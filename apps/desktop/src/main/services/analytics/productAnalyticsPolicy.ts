@@ -1,5 +1,6 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import type { ToolErrorKind } from "../../../shared/types";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -21,6 +22,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_auto_apply_cancelled",
   "ade_brain_recovered", "ade_publish_failing", "ade_relay_suppressed",
   "ade_account_session_unreadable",
+  "ade_tool_fetched",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -45,6 +47,8 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_publish_failing: 10,
   ade_relay_suppressed: 10,
   ade_account_session_unreadable: 10,
+  // Three pinned tools, plus headroom for a retry apiece after a flaky network.
+  ade_tool_fetched: 12,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -69,6 +73,7 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_publish_failing: 3,
   ade_relay_suppressed: 3,
   ade_account_session_unreadable: 3,
+  ade_tool_fetched: 3,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -76,6 +81,7 @@ const STRING_PROPERTIES = new Set([
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
+  "tool_error_kind",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -136,6 +142,9 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
   ade_account_session_unreadable: new Set(["code"]),
+  // `provider` already enumerates codex/claude/opencode, so the tool identity
+  // reuses it rather than adding a parallel key.
+  ade_tool_fetched: new Set(["provider", "outcome", "duration_bucket", "tool_error_kind"]),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
@@ -181,6 +190,22 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
   trigger: new Set(["work_session_completed"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
+  // A closed, code-authored vocabulary with no user data in it, which is why it
+  // gets an exact allowlist instead of going through `error_kind`'s coarsening
+  // -- that would flatten integrity, disk-space and extract into "other" and
+  // lose the only signal worth collecting here. Typed as ToolErrorKind so a
+  // rename in errors.ts fails the build instead of silently dropping a value.
+  //
+  // `not-installed` is deliberately absent. The sole emitter of this property
+  // is captureOutcome() in services/tools/agentToolsCacheService.ts, which
+  // reports the kind of an `ensureTools` rejection; `not-installed` is thrown
+  // only by `resolveTool`, and the ensure path checks the install sentinel
+  // directly (readInstalledEntry returns null, it does not throw). Add it back
+  // if an ensure ever starts surfacing it.
+  tool_error_kind: new Set<ToolErrorKind>([
+    "manifest", "unsupported-target", "network", "integrity", "disk-space", "extract",
+    "lock-timeout", "filesystem",
+  ]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {

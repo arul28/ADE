@@ -1,13 +1,16 @@
 # Windows support and troubleshooting
 
-ADE supports the packaged Windows 10/11 x64 desktop preview. Windows ARM64,
-Windows as an SSH-bootstrap runtime target, native Windows OS computer use, and
-iOS Simulator remain out of scope. App Control over CDP, the built-in Browser,
-proof-file ingestion, phone pairing, and the local Windows brain are supported
-within the preview boundary.
+ADE supports the packaged Windows 10/11 x64 desktop, shipped as a public beta.
+Windows ARM64, native Windows OS computer use, and iOS Simulator remain out of
+scope. App Control over CDP, the built-in Browser, proof-file ingestion, phone
+pairing, the local Windows brain, and Windows as an SSH-bootstrap runtime target
+are supported.
 
-Public Windows installers remain disabled until the exact-SHA release proof in
-[`windows-release-proof.md`](./windows-release-proof.md) passes.
+Public Windows installers ship. v1.2.52 was the first signed public release;
+downloads are served from `https://ade-app.dev/download/windows` and the
+PowerShell installer from `https://ade-app.dev/install.ps1`. The exact-SHA proof
+in [`windows-release-proof.md`](./windows-release-proof.md) remains a standing
+regression check rather than a precondition.
 
 ## What Windows gets instead
 
@@ -31,7 +34,7 @@ all and the surface does not exist.
 | Claude Code sandbox permission modes | Blocked | Permission modes themselves work; the sandbox does not. | Vendor limitation — Claude Code sandboxing is WSL-2 only. Not an ADE gap. |
 | Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | No Keychain. DPAPI is user-scoped rather than per-item ACL'd, so it is a weaker boundary than a Keychain item. |
 | Remote runtime bootstrap from a locally built channel | Blocked | A local `package:beta` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
-| Windows as an SSH-bootstrap runtime target | Unavailable | A Windows machine can drive remote runtimes; it cannot be one. | Out of scope for the preview. |
+| Windows as an SSH-bootstrap runtime target | Supported | Windows 10 22H2 (build 19045) and Windows 11 x64 can be bootstrapped over Windows OpenSSH Server. | Requires PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server remain unsupported as targets. |
 | Windows ARM64 | Unavailable | x64 only. The Cursor provider is additionally gated on ARM64 even under emulation. | Native and provider payloads are incomplete; `@cursor/sdk` publishes no `win32-arm64` package. |
 | Cross-channel phone-sync launch gate | Degraded | The launch gate answers from the sync-host lock file alone. A brain that was hard-killed and left a stale lock is not detected, so two channels can briefly both hold phone sync. `ade serve` still runs the full scan when it starts a brain. | The listener scan is a full-machine `Get-NetTCPConnection` + `Get-CimInstance` PowerShell query. It runs before any window exists, so on every launch it would block first paint — the cost `lsof` does not carry on macOS. |
 | Symlink-dependent operations | Degraded | Junctions are used where possible. Operations that need a real symlink require Developer Mode or an elevated shell. | Windows restricts symlink creation to administrators unless Developer Mode is on. |

@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": "apps/ade-cli/package-lock.json",
+  "tools": [
+    {
+      "name": "codex",
+      "description": "OpenAI Codex CLI native binary, spawned as `codex app-server`.",
+      "entry": {
+        "kind": "binary",
+        "path": "vendor/*/bin/codex",
+        "windowsPath": "vendor/*/bin/codex.exe"
+      },
+      "targets": {
+        "darwin-arm64": {
+          "package": "@openai/codex-darwin-arm64",
+          "version": "0.144.5-darwin-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.5-darwin-arm64.tgz",
+          "integrity": "sha512-zcT6NfBCqLFt+BReNSETTZW6v6PdbH0dzNtm9j7l7mDGqwPbKZDGJdnpkBao2389I0ZacyIKgSZoI0vez1d4Dw=="
+        },
+        "darwin-x64": {
+          "package": "@openai/codex-darwin-x64",
+          "version": "0.144.5-darwin-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.5-darwin-x64.tgz",
+          "integrity": "sha512-//Mo0m1MwaoT6psu5xsmofXpKx4/0irIkeq10xJvk59+886EG355ibjA+ZmlRcKhE3bLjsKD7p81nTbAdRL/bw=="
+        },
+        "linux-arm64": {
+          "package": "@openai/codex-linux-arm64",
+          "version": "0.144.5-linux-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.5-linux-arm64.tgz",
+          "integrity": "sha512-zAHggxVwR2TBxKmybXY7ZMiB0G8DMonY2YPdwNNjwXcf+LOIqNGgswwNCDMbP/HEe6r8j+R9ZX/yYoo8f+n/RQ=="
+        },
+        "linux-x64": {
+          "package": "@openai/codex-linux-x64",
+          "version": "0.144.5-linux-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.5-linux-x64.tgz",
+          "integrity": "sha512-FalLJlBQGFdK8Gc3kj9sa/ekNdgkHhUawLaKkvy5CtB18JaP2YxtTP/Pe1pD2iBiq8mMUliRnafpF6AdBdQMbg=="
+        },
+        "win32-x64": {
+          "package": "@openai/codex-win32-x64",
+          "version": "0.144.5-win32-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.5-win32-x64.tgz",
+          "integrity": "sha512-DnsSTlnnzleTxvLwIGnBitKInscxn2I7qASqosS8Fv+qysBygd+ZiBn/SQsRCgQ28PAlsNzmd3Gf3ZTecolAmg=="
+        }
+      }
+    },
+    {
+      "name": "claude-code",
+      "description": "Claude Code native binary that the Claude agent SDK spawns via pathToClaudeCodeExecutable.",
+      "entry": {
+        "kind": "binary",
+        "path": "claude",
+        "windowsPath": "claude.exe"
+      },
+      "targets": {
+        "darwin-arm64": {
+          "package": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+          "version": "0.3.220",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.220.tgz",
+          "integrity": "sha512-7VxlbEosK7DODiOnsjoVd0DSJzbnaPrM2jelMHI0y8zx1UnLS3WC6EFUXbvy74F2sXqEznh2tzn7EKWInaRN6Q=="
+        },
+        "darwin-x64": {
+          "package": "@anthropic-ai/claude-agent-sdk-darwin-x64",
+          "version": "0.3.220",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.220.tgz",
+          "integrity": "sha512-X9RwDsSmbF6ultKZroaip+DL8WRgC64gHbrAwrRlAFSPNZV7zmJyP2ur8rW7KrxqmtuehdMMkw8+SAC/6hD2PA=="
+        },
+        "linux-arm64": {
+          "package": "@anthropic-ai/claude-agent-sdk-linux-arm64",
+          "version": "0.3.220",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.220.tgz",
+          "integrity": "sha512-WkROPwWskqhKR9XgnmseHQ6rLi9zM9qt57IWoToIjL/eXOqDWipp7JXZ1L5ud+LrA42dunHPZfBwD/vXZ+A7LA=="
+        },
+        "linux-x64": {
+          "package": "@anthropic-ai/claude-agent-sdk-linux-x64",
+          "version": "0.3.220",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.220.tgz",
+          "integrity": "sha512-tkTJFnpR9VifvWX2fmkCAPkT6+8Wk/gVu8B5jsVekKZPiZoWRHmMXO30BnZn+f0TZhgYP+82PSX3S8crH1kn+w=="
+        },
+        "win32-x64": {
+          "package": "@anthropic-ai/claude-agent-sdk-win32-x64",
+          "version": "0.3.220",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.220.tgz",
+          "integrity": "sha512-MuOuXhbr66HlGaWXD2f3w0k2PsvmnbkwcUZ0dAe2poFLdl72GC2dapwwOBefxm9QmoNqk9+jmv/dSKGOVWyvLw=="
+        }
+      }
+    },
+    {
+      "name": "opencode",
+      "description": "OpenCode native binary.",
+      "entry": {
+        "kind": "binary",
+        "path": "bin/opencode",
+        "windowsPath": "bin/opencode.exe"
+      },
+      "targets": {
+        "darwin-arm64": {
+          "package": "opencode-darwin-arm64",
+          "version": "1.15.5",
+          "tarball": "https://registry.npmjs.org/opencode-darwin-arm64/-/opencode-darwin-arm64-1.15.5.tgz",
+          "integrity": "sha512-gv8o3WbbW33SbmJvx/enDuZewlIoWfduSFo8M/WqlRwwO//33Rs3bgSnY21a6DYtXFL7NFzXO7QOmbPY5y02Jg=="
+        },
+        "darwin-x64": {
+          "package": "opencode-darwin-x64",
+          "version": "1.15.5",
+          "tarball": "https://registry.npmjs.org/opencode-darwin-x64/-/opencode-darwin-x64-1.15.5.tgz",
+          "integrity": "sha512-yuglSeJbTF4jRHmFgqteQUMCRLjVOQ1aqMaeevDNyJXOUZPWCdFG1h8Fq8dZBgBfPfBEpQNFEWv8D9DU3ycytg=="
+        },
+        "linux-arm64": {
+          "package": "opencode-linux-arm64",
+          "version": "1.15.5",
+          "tarball": "https://registry.npmjs.org/opencode-linux-arm64/-/opencode-linux-arm64-1.15.5.tgz",
+          "integrity": "sha512-y2K5gT0IPWXx5DSy9hw+h0vSTahbdEV8spK/oZ4iwCY/Px/wdVpk5IphgkHcEes/9fIR1oLmu0/HF/SHhWRMxw=="
+        },
+        "linux-x64": {
+          "package": "opencode-linux-x64",
+          "version": "1.15.5",
+          "tarball": "https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.15.5.tgz",
+          "integrity": "sha512-Y3arLZezt8a6Ed2fdwrD21+JSQeNCZmfqHqYCv5iMzcpkE8/a8TLkDQVre74zjA7Gxelyk2sjk4b6ZKMuWHIkw=="
+        },
+        "win32-x64": {
+          "package": "opencode-windows-x64-baseline",
+          "version": "1.15.5",
+          "tarball": "https://registry.npmjs.org/opencode-windows-x64-baseline/-/opencode-windows-x64-baseline-1.15.5.tgz",
+          "integrity": "sha512-6oIoyY+ZSwsTsG2tekTZ67DKLsdRrywLECZWrJW/5Lj5aaibAc0uaQxIvNXKHbpznUU/Iaz+tgQ9D6o0OISIXg=="
+        }
+      }
+    }
+  ]
+}

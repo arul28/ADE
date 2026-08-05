@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Container } from "./Container";
 import { LINKS } from "../lib/links";
+import { useInstallDialog } from "./install/InstallDialogProvider";
 import {
   MARKETING_CTA_LABELS,
   MARKETING_CTA_POSITIONS,
@@ -10,6 +11,7 @@ import {
 
 export function SiteFooter() {
   const year = new Date().getFullYear();
+  const { openInstall } = useInstallDialog();
 
   return (
     <footer className="border-t border-border/70 bg-card/30">
@@ -37,9 +39,12 @@ export function SiteFooter() {
             <div>
               <div className="text-sm font-semibold text-fg">Product</div>
               <div className="mt-3 flex flex-col gap-2 text-sm">
-                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releasesLatest} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
+                <button type="button" className="focus-ring w-fit rounded-md text-left text-muted-fg hover:text-fg" onClick={() => openInstall("mac")} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER}>
                   Download for Mac
-                </a>
+                </button>
+                <button type="button" className="focus-ring w-fit rounded-md text-left text-muted-fg hover:text-fg" onClick={() => openInstall("windows")} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER}>
+                  Download for Windows
+                </button>
                 <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for iOS
                 </a>

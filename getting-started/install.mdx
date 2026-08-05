@@ -1,35 +1,56 @@
 ---
 title: "Install ADE"
-description: "Download ADE for macOS, install the Windows beta, add the iOS companion from TestFlight, and run in guest mode with no account."
+description: "Install ADE with one command on macOS, Linux, or Windows, or download the desktop app. Add the iOS companion from TestFlight and run in guest mode with no account."
 icon: "download"
 ---
 
-ADE is a native desktop app with an iOS companion. It is generally available on macOS and in beta on Windows 10/11 x64. Install the desktop app, launch it with no account, then add the phone app from TestFlight when you want mobile review and chat.
+ADE is a native desktop app, a headless engine, and an iOS companion. It is generally available on macOS, in beta on Windows 10/11 x64, and runs headless on Linux. The fastest path on every platform is one command.
 
 <Frame caption="Add your first repository from the welcome screen">
   <img src="/media/features/project/add-project-button.webp" alt="Add your first repository from the ADE welcome screen" />
 </Frame>
 
-## Requirements
+## Install from your terminal
 
-<CardGroup cols={3}>
-  <Card title="macOS 13+ or Windows 10/11" icon="desktop">
-    macOS on Apple Silicon or Intel, generally available and shipped as a signed, notarized app. Windows is in beta, x64 only — see [ADE on Windows](/getting-started/windows).
-  </Card>
-  <Card title="Git" icon="git-alt">
-    Required — ADE uses branches and worktrees to run lanes.
-  </Card>
-  <Card title="One AI provider" icon="key">
-    Needed to run agents. Connect it after launch — guest mode lets you explore first.
-  </Card>
-</CardGroup>
+<CodeGroup>
+```bash macOS & Linux
+curl -fsSL https://ade-app.dev/install.sh | sh
+```
 
-## Install
+```powershell Windows
+irm https://ade-app.dev/install.ps1 | iex
+```
+</CodeGroup>
 
-On macOS the fastest path is Homebrew. Prefer a download? Grab the DMG from GitHub Releases.
+This installs the **brain** — ADE's always-on engine. The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and stages it under `~/.ade`, rolling back if anything fails. There is no Node, npm, or other prerequisite.
+
+It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too.
+
+| Platform | Background service |
+| --- | --- |
+| macOS | launchd login service |
+| Linux | systemd user service |
+| Windows | Per-user startup entry |
+
+None of them need an administrator or elevated shell.
+
+<Warning>
+On macOS and Linux the installer does **not** edit your shell profile. It installs `ade` to `~/.ade/bin` and prints the line to add — put that directory on your `PATH` to run `ade` from a new shell. The Windows installer adds its directory to your user `PATH` for you (pass `-NoPath` to skip that).
+</Warning>
+
+<Note>
+When no terminal is attached — CI, or a provisioning script — the installer skips its prompts and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt` for `install.ps1`) opts out explicitly. You can always run `ade connect` later.
+</Note>
+
+## Or download the app
 
 <AccordionGroup>
-  <Accordion title="macOS — Homebrew (recommended)" icon="terminal">
+  <Accordion title="macOS — download" icon="apple">
+    Download for [**Apple Silicon**](https://ade-app.dev/download/mac-arm64) (M1 and later) or [**Intel**](https://ade-app.dev/download/mac-x64), then drag **ADE.app** into `/Applications` and launch it. If macOS asks for confirmation, choose **Open**.
+
+    The app is signed and notarized, and keeps itself current from then on.
+  </Accordion>
+  <Accordion title="macOS — Homebrew" icon="terminal">
     ```bash
     brew install --cask arul28/ade/ade
     ```
@@ -40,20 +61,38 @@ On macOS the fastest path is Homebrew. Prefer a download? Grab the DMG from GitH
     brew upgrade --cask ade
     ```
   </Accordion>
-  <Accordion title="macOS — download the DMG" icon="download">
-    1. Open [GitHub Releases](https://github.com/arul28/ADE/releases/latest) and download the latest ADE macOS `.dmg`.
-    2. Open the DMG and drag **ADE.app** into `/Applications`.
-    3. Launch ADE from `/Applications` or Spotlight. If macOS asks for confirmation, choose **Open**.
-  </Accordion>
   <Accordion title="Windows (beta)" icon="windows">
-    ADE for Windows ships as a per-user NSIS installer for Windows 10/11 x64. It needs no administrator rights and installs the app, the `ade` CLI, `ade code`, and the background ADE brain into your user profile.
+    Download the [**signed Windows installer**](https://ade-app.dev/download/windows) for Windows 10/11 x64.
 
-    Public Windows downloads are not published yet — the signed installer ships once the Windows release proof passes. Until then, build from source, and read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
+    It is a per-user NSIS installer: no administrator rights, and it installs the app, the `ade` CLI, `ade code`, and the background ADE brain into your user profile. Read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
+  </Accordion>
+  <Accordion title="Linux — the brain only" icon="linux">
+    There is no ADE desktop app for Linux, and none is needed. Install the brain with the one-liner above on any x64 or arm64 box, connect it to your account, and drive it from ADE on your Mac, Windows PC, phone, or the web.
+
+    See [Connect a machine](/getting-started/connect-machine) for the full server workflow.
   </Accordion>
   <Accordion title="Install the iOS companion" icon="mobile-screen">
-    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Pair it after the desktop app is running, from the desktop **Mobile** control.
+    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Sign in with the same account to see your machines automatically, or pair directly from the desktop **Mobile** control.
   </Accordion>
 </AccordionGroup>
+
+<Tip>
+Want the brain binary directly, without piping a script? Download it for [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64), [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64), [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64), [`linux-x64`](https://ade-app.dev/download/brain/linux-x64), or [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
+</Tip>
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="macOS 13+, Windows 10/11, or Linux" icon="desktop">
+    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows is in beta, x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the brain headless on x64 and arm64.
+  </Card>
+  <Card title="Git" icon="git-alt">
+    Required — ADE uses branches and worktrees to run lanes.
+  </Card>
+  <Card title="One AI provider" icon="key">
+    Needed to run agents. Connect it after launch — guest mode lets you explore first.
+  </Card>
+</CardGroup>
 
 ## Launch and explore
 
@@ -70,6 +109,9 @@ macOS is the generally available desktop platform. Windows 10/11 x64 is in beta:
 ## Next
 
 <CardGroup cols={2}>
+  <Card title="Connect a machine" icon="server" href="/getting-started/connect-machine">
+    Put this machine on your account — or run the brain on a Linux server.
+  </Card>
   <Card title="Connect a provider" icon="key" href="/getting-started/connect-provider">
     Add Claude Code, Codex, Cursor, Factory Droid, or OpenCode.
   </Card>

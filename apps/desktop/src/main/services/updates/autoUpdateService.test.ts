@@ -9,7 +9,11 @@ import {
   buildReleaseNotesUrl,
   compareUpdateVersions,
 } from "./autoUpdateVersions";
-import { classifyUpdateError, estimateUpdateRequiredBytes } from "./autoUpdateErrors";
+import {
+  MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
+  classifyUpdateError,
+  estimateUpdateRequiredBytes,
+} from "./autoUpdateErrors";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -102,6 +106,18 @@ describe("auto-update error classification", () => {
     expect(classifyUpdateError(error, "install")).toEqual({
       kind: "disk_full",
       phase: "staging",
+    });
+  });
+
+  it("does not recover the oversized-artifact kind from message copy", () => {
+    // The preflight passes kind: "artifact_too_large" to setErrorSnapshot, so
+    // classification must not depend on the wording of that message -- an edit
+    // to the user-facing copy cannot silently reclassify the error. The
+    // end-to-end coverage lives in "refuses a macOS update whose archive would
+    // crash Squirrel.Mac".
+    expect(classifyUpdateError(new Error(MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE), "download")).toEqual({
+      kind: "unknown",
+      phase: "download",
     });
   });
 
@@ -508,6 +524,166 @@ describe("createAutoUpdateService", () => {
       });
     });
     expect(updater.downloadUpdate).not.toHaveBeenCalled();
+
+    service.dispose();
+  });
+
+  it("refuses a macOS update whose archive would crash Squirrel.Mac", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.53",
+      files: [{ url: "ADE-1.2.53-arm64.zip", size: 1054 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.52",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      installTargetPath: "/Applications/ADE.app",
+      platform: "darwin",
+      // Ample space: the refusal must come from the archive size, not capacity.
+      getDiskSpace: () => ({
+        availableBytes: 500 * 1024 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        version: "1.2.53",
+        error: "This update is too large for macOS to install safely.",
+        errorDetails: {
+          kind: "artifact_too_large",
+          phase: "download",
+          preservesDownload: false,
+        },
+      });
+    });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+
+    service.dispose();
+  });
+
+  it("downloads a macOS update that sits inside the archive size budget", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.53",
+      files: [{ url: "ADE-1.2.53-arm64.zip", size: 700 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.52",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      installTargetPath: "/Applications/ADE.app",
+      platform: "darwin",
+      getDiskSpace: () => ({
+        availableBytes: 500 * 1024 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(updater.downloadUpdate).toHaveBeenCalled();
+    });
+
+    service.dispose();
+  });
+
+  // Windows streams the installer to disk and runs it as an external process,
+  // so nothing buffers it whole and the macOS cliff does not apply.
+  it("does not apply the macOS archive size guard on Windows", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.53",
+      files: [{ url: "ADE-1.2.53-win-x64.exe", size: 1054 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.52",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "C:/Users/test/AppData/Local/ade-updater",
+      installTargetPath: "C:/Users/test/AppData/Local/Programs/ADE/ADE.exe",
+      platform: "win32",
+      getDiskSpace: () => ({
+        availableBytes: 500 * 1024 * 1024 * 1024,
+        volumePath: "C:/",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(updater.downloadUpdate).toHaveBeenCalled();
+    });
+
+    service.dispose();
+  });
+
+  // Release metadata is advisory and CI already caps published artifacts, so a
+  // manifest without a size must not block every update.
+  it("allows a macOS update whose metadata omits the archive size", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = { version: "1.2.53", files: [{ url: "ADE-1.2.53-arm64.zip", sha512: "test" }] };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.52",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      installTargetPath: "/Applications/ADE.app",
+      platform: "darwin",
+      getDiskSpace: () => ({
+        availableBytes: 500 * 1024 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(updater.downloadUpdate).toHaveBeenCalled();
+    });
 
     service.dispose();
   });

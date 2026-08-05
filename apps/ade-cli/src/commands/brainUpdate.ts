@@ -1,13 +1,22 @@
 import { execFile, spawn, spawnSync, type SpawnOptions } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
+import {
+  DEFAULT_ADE_RELEASE_REPO,
+  RELEASE_CHECKSUMS_ASSET,
+  RELEASE_DOWNLOAD_TIMEOUT_MS,
+  detectRuntimeTargetResult,
+  downloadReleaseAsset,
+  readSha256SumsFile,
+  releaseAssetUrl,
+  runtimeBinaryAssetName,
+  runtimeNativeArchiveAssetName,
+  sha256File,
+} from "../lib/releaseAssets";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 type BrainUpdateExecFile = (
@@ -18,18 +27,10 @@ type BrainUpdateExecFile = (
 
 const execFileAsync = promisify(execFile) as BrainUpdateExecFile;
 
-const DEFAULT_RELEASE_REPO = "arul28/ADE";
-const CHECKSUMS_ASSET = "SHA256SUMS";
+const DEFAULT_RELEASE_REPO = DEFAULT_ADE_RELEASE_REPO;
+const CHECKSUMS_ASSET = RELEASE_CHECKSUMS_ASSET;
 const UPDATE_STATUS_FILE = "update-status.json";
 const UPDATE_USER_AGENT = "ADE brain updater";
-const UPDATE_DOWNLOAD_TIMEOUT_MS = 30_000;
-const SUPPORTED_TARGETS = new Set([
-  "darwin-arm64",
-  "darwin-x64",
-  "linux-arm64",
-  "linux-x64",
-  "win32-x64",
-]);
 
 export class BrainUpdateUsageError extends Error {}
 
@@ -98,31 +99,19 @@ function nowIso(deps: BrainUpdateDeps): string {
   return (deps.now?.() ?? new Date()).toISOString();
 }
 
-function normalizeArch(arch: string): "arm64" | "x64" | null {
-  const normalized = arch.trim().toLowerCase();
-  if (normalized === "arm64" || normalized === "aarch64") return "arm64";
-  if (normalized === "x64" || normalized === "x86_64" || normalized === "amd64") return "x64";
-  return null;
-}
-
+/** The published target list and its normalization live in `lib/releaseAssets.ts`. */
 export function detectRuntimeTarget(
   platform: NodeJS.Platform = process.platform,
   arch: string = os.arch(),
 ): string {
-  const normalizedArch = normalizeArch(arch);
-  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
-    ? platform
-    : null;
-  if (!normalizedPlatform || !normalizedArch) {
-    throw new BrainUpdateUsageError(
-      `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
-    );
+  const detected = detectRuntimeTargetResult(platform, arch);
+  if (detected.ok) return detected.target;
+  if (detected.reason === "unsupported-target") {
+    throw new BrainUpdateUsageError(`Unsupported ADE runtime target: ${detected.target}.`);
   }
-  const target = `${normalizedPlatform}-${normalizedArch}`;
-  if (!SUPPORTED_TARGETS.has(target)) {
-    throw new BrainUpdateUsageError(`Unsupported ADE runtime target: ${target}.`);
-  }
-  return target;
+  throw new BrainUpdateUsageError(
+    `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
+  );
 }
 
 export function brainUpdateAssetUrl(repo: string, version: string, assetName: string): string {
@@ -131,13 +120,10 @@ export function brainUpdateAssetUrl(repo: string, version: string, assetName: st
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(trimmedRepo)) {
     throw new BrainUpdateUsageError("ADE brain update --repo must be in owner/repo form.");
   }
-  if (!trimmedVersion || trimmedVersion === "latest") {
-    return `https://github.com/${trimmedRepo}/releases/latest/download/${assetName}`;
-  }
-  if (!/^v?[A-Za-z0-9_.-]+$/.test(trimmedVersion)) {
+  if (trimmedVersion && trimmedVersion !== "latest" && !/^v?[A-Za-z0-9_.-]+$/.test(trimmedVersion)) {
     throw new BrainUpdateUsageError("ADE brain update --version must be a release tag such as v1.2.13.");
   }
-  return `https://github.com/${trimmedRepo}/releases/download/${trimmedVersion}/${assetName}`;
+  return releaseAssetUrl(trimmedRepo, trimmedVersion, assetName);
 }
 
 function readValue(args: string[], index: number, flag: string): string {
@@ -310,52 +296,10 @@ async function defaultUpdateStagingDir(runtimeDir: string): Promise<string> {
   return await fsp.mkdtemp(path.join(updatesDir, "update-"));
 }
 
-function resolveDownload(url: string): typeof https | typeof http {
-  if (url.startsWith("https://")) return https;
-  if (url.startsWith("http://")) return http;
-  throw new BrainUpdateUsageError(`Unsupported ADE brain update URL: ${url}`);
-}
-
-async function defaultDownloadFile(url: string, outPath: string, redirects = 0): Promise<void> {
-  if (redirects > 5) {
-    throw new Error(`Too many redirects while downloading ${url}`);
-  }
-  await fsp.mkdir(path.dirname(outPath), { recursive: true });
-  const tmp = `${outPath}.${process.pid}.download`;
-  await new Promise<void>((resolve, reject) => {
-    const request = resolveDownload(url).get(
-      url,
-      { headers: { "user-agent": UPDATE_USER_AGENT }, timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
-      (response) => {
-        const status = response.statusCode ?? 0;
-        const location = response.headers.location;
-        if (status >= 300 && status < 400 && location) {
-          response.resume();
-          const redirected = new URL(location, url).toString();
-          if (url.startsWith("https://") && !redirected.startsWith("https://")) {
-            reject(new Error(`Refusing insecure redirect from ${url} to ${redirected}`));
-            return;
-          }
-          defaultDownloadFile(redirected, outPath, redirects + 1).then(resolve, reject);
-          return;
-        }
-        if (status !== 200) {
-          response.resume();
-          reject(new Error(`Download failed with HTTP ${status}: ${url}`));
-          return;
-        }
-        pipeline(response, fs.createWriteStream(tmp))
-          .then(() => fsp.rename(tmp, outPath))
-          .then(resolve, reject);
-      },
-    );
-    request.on("timeout", () => {
-      request.destroy(new Error(`Timed out downloading ${url}`));
-    });
-    request.on("error", reject);
-  }).catch(async (error) => {
-    await fsp.rm(tmp, { force: true }).catch(() => undefined);
-    throw error;
+async function defaultDownloadFile(url: string, outPath: string): Promise<void> {
+  await downloadReleaseAsset(url, outPath, {
+    userAgent: UPDATE_USER_AGENT,
+    timeoutMs: RELEASE_DOWNLOAD_TIMEOUT_MS,
   });
 }
 
@@ -444,10 +388,6 @@ export function requestBrainServiceStatus(
   return { ...result, installed };
 }
 
-function runtimeBinaryAssetName(target: string): string {
-  return `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
-}
-
 function installedRuntimeBinaryName(target: string): string {
   return target.startsWith("win32-") ? "ade.exe" : "ade";
 }
@@ -469,23 +409,8 @@ function runtimeSidecarEnv(
   };
 }
 
-function readSha256Sums(filePath: string): Map<string, string> {
-  const sums = new Map<string, string>();
-  const content = fs.readFileSync(filePath, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = /^([a-fA-F0-9]{64})\s+\*?(.+)$/.exec(line);
-    if (!match) continue;
-    sums.set(path.basename(match[2].trim()), match[1].toLowerCase());
-  }
-  return sums;
-}
-
 async function verifySha256(filePath: string, expectedHex: string, label: string): Promise<void> {
-  const hash = createHash("sha256");
-  await pipeline(fs.createReadStream(filePath), hash);
-  const actual = hash.digest("hex");
+  const actual = await sha256File(filePath);
   if (actual !== expectedHex.toLowerCase()) {
     throw new Error(`ADE brain update checksum mismatch for ${label}: expected ${expectedHex}, got ${actual}.`);
   }
@@ -498,7 +423,7 @@ async function verifyDownloadedAssetChecksums(args: {
   nativeArchiveName: string;
   nativeArchivePath: string;
 }): Promise<void> {
-  const sums = readSha256Sums(args.checksumPath);
+  const sums = readSha256SumsFile(args.checksumPath);
   const binarySum = sums.get(args.binaryName);
   const nativeArchiveSum = sums.get(args.nativeArchiveName);
   if (!binarySum) {
@@ -517,7 +442,11 @@ async function extractArchiveToDirectory(
   deps: BrainUpdateDeps,
 ): Promise<void> {
   await fsp.mkdir(targetDir, { recursive: true });
-  const result = (deps.runCommand ?? runCommand)("tar", ["-xzf", archivePath, "-C", targetDir]);
+  // A bare "tar" on Windows resolves through PATH, which a caller controls; pin
+  // it to System32's bsdtar so the extraction path cannot be shimmed.
+  const platform = deps.platform ?? process.platform;
+  const tarCommand = platform === "win32" ? resolveTrustedWindowsTool("tar") : "tar";
+  const result = (deps.runCommand ?? runCommand)(tarCommand, ["-xzf", archivePath, "-C", targetDir]);
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to extract ADE native runtime dependencies.");
   }
@@ -924,7 +853,7 @@ export async function runBrainUpdateCommand(
     );
   }
   const binaryName = runtimeBinaryAssetName(target);
-  const canonicalNativeArchiveName = `ade-${target}.native.tar.gz`;
+  const canonicalNativeArchiveName = runtimeNativeArchiveAssetName(target);
   const binaryUrl = brainUpdateAssetUrl(options.repo, options.version, binaryName);
   const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, canonicalNativeArchiveName);
   const checksumUrl = brainUpdateAssetUrl(options.repo, options.version, CHECKSUMS_ASSET);

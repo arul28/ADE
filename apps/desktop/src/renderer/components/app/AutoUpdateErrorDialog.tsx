@@ -41,6 +41,9 @@ function updateErrorExplanation(snapshot: AutoUpdateSnapshot): string {
   if (kind === "insufficient_space" || kind === "disk_full") {
     return "ADE does not have enough free space on the affected volume to safely download, stage, and replace the app.";
   }
+  if (kind === "artifact_too_large") {
+    return "This release is too large for the macOS updater to install safely, so ADE stopped before it could crash. Download the latest version from the ADE website instead.";
+  }
   if (kind === "quota") return "The account or volume quota was reached while ADE was updating.";
   if (kind === "network") return "ADE could not reach or finish downloading the update from the release server.";
   if (kind === "signature" || kind === "verification") return "ADE could not verify that the downloaded update is complete and trusted.";

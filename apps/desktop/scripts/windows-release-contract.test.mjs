@@ -11,6 +11,7 @@ import {
   windowsInstallerArtifactName,
   windowsInstallerPattern,
 } from "./windows-package-identity.mjs";
+import { runtimeFetchedToolPackageNames } from "./runtime-fetched-tool-packages.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -25,6 +26,19 @@ const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", 
 // Downloads moved out of a dedicated page and into the home hero, one button
 // per platform. The gate disclosure moved with them, so this reads the hero.
 const heroDownloads = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "editorial", "Lede.tsx"), "utf8");
+// The hero button opens the install dialog rather than linking at GitHub, so
+// the Windows install path is spread across these four files. All of them are
+// read here so the contract covers the whole route from button to asset.
+const installTargets = fs.readFileSync(
+  path.join(repoRoot, "apps", "web", "src", "lib", "installTargets.ts"),
+  "utf8",
+);
+const webLinks = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "lib", "links.ts"), "utf8");
+const webVercelConfig = fs.readFileSync(path.join(repoRoot, "apps", "web", "vercel.json"), "utf8");
+const webDownloadEndpoint = fs.readFileSync(
+  path.join(repoRoot, "apps", "web", "api", "releaseAssets.ts"),
+  "utf8",
+);
 const winArtifactValidator = fs.readFileSync(
   path.join(desktopRoot, "scripts", "validate-win-artifacts.mjs"),
   "utf8",
@@ -73,17 +87,21 @@ function jobBlock(workflow, jobName, nextJobName) {
   return workflow.slice(start, end);
 }
 
-test("Windows package carries every remote runtime sidecar its validator requires", () => {
-  const runtimeResources = [...pkg.build.extraResources, ...pkg.build.win.extraResources]
-    .filter((entry) => entry.to === "runtime");
+// The Windows package used to carry all five remote runtime sidecars, which is
+// most of why the installer reached 1716 MB. It now carries win32-x64 only; the
+// other targets stay published as standalone release assets.
+test("Windows package carries only the win32-x64 remote runtime sidecar", () => {
+  const runtimeResources = [
+    ...(pkg.build.extraResources ?? []),
+    ...pkg.build.win.extraResources,
+  ].filter((entry) => entry.to === "runtime");
   const runtimeFilter = runtimeResources.flatMap((entry) => entry.filter);
-  for (const target of remoteTargets) {
-    const binary = target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`;
-    assert.ok(runtimeFilter.includes(binary), target);
-    assert.ok(runtimeFilter.includes(`ade-${target}.native.tar.gz`), `${target} native archive`);
+  assert.deepEqual(runtimeFilter, ["ade-win32-x64.exe", "ade-win32-x64.native.tar.gz"]);
+  for (const target of remoteTargets.filter((entry) => entry !== "win32-x64")) {
+    assert.equal(runtimeFilter.some((entry) => entry.startsWith(`ade-${target}`)), false, target);
   }
-  const commonRuntimeFilter = pkg.build.extraResources.find((entry) => entry.to === "runtime").filter;
-  assert.equal(commonRuntimeFilter.some((entry) => entry.startsWith("ade-linux-")), false);
+  // A shared top-level runtime entry would reach every platform's bundle again.
+  assert.equal((pkg.build.extraResources ?? []).some((entry) => entry.to === "runtime"), false);
 });
 
 test("electron-builder owns packaged update metadata and preserves the upstream default", () => {
@@ -109,12 +127,15 @@ test("local Windows test builds omit only cross-platform runtime sidecars", () =
   assert.match(windowsTestBuild, /ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1"/);
   assert.match(windowsTestBuild, /ADE_WINDOWS_TEST_BUILD: "1"/);
   assert.match(windowsTestBuild, /npm\.cmd.*"run", "dist:win"/s);
-  assert.match(runtimeValidator, /allTargets\.includes\(hostTarget\) \? \[hostTarget\] : \[\]/);
-  assert.match(winArtifactValidator, /Local test build: skipping macOS\/Linux remote runtime sidecars/);
+  assert.match(runtimeValidator, /const runtimeTargetSet = resolveRuntimeTargets\(\);/);
+  assert.match(winArtifactValidator, /Local test build: skipping the remote runtime sidecar assertion/);
   assert.match(whisperValidator, /Local Windows test build: Whisper CLI is not bundled/);
   assert.match(electronBuilderWrapper, /windowsHide: process\.platform === "win32"/);
-  assert.match(afterPackScript, /Pruned \$\{reason\} OpenCode install shim/);
-  assert.match(winArtifactValidator, /duplicate OpenCode Windows executable/);
+  // `opencode-ai` carries a 107 MB Windows executable in its own bin/ on every
+  // platform. OpenCode is fetched into the machine tools cache now, so that
+  // payload is pruned on Windows too, not just off-target.
+  assert.match(afterPackScript, /Pruned runtime-fetched OpenCode install shim/);
+  assert.match(winArtifactValidator, /runtime-fetched OpenCode install shim/);
   assert.doesNotMatch(pkg.scripts["dist:win"], /ALLOW_HOST_ONLY/);
   assert.doesNotMatch(pkg.scripts["dist:win:signed"], /ALLOW_HOST_ONLY/);
   assert.doesNotMatch(pkg.scripts["dist:win"], /WINDOWS_TEST_BUILD/);
@@ -663,29 +684,108 @@ test("Windows package smoke requires every bundled provider runtime", () => {
     pkg.build.asarUnpack.includes("node_modules/@cursor/sdk-win32-x64/**"),
     "Cursor's Windows native helpers must be unpacked so Electron can execute them",
   );
-  assert.match(winArtifactValidator, /Claude executable source.*bundled/i);
-  assert.doesNotMatch(winArtifactValidator, /Claude CLI is not installed.*skipping live Claude startup/i);
-  assert.match(winArtifactValidator, /Codex executable source.*bundled/i);
-  assert.match(winArtifactValidator, /OpenCode.*--version/i);
+  // Cursor and Droid are still bundled; Codex, Claude Code and OpenCode are not.
+  // For those three the smoke's job flipped from "prove the bundled copy runs"
+  // to "prove the resolver runs and did NOT find a bundled copy" - a bundled
+  // resolution now means the packaging exclusions regressed.
+  assert.match(winArtifactValidator, /assertFetchedToolResolution\("Claude"/);
+  assert.match(winArtifactValidator, /assertFetchedToolResolution\("Codex"/);
+  assert.match(winArtifactValidator, /assertFetchedToolResolution\("OpenCode"/);
+  assert.match(winArtifactValidator, /if \(source === "bundled"\)/);
+  assert.doesNotMatch(winArtifactValidator, /executable source must be bundled/i);
+  assert.match(winArtifactValidator, /--version/);
   assert.match(winArtifactValidator, /cursorSdkCreateAgentPlatform/);
   assert.match(winArtifactValidator, /cursorNativeRgPath/);
   assert.match(winArtifactValidator, /droidSdkCreateSession/);
 });
 
+test("the Windows package excludes every runtime-fetched agent tool package", () => {
+  // The list is imported from the brain runtime archive filter rather than
+  // restated, so this pins the wiring, not a second copy of 26 names.
+  assert.match(
+    winArtifactValidator,
+    /from "\.\/runtime-fetched-tool-packages\.mjs"/,
+  );
+  assert.match(winArtifactValidator, /assertAsarEmbedsNoRuntimeFetchedToolPayload/);
+  assert.match(afterPackScript, /assertNoRuntimeFetchedToolPackages/);
+  for (const packageName of runtimeFetchedToolPackageNames) {
+    assert.ok(
+      pkg.build.files.includes(`!node_modules/${packageName}/**`),
+      `build.files must exclude ${packageName}; asarUnpack alone would pack it into app.asar`,
+    );
+    assert.ok(
+      !pkg.build.asarUnpack.includes(`node_modules/${packageName}/**`),
+      `build.asarUnpack must not unpack ${packageName}`,
+    );
+  }
+  // The JS launcher and SDK still ship: breaking those breaks the product.
+  assert.ok(pkg.build.asarUnpack.includes("node_modules/opencode-ai/**"));
+  assert.ok(pkg.build.asarUnpack.includes("node_modules/@openai/codex/**"));
+  assert.ok(pkg.build.asarUnpack.includes("node_modules/@anthropic-ai/claude-agent-sdk/**"));
+});
+
 test("the Windows download is permanently live and carries dedicated analytics", () => {
   // The site-side gate existed so a Windows button could never imply an
   // artifact that was not published. v1.2.52 shipped the signed installer, so
-  // the gate is retired: the button now pins the opposite invariant -- a
-  // permanent, ungated link straight to the latest release. If Windows assets
-  // ever have to be pulled, take the button out; do not resurrect the flag,
-  // because a dead env var reads as "off by accident" forever.
+  // the gate is retired: the hero now pins the opposite invariant -- a
+  // permanent, ungated Windows install path. If Windows assets ever have to be
+  // pulled, take the button out; do not resurrect the flag, because a dead env
+  // var reads as "off by accident" forever.
   assert.doesNotMatch(heroDownloads, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED\s*===/);
   assert.match(heroDownloads, /Download for Windows/);
-  // The Windows anchor specifically (its href sits directly above its
-  // analytics attribute) must point at the latest release, not the list.
+  // The hero button no longer links straight at GitHub -- it opens the install
+  // dialog, which is where the terminal one-liner and the direct download now
+  // live. Pin the trigger (so the button cannot silently become inert) and its
+  // CTA label (so the funnel keeps reporting).
+  assert.match(heroDownloads, /onClick=\{\(\) => openInstall\("windows"\)\}/);
+  assert.match(heroDownloads, /MARKETING_CTA_LABELS\.DOWNLOAD_WINDOWS/);
+  // Windows 10/11 x64 + per-user, no-admin is a support claim, not decoration:
+  // it has to stay visible wherever the Windows button is.
+  assert.match(heroDownloads, /Windows 10\/11 x64\. Per-user installer, no administrator rights\./);
+});
+
+test("the Windows install dialog keeps both install paths and their wording", () => {
+  // What the hero button opens. These strings ARE the Windows install
+  // instructions -- the one-liner people paste into PowerShell and the
+  // no-admin promise -- so they are pinned here rather than left to drift.
+  assert.match(installTargets, /irm https:\/\/ade-app\.dev\/install\.ps1 \| iex/);
   assert.match(
-    heroDownloads,
-    /href=\{LINKS\.releasesLatest\}\s*\n\s*data-ade-analytics-feature=\{MARKETING_FEATURES\.DOWNLOAD_WINDOWS\}/,
+    installTargets,
+    /Per-user installer — no administrator rights\. Windows 10\/11, x64\./,
   );
-  assert.match(heroDownloads, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
+  // The direct download must resolve through the site endpoint, never a
+  // hardcoded versioned asset URL that goes stale on the next release.
+  assert.match(installTargets, /href: LINKS\.downloadWindows/);
+  assert.match(webLinks, /downloadWindows: "\/download\/windows"/);
+  assert.doesNotMatch(installTargets, /ADE-\d+\.\d+\.\d+/);
+  assert.match(installTargets, /MARKETING_CTA_LABELS\.DOWNLOAD_WINDOWS_X64/);
+  assert.match(installTargets, /MARKETING_FEATURES\.COPY_INSTALL_COMMAND_WINDOWS/);
+});
+
+test("the /download/windows endpoint is routed and resolves the signed installer", () => {
+  // The rewrite has to exist or the SPA catch-all swallows /download/windows
+  // and the dialog's download button lands on the marketing page.
+  const rewrites = JSON.parse(webVercelConfig).rewrites;
+  assert.ok(
+    rewrites.some(
+      (rewrite) =>
+        rewrite.source === "/download/:slug" && rewrite.destination.includes("kind=app"),
+    ),
+    "vercel.json must rewrite /download/:slug to the download function",
+  );
+  assert.ok(
+    rewrites.some((rewrite) => rewrite.source === "/install.ps1"),
+    "vercel.json must rewrite /install.ps1 to the install function",
+  );
+  // Suffix, not a rebuilt filename: this is what has to keep matching the
+  // artifact name electron-builder actually produces.
+  assert.match(webDownloadEndpoint, /windows: \{ suffix: "-win-x64\.exe"/);
+  // The endpoint matches by suffix, so prove the suffix actually selects the
+  // installer electron-builder produces -- and nothing else in the release.
+  const installerName = windowsInstallerArtifactName(resolveWindowsPackageIdentity("stable"))
+    .replace("${version}", "1.2.3")
+    .replace("${arch}", "x64")
+    .replace("${ext}", "exe");
+  assert.equal(installerName.endsWith("-win-x64.exe"), true);
+  assert.equal(`${installerName}.blockmap`.endsWith("-win-x64.exe"), false);
 });

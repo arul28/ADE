@@ -57,6 +57,23 @@ vi.mock("./runtimeRpcClient", () => ({
   RuntimeRpcClient: runtimeRpcClientMock,
 }));
 
+// These flow tests describe a desktop with no sidecar for the remote's target
+// and no reachable release, i.e. the pre-fetch-fallback behaviour. Release
+// downloads are covered end to end in remoteSidecarCache.test.ts; stubbing them
+// here keeps this suite offline.
+vi.mock("./remoteSidecarCache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./remoteSidecarCache")>();
+  return {
+    ...actual,
+    resolveRemoteRuntimeSidecars: vi.fn(async (args: { archLabel: string }) => {
+      throw new actual.RemoteSidecarFetchError(
+        `No published ${args.archLabel} runtime in this test.`,
+        { kind: "unavailable" },
+      );
+    }),
+  };
+});
+
 describe("normalizeRemoteArch", () => {
   it("normalizes supported uname platform and architecture pairs", () => {
     expect(normalizeRemoteArch("Darwin arm64")).toEqual({

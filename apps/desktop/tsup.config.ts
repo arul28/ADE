@@ -21,9 +21,8 @@ export default defineConfig({
   platform: "node",
   target: "node18",
   // Electron provides the "electron" module at runtime; bundling the npm package breaks it.
-  // sql.js loads a wasm file from disk; keep it external so it can resolve its assets.
   // node-pty is native and must be resolved at runtime for Electron.
-  external: ["electron", "sql.js", "node-pty", "@cursor/sdk", "@factory/droid-sdk", "sqlite3"],
+  external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk"],
   // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   noExternal: ["@opencode-ai/sdk", /^@opencode-ai\/sdk\/v2(?:\/.*)?$/],

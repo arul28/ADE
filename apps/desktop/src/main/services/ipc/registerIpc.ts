@@ -4,7 +4,8 @@ import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
-import { DEFAULT_AUTO_UPDATE_PREFERENCES } from "../../../shared/types";
+import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
@@ -597,6 +598,7 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudStreamRunResult,
+  AgentToolsCacheSnapshot,
   AutoUpdatePreferences,
   UpdateInstallImpact,
   ExternalSessionListArgs,
@@ -987,6 +989,7 @@ export type AppContext = {
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
@@ -4617,10 +4620,25 @@ export function registerIpc({
   // Cheap binary-only check (no probe, no server boot). Used by the renderer
   // for instant first-paint of OpenCode-gated UI without waiting on the full
   // ~2s getStatus() roundtrip.
-  ipcMain.handle(IPC.aiIsOpenCodeInstalled, async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> => {
+  ipcMain.handle(IPC.aiIsOpenCodeInstalled, async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> => {
     const { resolveOpenCodeBinary } = await import("../opencode/openCodeBinaryManager");
     const info = resolveOpenCodeBinary();
     return { installed: Boolean(info.path), source: info.source };
+  });
+
+  // The fetched agent-CLI cache belongs to THIS machine's install, not to the
+  // bound project's runtime, so these are deliberately not routed through a
+  // runtime action the way the project-scoped `ai` calls are.
+  ipcMain.handle(IPC.aiGetToolsCache, (): AgentToolsCacheSnapshot => {
+    return getCtx().agentToolsCacheService?.getSnapshot() ?? EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT;
+  });
+
+  // Retry entry point for onboarding. `ensureMissing` coalesces, so a user
+  // mashing Retry cannot start a second download of the same tarball.
+  ipcMain.handle(IPC.aiEnsureToolsCache, async (): Promise<AgentToolsCacheSnapshot> => {
+    const service = getCtx().agentToolsCacheService;
+    if (!service) return EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT;
+    return service.ensureMissing();
   });
 
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {

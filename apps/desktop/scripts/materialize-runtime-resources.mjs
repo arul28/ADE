@@ -7,6 +7,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
+
+const {
+  RUNTIME_TARGET_ENV,
+  artifactNamesForTarget,
+  diffRuntimeArtifacts,
+  hostRuntimeTarget: currentTarget,
+  isRuntimeArtifactName,
+  isRuntimeBinaryName,
+  resolveRuntimeTargets,
+} = runtimeResourceTargets;
 
 const execFileAsync = promisify(execFile);
 
@@ -16,28 +27,10 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const cliRoot = path.join(repoRoot, "apps", "ade-cli");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const cliDistStaticRoot = path.join(cliRoot, "dist-static");
-const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
 const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
-const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
+const runtimeTargetSet = resolveRuntimeTargets();
+const allowHostOnlyRuntimeResources = runtimeTargetSet.mode === "host-only";
 const maxDownloadRedirects = 10;
-
-function currentTarget() {
-  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
-  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  return `${platform}-${arch}`;
-}
-
-function artifactNamesForTarget(target) {
-  return [target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`, `ade-${target}.native.tar.gz`];
-}
-
-function isRuntimeBinaryName(name) {
-  return targets.some((target) => name === artifactNamesForTarget(target)[0]);
-}
-
-function isRuntimeArtifactName(name) {
-  return targets.some((target) => artifactNamesForTarget(target).includes(name));
-}
 
 function uniquePaths(paths) {
   const seen = new Set();
@@ -294,15 +287,32 @@ async function missingArtifactsForTarget(target) {
 
 async function missingArtifacts() {
   const missing = [];
-  for (const target of targets) {
+  for (const target of runtimeTargetSet.targets) {
     missing.push(...await missingArtifactsForTarget(target));
   }
   return missing;
 }
 
+// In pinned-target mode every other target's sidecar is deleted rather than
+// merely left unrequested, so a re-widened CI artifact download cannot leave a
+// foreign payload behind for electron-builder to pick up.
+async function pruneForeignArtifacts() {
+  if (!runtimeTargetSet.exclusive) return;
+  const { unexpected } = diffRuntimeArtifacts(runtimeRoot, runtimeTargetSet.targets);
+  for (const name of unexpected) {
+    await fs.rm(path.join(runtimeRoot, name), { force: true });
+  }
+  if (unexpected.length > 0) {
+    console.log(
+      `[runtime-resources] Pruned ${unexpected.length} non-target runtime artifact(s) for `
+      + `${runtimeTargetSet.targets.join(", ")}: ${unexpected.join(", ")}`
+    );
+  }
+}
+
 async function buildHostArtifactsIfNeeded() {
   const target = currentTarget();
-  if (!targets.includes(target)) return false;
+  if (!runtimeTargetSet.targets.includes(target)) return false;
 
   const missingHostArtifacts = await missingArtifactsForTarget(target);
   if (missingHostArtifacts.length === 0) return false;
@@ -378,9 +388,17 @@ async function main() {
   }
 
   await buildHostArtifactsIfNeeded();
+  await pruneForeignArtifacts();
 
   const missing = await missingArtifacts();
   if (missing.length > 0) {
+    if (runtimeTargetSet.exclusive) {
+      throw new Error(
+        `[runtime-resources] ${RUNTIME_TARGET_ENV}=${runtimeTargetSet.targets.join(",")} but the runtime `
+          + `artifact(s) below are missing:\n${formatMissing(missing)}\n`
+          + "\nThe packaging job must download its own `ade-runtime-<target>` artifact before packaging."
+      );
+    }
     if (allowHostOnlyRuntimeResources) {
       console.warn(
         "[runtime-resources] Host-only local package mode is enabled; missing remote runtime artifact(s):\n" +
@@ -399,7 +417,10 @@ async function main() {
     );
   }
 
-  console.log(`[runtime-resources] Materialized runtime resources for ${targets.length} target(s).`);
+  console.log(
+    `[runtime-resources] Materialized ${runtimeTargetSet.mode} runtime resources for `
+    + `${runtimeTargetSet.targets.length} target(s): ${runtimeTargetSet.targets.join(", ")}.`
+  );
 }
 
 main().catch((error) => {

@@ -3,13 +3,14 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
 
-export type OpenCodeBinarySource = "user-installed" | "bundled" | "missing";
+export type OpenCodeBinarySource = "user-installed" | "tools-cache" | "bundled" | "missing";
 
 export type OpenCodeBinaryInfo = {
   path: string | null;
@@ -149,9 +150,19 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   // the stale value. setPathEnvValue collapses case-variant duplicates.
   setPathEnvValue(process.env, augmentProcessPathWithShellAndKnownCliDirs({ env: process.env }));
 
-  // 1. Prefer ADE's pinned bundled runtime, matching the Claude/Codex
-  // resolver policy. Developers can opt out to exercise a local install.
+  // 1. Prefer ADE's pinned runtime, matching the Claude/Codex resolver policy.
+  // Developers can opt out to exercise a local install.
   if (process.env.ADE_DISABLE_BUNDLED_OPENCODE !== "1") {
+    // The machine tools cache first: in a packaged build the platform package
+    // is fetched there rather than bundled. The manifest already encodes the
+    // win32-x64 -> opencode-windows-x64-baseline substitution, so the AVX2
+    // avoidance documented on OPENCODE_PLATFORM_PACKAGES holds here too.
+    const cachedPath = cachedToolEntryPath("opencode");
+    if (cachedPath && canRunBinaryCandidate(cachedPath)) {
+      cachedInfo = { path: cachedPath, source: "tools-cache" };
+      return cachedInfo;
+    }
+
     const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBinaryCandidate(candidate));
     if (bundled) {
       cachedInfo = { path: bundled, source: "bundled" };

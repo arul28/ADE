@@ -1,6 +1,7 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowUpRight, BookOpen, Github, Smartphone } from "lucide-react";
+import { ArrowUpRight, BookOpen, Github, Smartphone, Terminal } from "lucide-react";
 import { LINKS } from "../../lib/links";
+import { useInstallDialog } from "../install/InstallDialogProvider";
 import {
   MARKETING_CTA_LABELS,
   MARKETING_CTA_POSITIONS,
@@ -41,6 +42,7 @@ function WindowsMark({ className }: { className?: string }) {
  */
 export function Lede() {
   const reduceMotion = useReducedMotion() ?? true;
+  const { openInstall } = useInstallDialog();
 
   const container = {
     hidden: {},
@@ -88,33 +90,32 @@ export function Lede() {
         className="mt-[clamp(22px,2.8vw,34px)] flex flex-col items-center gap-3"
       >
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <a
-            href={LINKS.releasesLatest}
-            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
+          {/* Mac and Windows open the install dialog — terminal one-liner or a
+              direct download, visitor's choice — rather than dumping people on
+              a GitHub releases page full of assets they'd have to decode. */}
+          <button
+            type="button"
+            onClick={() => openInstall("mac")}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.HERO}
-            target="_blank"
-            rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-5 py-3 text-[14px] font-medium text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
           >
             <AppleMark className="h-4 w-4" /> Download for Mac
-          </a>
+          </button>
           {/* Windows sits beside macOS rather than behind a download page.
               The wording is pinned by the Windows release contract test, which
               used to pin the download page. */}
-          <a
-            href={LINKS.releasesLatest}
-            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_WINDOWS}
+          <button
+            type="button"
+            onClick={() => openInstall("windows")}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.HERO}
-            target="_blank"
-            rel="noreferrer"
             title="Windows 10/11 x64. Per-user installer, no administrator rights."
             className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-5 py-3 text-[14px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
           >
             <WindowsMark className="h-[15px] w-[15px]" />
             Download for Windows
-          </a>
+          </button>
           <a
             href={LINKS.testflight}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
@@ -128,6 +129,16 @@ export function Lede() {
           </a>
         </div>
         <p className="flex flex-wrap items-center justify-center gap-x-2 text-[13px] text-[color:var(--color-cream-faint)]">
+          {/* No Linux desktop app — but the brain runs anywhere, and that is
+              the part that matters for a headless box. */}
+          <button
+            type="button"
+            onClick={() => openInstall("linux")}
+            className="inline-flex items-center gap-1 text-[color:var(--color-cream-muted)] underline decoration-[color:var(--color-hairline-strong)] underline-offset-4 transition-colors hover:text-[color:var(--color-cream)]"
+          >
+            <Terminal className="h-3.5 w-3.5" aria-hidden /> Linux · install the brain
+          </button>
+          <span aria-hidden>·</span>
           <a
             href={LINKS.github}
             data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}

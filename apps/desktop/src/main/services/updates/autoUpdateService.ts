@@ -18,7 +18,10 @@ import { readGlobalState, writeGlobalState, type GlobalState } from "../state/gl
 import {
   classifyUpdateError,
   estimateUpdateRequiredBytes,
+  exceedsMacUpdateArtifactLimit,
   finitePositive,
+  MAC_UPDATE_ARTIFACT_MAX_BYTES,
+  MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
   readDiskSpace,
   updateDownloadBytes,
   type DiskSpaceInfo,
@@ -115,6 +118,7 @@ type CreateAutoUpdateServiceArgs = {
   updaterCacheDir?: string;
   installTargetPath?: string;
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
+  platform?: NodeJS.Platform;
   installWatchdogMs?: number;
   quitStagingSlowWarnMs?: number;
   quitHardDeadlineMs?: number;
@@ -395,6 +399,7 @@ export function createAutoUpdateService({
   updaterCacheDir,
   installTargetPath = process.execPath,
   getDiskSpace = readDiskSpace,
+  platform = process.platform,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
   quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
   // Only Squirrel.Mac reports staging progress; electron-updater's other
@@ -593,12 +598,20 @@ export function createAutoUpdateService({
   function setErrorSnapshot(args: {
     error: unknown;
     fallbackPhase: AutoUpdatePhase;
+    /**
+     * Set by callers that already know why they failed. Message-sniffing is only
+     * for opaque errors from electron-updater; a caller that raised the failure
+     * itself must not have its own copy parsed back into a kind.
+     */
+    kind?: AutoUpdateErrorKind;
     capacity?: Pick<AutoUpdateErrorDetails, "availableBytes" | "requiredBytes" | "volumePath">;
     message?: string;
     preservesDownload?: boolean;
     preservedUpdate?: PreservedDownloadRetry;
   }): void {
-    const classified = classifyUpdateError(args.error, args.fallbackPhase);
+    const classified = args.kind
+      ? { kind: args.kind, phase: args.fallbackPhase }
+      : classifyUpdateError(args.error, args.fallbackPhase);
     const message = args.message ?? formatErrorMessage(args.error);
     const preservesDownload = args.preservesDownload
       ?? shouldPreserveDownloadedUpdate(classified.kind, classified.phase);
@@ -664,6 +677,26 @@ export function createAutoUpdateService({
     }
     const { kind } = classifyUpdateError(error, currentPhase);
     return kind === "signature" || kind === "verification" ? null : preservedDownloadRetry;
+  }
+
+  // Squirrel.Mac crashes the app on an oversized archive rather than failing the
+  // install, so this refuses the download outright instead of handing the bytes
+  // to a code path that cannot survive them.
+  function preflightArtifactSize(): boolean {
+    if (!exceedsMacUpdateArtifactLimit(platform, compressedUpdateBytes)) return true;
+    logger.error("autoUpdate.artifact_too_large", {
+      version: snapshot.version,
+      compressedUpdateBytes,
+      maxBytes: MAC_UPDATE_ARTIFACT_MAX_BYTES,
+    });
+    setErrorSnapshot({
+      error: new Error(MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE),
+      fallbackPhase: "download",
+      kind: "artifact_too_large",
+      message: MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
+      preservesDownload: false,
+    });
+    return false;
   }
 
   function preflightSpace(
@@ -950,6 +983,7 @@ export function createAutoUpdateService({
         if (snapshot.version) {
           const downloadTarget = updaterCacheDir ?? path.dirname(globalStatePath);
           const reusesPreservedDownload = reusableDownloadedVersion === snapshot.version;
+          if (!preflightArtifactSize()) return;
           if (!reusesPreservedDownload && !preflightSpace("download", downloadTarget)) return;
           currentPhase = "download";
           patchSnapshot({

@@ -286,12 +286,6 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
-    "Contents/Resources/app.asar.unpacked/node_modules/@napi-rs/canvas-darwin-x64",
-    "node_modules/@napi-rs/canvas-darwin-x64",
-    "canvas x64 package",
-  );
-  await copyFromAppBundle(
-    x64AppPath,
     "Contents/Resources/app.asar.unpacked/vendor/crsqlite/darwin-x64",
     "vendor/crsqlite/darwin-x64",
     "crsqlite x64 payload",
@@ -323,12 +317,6 @@ async function seedFromLockfileAndPinnedArtifacts() {
     "node_modules/@cursor/sdk-darwin-x64",
     "node_modules/@cursor/sdk-darwin-x64",
     "Cursor SDK x64 package",
-  );
-  await seedPackageFromResolvedUrl(
-    packageLock,
-    "node_modules/@napi-rs/canvas-darwin-x64",
-    "node_modules/@napi-rs/canvas-darwin-x64",
-    "canvas x64 package",
   );
   await seedCrsqliteDarwinX64();
 }
@@ -362,10 +350,6 @@ async function assertUniversalInputsReady() {
   await assertPathExists(
     path.join(appDir, "node_modules", "@cursor", "sdk-darwin-x64", "bin", "rg"),
     "x64 Cursor SDK ripgrep binary",
-  );
-  await assertPathExists(
-    path.join(appDir, "node_modules", "@napi-rs", "canvas-darwin-x64", "skia.darwin-x64.node"),
-    "x64 canvas native addon",
   );
   await assertPathExists(
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),

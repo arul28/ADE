@@ -6,7 +6,8 @@ param(
   [string]$InstallDir = $env:ADE_INSTALL_DIR,
   [string]$AdeHome = $env:ADE_HOME,
   [switch]$NoService,
-  [switch]$NoPath
+  [switch]$NoPath,
+  [switch]$NoPrompt
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,6 +62,67 @@ function Verify-Checksum([string]$ManifestPath, [string]$AssetName, [string]$Fil
   if (-not [string]::Equals($expected, $actual, [StringComparison]::Ordinal)) {
     Fail "checksum mismatch for $AssetName"
   }
+}
+
+# Prompting is only safe when a real console is attached. `irm | iex` keeps the
+# console on stdin (the script text arrives over the pipeline, not stdin), so
+# Read-Host works there; CI and redirected-stdin hosts must fall through to the
+# printed follow-up commands instead.
+function Test-AdeInteractive {
+  if ($NoPrompt) { return $false }
+  if ($env:ADE_INSTALL_NO_PROMPT -eq "1") { return $false }
+  try {
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+  } catch {
+    return $false
+  }
+  return $true
+}
+
+function Read-AdeConfirmation([string]$Question, [bool]$DefaultYes) {
+  $hint = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+  $reply = Read-Host "$Question $hint"
+  if ([string]::IsNullOrWhiteSpace($reply)) { return $DefaultYes }
+  switch -Regex ($reply.Trim()) {
+    '^(y|yes)$' { return $true }
+    '^(n|no)$' { return $false }
+    default { return $DefaultYes }
+  }
+}
+
+# The published SHA256SUMS covers only the standalone runtime assets, so the
+# desktop installer is verified against the base64 SHA-512 in latest.yml -- the
+# same digest electron-updater checks.
+function Get-Sha512Base64([string]$Path) {
+  $sha = [Security.Cryptography.SHA512]::Create()
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+      return [Convert]::ToBase64String($sha.ComputeHash($stream))
+    } finally {
+      $stream.Dispose()
+    }
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-DesktopInstallerEntry([string]$ManifestPath) {
+  $url = $null
+  foreach ($line in Get-Content -LiteralPath $ManifestPath -ErrorAction Stop) {
+    if ($line -match '^\s*-\s+url:\s*(\S+)\s*$') {
+      $url = $Matches[1]
+      continue
+    }
+    if ($line -match '^\s*sha512:\s*(\S+)\s*$') {
+      if ($url -and $url.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ Name = $url; Sha512 = $Matches[1] }
+      }
+      $url = $null
+    }
+  }
+  return $null
 }
 
 function Get-ShortSha256([string]$Value) {
@@ -194,6 +256,7 @@ $previousServiceWasRunning = $false
 $promotedBinary = $false
 $promotedRuntime = $false
 $preserveTempForRecovery = $false
+$installSucceeded = $false
 
 try {
   New-Item -ItemType Directory -Force -Path $tempRoot, $stagedRuntime | Out-Null
@@ -259,7 +322,7 @@ try {
 
   Write-Output "ADE runtime installed: $destinationBinary"
   Write-Output "ADE native runtime: $runtimeDir"
-  if (-not $NoPath) { Write-Output "Open a new terminal and run: ade doctor --text" }
+  $installSucceeded = $true
 } catch {
   $installError = $_
   $rollbackErrors = [Collections.Generic.List[string]]::new()
@@ -304,5 +367,121 @@ try {
   }
   if (-not $preserveTempForRecovery) {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Onboarding. Runs only after a fully successful install, and outside the
+# install's try/catch so nothing here can trigger a rollback of a good install.
+# ---------------------------------------------------------------------------
+if ($installSucceeded) {
+  $adeCommand = if ($NoPath) { $destinationBinary } else { "ade" }
+  $interactive = Test-AdeInteractive
+  $onboardingTemp = Join-Path ([IO.Path]::GetTempPath()) ("ade-onboard-" + [Guid]::NewGuid().ToString("N"))
+  $onboardingPreviousEnvironment = @{
+    ADE_HOME = $env:ADE_HOME
+    ADE_PACKAGE_CHANNEL = $env:ADE_PACKAGE_CHANNEL
+    ADE_RUNTIME_ROOT = $env:ADE_RUNTIME_ROOT
+    ADE_RUNTIME_NODE_MODULES = $env:ADE_RUNTIME_NODE_MODULES
+    NODE_PATH = $env:NODE_PATH
+  }
+
+  try {
+    New-Item -ItemType Directory -Force -Path $onboardingTemp | Out-Null
+    # `ade connect` needs the runtime sidecar environment; the install's finally
+    # deliberately restored the caller's copy, so re-apply it just for these
+    # child processes and put it back afterwards.
+    Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
+
+    # --- agent CLIs ---
+    # Pinned but not bundled: fetch them into the shared machine cache now so
+    # the first agent run is not a surprise multi-hundred-megabyte download.
+    # Non-fatal -- the brain retries in the background on every `ade serve`.
+    Write-Output ""
+    Write-Output "Fetching pinned agent CLIs (Codex, Claude Code, OpenCode)..."
+    try {
+      & $destinationBinary tools ensure --text
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Could not fetch the agent CLIs now; ADE will fetch them on first run."
+      }
+    } catch {
+      Write-Warning "Could not fetch the agent CLIs ($($_.Exception.Message)); ADE will fetch them on first run."
+    }
+
+    # --- sign in ---
+    if (-not $interactive) {
+      Write-Output ""
+      Write-Output "Next: run '$adeCommand connect' to link this machine to your ADE account."
+    } else {
+      Write-Output ""
+      if (Read-AdeConfirmation "Sign in to link this machine to your ADE account?" $true) {
+        try {
+          & $destinationBinary connect
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Sign-in did not finish. Run '$adeCommand connect' to try again."
+          }
+        } catch {
+          Write-Warning "Sign-in did not finish ($($_.Exception.Message)). Run '$adeCommand connect' to try again."
+        }
+      } else {
+        Write-Output "Skipped. Run '$adeCommand connect' later to link this machine."
+      }
+    }
+
+    # --- desktop app ---
+    try {
+      $desktopManifest = Join-Path $onboardingTemp "latest.yml"
+      Download-Asset "latest.yml" $desktopManifest
+      $desktopEntry = Get-DesktopInstallerEntry $desktopManifest
+      if ($null -eq $desktopEntry) { throw "latest.yml did not name a Windows installer" }
+
+      if (-not $interactive) {
+        Write-Output "Desktop app for Windows: $(Resolve-AssetUrl $desktopEntry.Name)"
+      } else {
+        $desktopApp = Join-Path $env:LOCALAPPDATA "Programs\ADE\ADE.exe"
+        $desktopInstalled = Test-Path -LiteralPath $desktopApp -PathType Leaf
+        $question = if ($desktopInstalled) {
+          "Reinstall the ADE desktop app for Windows?"
+        } else {
+          "Install the ADE desktop app for Windows? (about 1 GB download)"
+        }
+        if (Read-AdeConfirmation $question (-not $desktopInstalled)) {
+          $desktopInstaller = Join-Path $onboardingTemp $desktopEntry.Name
+          Write-Output "Downloading $($desktopEntry.Name)"
+          Download-Asset $desktopEntry.Name $desktopInstaller
+          $actualSha = Get-Sha512Base64 $desktopInstaller
+          if (-not [string]::Equals($actualSha, $desktopEntry.Sha512, [StringComparison]::Ordinal)) {
+            throw "checksum mismatch for $($desktopEntry.Name)"
+          }
+          # oneClick:false + perMachine:false + allowElevation:false, so /S is a
+          # silent per-user install that never raises a UAC prompt.
+          $process = Start-Process -FilePath $desktopInstaller -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "the desktop installer exited with code $($process.ExitCode)"
+          }
+          if (Test-Path -LiteralPath $desktopApp -PathType Leaf) {
+            Write-Output "ADE desktop app installed: $desktopApp"
+            Start-Process -FilePath $desktopApp | Out-Null
+          } else {
+            Write-Output "ADE desktop app installed."
+          }
+        } else {
+          # Only /, /open, /pair, /privacy and /terms are real SPA routes
+          # (apps/web/src/app/SiteRoutes.tsx); anything else renders NotFound.
+          # The homepage carries the install modal.
+          Write-Output "Skipped. Download it later from https://ade-app.dev"
+        }
+      }
+    } catch {
+      Write-Warning "Desktop app step skipped ($($_.Exception.Message)). The ADE runtime is still installed."
+    }
+
+    Write-Output ""
+    if (-not $NoPath) { Write-Output "Open a new terminal and run: $adeCommand connect --status --text" }
+  } finally {
+    foreach ($name in $onboardingPreviousEnvironment.Keys) {
+      [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")
+    }
+    Remove-Item -LiteralPath $onboardingTemp -Recurse -Force -ErrorAction SilentlyContinue
   }
 }

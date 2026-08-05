@@ -7,6 +7,30 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
+import { RUNTIME_FETCHED_TOOL_EXPLANATION } from "./runtime-fetched-tool-packages.mjs";
+import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
+
+const { RUNTIME_TARGETS, runtimeBinaryNameForTarget } = runtimeResourceTargets;
+
+// Every failure in this validator is prefixed "[release:mac]". The shared
+// packaged-tree assertions report through this, so their messages read exactly
+// as the hand-written ones they replaced.
+function fail(message) {
+  throw new Error(`[release:mac] ${message}`);
+}
+
+const {
+  assertAsarEmbedsNoRuntimeFetchedToolPayload,
+  assertBundledAgentSkills,
+  assertNoRuntimeFetchedToolPackages,
+  assertPackagedTreeSizeBudget,
+  assertPackagedTuiEsmShims,
+  assertPathExists,
+  assertPathMissing,
+  assertRuntimeToolJsEntryPointsPresent,
+  readByteLimit,
+} = createPackagedTreeAssertions({ fail });
 
 const execFileAsync = promisify(execFile);
 
@@ -25,18 +49,6 @@ const {
   missingRequiredPackagedAdeCliPayloadPaths,
   packagedAdeCliPayloadFiles,
 } = packagedAdeCliResourcesModule;
-const bundledAgentSkills = [
-  "ade-cli-control-plane",
-  "ade-ios-simulator",
-  "ade-app-control",
-  "ade-browser",
-  "ade-pr-workflows",
-  "ade-lanes-git",
-  "ade-linear",
-  "ade-proof-artifacts",
-  "ade-deeplinks",
-  "ade-orchestrator",
-];
 const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir })
   .map((resource) => [
     resource.relativePath,
@@ -75,94 +87,6 @@ function currentTarget() {
 function resolveAbsolute(input) {
   if (!input) return null;
   return path.isAbsolute(input) ? input : path.resolve(appDir, input);
-}
-
-function readByteLimit(envName, fallback) {
-  const rawValue = process.env[envName];
-  if (!rawValue) return fallback;
-  const parsed = Number(rawValue);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`[release:mac] ${envName} must be a positive byte count, received: ${rawValue}`);
-  }
-  return parsed;
-}
-
-async function collectMatchingPaths(rootPath, predicate, matches = []) {
-  let entries;
-  try {
-    entries = await fs.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return matches;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (predicate(entryPath, entry)) {
-      matches.push(entryPath);
-    }
-    if (entry.isDirectory()) {
-      await collectMatchingPaths(entryPath, predicate, matches);
-    }
-  }
-
-  return matches;
-}
-
-async function computeRecursiveFileSize(rootPath) {
-  let totalBytes = 0;
-  let entries;
-  try {
-    entries = await fs.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return 0;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      totalBytes += await computeRecursiveFileSize(entryPath);
-    } else if (entry.isFile()) {
-      totalBytes += (await fs.stat(entryPath)).size;
-    }
-  }
-
-  return totalBytes;
-}
-
-function formatRelativeSample(rootPath, entries) {
-  return entries
-    .slice(0, 12)
-    .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
-    .join(", ");
-}
-
-async function assertPathMissing(targetPath, description) {
-  try {
-    await fs.access(targetPath);
-  } catch {
-    return;
-  }
-  throw new Error(`[release:mac] Unexpected ${description}: ${targetPath}`);
-}
-
-async function assertPathExists(targetPath, description) {
-  try {
-    await fs.access(targetPath);
-  } catch {
-    throw new Error(`[release:mac] Missing ${description}: ${targetPath}`);
-  }
-}
-
-async function assertBundledAgentSkills(agentSkillsRoot) {
-  await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
-  for (const skillName of bundledAgentSkills) {
-    await assertPathExists(
-      path.join(agentSkillsRoot, skillName, "SKILL.md"),
-      `bundled ADE agent skill ${skillName}`,
-    );
-  }
 }
 
 async function pathExists(targetPath) {
@@ -206,13 +130,12 @@ async function assertExecutable(targetPath, description) {
 
 async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArch) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
-  // Per-arch builds bundle ONLY their own darwin sidecar (afterPack prunes the
-  // other arch). Universal builds keep both darwin sidecars.
+  // A macOS bundle carries ONLY its own darwin sidecar; universal carries both
+  // darwin arches. Every other target -- including win32-x64, which used to ride
+  // along and cost ~500 MB of the update zip -- must be absent.
   const requiredTargets =
     expectedArch === "universal" ? ["darwin-arm64", "darwin-x64"] : [`darwin-${expectedArch}`];
-  const excludedTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].filter(
-    (target) => !requiredTargets.includes(target),
-  );
+  const excludedTargets = RUNTIME_TARGETS.filter((target) => !requiredTargets.includes(target));
   await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
   for (const requiredTarget of requiredTargets) {
     const binaryPath = path.join(runtimeRoot, `ade-${requiredTarget}`);
@@ -233,7 +156,7 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
     }
   }
   for (const target of excludedTargets) {
-    await assertPathMissing(path.join(runtimeRoot, `ade-${target}`), `non-target remote runtime binary ${target} for ${description}`);
+    await assertPathMissing(path.join(runtimeRoot, runtimeBinaryNameForTarget(target)), `non-target remote runtime binary ${target} for ${description}`);
     await assertPathMissing(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), `non-target remote runtime native archive ${target} for ${description}`);
   }
   const runtimeEntries = await fs.readdir(runtimeRoot, { withFileTypes: true });
@@ -248,17 +171,44 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
   }
 }
 
-async function assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch) {
-  // Per-arch builds bundle ONLY their own arch's OpenCode binary (electron-builder
-  // excludes the non-target arch's optional native dep). Require just that one;
-  // we don't assert the other arch is absent (a harmless extra copy must not fail
-  // the release).
-  const arches = expectedArch === "universal" ? ["arm64", "x64"] : [expectedArch];
-  for (const arch of arches) {
-    const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${arch}`, "bin", "opencode");
-    await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
-    await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+/**
+ * The packaged smoke used to require source === "bundled" for all three agent
+ * CLIs. That expectation is now inverted: "bundled" means the packaging
+ * exclusions regressed and the build is shipping payload the resolver would
+ * never have reached anyway (the tools cache is consulted first). Everything
+ * else - a populated cache, a user install, or the not-yet-fetched fallback - is
+ * a working resolver.
+ */
+function assertFetchedToolResolution(label, source, executablePath) {
+  if (typeof source !== "string" || source.trim().length === 0) {
+    throw new Error(`[release:mac] Packaged smoke did not report a ${label} executable source`);
   }
+  if (source === "bundled") {
+    throw new Error(
+      `[release:mac] ${label} resolved to a bundled copy (source="bundled") at ${String(executablePath)}; `
+      + `the packaged app must not carry the native platform packages. ${RUNTIME_FETCHED_TOOL_EXPLANATION}`,
+    );
+  }
+  console.log(`[release:mac] ${label} executable resolved from "${source}".`);
+}
+
+/**
+ * Codex, Claude Code and OpenCode native platform packages are fetched into the
+ * machine tools cache at runtime, so none of them may ship - not even the
+ * on-target arch. The JS entry points still must, and are checked here too:
+ * over-broad `!` exclusions in build.files would take the SDK out with the
+ * native siblings, and that breaks the product rather than merely bloating it.
+ */
+async function assertNoRuntimeFetchedToolPayload(nodeModulesPath, description) {
+  await assertNoRuntimeFetchedToolPackages({
+    nodeModulesPath,
+    report: "aggregate",
+    description,
+  });
+  await assertRuntimeToolJsEntryPointsPresent({
+    nodeModulesPath,
+    labelSuffix: ` for ${description}`,
+  });
 }
 
 async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch) {
@@ -316,52 +266,6 @@ function assertPackagedStartupModules(appAsarPath, description) {
 function pathReferencesPackedAsar(targetPath) {
   const normalized = targetPath.split(path.sep).join("/");
   return normalized.split("/").some((segment) => segment.endsWith(".asar") && !segment.endsWith(".asar.unpacked"));
-}
-
-async function findFirstNodeAddon(rootPath) {
-  const entries = await fs.readdir(rootPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-
-    if (entry.isDirectory()) {
-      const nestedMatch = await findFirstNodeAddon(entryPath);
-      if (nestedMatch) {
-        return nestedMatch;
-      }
-      continue;
-    }
-
-    if (entry.isFile() && entry.name.endsWith(".node")) {
-      return entryPath;
-    }
-  }
-
-  return null;
-}
-
-async function findNodePtyAddon(moduleRootPath) {
-  const candidateRoots = [
-    path.join(moduleRootPath, "build", "Release"),
-    path.join(moduleRootPath, "build", "Debug"),
-    path.join(moduleRootPath, "prebuilds", "darwin-arm64"),
-    path.join(moduleRootPath, "prebuilds", "darwin-x64"),
-  ];
-
-  for (const candidateRoot of candidateRoots) {
-    try {
-      await fs.access(candidateRoot);
-    } catch {
-      continue;
-    }
-
-    const addonPath = await findFirstNodeAddon(candidateRoot);
-    if (addonPath) {
-      return addonPath;
-    }
-  }
-
-  return null;
 }
 
 async function findNodePtySpawnHelper(moduleRootPath) {
@@ -457,33 +361,38 @@ async function validatePackageHygiene(appPath, description, expectedArch) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPaths = await resolveRuntimeUnpackedPaths(resourcesPath);
-  const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
-  const maxUnpackedBytes = readByteLimit(
-    "ADE_MAX_APP_ASAR_UNPACKED_BYTES",
-    expectedArch === "universal" ? DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES : DEFAULT_MAX_UNPACKED_BYTES,
-  );
 
   if (unpackedPaths.length === 0) {
     throw new Error(`[release:mac] Missing unpacked runtime payload for ${description}: ${resourcesPath}`);
   }
 
-  const appAsarStat = await fs.stat(appAsarPath);
-  if (appAsarStat.size > maxAppAsarBytes) {
-    throw new Error(
-      `[release:mac] app.asar is too large for ${description}: ${appAsarStat.size} bytes ` +
-        `(limit ${maxAppAsarBytes})`
-    );
-  }
+  await assertPackagedTreeSizeBudget({
+    appAsarPath,
+    unpackedPaths,
+    maxAppAsarBytes: readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES),
+    maxUnpackedBytes: readByteLimit(
+      "ADE_MAX_APP_ASAR_UNPACKED_BYTES",
+      expectedArch === "universal" ? DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES : DEFAULT_MAX_UNPACKED_BYTES,
+    ),
+    unpackedLabel: "unpacked runtime payload",
+    subject: ` for ${description}`,
+  });
 
-  let unpackedBytes = 0;
-  for (const unpackedPath of unpackedPaths) {
-    unpackedBytes += await computeRecursiveFileSize(unpackedPath);
-  }
-  if (unpackedBytes > maxUnpackedBytes) {
-    throw new Error(
-      `[release:mac] unpacked runtime payload is too large for ${description}: ${unpackedBytes} bytes ` +
-        `(limit ${maxUnpackedBytes})`
-    );
+  // NEW on macOS, and the one behaviour this extraction adds rather than moves.
+  // The check existed only on the Windows side, yet the regression it catches is
+  // platform-independent: a package dropped from asarUnpack without a matching
+  // build.files negation is packed *into* the archive, where the unpacked-tree
+  // assertions above cannot see it. A universal bundle carries a per-arch asar
+  // next to the shared one, so every archive that has an unpacked sibling is
+  // checked, not just app.asar.
+  const asarPaths = new Set([
+    appAsarPath,
+    ...unpackedPaths.map((unpackedPath) => unpackedPath.replace(/\.unpacked$/, "")),
+  ]);
+  for (const asarPath of asarPaths) {
+    if (await pathExists(asarPath)) {
+      await assertAsarEmbedsNoRuntimeFetchedToolPayload(asarPath);
+    }
   }
 
   console.log(`[release:mac] Package hygiene passed for ${description}`);
@@ -521,18 +430,18 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledAttentionNotch(resourcesPath, description);
-  await assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch);
+  await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch);
-  const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
-  for (const token of ["__dirname", "__filename"]) {
-    if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
-      throw new Error(`[release:mac] Bundled ADE code TUI references ${token} without an ESM shim`);
-    }
-  }
+  assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
   await assertRemoteRuntimeBundle(resourcesPath, description, expectedArch);
   await validatePackageHygiene(appPath, description, expectedArch);
 
-  const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
+  // Named prebuild directories rather than "whatever is under prebuilds/": a
+  // macOS bundle must resolve its addon from a darwin prebuild, and a foreign
+  // one sitting there is a packaging bug this must not paper over.
+  const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath, {
+    prebuildDirNames: ["darwin-arm64", "darwin-x64"],
+  });
   if (!nodePtyAddon) {
     throw new Error(`[release:mac] Missing node-pty native addon under ${nodePtyModulePath}`);
   }
@@ -571,11 +480,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
   }
-  if (payload?.claudeExecutableSource !== "bundled") {
-    throw new Error(
-      `[release:mac] Packaged smoke expected bundled Claude, got ${String(payload?.claudeExecutableSource)} at ${payload.claudeExecutablePath}`
-    );
-  }
+  assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath);
   if (pathReferencesPackedAsar(payload.claudeExecutablePath)) {
     throw new Error(
       `[release:mac] Packaged smoke resolved Claude to a packed app.asar path instead of app.asar.unpacked: ${payload.claudeExecutablePath}`
@@ -600,11 +505,8 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (payload?.openCodeExecutable !== "function") {
     throw new Error(`[release:mac] Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
-  if (payload?.openCodeExecutableSource !== "bundled") {
-    throw new Error(
-      `[release:mac] Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`
-    );
-  }
+  assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath);
+  assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath);
 
   const { stdout: adeCliHelp } = await execFileAsync(adeCliBinPath, ["--help"], {
     cwd: resourcesPath,

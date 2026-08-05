@@ -40,7 +40,6 @@ export default defineConfig({
           if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
           if (
             normalized.includes("/node_modules/@xyflow/react/")
-            || normalized.includes("/node_modules/dagre/")
             || normalized.includes("/node_modules/framer-motion/")
             || normalized.includes("/node_modules/motion/")
           ) {

@@ -47,7 +47,7 @@ ADE adds the remote over SSH using the same connection details you already use f
 Connecting a remote does not move ADE off your own machine. The desktop app remains the control plane: you compose prompts, approve diffs, and merge PRs locally, while the agent processes, builds, and tests live on the remote. The remote's own GitHub, Linear, and provider credentials are used for work that happens there.
 
 <Note>
-Remote machines run macOS or Linux. A Windows desktop can drive them when it is running an installed release build — a locally packaged Windows build ships no macOS or Linux runtime payloads and will refuse. A Windows machine cannot itself be a remote target — ADE cannot bootstrap its runtime onto Windows over SSH. See [ADE on Windows](/getting-started/windows).
+Remote machines run macOS, Linux, or Windows. A Windows desktop can drive them when it is running an installed release build — a locally packaged Windows build ships no macOS or Linux runtime payloads and will refuse. Windows targets must be Windows 10 22H2 or Windows 11 x64 with OpenSSH Server and PowerShell 5.1 or newer; WSL, ARM64, and Windows Server are not supported. See [ADE on Windows](/getting-started/windows).
 </Note>
 
 <Note>
@@ -68,7 +68,21 @@ Remote machines run macOS or Linux. A Windows desktop can drive them when it is 
   </Accordion>
 </AccordionGroup>
 
+## Or install the brain on the box instead
+
+SSH remotes are driven by your desktop: it bootstraps the runtime on the far side and tunnels the connection. The alternative is to install ADE's brain on that machine directly and connect it to your account:
+
+```bash
+curl -fsSL https://ade-app.dev/install.sh | sh
+ade connect --headless
+```
+
+The machine then publishes itself to your account directory and is reachable from ADE desktop, [the web client](https://app.ade-app.dev), and iOS — with no SSH session and no desktop app doing the bootstrapping. This is the better fit for a long-lived server you want available from everywhere, rather than a box you occasionally attach to.
+
 <CardGroup cols={2}>
+  <Card title="Connect a machine" icon="server" href="/getting-started/connect-machine">
+    Install the brain on a server and put it on your account.
+  </Card>
   <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
     Drive ADE from a fast terminal UI, locally or over SSH.
   </Card>

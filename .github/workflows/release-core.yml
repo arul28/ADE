@@ -182,6 +182,11 @@ jobs:
     concurrency:
       group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
       cancel-in-progress: true
+    # Job-scoped so every packaging step -- materialize, the pre-build gate, and
+    # the validators inside dist:mac:*:signed -- agrees on the single runtime
+    # target this job may bundle.
+    env:
+      ADE_RUNTIME_TARGET: darwin-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -202,17 +207,23 @@ jobs:
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
 
+      # Only this job's own target. Downloading every ade-runtime-* artifact is
+      # what let foreign-platform payloads into the bundle in the first place.
       - name: Download ADE runtime binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: ade-runtime-*
+          name: ade-runtime-darwin-${{ matrix.arch }}
           path: apps/desktop/resources/runtime
-          merge-multiple: true
 
       - name: Materialize ADE runtime resources
         env:
           ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
         run: cd apps/desktop && npm run materialize:runtime-resources
+
+      # Seconds, not minutes: fail here rather than after a ~20 minute build if
+      # resources/runtime holds anything but this job's target.
+      - name: Gate runtime resources to darwin-${{ matrix.arch }}
+        run: cd apps/desktop && npm run assert:runtime-target
 
       - name: Stamp release version
         env:
@@ -323,6 +334,12 @@ jobs:
       - name: Validate ${{ matrix.arch }} release artifacts
         run: cd apps/desktop && npm run validate:mac:artifacts
 
+      # Artifact size is unknowable before the build, so this is its own step
+      # rather than a preflight. An oversized zip crashes every updating macOS
+      # client, so it must never reach the upload below.
+      - name: Enforce macOS update artifact size budget
+        run: cd apps/desktop && npm run assert:artifact-size
+
       - name: Rename per-arch updater manifest
         run: cd apps/desktop && mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
 
@@ -349,6 +366,10 @@ jobs:
     concurrency:
       group: release-${{ inputs.release_tag }}-win-x64
       cancel-in-progress: true
+    # Same job-scoped pin as build-mac-release: the Windows bundle may carry the
+    # win32-x64 runtime and nothing else.
+    env:
+      ADE_RUNTIME_TARGET: win32-x64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -388,17 +409,31 @@ jobs:
             throw "WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline; pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
           }
 
+      # Only this job's own target; see the equivalent step in build-mac-release.
       - name: Download ADE runtime binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: ade-runtime-*
+          name: ade-runtime-win32-x64
           path: apps/desktop/resources/runtime
-          merge-multiple: true
 
       - name: Materialize ADE runtime resources
         env:
           ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
         run: cd apps/desktop && npm run materialize:runtime-resources
+
+      - name: Gate runtime resources to win32-x64
+        run: cd apps/desktop && npm run assert:runtime-target
+
+      # Clean-host evidence still covers every published standalone runtime, so
+      # the full artifact set is staged OUTSIDE resources/runtime, where it
+      # cannot reach the desktop bundle.
+      - name: Download all standalone runtime artifacts for proof
+        if: ${{ inputs.windows_proof }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: ${{ runner.temp }}/ade-runtime-all
+          merge-multiple: true
 
       - name: Stamp release version
         env:
@@ -427,6 +462,11 @@ jobs:
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
         run: cd apps/desktop && npm run dist:win:signed
 
+      # Windows parity with the macOS budget gate. Runs before the smoke test and
+      # the upload so an oversized installer cannot reach a release draft.
+      - name: Enforce Windows installer size budget
+        run: cd apps/desktop && npm run assert:artifact-size
+
       - name: Test installed signed Windows product lifecycle
         shell: pwsh
         run: |
@@ -453,8 +493,11 @@ jobs:
       - name: Stage standalone runtime proof assets
         if: ${{ inputs.windows_proof }}
         shell: pwsh
+        env:
+          ADE_RUNTIME_PROOF_DIR: ${{ runner.temp }}/ade-runtime-all
         run: |
           $releaseDir = "apps/desktop/release"
+          $runtimeSourceDir = $env:ADE_RUNTIME_PROOF_DIR
           Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.sh" -Destination "$releaseDir/install.sh"
           Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.ps1" -Destination "$releaseDir/install.ps1"
           $runtimeFiles = @(
@@ -470,7 +513,7 @@ jobs:
             "ade-win32-x64.native.tar.gz"
           )
           $actualRuntimeFiles = @(
-            Get-ChildItem -LiteralPath "apps/desktop/resources/runtime" -File -Filter "ade-*" |
+            Get-ChildItem -LiteralPath $runtimeSourceDir -File -Filter "ade-*" |
               ForEach-Object Name |
               Sort-Object
           )
@@ -480,7 +523,7 @@ jobs:
             throw "Runtime artifact inventory mismatch. Missing: $($missingRuntimeFiles -join ', '); unexpected: $($unexpectedRuntimeFiles -join ', ')."
           }
           foreach ($runtimeFile in $runtimeFiles) {
-            Copy-Item -LiteralPath "apps/desktop/resources/runtime/$runtimeFile" -Destination $releaseDir
+            Copy-Item -LiteralPath (Join-Path $runtimeSourceDir $runtimeFile) -Destination $releaseDir
           }
           $checksumFiles = @(
             Get-Item -LiteralPath "$releaseDir/install.sh"
@@ -693,8 +736,15 @@ jobs:
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
           grep -q '^\./node_modules/' "$archive_listing"
-          if grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-' "$archive_listing"; then
-            echo "Unexpected duplicate OpenCode platform package in native runtime archive"
+          # Derived from the canonical runtime-fetched package list rather than
+          # hardcoded: this gate used to name only opencode, leaving the other
+          # 25 packages -- every Codex and Claude agent SDK native -- unguarded.
+          leak_pattern="$(node apps/desktop/scripts/runtime-fetched-tool-packages.mjs --grep-pattern)"
+          if grep -Eq "$leak_pattern" "$archive_listing"; then
+            echo "Unexpected runtime-fetched tool package in native runtime archive:"
+            # Bounded sample: one leaked platform package is tens of thousands of
+            # entries, and the first few name it just as well as all of them.
+            grep -E "$leak_pattern" "$archive_listing" | head -20 || true
             exit 1
           fi
 

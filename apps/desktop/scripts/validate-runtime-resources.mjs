@@ -3,24 +3,22 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
+
+const {
+  diffRuntimeArtifacts,
+  formatRuntimeArtifactDiff,
+  resolveRuntimeTargets,
+  runtimeBinaryNameForTarget,
+} = runtimeResourceTargets;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
-const allTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const execFileAsync = promisify(execFile);
 
-function currentTarget() {
-  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
-  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  return `${platform}-${arch}`;
-}
-
-const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
-const hostTarget = currentTarget();
-const targets = allowHostOnlyRuntimeResources
-  ? allTargets.includes(hostTarget) ? [hostTarget] : []
-  : allTargets;
+const runtimeTargetSet = resolveRuntimeTargets();
+const targets = runtimeTargetSet.targets;
 
 function fail(message) {
   throw new Error(`[runtime-resources] ${message}`);
@@ -62,13 +60,28 @@ async function validateNativeArchive(filePath, target) {
 }
 
 async function main() {
+  // A packaging job pinned to one target must contain that target and nothing
+  // else. Foreign-platform sidecars are what pushed the macOS update zip past
+  // the 1 GB Squirrel.Mac cliff, so they fail the build rather than ship.
+  if (runtimeTargetSet.exclusive) {
+    const diff = diffRuntimeArtifacts(runtimeRoot, targets);
+    if (diff.missing.length > 0 || diff.unexpected.length > 0) {
+      fail(formatRuntimeArtifactDiff(runtimeRoot, targets, diff));
+    }
+  }
+
   for (const target of targets) {
-    await validateExecutable(path.join(runtimeRoot, `ade-${target}`), `remote ADE service binary ${target}`);
+    await validateExecutable(
+      path.join(runtimeRoot, runtimeBinaryNameForTarget(target)),
+      `remote ADE service binary ${target}`,
+    );
     await validateNativeArchive(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), target);
   }
 
-  const mode = allowHostOnlyRuntimeResources ? "host-only local" : "full";
-  console.log(`[runtime-resources] Found ${targets.length} ${mode} ADE service binaries and native archives.`);
+  console.log(
+    `[runtime-resources] Found ${targets.length} ${runtimeTargetSet.mode} ADE service `
+    + `binaries and native archives: ${targets.join(", ")}.`,
+  );
 }
 
 main().catch((error) => {

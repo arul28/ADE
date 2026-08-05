@@ -1165,6 +1165,57 @@ export interface AiCustomProviderConfig {
   models: string[];
 }
 
+/**
+ * Renderer-facing state of the pinned agent-CLI cache. ADE fetches codex,
+ * claude-code and opencode into a machine cache at runtime instead of bundling
+ * them, so onboarding has to be able to say "still downloading" and "download
+ * failed, retry" rather than "not detected".
+ *
+ * The single definition of this wire shape: main/services/tools/
+ * agentToolsCacheService.ts builds the snapshot from these types and the IPC
+ * handler is annotated with them, so main and renderer cannot drift.
+ */
+export type AgentToolCacheStatus = "installed" | "fetching" | "missing" | "failed";
+
+/**
+ * Mirror of `ToolErrorKind` in apps/ade-cli/src/services/tools/errors.ts, which
+ * is the source of truth. `shared/` is imported by the renderer bundle and by
+ * `apps/ade-cli` itself, so it deliberately imports nothing from another
+ * package — hence a re-declaration rather than a re-export. Any change to the
+ * union in errors.ts must be mirrored here.
+ */
+export type ToolErrorKind =
+  | "manifest"
+  | "unsupported-target"
+  | "network"
+  | "integrity"
+  | "disk-space"
+  | "extract"
+  | "lock-timeout"
+  | "filesystem"
+  | "not-installed";
+
+export type AgentToolCacheState = {
+  /** Pinned tool name as it appears in the tools manifest, e.g. "claude-code". */
+  tool: string;
+  status: AgentToolCacheStatus;
+  /** 0-100 while fetching and the total size is known, else null. */
+  percent: number | null;
+  /** The typed failure kind when status is "failed", else null. */
+  errorKind: ToolErrorKind | null;
+};
+
+export type AgentToolsCacheSnapshot = {
+  tools: AgentToolCacheState[];
+  /** True while any tool is still being fetched. */
+  fetching: boolean;
+};
+
+export const EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT: AgentToolsCacheSnapshot = {
+  tools: [],
+  fetching: false,
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1185,7 +1236,8 @@ export type AiSettingsStatus = {
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
   opencodeBinaryInstalled?: boolean;
-  opencodeBinarySource?: "user-installed" | "bundled" | "missing";
+  /** Mirrors OpenCodeBinarySource in main/services/opencode/openCodeBinaryManager.ts. */
+  opencodeBinarySource?: "user-installed" | "tools-cache" | "bundled" | "missing";
   opencodeInventoryError?: string | null;
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */

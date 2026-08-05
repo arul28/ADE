@@ -3,11 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 
 export type CodexExecutableResolution = {
   path: string;
-  source: "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
+  source: "tools-cache" | "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
 };
 
 const CODEX_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, string>>>> = {
@@ -194,6 +195,23 @@ export function resolveCodexExecutable(args?: {
   const envPath = env.CODEX_EXECUTABLE?.trim() || env.CODEX_EXECUTABLE_PATH?.trim();
   if (envPath) {
     return { path: envPath, source: "path" };
+  }
+
+  // Codex is the one tool that cannot be reached by seeding a module search
+  // path: its binary lives at `vendor/<triple>/bin/codex` and is found by the
+  // probe below, never by NODE_PATH. The cache therefore has to hand over the
+  // resolved entry path explicitly. `ADE_DISABLE_BUNDLED_CODEX` means "use my
+  // own Codex, not ADE's", so it opts out of the cache for the same reason it
+  // opts out of the bundled copy.
+  if (env.ADE_DISABLE_BUNDLED_CODEX !== "1") {
+    const cachedPath = cachedToolEntryPath("codex", {
+      env,
+      platform: args?.platform,
+      arch: args?.arch,
+    });
+    if (cachedPath && pathExists(cachedPath)) {
+      return { path: cachedPath, source: "tools-cache" };
+    }
   }
 
   const bundledPath = findBundledCodexExecutable({

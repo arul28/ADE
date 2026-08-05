@@ -189,6 +189,7 @@ export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "
 export type AutoUpdatePhase = "download" | "staging" | "verification" | "install";
 
 export type AutoUpdateErrorKind =
+  | "artifact_too_large"
   | "insufficient_space"
   | "disk_full"
   | "quota"

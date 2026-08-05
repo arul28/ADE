@@ -35,6 +35,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   sensitive action dispatch, unknown-outcome errors for non-replayable actions
   that lose confirmation, and capability-gated handoff storage preflight),
   connection service, and Bonjour + Tailscale discovery.
+- `apps/desktop/src/main/services/remoteRuntime/remoteSidecarCache.ts` — the
+  release-asset fallback for the `ade-<target>` sidecar a target-only desktop
+  package does not bundle: version-pinned download, `SHA256SUMS` verification,
+  atomic publish into `<ADE home>/runtime-sidecars/<tag>/<target>/`, and typed
+  `unavailable`/`network`/`checksum` failures. Reached only through
+  `resolveBootstrapRuntimeSidecars` in `remoteBootstrap.ts`. Shares its asset
+  naming and checksum parsing with `apps/ade-cli/src/lib/releaseAssets.ts`.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
   action/sync/event dispatch, local-runtime project action/sync/event routing,
@@ -648,13 +655,34 @@ Version skew and capability skew no longer fail the connect outright. The bootst
 
 ## Runtime artifact layout
 
-Desktop distributable builds require `apps/desktop/resources/runtime/` to contain every supported `ade-<platform-arch>` binary and matching `.native.tar.gz` archive, plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote terminal hosting. The supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
+A desktop package carries **only its own build target's** `ade-<platform-arch>`
+binary and matching `.native.tar.gz` archive in `apps/desktop/resources/runtime/`,
+plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote
+terminal hosting. Bundling all five targets is what pushed the macOS update ZIP
+past the 1 GiB Squirrel.Mac cliff (see
+[desktop-auto-update.md](../onboarding-and-settings/desktop-auto-update.md)),
+so foreign-platform payloads now fail the build rather than ship.
 
-The Windows x64 desktop package carries that same complete Darwin/Linux
-sidecar set, so a Windows client can bootstrap supported SSH targets. It also
-contains its own bundled Windows CLI/native resources for the local brain.
-`win32-x64` is not currently an SSH-bootstrap target and is intentionally not
-part of the remote sidecar list.
+`apps/desktop/scripts/runtime-resource-targets.cjs` is the single source of
+truth for which sidecars a build may contain — `darwin-arm64`, `darwin-x64`,
+`linux-arm64`, `linux-x64`, `win32-x64` — and every packaging stage reads it:
+
+| Mode | Trigger | Meaning |
+| --- | --- | --- |
+| `target` | `ADE_RUNTIME_TARGET=<target>` (set per release packaging job) | Exactly that target must be present and any other target's sidecar is a hard failure. |
+| `host-only` | `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` | Local channel builds validate only the host target. |
+| `full` | neither | The historical local behavior that stages every target. |
+
+Only `target` mode is exclusive, and three stages enforce it: the pre-build CI
+gate `assert-runtime-resource-target.mjs` (name comparison only, so a mis-scoped
+artifact download fails in milliseconds rather than after a ~20 minute build),
+`validate-runtime-resources.mjs` before packaging (same diff plus the executable
+bit and archive-content checks), and the electron-builder `afterPack` hook.
+
+The consequence for SSH bootstrap is that a desktop no longer has a local copy
+of every runtime it might need to upload — see "Sidecar fetch fallback" below.
+`win32-x64` is still not an SSH-bootstrap *target*; a Windows desktop bundles it
+for its own local brain.
 
 Desktop distributable builds also package `apps/desktop/resources/agent-skills/`.
 Remote bootstrap copies that directory into the selected remote ADE home as
@@ -669,19 +697,59 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 
 …or set `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` to validate only the host target during local channel builds (release builds always require the full set).
 
-`materialize-runtime-resources.mjs` searches `ADE_RUNTIME_ARTIFACTS_DIR`, then `apps/ade-cli/dist-static/`, copies any matching artifacts into the resource directory, and falls back to invoking `npm run build:static` for the host target when a missing artifact is the host build (downloading the official Node SEA helper if `ADE_STATIC_NODE_BINARY` isn't set and `ADE_RUNTIME_DISABLE_NODE_DOWNLOAD` isn't `1`).
+`materialize-runtime-resources.mjs` searches `ADE_RUNTIME_ARTIFACTS_DIR`, then `apps/ade-cli/dist-static/`, copies any matching artifacts into the resource directory, and falls back to invoking `npm run build:static` for the host target when a missing artifact is the host build (downloading the official Node SEA helper if `ADE_STATIC_NODE_BINARY` isn't set and `ADE_RUNTIME_DISABLE_NODE_DOWNLOAD` isn't `1`). It reads the same resolved target set, and in pinned-target mode it also *deletes* any other target's sidecar it finds — a re-widened CI artifact download cannot leave a foreign payload behind for electron-builder to pick up.
+
+### Sidecar fetch fallback
+
+Because a package bundles one target, a mac desktop provisioning a Linux box —
+or a Windows desktop provisioning a mac — has no local copy of the runtime it
+must upload. `remoteSidecarCache.ts` closes that gap by downloading the missing
+sidecar from the GitHub release, and `resolveBootstrapRuntimeSidecars` in
+`remoteBootstrap.ts` is the one entry point both the POSIX and Windows bootstrap
+paths call.
+
+Resolution order is bundled → cache → release, and the release tag is **this
+desktop's exact version**, never `latest`, so a remote can never skew ahead of
+or behind the desktop that installed it. A version that is not a release tag
+(`vX.Y.Z`, optionally with a pre-release/build suffix — i.e. a dev build) fails
+`unavailable` rather than guessing.
+
+| Step | Behavior |
+| --- | --- |
+| Cache location | `<machine ADE dir>/runtime-sidecars/<tag>/<target>/` — channel-scoped like the rest of the ADE home, since a beta desktop uploads beta bytes. Overridable via `RemoteSidecarDeps.cacheRoot` in tests. |
+| Download | `ade-<target>[.exe]`, `ade-<target>.native.tar.gz`, and that release's `SHA256SUMS`, into a `.staging-<target>-XXXXXX` dir inside the version dir. |
+| Verify | Every asset is checked against the release's own `SHA256SUMS`. A missing entry is as fatal as a mismatch. |
+| Publish | `rename(staging, cacheDir)` — same volume by construction. Losing the race to a concurrent bootstrap adopts its (equally verified) copy; a half-written directory from an interrupted run is removed and re-published rather than wedging every future fetch. |
+| GC | Every version directory except the current tag is dropped, best effort, after a hit or a successful fetch. |
+| Cleanup | The staging directory is removed in a `finally`. Non-Windows binaries get `chmod 755`. |
+
+Failures are typed (`RemoteSidecarFetchError.kind`) and the caller decides
+whether one is fatal:
+
+| `kind` | Cause | Bootstrap behavior |
+| --- | --- | --- |
+| `unavailable` | HTTP 404/403, or the desktop is not running a published release | Never fatal — this is the dev-build case; bootstrap continues without an upload. |
+| `network` | DNS, TLS, timeout, proxy, 5xx | Survivable **only** when the remote already reports a runtime version; a first-time provisioning that cannot get bytes fails loudly. |
+| `checksum` | Downloaded bytes do not match the published `SHA256SUMS` | Always fatal. Installing unverified bytes is never the better outcome. |
+
+A survivable failure logs `remote_runtime.sidecar_fetch_failed` and returns no
+paths. Steady-state reconnects never reach the network at all: when the remote
+already runs exactly this desktop's version, the fetch is skipped before it
+starts.
 
 ## Standalone runtime install
 
 For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `ade rpc --stdio` with the channel-specific ADE home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
 
 ```bash
-curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+curl -fsSL https://ade-app.dev/install.sh | sh
 ```
 
 ```powershell
-irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
+irm https://ade-app.dev/install.ps1 | iex
 ```
+
+These are the promoted URLs; `apps/web/api/install.ts` serves them by proxying the same release assets, so `https://github.com/arul28/ADE/releases/latest/download/install.sh` remains equivalent and is what the scripts fall back to for the binaries themselves.
 
 `install.sh` (lives at `apps/ade-cli/scripts/install-runtime.sh`):
 
@@ -701,6 +769,11 @@ Environment overrides:
 - `ADE_HOME=/path/to/.ade` — alternate per-machine state root.
 
 After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; `ade code` works on the headless machine itself.
+
+There are two ways to make that machine reachable, and they are independent:
+
+- **SSH remote target** — the desktop bootstraps and tunnels to it. No account involved. Covered by the rest of this document.
+- **Account-published machine** — run `ade connect` (or `ade connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts offer to run this for you at the end. See `apps/ade-cli/README.md` §"ADE account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
 
 Headless hosts update through the same binary, without requiring the desktop app:
 

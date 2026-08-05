@@ -17,6 +17,14 @@ regexes = [
   # gitleaks' high-entropy generic-api-key rule. Only pk_ (publishable) keys
   # are allowlisted here; sk_ (secret) keys remain caught.
   '''pk_(test|live)_[A-Za-z0-9_-]+''',
+  # Deliberately fake test fixtures (present in PR history as well as HEAD):
+  # a synthetic 32-hex sync machine key in connect.test.ts and the synthetic
+  # PostHog project-token fixtures in the web api tests. None is a credential;
+  # phc_ project tokens are public-by-design client tokens in any case, and
+  # the phx_ fixture exists to prove personal keys are REJECTED.
+  '''a3f2c1d4e5b60718293a4b5c6d7e8f90''',
+  '''phc_abcdefgh12345678''',
+  '''phx_personalkey123''',
 ]
 paths = [
   '''\.env\.example$''',

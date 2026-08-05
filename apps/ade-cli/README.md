@@ -64,6 +64,9 @@ Three ways to put `ade` on a machine:
    - `ADE_INSTALL_DIR=/custom/bin` — destination directory for the binary (default `$ADE_HOME/bin`).
    - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
    - `ADE_HOME=/custom/.ade` — change the per-machine state root.
+   - `ADE_INSTALL_NO_PROMPT=1` — skip the interactive sign-in and desktop-app offers.
+
+   After a successful install both scripts run `ade tools ensure` so the pinned agent CLIs (Codex, Claude Code, OpenCode) are in the shared machine cache before the first agent run rather than as a surprise multi-hundred-megabyte download. That step is non-fatal — the brain retries it in the background on every `ade serve`. Then both scripts offer to run `ade connect`, which links the machine to your ADE account, and then offer the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run). Both desktop downloads are verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. Prompts are read from `/dev/tty` on POSIX because `curl | sh` occupies stdin; when no terminal is attached (CI, automation) both scripts skip the interactive steps and print the follow-up commands instead. `install.ps1` also accepts `-NoPrompt`.
 
    For an unpublished Windows proof bundle, run `install.ps1 -AssetDirectory <bundle-directory>` (or set `ADE_RELEASE_ASSET_DIR`) to install the local checksum, executable, and native archive without creating a GitHub Release.
 
@@ -395,6 +398,10 @@ ade brain status --text
 ade brain start
 ade brain stop
 ade brain restart
+ade connect                               # account + login service + account-directory row, idempotent
+ade connect --status --text               # report the three steps without changing anything
+ade connect --headless                    # force the copy-paste device flow
+ade connect --no-login --no-service       # opt out of either half
 ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
 ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
@@ -405,6 +412,10 @@ ade machines connect <machine-key> --project ADE
 ade machines hop <device-id> --session chat-1
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
+ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
+ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
+ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
+ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
@@ -583,6 +594,14 @@ stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
 
+`ade tools` is deliberately not backed by a service action. The pinned-tool cache
+is a property of the machine's filesystem, not of a project runtime, so the
+command calls `src/services/tools/` in-process and works on a headless box with
+no desktop and no brain running. The desktop's `agentToolsCacheService` is the
+same module behind an IPC snapshot feed for onboarding; there is nothing for
+`ade actions run` to reach that `ade tools status|ensure|gc` does not already
+cover.
+
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
@@ -590,6 +609,30 @@ Output modes are explicit: `--text` for human-readable summaries, `--json` (defa
 `--socket` requires a specific ADE local endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches to the brain when reachable and falls back to headless for commands that can run that way.
 
 ## ADE account auth and `ade doctor`
+
+`ade connect` is the one command that puts a machine on an account. It runs
+three idempotent steps and reports each as a checklist line on stderr, keeping
+stdout the structured payload (JSON by default, a one-line summary under
+`--text`):
+
+1. **account** — reuse a valid session, else delegate to the same `ade login`
+   implementation, so the loopback-vs-device decision lives in exactly one place.
+2. **service** — install and start this platform's login service when it is not
+   already running (launchd / systemd user service / Windows per-user startup
+   entry). A refusal caused by running inside the very brain it would replace is
+   not treated as a failure.
+3. **machine** — wait for this machine's row to reach the account directory.
+
+Step 3 is a wait rather than a write, and that distinction matters: the row is
+created by the brain's account-machine publisher, which POSTs to
+`/account/machines/register` on sign-in and then every 30s, gated on the brain
+holding the machine's sync-host lease and having an active host snapshot. No
+one-shot CLI publish exists, so `ade connect` makes the preconditions true and
+then polls `listMachines` for its own `machineKey` (from
+`~/.ade/secrets/sync-cloud-relay.json`) until a bounded deadline. Because the
+publisher lives in the brain, **the brain must keep running for the machine to
+stay reachable** — which is what the service step guarantees. The directory
+also marks a machine `online` only within a 90s `last_seen_at` window.
 
 ADE accounts are optional; local `ade code`, project, lane, and PIN workflows
 remain available while signed out. `ade login` uses Clerk OAuth with a local

@@ -265,8 +265,7 @@ the only Windows repository variable. Setting it back to `0` removes Windows
 from later releases and leaves the other platforms unchanged.
 
 The gate does not publish a release by itself; the release workflow still stops
-at an unpublished draft. Keep `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` unset or `0`;
-website readiness is not publication approval.
+at an unpublished draft. Website readiness is not publication approval.
 
 Signing stays mandatory and machine-enforced whenever Windows builds. The
 `build-win-release` job requires the signing secrets before it packages
@@ -313,8 +312,8 @@ secret exists, rather than ignoring it and leaving the release apparently pinned
 `windows_proof` is set, and passes everything else through with
 `secrets: inherit`.
 
-`VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` is not a GitHub setting. It is a Vercel
-Production variable for the website and is covered in Publish step 5.
+`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is the only Windows gate. The website has
+no separate flag — the Windows download is permanently on.
 
 ## Publish a release
 
@@ -433,17 +432,15 @@ gh release edit "v<VERSION>" \
 
 Run it only with explicit maintainer approval.
 
-### 5. Enable the website once
+### 5. Confirm the website
 
-For the first public Windows release:
-
-1. In the Vercel project serving `ade-app.dev`, set the Production variable `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED=1`.
-2. Redeploy the current `apps/web` commit.
-3. Confirm the Windows button opens the latest `arul28/ADE` GitHub Release.
-4. Confirm the macOS and iOS links are unchanged.
-5. Download and install ADE from that public link on a clean Windows computer.
-
-Later releases use the same website link and do not require another setting change.
+The website download is permanently on — v1.2.52 shipped the first signed public
+Windows installer and the old `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` gate is
+retired. No setting change is needed for any release. Confirm that
+`https://ade-app.dev/download/windows` resolves to the installer you just
+published, that `https://ade-app.dev/install.ps1` serves the matching script,
+and that the macOS and iOS links are unchanged. Then download and install ADE
+from that public link on a clean Windows computer.
 
 Prove the N to N+1 updater path with two signed, non-public builds before the
 first public Windows release. Repeat it against public metadata after the next

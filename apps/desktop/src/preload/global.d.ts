@@ -103,6 +103,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentTool,
+  AgentToolsCacheSnapshot,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
@@ -985,7 +986,10 @@ declare global {
           refreshOpenCodeInventory?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
-        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }>;
+        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
+        ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
+        onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;

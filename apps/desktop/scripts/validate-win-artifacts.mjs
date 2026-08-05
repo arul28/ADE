@@ -4,10 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
 import { AUTHENTICODE_PROBE_ERROR_STATUS, createAuthenticodeProbe } from "./windows-authenticode.mjs";
+import {
+  matchesRuntimeFetchedToolPackage,
+  runtimeFetchedToolPackageFilesExclusion,
+  runtimeFetchedToolPackageNames,
+  RUNTIME_FETCHED_TOOL_EXPLANATION,
+} from "./runtime-fetched-tool-packages.mjs";
+import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
 import {
   isGithubSafeAssetName,
   resolveWindowsPackageIdentity,
@@ -23,36 +30,44 @@ const {
   missingRequiredPackagedAdeCliPayloadPaths,
   packagedAdeCliPayloadFiles,
 } = packagedAdeCliResourcesModule;
+const { RUNTIME_TARGETS, runtimeBinaryNameForTarget } = runtimeResourceTargets;
 const packageIdentity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
 const productName = packageIdentity.productName;
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
-// The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
-// ONNX payloads. The afterPack step now also materializes the bundled ADE
-// runtime's platform-native OpenCode package into app.asar.unpacked so the
-// packaged runtime can launch OpenCode. Keep a ceiling to catch runaway bloat,
-// but size it to the current required toolset.
+// The unpacked runtime includes node-pty, the Cursor native helpers, the Claude
+// Agent SDK's JS payload and ONNX. It no longer includes any Codex / Claude Code
+// / OpenCode native platform package: those are fetched into the machine tools
+// cache at runtime. Keep a ceiling to catch runaway bloat; it is deliberately
+// looser than the current payload rather than retuned by guess, since the actual
+// Windows number is only measurable on a Windows package host.
 const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
-const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
+// A Windows bundle carries ONLY the win32-x64 sidecar. It used to carry all
+// five targets, which is most of why the installer reached 1716 MB.
+const REMOTE_RUNTIME_TARGETS = ["win32-x64"];
+const EXCLUDED_REMOTE_RUNTIME_TARGETS = RUNTIME_TARGETS.filter(
+  (target) => !REMOTE_RUNTIME_TARGETS.includes(target),
+);
 
-function remoteRuntimeBinaryName(target) {
-  return target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`;
-}
+const remoteRuntimeBinaryName = runtimeBinaryNameForTarget;
 const isLocalWindowsTestBuild =
   process.platform === "win32" &&
   process.env.ADE_WINDOWS_TEST_BUILD === "1" &&
   process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
-const bundledAgentSkills = [
-  "ade-cli-control-plane",
-  "ade-ios-simulator",
-  "ade-app-control",
-  "ade-browser",
-  "ade-pr-workflows",
-  "ade-lanes-git",
-  "ade-linear",
-  "ade-proof-artifacts",
-  "ade-deeplinks",
-  "ade-orchestrator",
-];
+
+// The cross-platform half of this validator. `fail` is injected so the shared
+// assertions keep this file's "[validate-win-artifacts]" prefix.
+const {
+  assertAsarEmbedsNoRuntimeFetchedToolPayload,
+  assertBundledAgentSkills,
+  assertNoRuntimeFetchedToolPackages,
+  assertPackagedTreeSizeBudget,
+  assertPackagedTuiEsmShims,
+  assertPathExists,
+  assertPathMissing,
+  assertRuntimeToolJsEntryPointsPresent,
+  readByteLimit,
+} = createPackagedTreeAssertions({ fail: (message) => fail(message) });
+
 function resolveBundledAdeCliFiles(options = {}) {
   return packagedAdeCliPayloadFiles({
     desktopRoot,
@@ -126,135 +141,41 @@ function fail(message) {
   throw new Error(`[validate-win-artifacts] ${message}`);
 }
 
-function readByteLimit(envName, fallback) {
-  const rawValue = process.env[envName];
-  if (!rawValue) return fallback;
-  const parsed = Number(rawValue);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    fail(`${envName} must be a positive byte count, received: ${rawValue}`);
-  }
-  return parsed;
-}
-
-async function collectMatchingPaths(rootPath, predicate, matches = []) {
-  let entries;
-  try {
-    entries = await fsp.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return matches;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (predicate(entryPath, entry)) {
-      matches.push(entryPath);
-    }
-    if (entry.isDirectory()) {
-      await collectMatchingPaths(entryPath, predicate, matches);
-    }
-  }
-
-  return matches;
-}
-
-async function computeRecursiveFileSize(rootPath) {
-  let totalBytes = 0;
-  let entries;
-  try {
-    entries = await fsp.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return 0;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      totalBytes += await computeRecursiveFileSize(entryPath);
-    } else if (entry.isFile()) {
-      totalBytes += (await fsp.stat(entryPath)).size;
-    }
-  }
-
-  return totalBytes;
-}
-
-function formatRelativeSample(rootPath, entries) {
-  return entries
-    .slice(0, 12)
-    .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
-    .join(", ");
-}
-
-async function assertPathExists(targetPath, description) {
-  try {
-    await fsp.access(targetPath);
-  } catch {
-    fail(`Missing ${description}: ${targetPath}`);
-  }
-}
-
-async function assertBundledAgentSkills(agentSkillsRoot) {
-  await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
-  for (const skillName of bundledAgentSkills) {
-    await assertPathExists(
-      path.join(agentSkillsRoot, skillName, "SKILL.md"),
-      `bundled ADE agent skill ${skillName}`,
-    );
-  }
-}
-
-async function assertPathMissing(targetPath, description) {
-  try {
-    await fsp.access(targetPath);
-  } catch {
-    return;
-  }
-  fail(`Unexpected ${description}: ${targetPath}`);
-}
-
-function collectAsarEmbeddedFiles(node, prefix, out) {
-  for (const [name, entry] of Object.entries(node?.files ?? {})) {
-    const entryPath = `${prefix}/${name}`;
-    if (entry?.files) {
-      collectAsarEmbeddedFiles(entry, entryPath, out);
-    } else if (!entry?.unpacked) {
-      // `unpacked: true` entries are index stubs; their bytes live in
-      // app.asar.unpacked, not inside the archive.
-      out.push({ path: entryPath, size: Number(entry?.size) || 0 });
-    }
-  }
-}
+// Resolver sources that name a concrete file on disk, so the smoke can stat and
+// run it. "fallback-command" (bare command name for PATH lookup) and OpenCode's
+// "missing" do not, and are the expected result on a package host whose tools
+// cache has never been populated - which is every CI runner.
+const ON_DISK_TOOL_SOURCES = new Set(["tools-cache", "auth", "common-dir", "path", "env", "user-installed"]);
 
 /**
- * OpenCode's platform packages are single ~141.5 MB native executables. They are
- * only usable from app.asar.unpacked - an exe embedded in app.asar cannot be
- * spawned - so any embedded copy is dead weight that still ships in the
- * installer. Dropping a package from `asarUnpack` without also excluding it in
- * `build.files` moves it *into* app.asar rather than removing it, which is
- * invisible in the unpacked-tree checks above; this catches that regression.
+ * The packaged smoke used to require source === "bundled" for all three agent
+ * CLIs. That expectation is now inverted: a bundled copy means the packaging
+ * exclusions regressed. What the smoke still proves is that the resolver runs
+ * inside the packaged app and reports a source, and that whatever it does
+ * resolve is a real, runnable file.
+ *
+ * Returns the executable path when it is worth executing, otherwise null.
  */
-async function assertAsarEmbedsNoOpenCodeNativePayload(appAsarPath) {
-  let header;
-  try {
-    header = asar.getRawHeader(appAsarPath).header;
-  } catch (error) {
-    fail(`Unable to read app.asar header for OpenCode payload hygiene: ${error?.message ?? error}`);
-    return;
+async function assertFetchedToolResolution(label, source, executablePath) {
+  if (typeof source !== "string" || source.trim().length === 0) {
+    fail(`Packaged smoke did not report a ${label} executable source`);
   }
-  const embedded = [];
-  collectAsarEmbeddedFiles(header, "", embedded);
-  // `node_modules/opencode-*` covers the native packages only; the JS SDK is the
-  // scoped `node_modules/@opencode-ai/sdk` and legitimately lives in the archive.
-  const offenders = embedded.filter((entry) => entry.path.startsWith("/node_modules/opencode-"));
-  if (offenders.length === 0) return;
-  const bytes = offenders.reduce((total, entry) => total + entry.size, 0);
-  fail(
-    `app.asar embeds ${offenders.length} OpenCode native payload file(s) totalling ${bytes} bytes; `
-    + "they must be excluded via build.files or unpacked via asarUnpack, never packed into the archive: "
-    + `${offenders.slice(0, 5).map((entry) => entry.path).join(", ")}`,
-  );
+  if (source === "bundled") {
+    fail(
+      `${label} resolved to a bundled copy (source="bundled") at ${String(executablePath)}; `
+      + "the packaged app must not carry the native platform packages. "
+      + RUNTIME_FETCHED_TOOL_EXPLANATION,
+    );
+  }
+  if (!ON_DISK_TOOL_SOURCES.has(source)) {
+    console.log(
+      `[validate-win-artifacts] ${label} resolved to "${source}" on this package host; `
+      + "the tools cache is empty here and the binary is fetched on first use.",
+    );
+    return null;
+  }
+  await assertPathExists(executablePath, `${label} executable resolved from ${source}`);
+  return executablePath;
 }
 
 async function assertExecutable(targetPath, description) {
@@ -326,31 +247,37 @@ function validatePreflight() {
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
   }
-  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/sql.js/**/*")) {
-    fail("package.json build.asarUnpack must unpack node_modules/sql.js/**/* for the plain node fallback");
-  }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
     fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
   }
-  // The default `opencode-windows-x64` build requires AVX2 and aborts with an
-  // illegal instruction on x64 CPUs without it. The `-baseline` build targets
-  // the lower instruction set, runs on every x64 CPU, and is the same size, so
-  // Windows x64 ships baseline only. Keep this in sync with
-  // OPENCODE_PLATFORM_PACKAGES in src/main/services/opencode/openCodeBinaryManager.ts.
-  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-windows-x64-baseline/**")) {
-    fail("package.json build.asarUnpack must unpack node_modules/opencode-windows-x64-baseline/** so non-AVX2 x64 machines get a runnable OpenCode binary");
+  // Codex, Claude Code and OpenCode native platform packages are fetched into
+  // the machine tools cache at runtime. Unpacking one would ship it: nothing
+  // resolves a bundled copy any more, because every resolver checks the cache
+  // first.
+  const unpackedFetchedTools = (Array.isArray(pkg.build?.asarUnpack) ? pkg.build.asarUnpack : [])
+    .filter((pattern) => matchesRuntimeFetchedToolPackage(pattern));
+  if (unpackedFetchedTools.length > 0) {
+    fail(
+      `package.json build.asarUnpack must not unpack runtime-fetched agent tool packages: ${unpackedFetchedTools.join(", ")}. `
+      + RUNTIME_FETCHED_TOOL_EXPLANATION,
+    );
   }
-  if (Array.isArray(pkg.build?.asarUnpack) && pkg.build.asarUnpack.includes("node_modules/opencode-windows-x64/**")) {
-    fail("package.json build.asarUnpack must not unpack node_modules/opencode-windows-x64/**; it is the AVX2-only build that crashes on older x64 CPUs");
-  }
-  // Dropping the AVX2 package from asarUnpack is not enough to stop shipping it:
+  // Dropping a package from asarUnpack is not enough to stop shipping it:
   // electron-builder always copies production dependencies, so a package that is
-  // not unpacked is embedded *inside* app.asar instead - 141.5 MB of binary that
-  // can never be executed from there and that nothing resolves. Only a `!` pattern
-  // in build.files keeps it out of the package entirely (getNodeModuleFileMatcher
-  // collects exactly the negated patterns and applies them to the node_modules walk).
-  if (!Array.isArray(pkg.build?.files) || !pkg.build.files.includes("!node_modules/opencode-windows-x64/**")) {
-    fail("package.json build.files must exclude !node_modules/opencode-windows-x64/**; otherwise the unused AVX2 OpenCode build is embedded in app.asar");
+  // not unpacked is embedded *inside* app.asar instead - hundreds of megabytes of
+  // binary that can never be executed from there and that nothing resolves. Only a
+  // `!` pattern in build.files keeps it out of the package entirely
+  // (getNodeModuleFileMatcher collects exactly the negated patterns and applies
+  // them to the node_modules walk).
+  const buildFiles = Array.isArray(pkg.build?.files) ? pkg.build.files : [];
+  const missingFilesExclusions = runtimeFetchedToolPackageNames
+    .map(runtimeFetchedToolPackageFilesExclusion)
+    .filter((pattern) => !buildFiles.includes(pattern));
+  if (missingFilesExclusions.length > 0) {
+    fail(
+      `package.json build.files must exclude every runtime-fetched agent tool package; missing: ${missingFilesExclusions.join(", ")}. `
+      + RUNTIME_FETCHED_TOOL_EXPLANATION,
+    );
   }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
@@ -406,7 +333,17 @@ function validatePreflight() {
   for (const target of REMOTE_RUNTIME_TARGETS) {
     for (const fileName of [remoteRuntimeBinaryName(target), `ade-${target}.native.tar.gz`]) {
       if (!runtimeFilter.has(fileName)) {
-        fail(`package.json build.extraResources runtime filter must include ${fileName}`);
+        fail(`package.json build.win.extraResources runtime filter must include ${fileName}`);
+      }
+    }
+  }
+  for (const target of EXCLUDED_REMOTE_RUNTIME_TARGETS) {
+    for (const fileName of [remoteRuntimeBinaryName(target), `ade-${target}.native.tar.gz`]) {
+      if (runtimeFilter.has(fileName)) {
+        fail(
+          `package.json runtime filter must not ship ${fileName} in the Windows bundle; `
+          + "foreign-platform sidecars are published as standalone release assets instead",
+        );
       }
     }
   }
@@ -553,56 +490,16 @@ async function assertRemoteRuntimeBundle(resourcesPath) {
       fail(`Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
     }
   }
-}
-
-async function findFirstNodeAddon(rootPath) {
-  const entries = await fsp.readdir(rootPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      const nestedMatch = await findFirstNodeAddon(entryPath);
-      if (nestedMatch) return nestedMatch;
-      continue;
-    }
-    if (entry.isFile() && entry.name.endsWith(".node")) {
-      return entryPath;
-    }
+  for (const target of EXCLUDED_REMOTE_RUNTIME_TARGETS) {
+    await assertPathMissing(
+      path.join(runtimeRoot, runtimeBinaryNameForTarget(target)),
+      `non-target remote runtime binary ${target}`,
+    );
+    await assertPathMissing(
+      path.join(runtimeRoot, `ade-${target}.native.tar.gz`),
+      `non-target remote runtime native archive ${target}`,
+    );
   }
-
-  return null;
-}
-
-async function findNodePtyAddon(moduleRootPath) {
-  const candidateRoots = [
-    path.join(moduleRootPath, "build", "Release"),
-    path.join(moduleRootPath, "build", "Debug"),
-  ];
-
-  try {
-    const prebuildRoot = path.join(moduleRootPath, "prebuilds");
-    const prebuildDirs = await fsp.readdir(prebuildRoot, { withFileTypes: true });
-    for (const entry of prebuildDirs) {
-      if (entry.isDirectory()) candidateRoots.push(path.join(prebuildRoot, entry.name));
-    }
-  } catch {
-    // Keep the explicit candidate roots only.
-  }
-
-  for (const candidateRoot of candidateRoots) {
-    try {
-      await fsp.access(candidateRoot);
-    } catch {
-      continue;
-    }
-
-    const addonPath = await findFirstNodeAddon(candidateRoot);
-    if (addonPath) {
-      return addonPath;
-    }
-  }
-
-  return null;
 }
 
 function createNodePathValue(paths, options = {}) {
@@ -618,18 +515,13 @@ function assertAdeCliHelp(stdout, label) {
 async function validatePackageHygiene(resourcesPath) {
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
-  const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
-  const maxUnpackedBytes = readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES);
-
-  const appAsarStat = await fsp.stat(appAsarPath);
-  if (appAsarStat.size > maxAppAsarBytes) {
-    fail(`app.asar is too large: ${appAsarStat.size} bytes (limit ${maxAppAsarBytes})`);
-  }
-
-  const unpackedBytes = await computeRecursiveFileSize(unpackedPath);
-  if (unpackedBytes > maxUnpackedBytes) {
-    fail(`app.asar.unpacked is too large: ${unpackedBytes} bytes (limit ${maxUnpackedBytes})`);
-  }
+  await assertPackagedTreeSizeBudget({
+    appAsarPath,
+    unpackedPaths: [unpackedPath],
+    maxAppAsarBytes: readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES),
+    maxUnpackedBytes: readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES),
+    unpackedLabel: "app.asar.unpacked",
+  });
 
   // Source-map and binary-package hygiene checks are paused until the
   // perf-fixes packaging changes are reapplied with proper exclusions.
@@ -639,12 +531,13 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-arm64"), "macOS node-pty arm64 prebuild in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-x64"), "macOS node-pty x64 prebuild in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "win32-arm64"), "Windows arm64 node-pty prebuild in Windows x64 package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"), "Claude Windows arm64 payload in Windows x64 package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-win32-arm64"), "Codex Windows arm64 payload in Windows x64 package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-darwin-arm64"), "Codex macOS arm64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-darwin-x64"), "Codex macOS x64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-arm64"), "Codex Linux arm64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-x64"), "Codex Linux x64 payload in Windows package");
+  // Every native platform variant of Codex, Claude Code and OpenCode, including
+  // the win32-x64 ones: all three CLIs are fetched into the machine tools cache
+  // at runtime, so no variant has any business in the package.
+  await assertNoRuntimeFetchedToolPackages({
+    nodeModulesPath: path.join(unpackedPath, "node_modules"),
+    report: "first-offender",
+  });
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
   await assertPathExists(path.join(unpackedPath, "node_modules", "@cursor", "sdk-win32-x64", "bin", "rg.exe"), "Cursor Windows x64 ripgrep helper");
@@ -654,25 +547,16 @@ async function validatePackageHygiene(resourcesPath) {
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
-  // The afterPack step (ensureOpenCodeRuntimePackages) now deliberately bundles
-  // the on-target OpenCode native package into app.asar.unpacked. Require it
-  // present; the duplicate opencode-ai install shim and all off-target variants
-  // must be absent. Windows x64's on-target package is `-baseline`: it is what
-  // OPENCODE_PLATFORM_PACKAGES resolves, and the AVX2 `opencode-windows-x64`
-  // build must not ship at all - it crashes on non-AVX2 CPUs and, since nothing
-  // resolves it, any copy of it is 141.5 MB of pure installer weight.
-  await assertPathExists(
-    path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline", "bin", "opencode.exe"),
-    "bundled baseline OpenCode Windows x64 executable in Windows package",
-  );
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "duplicate OpenCode Windows executable");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "AVX2-only OpenCode Windows x64 payload in Windows package");
-  await assertAsarEmbedsNoOpenCodeNativePayload(appAsarPath);
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-x64"), "OpenCode macOS x64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-arm64"), "OpenCode Linux arm64 payload in Windows package");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-x64"), "OpenCode Linux x64 payload in Windows package");
+  // `opencode-ai` still ships (the resolver and the ADE CLI both load the JS
+  // launcher), but the 107 MB Windows executable it carries in its own bin/ is
+  // pruned: OpenCode comes from the tools cache now.
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
+  // The JS entry points must survive the exclusions above.
+  await assertRuntimeToolJsEntryPointsPresent({
+    nodeModulesPath: path.join(unpackedPath, "node_modules"),
+    labelSuffix: " package",
+  });
+  await assertAsarEmbedsNoRuntimeFetchedToolPayload(appAsarPath);
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-arm64"), "macOS arm64 cr-sqlite payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-x64"), "macOS x64 cr-sqlite payload in Windows package");
 
@@ -707,7 +591,6 @@ async function validatePackagedRuntime(appDir) {
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
-  const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
@@ -725,18 +608,12 @@ async function validatePackagedRuntime(appDir) {
   }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
-  await assertPathExists(sqlJsModulePath, "unpacked sql.js module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
-  const adeCliTuiContents = await fsp.readFile(adeCliTuiPath, "utf8");
-  for (const token of ["__dirname", "__filename"]) {
-    if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
-      fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
-    }
-  }
+  assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
     console.warn(
-      "[validate-win-artifacts] Local test build: skipping macOS/Linux remote runtime sidecars.",
+      "[validate-win-artifacts] Local test build: skipping the remote runtime sidecar assertion.",
     );
   } else {
     await assertRemoteRuntimeBundle(resourcesPath);
@@ -784,34 +661,35 @@ async function validatePackagedRuntime(appDir) {
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     fail("Packaged smoke did not report a Claude executable path");
   }
-  if (payload?.claudeExecutableSource !== "bundled") {
-    fail(`Claude executable source must be bundled, got ${String(payload?.claudeExecutableSource)} at ${String(payload?.claudeExecutablePath)}`);
-  }
-  await assertPathExists(payload.claudeExecutablePath, "bundled Claude executable");
+  await assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath);
   if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
     fail("Packaged smoke did not report a Claude startup result");
   }
   if (payload.claudeStartup.state === "binary-missing") {
-    fail(`Packaged Claude executable could not start: ${String(payload.claudeStartup.message || "binary missing")}`);
+    // Expected on a package host with an empty tools cache and no user-installed
+    // Claude: the binary is fetched on first use. A resolver that silently
+    // returned nothing at all is still caught above.
+    console.log(
+      "[validate-win-artifacts] Claude CLI is not present on this package host (empty tools cache); "
+      + "skipping the live Claude startup check.",
+    );
   } else if (payload.claudeStartup.state === "runtime-failed") {
     fail(`Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`);
   }
   if (payload?.codexExecutable !== "function") {
     fail(`Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
-  if (payload?.codexExecutableSource !== "bundled") {
-    fail(`Codex executable source must be bundled, got ${String(payload?.codexExecutableSource)} at ${String(payload?.codexExecutablePath)}`);
+  const codexPath = await assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath);
+  if (codexPath) {
+    await runCommand(codexPath, ["--version"], { timeoutMs: 20_000 });
   }
-  await assertPathExists(payload.codexExecutablePath, "bundled Codex executable");
-  await runCommand(payload.codexExecutablePath, ["--version"], { timeoutMs: 20_000 });
   if (payload?.openCodeExecutable !== "function") {
     fail(`Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
-  if (payload?.openCodeExecutableSource !== "bundled") {
-    fail(`Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`);
+  const openCodePath = await assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath);
+  if (openCodePath) {
+    await runCommand(openCodePath, ["--version"], { timeoutMs: 20_000 });
   }
-  await assertPathExists(payload.openCodeExecutablePath, "bundled OpenCode executable");
-  await runCommand(payload.openCodeExecutablePath, ["--version"], { timeoutMs: 20_000 });
   if (payload?.cursorSdkCreateAgentPlatform !== "function") {
     fail(`Packaged smoke expected Cursor SDK createAgentPlatform() to be available, got ${String(payload?.cursorSdkCreateAgentPlatform)}`);
   }

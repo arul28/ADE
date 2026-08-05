@@ -3,13 +3,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nativeArchiveAction, nativeArchiveNotarizeArgs } from "./mac-runtime-archive-mode.mjs";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
+
+const { resolveRuntimeTargets } = runtimeResourceTargets;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(desktopRoot, "..", "..");
 const adeCliRoot = path.join(repoRoot, "apps", "ade-cli");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
-const darwinTargets = ["darwin-arm64", "darwin-x64"];
+// Only the darwin sidecars this build actually stages carry Mach-O payloads to
+// sign or verify. A per-arch release job stages exactly one.
+const darwinTargets = resolveRuntimeTargets().targets.filter((target) => target.startsWith("darwin-"));
 const action = nativeArchiveAction();
 
 async function assertExists(filePath, label) {
@@ -30,6 +35,10 @@ function run(command, args) {
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status || 1}`);
   }
+}
+
+if (darwinTargets.length === 0) {
+  throw new Error("[release:mac] No darwin runtime sidecar is staged for signing in resources/runtime.");
 }
 
 for (const target of darwinTargets) {

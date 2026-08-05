@@ -333,6 +333,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentTool,
+  AgentToolsCacheSnapshot,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
@@ -4118,10 +4119,24 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ai", "getOpenCodeRuntimeDiagnostics", {}, () =>
         ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
       ),
-    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> =>
+    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> =>
       callProjectRuntimeActionOr("ai", "isOpenCodeInstalled", {}, () =>
         ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
       ),
+    // Machine-local, not project-scoped: the tools cache lives beside this
+    // install, so these bypass the runtime-action routing above.
+    getToolsCache: (): Promise<AgentToolsCacheSnapshot> =>
+      ipcRenderer.invoke(IPC.aiGetToolsCache),
+    ensureToolsCache: (): Promise<AgentToolsCacheSnapshot> =>
+      ipcRenderer.invoke(IPC.aiEnsureToolsCache),
+    onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AgentToolsCacheSnapshot,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.aiToolsCacheEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.aiToolsCacheEvent, listener);
+    },
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       clearAround(
         () => aiStatusCache.clear(),

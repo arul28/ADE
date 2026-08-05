@@ -328,6 +328,8 @@ type CliPlan =
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
+  | { kind: "tools"; rest: string[] }
+  | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
@@ -603,6 +605,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -655,6 +658,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -1117,6 +1121,36 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  connect: `${ADE_BANNER}
+  ADE Connect
+
+  Link this machine to your ADE account so you can reach it from ADE desktop,
+  the web client, and iOS. Safe to re-run: every step is idempotent, and on an
+  already-connected machine it just prints status and exits.
+
+  Three steps, each reported as a checklist line on stderr:
+    account   Reuse a valid session, or sign in (browser, or device flow over SSH)
+    service   Register and start this platform's login service
+    machine   Wait for this machine's row to reach the account directory
+
+    $ ade connect                  Connect this machine (prompts to sign in)
+    $ ade connect --status --text  Report only; never signs in or installs
+    $ ade connect --headless       Sign in with the copy-paste device flow
+    $ ade connect --no-login       Install the service only; stay local/LAN-only
+
+  Flags:
+    --status                       Report the three steps without changing anything.
+    --no-login                     Skip sign-in. The machine stays local/LAN-only.
+    --no-service                   Do not register the login service.
+    --headless                     Force the copy-paste device authorization flow.
+    --timeout <seconds>            Bound the wait for the account-directory row
+                                   (default 60). Also spelled --max-wait.
+
+  Notes:
+    The machine row is published by the running brain, not by this command, so
+    the brain must stay running for the machine to remain reachable.
+    Undo with "ade logout" and "ade runtime uninstall-service".
+`,
   auth: `${ADE_BANNER}
   ADE Account
 
@@ -1344,6 +1378,32 @@ const HELP_BY_COMMAND: Record<string, string> = {
     "update" downloads the standalone runtime for this channel, stages it under
     ADE_HOME, then hands off to a detached helper that restarts the brain.
     Pairing PIN commands are aliases for the machine sync PIN.
+`,
+  tools: `${ADE_BANNER}
+  ADE Agent Tools
+
+  Inspect and populate the pinned agent-CLI cache. ADE pins exact versions of
+  Codex, Claude Code, and OpenCode and fetches them from the npm registry into a
+  machine-level cache shared by the desktop app, the brain, and every channel,
+  rather than bundling ~650 MB of binaries into each one.
+
+    $ ade tools status --text
+    $ ade tools ensure --text
+    $ ade tools ensure codex --text
+    $ ade tools gc --dry-run --text
+
+  Notes:
+    "ensure" with no tool names fetches everything this build pins, and is a
+    no-op for tools already cached. The brain also runs it in the background on
+    every "ade serve", so this is only needed to fetch on demand or to see why a
+    background fetch failed.
+    Failures return ok:false with a typed "errorKind" (network, integrity,
+    disk-space, lock-timeout, ...) rather than a message to scrape.
+    "gc" drops cached versions this build no longer pins, keeping the most
+    recent superseded one as a rollback target unless --no-keep-previous.
+    The cache lives at ADE_TOOLS_ROOT, else %LOCALAPPDATA%\\ADE\\tools on
+    Windows, else ~/.ade/tools. Set ADE_DISABLE_TOOLS_FETCH=1 to stop the brain
+    and desktop app from fetching in the background.
 `,
   serve: `${ADE_BANNER}
   ADE Internal Brain Process
@@ -12290,12 +12350,18 @@ function buildCliPlan(
     }
     return { kind: "runtime", rest: args };
   }
+  if (primary === "connect") {
+    return { kind: "connect", rest: args };
+  }
   if (primary === "brain") {
     const sub = firstStandalonePositional([...args]) ?? "status";
     if (sub === "pin") {
       return buildSyncPlan(args);
     }
     return { kind: "brain", rest: args };
+  }
+  if (primary === "tools") {
+    return { kind: "tools", rest: args };
   }
   if (primary === "serve") {
     return { kind: "serve", rest: args };
@@ -15513,6 +15579,178 @@ async function readBrainSyncStatus(
   }
 }
 
+/**
+ * `ade connect` — link this machine to the user's ADE account.
+ *
+ * The step orchestration lives in ./commands/connect; this function only binds
+ * it to the real brain connection, service manager and account directory. It
+ * connects at cto role for the same reason `ade login` does: the account
+ * actions it drives are CTO-only.
+ */
+async function runConnectCli(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const { ConnectUsageError, renderConnectSummary, runConnectCommand } = await import(
+    "./commands/connect"
+  );
+
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+  } catch (error) {
+    throw new CliExecutionError("Failed to initialize the ADE brain for `ade connect`.", {
+      cause: error instanceof Error ? error.message : String(error),
+      nextAction: "Start the machine ADE brain with `ade brain start`, then retry `ade connect`.",
+    });
+  }
+
+  try {
+    // Brain-side rejections must reach the user as typed guidance. Letting the
+    // raw RPC rejection escape would print a stack trace, which is the one
+    // thing this command must never do.
+    const accountAction = async (action: string): Promise<JsonObject> => {
+      let raw: unknown;
+      try {
+        raw = await connection.request("account.call", { action, args: {} });
+      } catch (error) {
+        throw new CliExecutionError(`The ADE brain rejected account.${action}.`, {
+          cause: error instanceof Error ? error.message : String(error),
+          nextAction:
+            "Run `ade doctor --text` to inspect this machine's brain, then retry `ade connect`.",
+        });
+      }
+      const result = unwrapActionEnvelope(raw);
+      if (!isRecord(result)) {
+        throw new CliExecutionError(`account.${action} returned an unexpected result.`, { action });
+      }
+      return result;
+    };
+    const readAccountStatus = async () => {
+      const status = await accountAction("status");
+      return {
+        signedIn: status.signedIn === true,
+        email: asString(status.email),
+        name: asString(status.name),
+        userId: asString(status.userId),
+        source: asString(status.source),
+      };
+    };
+
+    // The directory keys this machine by the sync machineKey, so resolve it up
+    // front from the same file the brain's publisher reads.
+    let machineKey: string | null = null;
+    try {
+      const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+      const layout = resolveMachineAdeLayout();
+      machineKey = createSyncCloudRelayStore({
+        filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
+      }).getMachineIdentity().machineKey;
+    } catch {
+      machineKey = null;
+    }
+
+    const result = await runConnectCommand(rest, {
+      write: (text) => process.stderr.write(text),
+      getAccountStatus: readAccountStatus,
+      // Delegates to the same `ade login` implementation, so the loopback-vs-device
+      // decision and every OAuth detail stay in exactly one place.
+      runLogin: async ({ headless }) => {
+        const login = await runAccountLogin(
+          { kind: "account-login", maxWaitSec: null, explicitHeadless: headless },
+          options,
+        );
+        if (login.exitCode !== 0) {
+          throw new CliExecutionError("ADE account sign-in did not complete.", {
+            nextAction: "Retry `ade connect`, or `ade connect --headless` without a browser.",
+          });
+        }
+        return readAccountStatus();
+      },
+      getServiceStatus: async () => {
+        const { getRuntimeServiceStatus } = await import("./serviceManager");
+        const status = getRuntimeServiceStatus();
+        return { installed: status.installed, running: status.running, message: status.message };
+      },
+      installService: async () => {
+        const { installRuntimeService } = await import("./serviceManager");
+        const install = await withAdeDefaultRole("cto", () => installRuntimeService());
+        return {
+          ok: install.ok,
+          message: install.message,
+          selfMutationBlocked: install.selfMutationBlocked,
+        };
+      },
+      getMachineKey: () => machineKey,
+      // A directory read that fails degrades the machine step rather than
+      // aborting the command: the account and service steps already succeeded
+      // and their results are worth reporting.
+      listMachines: async () => {
+        let listed: JsonObject;
+        try {
+          listed = await accountAction("listMachines");
+        } catch (error) {
+          const cause = error instanceof CliExecutionError
+            ? asString(error.details.cause) ?? error.message
+            : error instanceof Error
+              ? error.message
+              : String(error);
+          return { state: "unavailable", machines: [], message: cause };
+        }
+        const machines = Array.isArray(listed.machines)
+          ? listed.machines.flatMap((entry) => {
+            if (!isRecord(entry)) return [];
+            const key = asString(entry.machineKey);
+            if (!key) return [];
+            return [{
+              machineKey: key,
+              name: asString(entry.name),
+              customName: asString(entry.customName),
+              online: entry.online === true,
+              lastSeenAt: typeof entry.lastSeenAt === "number" ? entry.lastSeenAt : null,
+            }];
+          })
+          : [];
+        return {
+          state: asString(listed.state) ?? "unavailable",
+          machines,
+          message: asString(listed.message),
+        };
+      },
+      // Best-effort diagnostics for a poll that never saw the row. A failure to
+      // read health must not replace the timeout message with its own error.
+      getPublishHealth: async () => {
+        const raw = await connection.request("sync.getStatus", {});
+        const status = unwrapActionEnvelope(raw);
+        if (!isRecord(status)) return null;
+        const routeHealth = isRecord(status.routeHealth) ? status.routeHealth : null;
+        const directory = routeHealth && isRecord(routeHealth.accountDirectory)
+          ? routeHealth.accountDirectory
+          : null;
+        if (!directory) return null;
+        return { state: asString(directory.state), reason: asString(directory.reason) };
+      },
+    });
+
+    return {
+      // The checklist and guidance already went to stderr, so --text keeps
+      // stdout to a single pipeable line.
+      output: options.text
+        ? `${renderConnectSummary(result)}\n`
+        : formatOutput(result, options, undefined),
+      exitCode: result.ok ? 0 : 1,
+    };
+  } catch (error) {
+    if (error instanceof ConnectUsageError) throw new CliUsageError(error.message);
+    throw error;
+  } finally {
+    await connection.close();
+  }
+}
+
 async function runBrainCommand(
   rest: string[],
   options: GlobalOptions,
@@ -16701,6 +16939,33 @@ async function runServe(
   );
   clearLastFailure({ kind: "machine" });
   serveStarted = true;
+
+  // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
+  // three of them. A source checkout still resolves all three out of the repo's
+  // own node_modules, so firing the fetch there downloads that much on every
+  // `ade serve` in a dev loop and on every CI job, for bytes nothing will read.
+  // Packaged installs have no node_modules to fall back on and do need it. The
+  // desktop app draws the same line (`app.isPackaged` in main.ts).
+  //
+  // ADE_FORCE_TOOLS_FETCH=1 opts a checkout back in (exercising the real fetch
+  // path locally); ADE_DISABLE_TOOLS_FETCH=1 still wins over it, and is handled
+  // inside startBackgroundAgentToolsFetch so the skip is logged there.
+  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
+  const skipToolsFetchForSourceCheckout =
+    !toolsFetchDisabled
+    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
+    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  if (skipToolsFetchForSourceCheckout) {
+    headlessProjectLogger.info("tools.fetch_skipped", {
+      reason:
+        "Running from a source checkout, where the pinned agent tools resolve from the repo's node_modules. "
+        + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
+    });
+  } else {
+    void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
+      startBackgroundAgentToolsFetch(headlessProjectLogger);
+    });
+  }
 
   const serviceCommand = resolveAdeServeCommand();
   const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);
@@ -20784,6 +21049,9 @@ async function runCli(
         exitCode: result.ok ? 0 : 1,
       };
     }
+    if (plan.kind === "connect") {
+      return await runConnectCli(plan.rest, parsed.options);
+    }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
       return {
@@ -20797,6 +21065,21 @@ async function runCli(
         output: formatOutput(result, parsed.options, undefined),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
+    }
+    if (plan.kind === "tools") {
+      const { ToolsUsageError, runToolsCommand } = await import("./commands/tools");
+      try {
+        const result = await runToolsCommand(plan.rest, { textProgress: parsed.options.text });
+        return {
+          output: formatOutput(result, parsed.options, undefined),
+          exitCode: isRecord(result) && result.ok === false ? 1 : 0,
+        };
+      } catch (error) {
+        if (error instanceof ToolsUsageError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
     }
     if (plan.kind === "serve") {
       const result = await runServe(plan.rest, parsed.options);
