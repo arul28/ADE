@@ -598,12 +598,20 @@ export function createAutoUpdateService({
   function setErrorSnapshot(args: {
     error: unknown;
     fallbackPhase: AutoUpdatePhase;
+    /**
+     * Set by callers that already know why they failed. Message-sniffing is only
+     * for opaque errors from electron-updater; a caller that raised the failure
+     * itself must not have its own copy parsed back into a kind.
+     */
+    kind?: AutoUpdateErrorKind;
     capacity?: Pick<AutoUpdateErrorDetails, "availableBytes" | "requiredBytes" | "volumePath">;
     message?: string;
     preservesDownload?: boolean;
     preservedUpdate?: PreservedDownloadRetry;
   }): void {
-    const classified = classifyUpdateError(args.error, args.fallbackPhase);
+    const classified = args.kind
+      ? { kind: args.kind, phase: args.fallbackPhase }
+      : classifyUpdateError(args.error, args.fallbackPhase);
     const message = args.message ?? formatErrorMessage(args.error);
     const preservesDownload = args.preservesDownload
       ?? shouldPreserveDownloadedUpdate(classified.kind, classified.phase);
@@ -684,6 +692,7 @@ export function createAutoUpdateService({
     setErrorSnapshot({
       error: new Error(MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE),
       fallbackPhase: "download",
+      kind: "artifact_too_large",
       message: MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
       preservesDownload: false,
     });

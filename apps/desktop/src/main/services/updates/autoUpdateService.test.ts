@@ -9,7 +9,11 @@ import {
   buildReleaseNotesUrl,
   compareUpdateVersions,
 } from "./autoUpdateVersions";
-import { classifyUpdateError, estimateUpdateRequiredBytes } from "./autoUpdateErrors";
+import {
+  MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
+  classifyUpdateError,
+  estimateUpdateRequiredBytes,
+} from "./autoUpdateErrors";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -102,6 +106,18 @@ describe("auto-update error classification", () => {
     expect(classifyUpdateError(error, "install")).toEqual({
       kind: "disk_full",
       phase: "staging",
+    });
+  });
+
+  it("does not recover the oversized-artifact kind from message copy", () => {
+    // The preflight passes kind: "artifact_too_large" to setErrorSnapshot, so
+    // classification must not depend on the wording of that message -- an edit
+    // to the user-facing copy cannot silently reclassify the error. The
+    // end-to-end coverage lives in "refuses a macOS update whose archive would
+    // crash Squirrel.Mac".
+    expect(classifyUpdateError(new Error(MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE), "download")).toEqual({
+      kind: "unknown",
+      phase: "download",
     });
   });
 

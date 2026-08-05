@@ -135,6 +135,26 @@ test("the macOS zip budget sits below the 1 GiB Squirrel.Mac cliff", () => {
   assert.equal(violations[0].budget.id, "mac-update-archive");
 });
 
+// The CI budget and the runtime guard are the same number declared twice: CI
+// refuses to publish an oversized zip, and the app refuses to download one. If
+// they drift, a build can pass CI and still be refused on users' machines (or
+// worse, the reverse). Read the runtime constant as source text -- this is a
+// `node --test` file and cannot import TypeScript.
+test("the runtime updater guard uses the same archive budget as CI", async () => {
+  const errorsPath = path.join(desktopRoot, "src/main/services/updates/autoUpdateErrors.ts");
+  const source = await fs.readFile(errorsPath, "utf8");
+  const match = /MAC_UPDATE_ARTIFACT_MAX_BYTES\s*=\s*(\d+)\s*\*\s*MIB/.exec(source);
+  assert.ok(match, `could not find MAC_UPDATE_ARTIFACT_MAX_BYTES in ${errorsPath}`);
+  assert.equal(
+    Number(match[1]) * 1024 * 1024,
+    MAC_UPDATE_ARCHIVE_MAX_BYTES,
+    "macOS update archive budget drifted: MAC_UPDATE_ARCHIVE_MAX_BYTES in "
+    + "apps/desktop/scripts/artifact-size-budget.cjs and MAC_UPDATE_ARTIFACT_MAX_BYTES in "
+    + "apps/desktop/src/main/services/updates/autoUpdateErrors.ts must be the same size. "
+    + "Update both.",
+  );
+});
+
 test("an in-budget macOS zip and Windows installer pass", () => {
   assert.deepEqual(
     findArtifactSizeViolations([

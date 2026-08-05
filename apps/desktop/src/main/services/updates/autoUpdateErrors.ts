@@ -103,9 +103,8 @@ export function classifyUpdateError(
   const code = errorCode(error);
   const message = errorMessage(error).toLowerCase();
   const phase = /extract|staging|shipit|unpack/.test(message) ? "staging" : fallbackPhase;
-  if (/too large for macos to install/.test(message)) {
-    return { kind: "artifact_too_large", phase };
-  }
+  // "artifact_too_large" is never recovered from a message: the only producer is
+  // our own preflight, which passes the kind to setErrorSnapshot explicitly.
   if (code === "ENOSPC" || /no space left|disk(?: is)? full/.test(message)) {
     return { kind: "disk_full", phase };
   }
