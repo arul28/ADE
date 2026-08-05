@@ -108,6 +108,7 @@ import type {
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { docs } from "../../onboarding/docsLinks";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -2002,7 +2003,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   };
 
-  const openAutoRebaseSettings = useCallback(() => { navigate("/settings?tab=lane-templates"); }, [navigate]);
+  const openAutoRebaseSettings = useCallback(() => { navigate(settingsRouteFor("lanes-git.lane-templates")); }, [navigate]);
   const openRebaseDetails = useCallback((laneId?: string | null) => {
     const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
     if (trimmedLaneId.length) {
@@ -3656,8 +3657,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         prefill={createPrefill}
         onCreated={handleLaneCreated}
         onBusyChange={(busy) => { createBusyRef.current = busy; }}
-        onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
-        onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
+        onOpenLinearSettings={() => navigate(settingsRouteFor("integrations.linear"))}
+        onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
       />
 
       {rebaseScopePrompt ? (

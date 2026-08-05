@@ -302,7 +302,9 @@ function CrossTabResults({
 export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  // Read-only: every write to the settings URL goes through `navigate` so the
+  // hash survives alongside the search params.
+  const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   // Machine-scoped settings write to the machine the active project tab is
   // bound to, so on web they exist only while one is open. The manifest is what
@@ -331,7 +333,24 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // so it falls through to the first tab this renderer does serve.
   const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
   const defaultTab = tabs[0]?.id ?? "general";
-  const requestedTab = resolveSettingsTab(tabParam);
+  // A `#hash` names one specific setting, so it is strictly more precise than
+  // the `?tab=` next to it. When the two disagree — an older link that still
+  // says `?tab=general#github-connection` after GitHub moved to Integrations —
+  // follow the hash, which is the tab that actually contains the card we were
+  // asked to show. Without this the URL lands on the named tab and the scroll
+  // effect below silently no-ops, which is exactly how the GitHub App banner
+  // used to dump people on General.
+  const hashEntryTab = useMemo(() => {
+    if (!location.hash) return null;
+    let raw = location.hash.slice(1);
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      // A malformed hash should never break tab resolution.
+    }
+    return resolveSettingsHash(raw)?.tab ?? null;
+  }, [location.hash]);
+  const requestedTab = hashEntryTab ?? resolveSettingsTab(tabParam);
   const resolvedTab = requestedTab && tabs.some((tab) => tab.id === requestedTab)
     ? requestedTab
     : requestedTab
@@ -357,8 +376,14 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     if (!tabParam || !resolvedTab || tabParam === resolvedTab) return;
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", resolvedTab);
-    setSearchParams(nextParams, { replace: true });
-  }, [active, resolvedTab, searchParams, setSearchParams, tabParam]);
+    // Navigate rather than setSearchParams: the latter drops the hash, which
+    // would throw away the very anchor that selected this tab and leave the
+    // scroll effect below with nothing to scroll to.
+    navigate(
+      { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash },
+      { replace: true },
+    );
+  }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
 
   // `?integration=github|linear|cli` predates the manifest.
   useEffect(() => {

@@ -9,6 +9,7 @@ import type {
 import { useAppStore } from "../../state/appStore";
 import { expectNoJargon, JARGON_PATTERN } from "../../../test/jargonGuard";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigateMock }));
@@ -206,7 +207,9 @@ describe("ProjectRecoveryScreen", () => {
     // The takeover must exit (clear the error) before navigating, or
     // ProjectTabHost keeps rendering this screen and Settings never shows.
     expect(clear).toHaveBeenCalled();
-    expect(navigateMock).toHaveBeenCalledWith("/settings?tab=storage");
+    // Route comes from the settings manifest, so this assertion follows the
+    // storage card if it ever moves tabs instead of pinning a stale literal.
+    expect(navigateMock).toHaveBeenCalledWith(settingsRouteFor("storage.usage"));
   });
 
   it("clears the transition error when Back is pressed", async () => {

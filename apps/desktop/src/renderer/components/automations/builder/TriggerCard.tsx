@@ -24,6 +24,7 @@ import {
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
+import { settingsRouteFor } from "../../settings/settingsManifest";
 
 function SmallField({
   label,
@@ -104,13 +105,13 @@ function TriggerDeliveryCallout({
   let action = null;
   if (deliveryKey === "github" || deliveryKey === "githubWebhook") {
     action = (
-      <CalloutActionButton label="Open GitHub settings" onClick={() => navigate("/settings?tab=general#github-connection")} />
+      <CalloutActionButton label="Open GitHub settings" onClick={() => navigate(settingsRouteFor("integrations.github"))} />
     );
   } else if (deliveryKey === "linear") {
     action = linearApi?.setup ? (
       <CalloutActionButton label="Connect Linear" disabled={linearPending} onClick={() => void setupLinear()} />
     ) : (
-      <CalloutActionButton label="Open Linear settings" onClick={() => navigate("/settings?tab=general#linear-connection")} />
+      <CalloutActionButton label="Open Linear settings" onClick={() => navigate(settingsRouteFor("integrations.linear"))} />
     );
   }
 

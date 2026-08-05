@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiskPressureSnapshot, DiskPressureState } from "../../../shared/types/storage";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 function snapshot(state: DiskPressureState): DiskPressureSnapshot {
   return {
@@ -89,6 +90,6 @@ describe("StoragePressureIndicator", () => {
     render(<StoragePressureIndicator enabled />);
 
     fireEvent.click(await screen.findByRole("status"));
-    expect(window.location.hash).toBe("#/settings?tab=storage");
+    expect(window.location.hash).toBe(`#${settingsRouteFor("storage.usage")}`);
   });
 });

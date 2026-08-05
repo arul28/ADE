@@ -883,6 +883,22 @@ export function settingsEntryPath(entry: SettingEntry): string {
   return `/settings?tab=${entry.tab}#${entry.anchor}`;
 }
 
+/**
+ * The route for a setting named by its manifest id — the form every in-app CTA
+ * (banners, callouts, empty states) should use.
+ *
+ * Hand-written `/settings?tab=general#github-connection` strings were the bug
+ * this replaces: when GitHub moved from General to Integrations, the tab in
+ * those literals kept pointing at General while the anchor moved, so the
+ * "Authorize" banner landed on General and scrolled nowhere. Deriving the whole
+ * route from the manifest means a setting can never move out from under a CTA
+ * again. Unknown ids fall back to the settings root rather than throwing.
+ */
+export function settingsRouteFor(entryId: string): string {
+  const entry = ENTRIES_BY_ID.get(entryId);
+  return entry ? settingsEntryPath(entry) : "/settings";
+}
+
 export function settingsTabLabel(tab: SettingsTabId): string {
   return SETTINGS_TABS.find((candidate) => candidate.id === tab)?.label ?? tab;
 }

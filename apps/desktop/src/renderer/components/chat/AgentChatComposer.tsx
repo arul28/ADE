@@ -102,6 +102,7 @@ import {
   ComposerPromptStash,
   type ComposerPromptStashHandle,
 } from "./ComposerPromptStash";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
@@ -5054,7 +5055,7 @@ export function AgentChatComposer({
                     type="button"
                     onClick={() => {
                       // HashRouter deep-link to the voice-input card under General.
-                      window.location.hash = "#/settings?tab=general#voice-input";
+                      window.location.hash = `#${settingsRouteFor("agents.dictation")}`;
                     }}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)] active:scale-[0.97]"
                     aria-label="Set up voice input"

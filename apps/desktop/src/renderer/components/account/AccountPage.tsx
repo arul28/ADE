@@ -55,6 +55,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { docs } from "../../onboarding/docsLinks";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
 const MACHINES_REFRESH_MS = 30_000;
@@ -1247,7 +1248,7 @@ export function AccountPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => navigate("/settings?tab=general#github-connection")}
+                  onClick={() => navigate(settingsRouteFor("integrations.github"))}
                   style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px", flexShrink: 0 })}
                 >
                   Connect GitHub

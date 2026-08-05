@@ -19,6 +19,7 @@ import {
   githubAccountIssueCopy,
   githubRepoIssueCopy,
 } from "../../lib/githubIntegrationStatus";
+import { settingsRouteFor } from "../settings/settingsManifest";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { openExternalUrl } from "../../lib/openExternal";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -55,8 +56,10 @@ export type IntegrationBannerHostProps = {
   navigate: NavigateFunction;
 };
 
-const GITHUB_CONNECTION_SETTINGS_ROUTE = "/settings?tab=general#github-connection";
-const AI_SETTINGS_ROUTE = "/settings?tab=ai";
+// Derived from the settings manifest, never hand-written: these CTAs must land
+// on the card that actually owns the setting, wherever the manifest has moved it.
+const GITHUB_CONNECTION_SETTINGS_ROUTE = settingsRouteFor("integrations.github");
+const AI_SETTINGS_ROUTE = settingsRouteFor("agents.providers");
 const MAX_VISIBLE_BANNERS = 2;
 const SEVERITY_RANK: Record<BannerSeverity, number> = { error: 0, warning: 1, info: 2 };
 
