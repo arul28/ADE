@@ -15,9 +15,9 @@ import {
   selectAssetUrl,
   stableAssetUrl,
   type VercelRes,
-} from "./releaseAssets";
-import downloadHandler from "./download";
-import installHandler from "./install";
+} from "./releaseAssets.js";
+import downloadHandler from "./download.js";
+import installHandler from "./install.js";
 
 const DOWNLOAD_PREFIX = "https://github.com/arul28/ADE/releases/download/v1.2.52";
 

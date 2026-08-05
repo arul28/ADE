@@ -29,7 +29,7 @@ import {
   type VercelQuery,
   type VercelReq,
   type VercelRes,
-} from "./releaseAssets";
+} from "./releaseAssets.js";
 
 function flatQuery(query: VercelQuery): Record<string, string | undefined> {
   return {
