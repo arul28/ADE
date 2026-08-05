@@ -16,71 +16,32 @@
  *   await ensureTools(["codex"], { onProgress }) // fetch what is missing
  *   await gcTools();                             // drop superseded versions
  *
+ * This barrel is deliberately narrow: it exports only what is consumed from
+ * *outside* this directory. It is not the resolver entry point — the three
+ * desktop executable resolvers deep-import `./cacheLookup` directly (as does
+ * `ade serve` for `./backgroundFetch`), and modules inside this directory
+ * import each other by deep path. Adding a re-export here is a decision to
+ * widen the module's public surface, not a convenience.
+ *
  * Consumers:
- *   - `cacheLookup.ts` is the single entry point the three desktop executable
- *     resolvers call before their bundled-node_modules probe.
+ *   - `cacheLookup.ts` (deep import) is the single entry point the three
+ *     desktop executable resolvers call before their bundled-node_modules probe.
  *   - `ade tools status|ensure|gc` (commands/tools.ts).
- *   - `ade serve` fires a background ensure at startup (cli.ts).
+ *   - `ade serve` fires a background ensure at startup via a deep import of
+ *     `backgroundFetch.ts` (cli.ts).
  *   - The desktop app kicks a coalesced ensure on packaged launch
  *     (services/tools/agentToolsCacheService.ts).
  *
  * See docs/features/onboarding-and-settings/agent-tools-cache.md.
  */
-export { ToolError, isToolError, type ToolErrorKind, type ToolErrorContext } from "./errors";
-export { cachedToolEntryPath, lookupCachedTool } from "./cacheLookup";
+export { ToolError, isToolError } from "./errors";
+export { TOOL_INSTALL_SENTINEL, resolveMachineToolsRoot } from "./paths";
+export { findToolTargetPin, loadToolsManifest } from "./manifest";
 export {
-  type BackgroundToolsFetchDeps,
-  startBackgroundAgentToolsFetch,
-} from "./backgroundFetch";
-export {
-  TOOL_TARGETS,
-  TOOL_INSTALL_SENTINEL,
-  type ToolTarget,
-  detectToolTarget,
-  isToolTarget,
-  normalizeToolArch,
-  resolveMachineToolsRoot,
-  toolPackageDir,
-  toolVersionDir,
-  toolSentinelPath,
-} from "./paths";
-export {
-  TOOLS_MANIFEST_SCHEMA_VERSION,
-  type ToolEntry,
-  type ToolPin,
-  type ToolTargetPin,
-  type ToolsManifest,
-  entryPathForPlatform,
-  findToolPin,
-  findToolTargetPin,
-  loadToolsManifest,
-  parseToolsManifest,
-} from "./manifest";
-export {
-  type ToolDownloader,
-  type ToolDownloadOptions,
-  type ToolDownloadResult,
-  downloadToolTarball,
-  fileIntegrity,
-} from "./download";
-export { type ToolExtractor, extractNpmTarball } from "./extract";
-export {
-  type FreeSpaceReader,
-  estimateToolRequiredBytes,
-  readFreeBytes,
-} from "./diskSpace";
-export { acquireToolLock, type ToolLockAcquisition, type ToolLockOptions } from "./lock";
-export {
-  type EnsureToolsOptions,
-  type GcToolsOptions,
-  type GcToolsResult,
   type ToolProgress,
-  type ToolProgressPhase,
   type ToolResolution,
-  type ToolsContext,
   ensureTools,
   gcTools,
   listPinnedTools,
-  resolveTool,
   tryResolveTool,
 } from "./install";

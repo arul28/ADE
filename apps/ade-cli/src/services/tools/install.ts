@@ -99,6 +99,15 @@ type ResolvedContext = {
 
 const STALE_STAGING_MS = 24 * 60 * 60_000;
 
+/**
+ * How many times `ensureOneTool` will re-enter itself after the lock reported
+ * `satisfied` but the install then read back as absent. One retry covers the
+ * ordinary race (the winner's sentinel landed and a GC or a rollback removed it
+ * a moment later); a sentinel that keeps flapping is a broken cache directory,
+ * and recursing on it forever would pin a core and never surface a diagnosis.
+ */
+const MAX_SATISFIED_ATTEMPTS = 3;
+
 function resolveContext(context: ToolsContext): ResolvedContext {
   const env = context.env ?? process.env;
   const platform = context.platform ?? process.platform;
@@ -240,6 +249,8 @@ async function ensureOneTool(
   name: string,
   resolved: ResolvedContext,
   options: EnsureToolsOptions,
+  /** Internal: bounds the `satisfied`-but-absent retry. Not part of `ensureTools`. */
+  attempt = 1,
 ): Promise<ToolResolution> {
   const pin = findToolPin(resolved.manifest, name);
   const pinned = resolvePinned(pin, resolved);
@@ -283,9 +294,24 @@ async function ensureOneTool(
       report("cached");
       return winner;
     }
-    // The sentinel disappeared between the poll and the read. Fall through and
-    // install it ourselves rather than reporting a phantom success.
-    return await ensureOneTool(name, resolved, options);
+    // The sentinel disappeared between the poll and the read. Retry — bounded,
+    // so a sentinel that keeps flapping fails loudly instead of recursing
+    // forever — and install it ourselves rather than report a phantom success.
+    if (attempt >= MAX_SATISFIED_ATTEMPTS) {
+      throw new ToolError(
+        `ADE agent tool ${name} (${pinned.packageName}@${pinned.version}) reported a completed install `
+        + `${MAX_SATISFIED_ATTEMPTS} times without one being there: its ${TOOL_INSTALL_SENTINEL} sentinel in `
+        + `${pinned.dir} keeps appearing and vanishing. Remove that directory and retry.`,
+        {
+          kind: "filesystem",
+          tool: name,
+          packageName: pinned.packageName,
+          version: pinned.version,
+          target: resolved.target,
+        },
+      );
+    }
+    return await ensureOneTool(name, resolved, options, attempt + 1);
   }
 
   try {

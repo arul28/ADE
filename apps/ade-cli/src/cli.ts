@@ -16935,9 +16935,32 @@ async function runServe(
   clearLastFailure({ kind: "machine" });
   serveStarted = true;
 
-  void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
-    startBackgroundAgentToolsFetch(headlessProjectLogger);
-  });
+  // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
+  // three of them. A source checkout still resolves all three out of the repo's
+  // own node_modules, so firing the fetch there downloads that much on every
+  // `ade serve` in a dev loop and on every CI job, for bytes nothing will read.
+  // Packaged installs have no node_modules to fall back on and do need it. The
+  // desktop app draws the same line (`app.isPackaged` in main.ts).
+  //
+  // ADE_FORCE_TOOLS_FETCH=1 opts a checkout back in (exercising the real fetch
+  // path locally); ADE_DISABLE_TOOLS_FETCH=1 still wins over it, and is handled
+  // inside startBackgroundAgentToolsFetch so the skip is logged there.
+  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
+  const skipToolsFetchForSourceCheckout =
+    !toolsFetchDisabled
+    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
+    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  if (skipToolsFetchForSourceCheckout) {
+    headlessProjectLogger.info("tools.fetch_skipped", {
+      reason:
+        "Running from a source checkout, where the pinned agent tools resolve from the repo's node_modules. "
+        + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
+    });
+  } else {
+    void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
+      startBackgroundAgentToolsFetch(headlessProjectLogger);
+    });
+  }
 
   const serviceCommand = resolveAdeServeCommand();
   const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);

@@ -72,6 +72,34 @@ function readLockRecord(lockPath: string): LockRecord | null {
   return null;
 }
 
+/**
+ * Windows does not report lock contention as EEXIST the way POSIX does.
+ *
+ * Deleting a file on Windows only unlinks the name once every open handle to it
+ * closes, so between one holder's unlink and the last handle drop the name
+ * still occupies the directory in a "delete pending" state. A concurrent
+ * `open(lockPath, "wx")` against that name fails with a delete-pending or
+ * sharing violation, which Node surfaces as EPERM, EACCES or EBUSY instead of
+ * EEXIST — the same "someone else holds it, try again" condition. Treating any
+ * of them as fatal turns a benign race between two ADE processes into a hard
+ * install failure. Mirrors `isLockContention` in
+ * services/credentials/credentialStore.ts.
+ *
+ * `socketSpawnLock.ts` deliberately narrows its own version of this to EBUSY,
+ * because there a genuine ACL denial retried as contention burned its whole
+ * 10s deadline and hid an actionable error. That trade-off comes out the other
+ * way here: this lock is held for *minutes* by a legitimate holder downloading
+ * hundreds of megabytes, so the delete-pending window is wide and constantly
+ * hit, and a genuine denial still terminates on its own — as a `lock-timeout`
+ * ToolError naming the holder, not an unbounded hang.
+ */
+export function isToolLockContention(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "EEXIST") return true;
+  if (process.platform !== "win32") return false;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
 function isLockStale(lockPath: string, staleMs: number, now: number): boolean {
   let mtimeMs: number;
   try {
@@ -120,17 +148,21 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
       await handle.writeFile(JSON.stringify(record), "utf8");
       await handle.close();
       handle = null;
-      return { kind: "acquired", release: startHeartbeat(lockPath, staleMs) };
+      return { kind: "acquired", release: startHeartbeat(lockPath, staleMs, record) };
     } catch (error) {
       if (handle) await handle.close().catch(() => undefined);
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if (!isToolLockContention(error)) {
         throw asToolError(error, { kind: "filesystem" });
       }
     }
 
     if (isSatisfied?.()) return { kind: "satisfied" };
 
-    if (isLockStale(lockPath, staleMs, now())) {
+    // The deadline is checked before the takeover so that a lock which reads as
+    // permanently stale but cannot be removed (an unremovable file, a denied
+    // directory) still terminates instead of spinning this branch's `continue`
+    // forever without ever reaching the timeout below.
+    if (now() - startedAt < timeoutMs && isLockStale(lockPath, staleMs, now())) {
       // Best-effort takeover. Losing this race is fine: the loop re-attempts
       // the O_EXCL create and only one process can win it.
       await fsp.rm(lockPath, { force: true }).catch(() => undefined);
@@ -151,7 +183,7 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
   }
 }
 
-function startHeartbeat(lockPath: string, staleMs: number): () => Promise<void> {
+function startHeartbeat(lockPath: string, staleMs: number, owned: LockRecord): () => Promise<void> {
   const timer = setInterval(() => {
     try {
       const stamp = new Date();
@@ -167,6 +199,19 @@ function startHeartbeat(lockPath: string, staleMs: number): () => Promise<void> 
     if (released) return;
     released = true;
     clearInterval(timer);
-    await fsp.rm(lockPath, { force: true }).catch(() => undefined);
+    // Only unlink a lock that is still *ours*. If our heartbeat stalled long
+    // enough for the acquisition loop above to declare this lock stale, another
+    // process has already rm'd it and created its own record under the same
+    // path — an unconditional rm here would silently release someone else's
+    // lock and let two installs race the same cache directory. An unreadable
+    // record counts as not-ours: leaving a lock behind costs one stale-takeover
+    // cycle, deleting the wrong one costs correctness.
+    try {
+      const current = readLockRecord(lockPath);
+      if (!current || current.pid !== owned.pid || current.host !== owned.host) return;
+      await fsp.rm(lockPath, { force: true });
+    } catch {
+      // Release is always best-effort; a leftover lock ages out via staleMs.
+    }
   };
 }
