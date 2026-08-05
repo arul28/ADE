@@ -156,16 +156,29 @@ const ON_DISK_TOOL_SOURCES = new Set(["tools-cache", "auth", "common-dir", "path
  *
  * Returns the executable path when it is worth executing, otherwise null.
  */
-async function assertFetchedToolResolution(label, source, executablePath) {
+async function assertFetchedToolResolution(label, source, executablePath, packagedRoot) {
   if (typeof source !== "string" || source.trim().length === 0) {
     fail(`Packaged smoke did not report a ${label} executable source`);
   }
   if (source === "bundled") {
-    fail(
-      `${label} resolved to a bundled copy (source="bundled") at ${String(executablePath)}; `
-      + "the packaged app must not carry the native platform packages. "
-      + RUNTIME_FETCHED_TOOL_EXPLANATION,
+    // Only a bundled copy INSIDE the package under validation is a leak. On a
+    // build/CI host the packaged app sits inside the repo checkout, so the
+    // resolvers' dev fallback can find the checkout's node_modules — an
+    // environmental artifact, not shipped bytes. The asar/unpacked content
+    // gates prove the artifact itself is clean either way.
+    const resolved = path.resolve(String(executablePath ?? ""));
+    if (resolved.startsWith(path.resolve(packagedRoot) + path.sep)) {
+      fail(
+        `${label} resolved to a bundled copy inside the packaged app at ${resolved}; `
+        + "the packaged app must not carry the native platform packages. "
+        + RUNTIME_FETCHED_TOOL_EXPLANATION,
+      );
+    }
+    console.log(
+      `[validate-win-artifacts] ${label} resolved to the build host's checkout copy at ${resolved} (outside the package); `
+      + "environmental on CI, absent on user machines.",
     );
+    return null;
   }
   if (!ON_DISK_TOOL_SOURCES.has(source)) {
     console.log(
@@ -661,7 +674,7 @@ async function validatePackagedRuntime(appDir) {
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     fail("Packaged smoke did not report a Claude executable path");
   }
-  await assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath);
+  await assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath, appDir);
   if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
     fail("Packaged smoke did not report a Claude startup result");
   }
@@ -679,14 +692,14 @@ async function validatePackagedRuntime(appDir) {
   if (payload?.codexExecutable !== "function") {
     fail(`Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
-  const codexPath = await assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath);
+  const codexPath = await assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath, appDir);
   if (codexPath) {
     await runCommand(codexPath, ["--version"], { timeoutMs: 20_000 });
   }
   if (payload?.openCodeExecutable !== "function") {
     fail(`Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
-  const openCodePath = await assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath);
+  const openCodePath = await assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath, appDir);
   if (openCodePath) {
     await runCommand(openCodePath, ["--version"], { timeoutMs: 20_000 });
   }
