@@ -28,6 +28,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/agent-skills/` | Bundled, version-locked ADE agent skills. Desktop remote bootstrap uploads this beside the remote runtime; CLI launch then re-seeds ADE-managed skills into runtime-native home skill directories. |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
+| `~/.ade/cache/desktop/` | Partially downloaded desktop installer, kept between `ade setup` runs so an interrupted 1 GB download resumes. Deleted once the install succeeds. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
 Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets live in `<project>/.ade/secrets/project-secrets.v1.enc` and are exposed through `ade secrets` / the `project_secret` action domain.

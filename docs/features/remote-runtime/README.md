@@ -426,8 +426,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `ade-<platform-arch>` SEA binary and the `.native.tar.gz` of native modules,
   resolves the runtime version from the CLI / desktop package metadata, and
   verifies same-platform static binaries report that version.
-- `apps/ade-cli/scripts/install-runtime.sh` — standalone installer that
-  downloads `ade-<platform-arch>` and the matching native deps from a release.
+- `apps/ade-cli/scripts/install-runtime.sh` and `install-runtime.ps1` —
+  standalone installers that download `ade-<platform-arch>` and the matching
+  native deps from a release. They own only what must happen before the `ade`
+  binary exists — download, verify, PATH, `ade brain start` — and hand the rest
+  of onboarding to `ade setup`, one implementation both platforms share so they
+  cannot drift.
 - `apps/desktop/scripts/materialize-runtime-resources.mjs` and
   `validate-runtime-resources.mjs` — populate and validate
   `apps/desktop/resources/runtime/` for packaging.
@@ -759,7 +763,8 @@ These are the promoted URLs; `apps/web/api/install.ts` serves them by proxying t
 - installs the binary to `$ADE_INSTALL_DIR` (default `$ADE_HOME/bin`),
 - extracts the native modules to `$ADE_HOME/runtime/<platform-arch>/`,
 - verifies with `ade --version`,
-- best-effort registers the per-user login service via `ade serve --install-service` on macOS and systemd Linux.
+- best-effort registers the per-user login service via `ade brain start` on macOS and systemd Linux — not `serve --install-service`, which inherits an unset `ADE_DEFAULT_ROLE`, registers the brain at role `agent`, and makes `ade connect` fail on every clean install.
+- hands off to `ade setup` for everything after that: pinned agent CLIs, account, desktop app, end-to-end verification, and a closing summary. The same command re-runs the flow at any time.
 
 Environment overrides:
 
@@ -773,7 +778,7 @@ After install, the headless machine can already serve clients. Desktop ADE on a 
 There are two ways to make that machine reachable, and they are independent:
 
 - **SSH remote target** — the desktop bootstraps and tunnels to it. No account involved. Covered by the rest of this document.
-- **Account-published machine** — run `ade connect` (or `ade connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts offer to run this for you at the end. See `apps/ade-cli/README.md` §"ADE account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
+- **Account-published machine** — run `ade connect` (or `ade connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts run this for you as `ade setup`'s account step. No project is required: a headless box with an empty `~/.ade/projects.json` publishes itself and dials the relay as soon as its brain holds the machine sync-host lease. See `apps/ade-cli/README.md` §"ADE account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
 
 Headless hosts update through the same binary, without requiring the desktop app:
 

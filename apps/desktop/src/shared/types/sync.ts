@@ -371,6 +371,126 @@ export function isBrainAccountSessionFailure(
   return state === "token_unreadable";
 }
 
+const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
+  "published",
+  "sync_disabled",
+  "no_active_sync_scope",
+  "snapshot_failed",
+  "machine_key_unavailable",
+  "missing_pairing_connect_info",
+  "not_host",
+  "account_signed_out",
+  "token_unreadable",
+  "invalid_directory_url",
+  "http_error",
+  "token_timeout",
+  "http_timeout",
+  "timeout",
+  "transport_error",
+];
+
+/**
+ * Narrows a publisher state that arrived over RPC as an untyped string.
+ *
+ * The widening belongs here, at the trust boundary, rather than in a caller's
+ * signature where it would silently disable exhaustiveness checking on the
+ * switch below.
+ */
+export function isSyncAccountDirectoryState(
+  value: string | null | undefined,
+): value is SyncAccountDirectoryState {
+  return typeof value === "string"
+    && (SYNC_ACCOUNT_DIRECTORY_STATES as readonly string[]).includes(value);
+}
+
+export type UnpublishedMachineAdvice = {
+  /** What is true right now, in the user's terms. Never a raw diagnostic. */
+  summary: string;
+  /** What clears it. Null when nothing the user does would help. */
+  nextAction: string | null;
+};
+
+/**
+ * User-facing advice for a machine that is signed in but not published.
+ *
+ * One table, consumed by both the desktop Connections pane and `ade setup`.
+ * They previously kept hand-mirrored copies that had already drifted: the pane
+ * covered every state while the CLI covered one and printed the publisher's raw
+ * `skipReason` for the rest — the exact thing both files' comments condemned.
+ *
+ * Never render `skipReason` from this state. Those strings are internal
+ * diagnostics ("No active sync scope is available."); a real user saw one and it
+ * told them a fault had occurred and nothing about how to clear it.
+ */
+export function describeUnpublishedAccountDirectory(
+  state: SyncAccountDirectoryState,
+): UnpublishedMachineAdvice {
+  switch (state) {
+    case "published":
+      return { summary: "published to your ADE account", nextAction: null };
+    case "no_active_sync_scope":
+      // NOT "open a project" any more. A brain with no project registered now
+      // publishes on its own, so the only way to reach this state is another ADE
+      // process on this computer holding the machine-wide sync-host lease — and
+      // that process is the one publishing this machine. Telling the user to
+      // open a project would hand them an action that cannot change anything.
+      return {
+        summary: "another ADE app on this computer owns sync for this machine",
+        nextAction: "ade doctor",
+      };
+    case "not_host":
+      return {
+        summary: "this computer publishes through your main ADE host",
+        nextAction: null,
+      };
+    case "sync_disabled":
+      return {
+        summary: "sync is off on this computer, so other devices can't reach it",
+        nextAction: null,
+      };
+    case "missing_pairing_connect_info":
+      return {
+        summary: "waiting for this computer's connection details",
+        nextAction: null,
+      };
+    case "machine_key_unavailable":
+      return {
+        summary: "this computer isn't registered yet",
+        nextAction: "restart ADE",
+      };
+    case "account_signed_out":
+      // The window has a session but the brain does not, so signing in again is
+      // what hands the brain one it can use.
+      return {
+        summary: "the ADE background service is signed out",
+        nextAction: "ade connect",
+      };
+    case "token_unreadable":
+      // A Repair control renders beside this in the pane
+      // (isBrainAccountSessionFailure), so the summary names the fault and lets
+      // the button carry the verb.
+      return {
+        summary: "the ADE background service can't read your account session",
+        nextAction: "ade brain restart",
+      };
+    case "http_error":
+    case "http_timeout":
+    case "token_timeout":
+    case "timeout":
+    case "transport_error":
+      return {
+        summary: "can't reach your ADE account right now, retrying",
+        nextAction: null,
+      };
+    case "snapshot_failed":
+    case "invalid_directory_url":
+      return {
+        summary: "this computer isn't published yet",
+        nextAction: "restart ADE",
+      };
+  }
+}
+
 export type SyncAccountDirectoryLegDurations = {
   snapshot: number | null;
   token: number | null;

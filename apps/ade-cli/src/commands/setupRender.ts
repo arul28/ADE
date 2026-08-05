@@ -253,9 +253,10 @@ export function renderSummary(
   caps: TerminalCapabilities,
 ): string {
   const failed = steps.filter((step) => step.state === "failed");
+  const dash = caps.unicode ? "—" : "-";
   const heading = failed.length === 0
     ? "ADE is ready"
-    : `ADE installed — ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
+    : `ADE installed ${dash} ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
 
   const lines: string[] = ["", `  ${heading}`, ""];
   for (const step of steps) {

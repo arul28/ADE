@@ -333,12 +333,6 @@
         }
       ],
       "icon": "build/icon.ico",
-      "signtoolOptions": {
-        "signingHashAlgorithms": [
-          "sha256"
-        ],
-        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
-      },
       "artifactName": "ADE-${version}-win-${arch}.${ext}",
       "extraResources": [
         {

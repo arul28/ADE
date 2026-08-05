@@ -138,6 +138,8 @@ import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
+import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
+import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
 import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
@@ -16306,6 +16308,7 @@ async function runServe(
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
     { createSyncCloudRelayStore },
     { setSyncRuntimeRpcHandlerFactory },
+    { buildProjectlessSyncSnapshot },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -16317,6 +16320,7 @@ async function runServe(
     import("./services/sync/rosterBuilder"),
     import("./services/sync/syncCloudRelayStore"),
     import("./services/sync/syncPairedChannelService"),
+    import("./services/sync/projectlessSyncSnapshot"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -16696,21 +16700,52 @@ async function runServe(
     secretsDir: layout.secretsDir,
   });
   // Same file the per-scope sync services read; another store instance is fine
-  // because every read reloads the file.
+  // because every read reloads the file. The path doubles as the machine-wide
+  // key for the shared relay tunnel client, so a projectless brain and a later
+  // project scope resolve to the SAME client instead of two racing dialers.
+  const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
+    filePath: machineCloudRelayFilePath,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // Relay tunnel for that same projectless case. `createAdeRuntime` builds one
+  // per project scope; with no scope there is nobody to build it, which left a
+  // projectless machine reachable only on the LAN.
+  let brainSyncTunnelClient: SyncTunnelClientService | null = null;
+  let brainRelayTunnelGate: RelayTunnelAuthorityGate | null = null;
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
       "sync_disabled",
       "Account-directory publishing has not started.",
     );
+  // What this machine looks like when no project scope owns sync. Hosting is
+  // the projectless lease AND a bound shared listener; the builder reports the
+  // honest all-down shape otherwise.
+  const projectlessSyncSnapshot = (): SyncRoleSnapshot => {
+    const accountStatus = brainAccountAuthService.getStatus();
+    const tunnelStatus = brainSyncTunnelClient?.getStatus() ?? null;
+    return buildProjectlessSyncSnapshot({
+      secretsDir: layout.secretsDir,
+      listener: sharedSyncListener,
+      holdsSyncHostLease: brainSyncHostLease != null,
+      relay: {
+        accountSignedIn: accountStatus.signedIn && Boolean(accountStatus.userId?.trim()),
+        // Same gate the scoped path applies: never advertise a relay URL the
+        // tunnel has deliberately stopped dialing, or a phone that saved it
+        // keeps retrying a route only this machine knows is dead.
+        wssUrl: tunnelStatus?.accountLeaseValid && !tunnelStatus.controlSuppressed
+          ? machineCloudRelayStore.getRelayWssUrl()
+          : null,
+        status: tunnelStatus,
+      },
+      accountDirectory: getAccountDirectoryHealth(),
+    });
+  };
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -16789,6 +16824,7 @@ async function runServe(
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
+      getProjectlessSyncSnapshot: projectlessSyncSnapshot,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -16805,6 +16841,44 @@ async function runServe(
       onShutdown: finish,
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
+  // A machine that hosts sync without a project must still be reachable off the
+  // LAN. `createAdeRuntime` builds the relay tunnel per project scope, so with
+  // no scope nothing ever dialled it and the target user for this path — a
+  // headless box or a fresh machine with no desktop app — was LAN-only. Built
+  // lazily, on the same event that takes the projectless lease.
+  const ensureProjectlessRelayTunnel = async (): Promise<void> => {
+    const listener = sharedSyncListener;
+    if (!listener || brainRelayTunnelGate) return;
+    try {
+      const { createMachineRelayTunnel } = await import("./services/sync/machineRelayTunnel");
+      const { tunnel, gate } = await createMachineRelayTunnel({
+        logger: headlessProjectLogger,
+        configStore: machineCloudRelayStore,
+        configPath: machineCloudRelayFilePath,
+        accountAuthService: brainAccountAuthService,
+        hostListener: listener,
+        onPublicationStateChanged: () => {
+          // Relay reachability is part of what this machine publishes, so a
+          // control/bridge transition has to re-publish rather than wait out
+          // the heartbeat.
+          accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+        },
+        captureAnalytics: (input) => {
+          brainProductAnalytics.captureInternal(input);
+        },
+      });
+      brainRelayTunnelGate = gate;
+      brainSyncTunnelClient = tunnel;
+    } catch (error) {
+      // Relay is an extra route, never a precondition for hosting sync. This
+      // runs inside the sync-host startup loop, which retries forever on
+      // failure, so letting a relay error escape would keep a perfectly good
+      // LAN host from ever finishing startup.
+      headlessProjectLogger.warn("sync.projectless_relay_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const startSyncHost = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
@@ -16831,11 +16905,18 @@ async function runServe(
         ),
       );
       brainSyncHostLease.updatePort(listenerPort);
+      await ensureProjectlessRelayTunnel();
     } else if (activeScope && brainSyncHostLease) {
       // A scope took over hosting and holds its own lease; drop the
       // projectless one so the lock file describes the real owner.
       brainSyncHostLease.dispose();
       brainSyncHostLease = null;
+      // The scope's own runtime builds a gate over the SAME shared tunnel
+      // client, so hand ownership over instead of leaving two gates reacting to
+      // the same lease transitions. Disposing a gate never stops the tunnel.
+      brainRelayTunnelGate?.dispose();
+      brainRelayTunnelGate = null;
+      brainSyncTunnelClient = null;
     }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
@@ -16848,6 +16929,9 @@ async function runServe(
     releaseAccountPublisherAuthoritySubscription = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
+    brainRelayTunnelGate?.dispose();
+    brainRelayTunnelGate = null;
+    brainSyncTunnelClient = null;
     brainSyncHostLease?.dispose();
     brainSyncHostLease = null;
     // Before scopes detach (which clears the run map): best-effort Live
@@ -16863,9 +16947,10 @@ async function runServe(
     }
     try {
       const { peekSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-      await peekSharedSyncTunnelClientService(
-        path.join(layout.secretsDir, "sync-cloud-relay.json"),
-      )?.dispose();
+      // Same constant the tunnel was created under. That path IS the cache key
+      // for the machine-wide client, so a second spelling here would silently
+      // look up nothing and leak the tunnel past shutdown.
+      await peekSharedSyncTunnelClientService(machineCloudRelayFilePath)?.dispose();
     } catch {
       // Best-effort tunnel teardown; the process exit closes sockets anyway.
     }
@@ -17071,9 +17156,18 @@ async function runServe(
         logger: headlessProjectLogger,
         getSnapshot: async () => {
           const activeScope = await scopeRegistry.resolveActiveSyncHost();
-          return await activeScope?.runtime.syncService?.getStatus({
+          const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
           }) ?? null;
+          if (scoped) return scoped;
+          // Hosting sync without a project is a supported state, not the
+          // absence of one. Falling through to null here is what kept a
+          // signed-in machine with an empty projects.json out of the account
+          // directory forever: the publisher reported `no_active_sync_scope`
+          // and returned before it ever made a request. Only report a snapshot
+          // while this brain actually holds the projectless lease — otherwise
+          // `no_active_sync_scope` remains the honest diagnosis.
+          return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,

@@ -5,6 +5,7 @@
  * `src/commands/` is already over its per-folder test-file budget and these are
  * one feature, not three.
  */
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,7 @@ import {
 } from "./setupRender";
 import {
   assetUrl,
+  defaultDesktopAppPath,
   downloadWithResume,
   parseDesktopManifest,
   sha512Base64,
@@ -176,6 +178,13 @@ describe("renderSummary", () => {
     expect(out).toContain("ade connect          link this machine to your account");
   });
 
+  it("keeps the heading ASCII on a terminal that renders an em dash as mojibake", () => {
+    const failed = step({ state: "failed", detail: "didn't finish", nextAction: "ade connect" });
+    expect(renderSummary([failed], totals, plain)).toContain("ADE installed - 1 step");
+    expect(renderSummary([failed], totals, { ...plain, unicode: true }))
+      .toContain("ADE installed — 1 step");
+  });
+
   it("reports elapsed time and bytes downloaded", () => {
     expect(renderSummary([step()], totals, plain)).toContain(
       "Installed in 2m 14s, 1.2 GB downloaded",
@@ -270,10 +279,32 @@ describe("release asset helpers", () => {
     );
   });
 
-  it("produces the base64 SHA-512 electron-updater manifests carry, not hex", () => {
-    expect(sha512Base64(tempFile(""))).toBe(
+  it("produces the base64 SHA-512 electron-updater manifests carry, not hex", async () => {
+    // Streamed rather than read into one buffer: the real input is ~1 GB.
+    expect(await sha512Base64(tempFile(""))).toBe(
       "z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==",
     );
+    const body = "DESKTOP-INSTALLER";
+    expect(await sha512Base64(tempFile(body))).toBe(
+      createHash("sha512").update(body).digest("base64"),
+    );
+  });
+});
+
+describe("defaultDesktopAppPath", () => {
+  it("follows the package channel instead of hardcoding the stable name", () => {
+    // Hardcoding `ADE` made the post-install launch a silent no-op on beta.
+    expect(
+      defaultDesktopAppPath("win32", {
+        LOCALAPPDATA: path.join("C:", "Users", "a", "AppData", "Local"),
+        ADE_PACKAGE_CHANNEL: "beta",
+      }),
+    ).toBe(
+      path.join("C:", "Users", "a", "AppData", "Local", "Programs", "ADE Beta", "ADE Beta.exe"),
+    );
+    expect(defaultDesktopAppPath("darwin", { ADE_PACKAGE_CHANNEL: "alpha" }))
+      .toBe("/Applications/ADE Alpha.app");
+    expect(defaultDesktopAppPath("darwin", {})).toBe("/Applications/ADE.app");
   });
 });
 
@@ -331,6 +362,69 @@ describe("downloadWithResume", () => {
     });
     expect(attempts).toBe(2);
     expect(fs.readFileSync(destination, "utf8")).toBe("OK");
+  });
+
+  it("retries a connection that goes silent instead of hanging on it forever", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-setup-test-"));
+    const destination = path.join(dir, "out.bin");
+    let attempts = 0;
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
+      attempts += 1;
+      // A server that accepts and then sends nothing. Without an idle deadline
+      // this promise never settles, the step line freezes, and the retry below
+      // never gets a turn.
+      if (attempts === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
+      return Promise.resolve(response("OK", 200, { "content-length": "2" }));
+    }) as unknown as typeof fetch;
+
+    await downloadWithResume("https://example.invalid/ADE.exe", destination, () => {}, {
+      fetchImpl,
+      idleTimeoutMs: 20,
+    });
+    expect(attempts).toBe(2);
+    expect(fs.readFileSync(destination, "utf8")).toBe("OK");
+  });
+
+  it("treats the caller's own abort as terminal, unlike the idle deadline", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-setup-test-"));
+    const destination = path.join(dir, "out.bin");
+    const controller = new AbortController();
+    controller.abort();
+    let attempts = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      attempts += 1;
+      if (init?.signal?.aborted) throw new Error("aborted by caller");
+      return response("OK", 200, { "content-length": "2" });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      downloadWithResume("https://example.invalid/ADE.exe", destination, () => {}, {
+        fetchImpl,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted by caller");
+    expect(attempts).toBe(1);
+  });
+
+  it("accepts the 416 a complete cache file gets, rather than burning its retries", async () => {
+    const destination = tempFile("COMPLETE");
+    const fetchImpl = vi.fn(async () =>
+      new Response(null, { status: 416 })
+    ) as unknown as typeof fetch;
+
+    const total = await downloadWithResume(
+      "https://example.invalid/ADE.exe",
+      destination,
+      () => {},
+      { fetchImpl },
+    );
+    expect(total).toBe(8);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fs.readFileSync(destination, "utf8")).toBe("COMPLETE");
   });
 
   it("reports progress with a total when content-length is known", async () => {
@@ -542,6 +636,180 @@ describe("runSetupCommand", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(launchDesktop).toHaveBeenCalledOnce();
   });
+
+  it("keeps the artifact for the next run and clears it only once the install works", async () => {
+    // The README promises the 1 GB download resumes from a partial file, which
+    // is only true across runs -- and the run that gets interrupted is exactly
+    // the one that never reaches its own cleanup.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-setup-home-"));
+    const body = "DESKTOP-INSTALLER";
+    const digest = createHash("sha512").update(body).digest("base64");
+    const manifest = `version: 1.2.54
+files:
+  - url: ADE-1.2.54-win-x64.exe
+    sha512: ${digest}
+path: ADE-1.2.54-win-x64.exe
+`;
+    const cached = path.join(adeHome, "cache", "desktop", "ADE-1.2.54-win-x64.exe");
+
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("latest.yml")) return new Response(manifest);
+      // GitHub answers a range request for a file that is already whole with a
+      // 416, which is what the second run sends.
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.Range) return new Response(null, { status: 416 });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(body.length) },
+      });
+    }) as unknown as typeof fetch;
+
+    const interrupted = await runSetupCommand(["--continue"], deps({
+      platform: "win32",
+      env: { ADE_HOME: adeHome },
+      reporter: reporter([]),
+      fetchImpl,
+      installDesktop: async () => {
+        throw new Error("the desktop installer exited with code 1");
+      },
+    }));
+    expect(interrupted.steps.find((s) => s.id === "desktop")?.state).toBe("failed");
+    expect(fs.existsSync(cached)).toBe(true);
+
+    const finished = await runSetupCommand(["--continue"], deps({
+      platform: "win32",
+      env: { ADE_HOME: adeHome },
+      reporter: reporter([]),
+      fetchImpl,
+      installDesktop: async () => ({ appPath: null, detail: "installed" }),
+    }));
+    expect(finished.steps.find((s) => s.id === "desktop")?.state).toBe("ok");
+    expect(fs.existsSync(cached)).toBe(false);
+  });
+
+  it("sweeps stale cache entries without touching the one it is resuming", async () => {
+    // Nothing else collects ~/.ade/cache/desktop -- `ade tools gc` covers the
+    // tools root and the storage dashboard reads <project>/.ade/cache -- so a
+    // partial from an abandoned run or a superseded release lives forever.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-setup-home-"));
+    const body = "DESKTOP-INSTALLER";
+    const digest = createHash("sha512").update(body).digest("base64");
+    const manifest = `version: 1.2.54
+files:
+  - url: ADE-1.2.54-win-x64.exe
+    sha512: ${digest}
+path: ADE-1.2.54-win-x64.exe
+`;
+    const cacheDir = path.join(adeHome, "cache", "desktop");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const stale = path.join(cacheDir, "ADE-1.2.53-win-x64.exe");
+    fs.writeFileSync(stale, "ABANDONED-PARTIAL");
+    // The half of the current artifact a Ctrl-C left behind: it must survive the
+    // sweep, or the resume this cache exists for can never happen.
+    fs.writeFileSync(path.join(cacheDir, "ADE-1.2.54-win-x64.exe"), body.slice(0, 8));
+
+    let ranged = false;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("latest.yml")) return new Response(manifest);
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (!headers?.Range) return new Response(body);
+      ranged = true;
+      return new Response(body.slice(8), {
+        status: 206,
+        headers: { "content-length": String(body.length - 8) },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await runSetupCommand(["--continue"], deps({
+      platform: "win32",
+      env: { ADE_HOME: adeHome },
+      reporter: reporter([]),
+      fetchImpl,
+      installDesktop: async () => ({ appPath: null, detail: "installed" }),
+    }));
+
+    expect(result.steps.find((s) => s.id === "desktop")?.state).toBe("ok");
+    expect(ranged).toBe(true);
+    expect(fs.existsSync(stale)).toBe(false);
+  });
+
+  it("does not sweep away its own download lock", async () => {
+    // Regression: the sweep deletes every cache entry except the artifact being
+    // resumed, and the concurrency lock lives in that same directory. Removing
+    // it mid-download would let a second `ade setup` acquire it and write to the
+    // same file.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-setup-home-"));
+    const body = "DESKTOP-INSTALLER";
+    const digest = createHash("sha512").update(body).digest("base64");
+    const cacheDir = path.join(adeHome, "cache", "desktop");
+    fs.mkdirSync(cacheDir, { recursive: true });
+
+    const fetchImpl = vi.fn(async (url: string) =>
+      String(url).endsWith("latest.yml")
+        ? new Response(
+          `version: 1.2.54\nfiles:\n  - url: ADE-1.2.54-win-x64.exe\n    sha512: ${digest}\n`,
+        )
+        : new Response(body)
+    ) as unknown as typeof fetch;
+
+    let lockDuringInstall: boolean | null = null;
+    const result = await runSetupCommand(["--continue"], deps({
+      platform: "win32",
+      env: { ADE_HOME: adeHome },
+      reporter: reporter([]),
+      fetchImpl,
+      installDesktop: async () => {
+        // Sampled while the lock is still held -- it is released in a `finally`
+        // after this returns.
+        lockDuringInstall = fs.existsSync(path.join(cacheDir, ".download.lock"));
+        return { appPath: null, detail: "installed" };
+      },
+    }));
+
+    expect(result.steps.find((s) => s.id === "desktop")?.state).toBe("ok");
+    expect(lockDuringInstall).toBe(true);
+  });
+
+  it("surfaces a failed check even when the user declined sign-in", async () => {
+    // The account step is `skipped`, so the old guard (`state === "ok"`) left a
+    // dead brain entirely out of the summary and still exited 0.
+    const result = await runSetupCommand(["--continue", "--no-desktop"], deps({
+      reporter: reporter([]),
+      ask: async () => 1,
+      getAccountStatus: async () => ({ signedIn: false, identity: null }),
+      verify: async () => ({
+        ok: false,
+        detail: "the ADE brain is not running",
+        nextAction: "ade brain start",
+      }),
+    }));
+
+    expect(result.ok).toBe(false);
+    const account = result.steps.find((s) => s.id === "account");
+    expect(account?.state).toBe("failed");
+    expect(account?.detail).toBe("the ADE brain is not running");
+  });
+
+  it("leaves a declined sign-in as a choice, not a failure", async () => {
+    // Verification can only report the decline back here, and the skipped step
+    // already prints the same recovery command.
+    const result = await runSetupCommand(["--continue", "--no-desktop"], deps({
+      reporter: reporter([]),
+      ask: async () => 1,
+      getAccountStatus: async () => ({ signedIn: false, identity: null }),
+      verify: async () => ({
+        ok: false,
+        detail: "sign-in didn't finish",
+        nextAction: "ade connect",
+      }),
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.verified).toBe(false);
+    const account = result.steps.find((s) => s.id === "account");
+    expect(account?.state).toBe("skipped");
+    expect(account?.detail).toBe("not linked");
+  });
 });
 
 // The bug that made this whole pass necessary: the installers registered the
@@ -567,24 +835,81 @@ describe("installer brain registration (regression)", () => {
   }
 });
 
+// `irm | iex` and `curl | sh` are what a Dockerfile, a CI provisioning step and
+// every config-management run invoke, and they trust the exit code. `ade setup`
+// documents its agent-CLI step as non-fatal, so a flaky fetch there must not
+// fail an install whose runtime and brain both landed.
+describe("installer exit codes (regression)", () => {
+  it("install-runtime.ps1 does not propagate ade setup's exit code", () => {
+    const source = fs.readFileSync(path.join(scriptsDir, "install-runtime.ps1"), "utf8");
+    expect(source).not.toMatch(/exit\s+\$setupExit/);
+    expect(source).toMatch(/^\s*exit 0\s*$/m);
+  });
+
+  it("install-runtime.sh does not propagate ade setup's exit code", () => {
+    const source = fs.readFileSync(path.join(scriptsDir, "install-runtime.sh"), "utf8");
+    expect(source).not.toMatch(/exit\s+"\$setup_status"/);
+    expect(source).toMatch(/^\s*exit 0\s*$/m);
+  });
+});
+
+describe("installer shell portability (regression)", () => {
+  it("install-runtime.sh probes for --show-progress rather than assuming GNU wget", () => {
+    // busybox wget (Alpine, most slim images) rejects the flag outright, and
+    // this is the required runtime download path, not a best-effort upsell.
+    const source = fs.readFileSync(path.join(scriptsDir, "install-runtime.sh"), "utf8");
+    expect(source).toMatch(/wget --help .*grep -q -- '--show-progress'/);
+  });
+
+  it("install-runtime.ps1 never assigns PowerShell's automatic $input", () => {
+    const source = fs.readFileSync(path.join(scriptsDir, "install-runtime.ps1"), "utf8");
+    expect(source).not.toMatch(/\$input\s*=[^=]/);
+  });
+});
+
 // The publisher's skipReason strings are internal diagnostics. The desktop
 // Connections pane concatenates them into user-facing copy verbatim, which is
 // how "No active sync scope is available." reached a real user's screen.
 describe("describeUnpublishedMachine", () => {
-  it("translates no_active_sync_scope into the action that clears it", async () => {
+  it("no longer tells the user to open a project -- that case now publishes", async () => {
     const { describeUnpublishedMachine } = await import("./setup");
     const described = describeUnpublishedMachine(
       "no_active_sync_scope",
       "No active sync scope is available.",
     );
+    // A projectless brain publishes on its own now, so the only way to reach
+    // this state is another ADE process owning the machine sync-host lease.
     expect(described.detail).not.toContain("sync scope");
-    expect(described.nextAction).toBe("open a project in ADE to finish linking this machine");
+    expect(described.detail).not.toContain("open a project");
+    expect(described.detail).toContain("another ADE app on this computer");
   });
 
-  it("keeps the reason visible for states it has no specific advice for", async () => {
+  it("never renders the publisher's skipReason, for any state", async () => {
     const { describeUnpublishedMachine } = await import("./setup");
+    // The whole point: skipReason is an internal diagnostic. Printing it tells
+    // the user a fault occurred and nothing about clearing it.
     expect(describeUnpublishedMachine("http_error", "directory returned 503").detail)
-      .toContain("directory returned 503");
-    expect(describeUnpublishedMachine("http_error", null).detail).toContain("http error");
+      .not.toContain("directory returned 503");
+    expect(describeUnpublishedMachine("http_error", null).detail)
+      .toContain("can't reach your ADE account");
+  });
+
+  it("hands an unrecognised state from a newer runtime to ade doctor", async () => {
+    const { describeUnpublishedMachine } = await import("./setup");
+    const described = describeUnpublishedMachine("some_future_state", "raw internal detail");
+    expect(described.detail).not.toContain("raw internal detail");
+    expect(described.detail).not.toContain("some_future_state");
+    expect(described.nextAction).toBe("ade doctor");
+  });
+
+  it("matches the desktop pane, because both read one shared table", async () => {
+    const { describeUnpublishedMachine } = await import("./setup");
+    const { describeUnpublishedAccountDirectory } = await import(
+      "../../../desktop/src/shared/types/sync"
+    );
+    for (const state of ["no_active_sync_scope", "account_signed_out", "not_host"] as const) {
+      expect(describeUnpublishedMachine(state).detail)
+        .toBe(describeUnpublishedAccountDirectory(state).summary);
+    }
   });
 });

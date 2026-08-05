@@ -5,6 +5,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { createSyncService, type SyncService } from "./syncService";
+import {
+  buildDegradedProjectlessSyncSnapshot,
+  buildProjectlessSyncSnapshot,
+  type ProjectlessSyncSnapshotArgs,
+} from "./projectlessSyncSnapshot";
+import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
+import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
+import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
+import { createSyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types";
 import { removeTestTree } from "../../test/filesystem";
 
 vi.mock("../../../../desktop/src/main/services/state/crsqliteExtension", async (importOriginal) => {
@@ -320,5 +329,284 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
+  });
+});
+
+describe("buildProjectlessSyncSnapshot", () => {
+  const cleanupRoots: string[] = [];
+
+  afterEach(async () => {
+    for (const root of cleanupRoots.splice(0)) {
+      await removeTestTree(root);
+    }
+  });
+
+  function makeSecretsDir(): string {
+    const root = makeTempRoot("ade-projectless-snapshot-");
+    cleanupRoots.push(root);
+    const secretsDir = path.join(root, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(secretsDir, "sync-device-id"), "device-machine\n");
+    fs.writeFileSync(path.join(secretsDir, "sync-site-id"), "site-machine\n");
+    return secretsDir;
+  }
+
+  function args(
+    secretsDir: string,
+    overrides: Partial<ProjectlessSyncSnapshotArgs> = {},
+  ): ProjectlessSyncSnapshotArgs {
+    return {
+      secretsDir,
+      listener: {
+        getPort: () => 8791,
+        getLoopbackValidationStatus: () => ({
+          port: 8791,
+          loopbackAdeValidated: true,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: "2026-07-16T00:00:00.000Z",
+        }),
+      },
+      holdsSyncHostLease: true,
+      relay: { accountSignedIn: false, wssUrl: null, status: null },
+      accountDirectory: createSyncAccountDirectoryHealth("published", null),
+      ...overrides,
+    };
+  }
+
+  it("reports the bound listener and real pairing connect info while hosting without a project", () => {
+    const secretsDir = makeSecretsDir();
+
+    const snapshot = buildProjectlessSyncSnapshot(args(secretsDir));
+
+    expect(snapshot.routeHealth.listener).toMatchObject({
+      listenerBound: true,
+      loopbackAdeValidated: true,
+      port: 8791,
+      reason: null,
+    });
+    expect(snapshot.runtimeRole).toBe("host");
+    expect(snapshot.pairingConnectInfo).not.toBeNull();
+    expect(snapshot.pairingConnectInfo?.port).toBe(8791);
+    expect(snapshot.pairingConnectInfo?.hostIdentity.deviceId).toBe("device-machine");
+    expect(snapshot.pairingConnectInfo?.hostIdentity.siteId).toBe("site-machine");
+    // A published machine needs no pairing code: account membership is the auth
+    // path and the PIN is only a fallback for nearby unsigned-in devices.
+    expect(snapshot.pairingPinConfigured).toBe(false);
+    expect(snapshot.localDevice.lastPort).toBe(8791);
+  });
+
+  it("stays pessimistic when the lease is not held or the listener is unbound", () => {
+    const secretsDir = makeSecretsDir();
+
+    const noLease = buildProjectlessSyncSnapshot(args(secretsDir, { holdsSyncHostLease: false }));
+    const noListener = buildProjectlessSyncSnapshot(args(secretsDir, { listener: null }));
+    const degraded = buildDegradedProjectlessSyncSnapshot({ secretsDir });
+
+    for (const snapshot of [noLease, noListener, degraded]) {
+      expect(snapshot.routeHealth.listener.listenerBound).toBe(false);
+      expect(snapshot.routeHealth.listener.port).toBeNull();
+      expect(snapshot.pairingConnectInfo).toBeNull();
+      expect(snapshot.routeHealth.relay.enabled).toBe(false);
+      expect(snapshot.routeHealth.listener.reason).toBe("No active sync project scope.");
+    }
+  });
+
+  it("enables relay purely from hosting plus a signed-in account, with no project", () => {
+    const secretsDir = makeSecretsDir();
+
+    const signedOut = buildProjectlessSyncSnapshot(args(secretsDir));
+    const signedIn = buildProjectlessSyncSnapshot(args(secretsDir, {
+      relay: {
+        accountSignedIn: true,
+        wssUrl: "wss://relay.example/connect/machine-key",
+        status: {
+          accountLeaseValid: true,
+          connected: true,
+          relayBridgeValidated: true,
+          activeTunnels: 0,
+          lastError: null,
+          bridgeOpenFailure: null,
+          lastControlError: null,
+          validatedPort: 8791,
+          lastFailureAt: null,
+          lastControlOpenAt: "2026-07-16T00:00:00.000Z",
+          lastBridgeValidationAt: "2026-07-16T00:00:00.000Z",
+          relayEndToEndVerifiedAt: "2026-07-16T00:00:01.000Z",
+          relayEndToEndFailure: null,
+          relayEndToEndRoundTripMs: 42,
+          controlSuppressed: false,
+          controlSuppressedReason: null,
+          controlFailingSinceMs: null,
+        } as ProjectlessSyncSnapshotArgs["relay"]["status"],
+      },
+    }));
+
+    expect(signedOut.routeHealth.relay.enabled).toBe(false);
+    expect(signedOut.routeHealth.relay.skipReason).toBe("Sign in to ADE to use ADE Relay.");
+    expect(signedIn.routeHealth.relay).toMatchObject({
+      enabled: true,
+      relayControlConnected: true,
+      relayBridgeValidated: true,
+      skipReason: null,
+    });
+    expect(signedIn.pairingConnectInfo?.addressCandidates).toContainEqual({
+      kind: "relay",
+      host: "wss://relay.example/connect/machine-key",
+    });
+  });
+});
+
+describe("syncRouteHealth", () => {
+  const validated: SyncLoopbackValidationStatus = {
+    port: 8791,
+    loopbackAdeValidated: true,
+    lastFailureAt: null,
+    reason: null,
+    lastSuccessAt: "2026-07-16T00:00:00.000Z",
+  };
+
+  function tunnelStatus(overrides: Partial<SyncTunnelClientStatus>): SyncTunnelClientStatus {
+    return {
+      connected: true,
+      activeTunnels: 0,
+      lastError: null,
+      lastControlError: null,
+      relayBridgeValidated: true,
+      validatedPort: 8791,
+      lastFailureAt: null,
+      lastControlOpenAt: "2026-07-16T00:00:00.000Z",
+      lastBridgeValidationAt: "2026-07-16T00:00:00.000Z",
+      relayEndToEndVerifiedAt: null,
+      relayEndToEndFailure: null,
+      relayEndToEndRoundTripMs: null,
+      relayUrl: "wss://relay.example",
+      machineKey: "machine-key",
+      ...overrides,
+    };
+  }
+
+  it("keeps each caller's wording for an unbound listener and hides the port", () => {
+    const scoped = deriveListenerHealth({
+      listenerPort: null,
+      rawValidation: { ...validated, port: null, loopbackAdeValidated: false },
+      bound: false,
+      notBoundReason: "The ADE sync listener is not bound.",
+    });
+    // A projectless brain can hold a bound port without the machine-wide
+    // sync-host lease. It is not the host, so it must not advertise the port.
+    const projectless = deriveListenerHealth({
+      listenerPort: 8791,
+      rawValidation: validated,
+      bound: false,
+      notBoundReason: "No active sync project scope.",
+    });
+
+    expect(scoped.listener.reason).toBe("The ADE sync listener is not bound.");
+    expect(projectless.listener.reason).toBe("No active sync project scope.");
+    expect(projectless.listener.port).toBeNull();
+    expect(projectless.loopbackAdeValidated).toBe(false);
+  });
+
+  it("discards a validation result that describes a different port", () => {
+    const health = deriveListenerHealth({
+      listenerPort: 8792,
+      rawValidation: validated,
+      bound: true,
+      notBoundReason: "The ADE sync listener is not bound.",
+    });
+
+    expect(health.loopbackAdeValidated).toBe(false);
+    expect(health.listener.reason).toBe("127.0.0.1:8792 did not answer as ADE.");
+  });
+
+  it("fills probe timestamps from accumulated history only where the current result has none", () => {
+    const health = deriveListenerHealth({
+      listenerPort: 8791,
+      rawValidation: validated,
+      bound: true,
+      notBoundReason: "The ADE sync listener is not bound.",
+      validationHistory: {
+        lastFailureAt: "2026-07-15T00:00:00.000Z",
+        lastSuccessAt: "2026-07-01T00:00:00.000Z",
+      },
+    });
+
+    expect(health.listener.lastFailureAt).toBe("2026-07-15T00:00:00.000Z");
+    expect(health.listener.lastSuccessAt).toBe("2026-07-16T00:00:00.000Z");
+  });
+
+  it("borrows the loopback failure time only while relay is enabled and skipped", () => {
+    const base = {
+      relayConfigured: true,
+      loopbackAdeValidated: false,
+      listenerReason: "127.0.0.1:8791 did not answer as ADE.",
+      listenerPort: 8791,
+      tunnelStatus: null,
+      lastFailureAtFallback: "2026-07-15T00:00:00.000Z",
+    };
+
+    const skipped = buildRelayRouteHealth({ ...base, relayAccountSignedIn: true });
+    const signedOut = buildRelayRouteHealth({ ...base, relayAccountSignedIn: false });
+    const noFallback = buildRelayRouteHealth({
+      ...base,
+      relayAccountSignedIn: true,
+      lastFailureAtFallback: null,
+    });
+
+    expect(skipped.skipReason)
+      .toBe("Relay route is unusable because 127.0.0.1:8791 did not answer as ADE.");
+    expect(skipped.lastFailureAt).toBe("2026-07-15T00:00:00.000Z");
+    // Relay is not enabled at all, so there is no relay failure to date-stamp.
+    expect(signedOut.skipReason).toBe("Sign in to ADE to use ADE Relay.");
+    expect(signedOut.lastFailureAt).toBeNull();
+    // A caller with no probe history reports no time rather than borrowing one.
+    expect(noFallback.lastFailureAt).toBeNull();
+  });
+
+  it("ranks the 4505 eviction reason above the raw close text", () => {
+    const health = buildRelayRouteHealth({
+      relayConfigured: true,
+      relayAccountSignedIn: true,
+      loopbackAdeValidated: true,
+      listenerReason: null,
+      listenerPort: 8791,
+      tunnelStatus: tunnelStatus({
+        connected: false,
+        controlSuppressed: true,
+        controlSuppressedReason: "Another ADE process on this machine owns ADE Relay.",
+        lastControlError: "Relay control closed with code 4505.",
+        lastError: "socket hang up",
+      }),
+      lastFailureAtFallback: null,
+    });
+
+    expect(health.skipReason).toBe("Another ADE process on this machine owns ADE Relay.");
+    expect(health.relayControlSuppressed).toBe(true);
+    expect(health.enabled).toBe(true);
+  });
+
+  it("reports a bridge-open failure once control and bridge are both up", () => {
+    const healthy = buildRelayRouteHealth({
+      relayConfigured: true,
+      relayAccountSignedIn: true,
+      loopbackAdeValidated: true,
+      listenerReason: null,
+      listenerPort: 8791,
+      tunnelStatus: tunnelStatus({}),
+      lastFailureAtFallback: null,
+    });
+    const bridgeBlocked = buildRelayRouteHealth({
+      relayConfigured: true,
+      relayAccountSignedIn: true,
+      loopbackAdeValidated: true,
+      listenerReason: null,
+      listenerPort: 8791,
+      tunnelStatus: tunnelStatus({ bridgeOpenFailure: "Local bridge socket refused." }),
+      lastFailureAtFallback: null,
+    });
+
+    expect(healthy.skipReason).toBeNull();
+    expect(bridgeBlocked.skipReason).toBe("Local bridge socket refused.");
   });
 });

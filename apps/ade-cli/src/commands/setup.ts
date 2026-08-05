@@ -36,8 +36,12 @@ import {
   DEFAULT_ADE_RELEASE_REPO,
   type DesktopManifestEntry,
 } from "./setupDesktop";
+import { resolveMachineAdeDir } from "../services/projects/machineLayout";
+import {
+  describeUnpublishedAccountDirectory,
+  isSyncAccountDirectoryState,
+} from "../../../desktop/src/shared/types/sync";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 export class SetupUsageError extends Error {}
@@ -45,29 +49,25 @@ export class SetupUsageError extends Error {}
 /**
  * Turn an account-directory publisher state into copy a person can act on.
  *
- * The publisher's `skipReason` strings are internal diagnostics ("No active
- * sync scope is available."). Surfacing them verbatim -- which is what the
- * desktop Connections pane does today -- tells a user that a fault occurred
- * and nothing whatsoever about how to clear it.
+ * The per-state copy is shared with the desktop Connections pane
+ * (`describeUnpublishedAccountDirectory`), because the two previously kept
+ * hand-mirrored tables that had already drifted apart: the pane covered every
+ * state while this function covered one and printed the publisher's raw
+ * `skipReason` for the rest -- the exact behaviour its own comment condemned.
+ *
+ * `skipReason` is now never rendered. An unrecognised state means a newer
+ * runtime than this CLI, so it gets the honest generic line and `ade doctor`,
+ * which is the command that can actually show the detail.
  */
 export function describeUnpublishedMachine(
   state: string,
-  skipReason: string | null,
+  _skipReason?: string | null,
 ): { detail: string; nextAction: string } {
-  if (state === "no_active_sync_scope") {
-    return {
-      detail: "signed in, but this machine isn't in your account yet",
-      // The publisher's only snapshot source is the active project's sync host,
-      // so with no project registered there is nothing for it to publish.
-      nextAction: "open a project in ADE to finish linking this machine",
-    };
+  if (!isSyncAccountDirectoryState(state)) {
+    return { detail: "not published to your account", nextAction: "ade doctor" };
   }
-  return {
-    detail: skipReason?.trim()
-      ? `not published to your account (${skipReason.trim()})`
-      : `not published to your account (${state.replaceAll("_", " ")})`,
-    nextAction: "ade connect",
-  };
+  const { summary, nextAction } = describeUnpublishedAccountDirectory(state);
+  return { detail: summary, nextAction: nextAction ?? "ade doctor" };
 }
 
 export type SetupOptions = {
@@ -335,14 +335,23 @@ export async function runSetupCommand(
   // --- verification ----------------------------------------------------------
   // "The files copied" is not the same claim as "it works". This is the check
   // that would have caught the install reporting success after sign-in failed.
+  //
+  // It has to reach the summary whatever the account step decided, or an install
+  // onto a machine whose brain is dead still heads its summary "ADE is ready".
+  // The one exception is the user declining sign-in: the check then only reports
+  // the decline back, and the skipped step already says so with the same
+  // recovery command, so failing it would punish a legitimate choice.
   let verified = false;
   try {
     const result = await deps.verify();
     verified = result.ok;
-    if (!result.ok && accountStep.state === "ok") {
+    const nextAction = result.nextAction ?? "ade connect";
+    const alreadyOffered = accountStep.state === "skipped" &&
+      accountStep.nextAction === nextAction;
+    if (!result.ok && accountStep.state !== "failed" && !alreadyOffered) {
       accountStep.state = "failed";
       accountStep.detail = result.detail;
-      accountStep.nextAction = result.nextAction ?? "ade connect";
+      accountStep.nextAction = nextAction;
     }
   } catch {
     verified = false;
@@ -433,6 +442,9 @@ async function runAccountStep(args: {
   step.nextAction = "ade connect";
 }
 
+/** The manifest is a few kilobytes; anything slower than this is a dead feed. */
+const MANIFEST_TIMEOUT_MS = 30_000;
+
 /** Returns the bytes downloaded, so the summary total stays honest. */
 async function runDesktopStep(args: {
   step: SetupStep;
@@ -454,9 +466,18 @@ async function runDesktopStep(args: {
   }
 
   const manifestName = manifestNameForPlatform(platform);
-  const manifestResponse = await fetchImpl(
-    assetUrl(manifestName, options.repo, options.releaseVersion),
-  );
+  let manifestResponse: Response;
+  try {
+    manifestResponse = await fetchImpl(
+      assetUrl(manifestName, options.repo, options.releaseVersion),
+      // A release feed that accepts the connection and then stalls would
+      // otherwise freeze the installer on this step line with no way through to
+      // the summary. Failing the desktop step is recoverable; a hang is not.
+      { signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS) },
+    );
+  } catch (error) {
+    throw new Error(`could not read ${manifestName} (${describeError(error)})`);
+  }
   if (!manifestResponse.ok) {
     throw new Error(`could not read ${manifestName}`);
   }
@@ -519,12 +540,38 @@ async function downloadAndInstallDesktop(args: {
   deps: SetupDeps;
 }): Promise<number> {
   const { step, entry, options, platform, env, reporter, deps } = args;
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-dl-"));
-  const artifact = path.join(stageDir, path.basename(entry.name));
+  // A stable path, not a per-run temp dir: resuming a 1 GB artifact is only
+  // worth anything across runs, and the interrupted run is precisely the one
+  // that does not get to clean up after itself. The manifest's asset name
+  // carries the release version, so a new release never resumes onto an old
+  // partial file.
+  const cacheDir = path.join(resolveMachineAdeDir(env), "cache", "desktop");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const artifact = path.join(cacheDir, path.basename(entry.name));
 
-  step.state = "active";
-  reporter.beginStep(step);
+  // A stable path is shared state, so two `ade setup` runs would otherwise open
+  // the same file and interleave writes -- both then fail the checksum and both
+  // delete it, where two isolated temp dirs had both succeeded. Re-running the
+  // installer while the first is still going is exactly the case resume exists
+  // for, so it has to be the case that works. Same lock primitive the agent-CLI
+  // cache uses, including its Windows EPERM/EACCES/EBUSY contention handling.
+  const { acquireToolLock } = await import("../services/tools/lock");
+  const lock = await acquireToolLock({
+    lockPath: path.join(cacheDir, ".download.lock"),
+    onWait: () => {
+      reporter.updateStep(step, {
+        fraction: null,
+        item: "waiting for another ADE install",
+      });
+    },
+  });
+  const release = lock.kind === "acquired" ? lock.release : null;
+
   try {
+    removeOtherCachedDesktopArtifacts(cacheDir, path.basename(artifact));
+
+    step.state = "active";
+    reporter.beginStep(step);
     const bytes = await downloadWithResume(
       assetUrl(entry.name, options.repo, options.releaseVersion),
       artifact,
@@ -541,7 +588,11 @@ async function downloadAndInstallDesktop(args: {
       { fetchImpl: deps.fetchImpl },
     );
 
-    if (sha512Base64(artifact) !== entry.sha512) {
+    if (await sha512Base64(artifact) !== entry.sha512) {
+      // The one failure a kept file must not survive. A truncated-then-completed
+      // or otherwise wrong artifact would be resumed as "already whole" on every
+      // later run, so the install could never recover on its own.
+      removeCachedDesktopArtifact(artifact);
       throw new Error(`checksum mismatch for ${path.basename(entry.name)}`);
     }
 
@@ -550,6 +601,10 @@ async function downloadAndInstallDesktop(args: {
       platform,
       env,
     );
+    // Only now. Every earlier exit -- a dropped connection, a Ctrl-C, a failed
+    // installer -- deliberately leaves the file so the next run resumes it.
+    removeCachedDesktopArtifact(artifact);
+
     const appPath = installed.appPath ?? defaultDesktopAppPath(platform, env);
     step.state = "ok";
     step.location = appPath ?? undefined;
@@ -563,17 +618,51 @@ async function downloadAndInstallDesktop(args: {
     }
     return bytes;
   } finally {
-    // Windows only unlinks a name once every handle closes, and the NSIS
-    // installer can still hold the .exe briefly after spawnSync returns --
-    // `force` swallows ENOENT but not EBUSY/EPERM. Retry, then give up quietly:
-    // a leftover temp file must never turn a successful install into a failure.
-    try {
-      fs.rmSync(stageDir, {
-        recursive: true,
-        force: true,
-        maxRetries: 10,
-        retryDelay: 100,
-      });
-    } catch {}
+    await release?.();
   }
+}
+
+function removeCachedDesktopArtifact(artifact: string): void {
+  // Windows only unlinks a name once every handle closes, and the NSIS
+  // installer can still hold the .exe briefly after spawnSync returns --
+  // `force` swallows ENOENT but not EBUSY/EPERM. Retry, then give up quietly:
+  // a leftover cache file must never turn a successful install into a failure.
+  // `recursive` is what arms that retry at all: Node ignores maxRetries and
+  // retryDelay without it, so this used to give up on the very first EBUSY and
+  // strand a gigabyte forever.
+  try {
+    fs.rmSync(artifact, {
+      force: true,
+      recursive: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  } catch {}
+}
+
+/**
+ * Sweep every cache entry except the one this run is about to resume.
+ *
+ * Nothing else collects `<adeHome>/cache/desktop`: `ade tools gc` covers the
+ * tools root and the storage dashboard enumerates `<project>/.ade/cache`, so a
+ * partial download abandoned by a Ctrl-C -- or left behind by a release that has
+ * since been superseded -- is invisible and permanent. Doing it here, on the one
+ * path that writes the directory, keeps both cases in a single place.
+ */
+function removeOtherCachedDesktopArtifacts(cacheDir: string, keep: string): void {
+  // `===` is the wrong comparison for a filename on Windows and macOS: the
+  // filesystem is case-insensitive but the string is not, so a manifest whose
+  // asset casing changed between runs would leave the on-disk spelling
+  // unmatched and this sweep would delete the very partial it meant to resume.
+  // Linux stays case-sensitive, so this must not fold unconditionally.
+  const foldsCase = process.platform === "win32" || process.platform === "darwin";
+  const sameName = (name: string): boolean =>
+    foldsCase ? name.toLowerCase() === keep.toLowerCase() : name === keep;
+  try {
+    for (const name of fs.readdirSync(cacheDir)) {
+      // The lock file is this directory's own bookkeeping, not a stale artifact.
+      if (name === ".download.lock" || sameName(name)) continue;
+      removeCachedDesktopArtifact(path.join(cacheDir, name));
+    }
+  } catch {}
 }

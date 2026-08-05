@@ -39,6 +39,17 @@ export type InstallTarget = {
     blurb?: string;
     options: InstallDownload[];
   };
+  /**
+   * OS prompts ADE cannot suppress, and what to click. Windows only today: the
+   * app installs per user with no elevation, so it can neither buy its way past
+   * SmartScreen's first-run warning nor pre-create a firewall rule (Windows has
+   * no per-user firewall rule store). Telling people up front is the fix that
+   * does not cost them a UAC prompt on every install.
+   */
+  prompts?: {
+    heading: string;
+    items: string[];
+  };
   footnote: {
     text?: string;
     /** Copyable command rendered inside the footnote, when there is one. */
@@ -103,6 +114,13 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
           detail: "x64",
           analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS_X64,
         },
+      ],
+    },
+    prompts: {
+      heading: "Two Windows prompts to expect",
+      items: [
+        "SmartScreen may say “Windows protected your PC”. Choose More info, then Run anyway.",
+        "Windows Firewall asks to allow ADE the first time you sync over your network. Allow it on private networks. A per-user install cannot pre-approve that rule.",
       ],
     },
     footnote: {

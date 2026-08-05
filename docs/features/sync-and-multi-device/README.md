@@ -114,6 +114,56 @@ stop and restart the machine's relay tunnel and tear down and rebuild the
 directory publisher (`ade doctor` would report "Account-directory publishing
 has not started" in the gap).
 
+### Hosting sync, and publishing, with no project
+
+A project is not a precondition for anything machine-level. A brain that holds
+the lease and has the shared listener bound hosts phone sync, publishes itself
+to the account directory, and dials the relay with nothing in
+`~/.ade/projects.json`. That is the normal state of a headless box and of any
+machine between the installer finishing and the user opening their first
+repository.
+
+`projectlessSyncSnapshot.ts` builds the `SyncRoleSnapshot` for that state.
+Hosting is the lease **and** a bound port: a runtime that bound a listener
+without winning the lease is not the machine's sync host and reports the honest
+all-down shape (`buildDegradedProjectlessSyncSnapshot`) instead of claiming a
+host that does not exist. When it is hosting, the snapshot carries the real
+listener port, the machine identity read from `~/.ade/secrets/sync-device-id` /
+`sync-site-id`, real `pairingConnectInfo`, and real relay route health.
+
+Those last two fields are why this matters beyond diagnostics. The
+account-directory publisher gates on `listenerBound` and `pairingConnectInfo`,
+so a projectless brain fed a hardcoded all-down placeholder could never publish
+itself — a signed-in machine with an empty project registry simply never
+appeared in the user's account, and `ade doctor` reported it unreachable while
+it was serving phones fine. `runServe`'s publisher `getSnapshot` now falls back
+to the projectless builder whenever this brain holds the lease, and returns null
+only when it genuinely does not.
+
+Two consequences follow for copy anywhere in the product:
+
+- **"Open a project" is never the fix for an unpublished machine.** It was
+  before; it is not now. The `no_active_sync_scope` publisher state is now only
+  reachable when *another* ADE process on this computer holds the machine-wide
+  lease — and that process is the one publishing the machine. Telling the user
+  to open a project would hand them an action that cannot change anything. The
+  per-state advice lives in one table,
+  `describeUnpublishedAccountDirectory` in `apps/desktop/src/shared/types/sync.ts`.
+- **A projectless brain still has no project-scoped state to report.** Runtime
+  name, pairing PIN, and Tailscale Serve publication belong to a project scope,
+  so the snapshot reports them absent rather than inventing them. Publication to
+  the account directory deliberately does not require a pairing PIN: account
+  membership is the auth path, and the PIN is the fallback for nearby devices
+  that are not signed in.
+
+The relay half is symmetric. `createAdeRuntime` builds the relay tunnel per
+project scope, so with no scope nothing dialed it and such a machine was
+LAN-only. `machineRelayTunnel.ts` is now the one construction both paths use;
+`runServe` builds it lazily on the same event that takes the projectless lease.
+Relay is an extra route, never a precondition for hosting sync, so a failure to
+build it is logged (`sync.projectless_relay_start_failed`) and startup
+continues.
+
 ## Who participates
 
 - **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
@@ -366,7 +416,12 @@ Runtime support files outside `services/sync/`:
   `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (a project switch never qualifies);
   the publisher cannot be restarted after dispose, so a later lease acquisition
   builds a fresh one. A second brain publishing its own endpoints would point
-  phones at a runtime that does not host sync. The published
+  phones at a runtime that does not host sync. Its snapshot source is the active
+  project scope's `syncService.getStatus()` when there is one and
+  `buildProjectlessSyncSnapshot` when there is not, so a machine with an empty
+  project registry publishes on the same terms as any other — see *Hosting sync,
+  and publishing, with no project*. It reports `no_active_sync_scope` only when
+  this brain does not hold the lease at all. The published
   machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
   build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
   stable build (or an already-suffixed name) is left untouched, so the same
@@ -515,7 +570,13 @@ Runtime support files outside `services/sync/`:
   probe, or returns a skipped verdict when no host is active),
   `runtimeEvents.*`, project-scoped
   `ade/actions/call`, and project-independent `personalChats.call` /
-  `personalChats.streamEvents`. Runtime-event subscribe replies include the gap
+  `personalChats.streamEvents`. `sync.getStatus` with no active scope answers
+  from the injected `getProjectlessSyncSnapshot` — the brain passes the real
+  builder, and a process that has none falls back to
+  `buildDegradedProjectlessSyncSnapshot` — rather than the fixed all-down
+  literal it used to return, which misreported a hosting brain as unreachable
+  to `ade doctor` and to the account-directory publisher.
+  Runtime-event subscribe replies include the gap
   fields above; `projects.list` resolves at most 24 host-side icons within
   750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps, so large
   project registries cannot stall remote desktop or mobile catalog setup just
@@ -545,6 +606,24 @@ Runtime support files outside `services/sync/`:
 
 Desktop connection UI:
 
+- `apps/desktop/src/shared/types/sync.ts` — the account-directory state union
+  plus the two things every consumer of it needs:
+  `isSyncAccountDirectoryState`, which narrows a state that arrived over RPC as
+  an untyped string (widening at the trust boundary rather than in a caller's
+  signature, where it would silently disable the exhaustiveness check), and
+  `describeUnpublishedAccountDirectory`, the per-state
+  `{ summary, nextAction }` advice for a machine that is signed in but not
+  published. That table is the **only** place this copy lives; the Connections
+  pane and `ade setup` both read it. They previously kept hand-mirrored copies
+  that had already drifted — the pane covered every state, the CLI covered one
+  and printed the publisher's raw `skipReason` for the rest. Never render
+  `skipReason` to a user: those strings are internal diagnostics ("No active
+  sync scope is available.") that name a fault and say nothing about clearing
+  it. `nextAction` is a CLI command, so a surface that has a button for the
+  same fix (the pane's **Repair** control for `token_unreadable`) drops it and
+  renders the summary alone.
+- `apps/desktop/src/renderer/components/settings/accountDirectorySummary.ts` —
+  turns that advice into the one Connections line: `Signed in — <summary>`.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
   the `relay-offline` banner alongside the GitHub/AI-provider family.
   `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (the physical
@@ -573,12 +652,15 @@ Desktop connection UI:
   generate and set a new six-digit PIN instead of leaving copy disabled.
   Initial-load failures show a short recovery action while keeping the raw
   message under **Technical details**: missing project registration asks the
-  user to open a project, a non-installed local release build asks for an
-  Applications install/relaunch, and other sync-service failures ask for an ADE
-  restart. When the account-directory state is the one failure a restart
+  user to open a project, a build running from its output directory asks the
+  user to install this build and reopen it from the installed copy — that copy
+  names no folder, because the macOS Applications folder it used to name does
+  not exist on Windows — and other sync-service failures ask for an ADE
+  restart. When
+  the account-directory state is the one failure a restart
   actually clears — `isBrainAccountSessionFailure(...)` in
-  `shared/types/sync.ts`, currently exactly `token_unreadable` — the This Mac
-  card renders a **Repair** control next to the directory summary. The local-brain-only
+  `shared/types/sync.ts`, currently exactly `token_unreadable` — the This
+  computer card renders a **Repair** control next to the directory summary. The local-brain-only
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   computer's identity, pairing code, and Phone/Web device lists.
@@ -734,7 +816,44 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   hand a phone a catalog and react to `project_switch_request`. Accepts
   `forceHostRole` only as a legacy override; normal callers leave it
   false so a second runtime becomes a viewer instead of stealing the
-  sync authority role.
+  sync authority role. Its route-health derivation lives in
+  `syncRouteHealth.ts`, shared with the projectless path.
+- `syncRouteHealth.ts` — `deriveListenerHealth` and `buildRelayRouteHealth`,
+  the one derivation of how a machine describes its own inbound routes. Both
+  `syncService.getStatus` (project scope) and `buildProjectlessSyncSnapshot`
+  (no scope) call it with the same raw inputs. The strings are what the user
+  reads in Connections and `ade doctor`, and the account-machine publisher gates
+  on the booleans, so the two paths disagreeing is not cosmetic drift — it is
+  one of them lying about whether the machine is reachable. The genuine
+  differences are parameters, not branches: what "not bound" means (a listener
+  that failed to start vs a machine with no scope), and which timestamp stands
+  in when the tunnel reports no failure time. A loopback validation result
+  counts only while it still names the currently bound port, so a rebound
+  listener is never reported healthy from a stale probe.
+- `projectlessSyncSnapshot.ts` — the `SyncRoleSnapshot` for a brain with no
+  project scope. See *Hosting sync, and publishing, with no project*.
+  `buildProjectlessSyncSnapshot` reports the real listener, machine identity,
+  pairing connect info, and relay when this process holds the lease and has the
+  shared listener bound; `buildDegradedProjectlessSyncSnapshot` is the honest
+  all-down shape for callers with neither. It replaced a hardcoded placeholder
+  that claimed `listenerBound: false` and `pairingConnectInfo: null` for a
+  genuinely bound listener — the two fields the account-directory publisher
+  gates on.
+- `machineRelayTunnel.ts` — `createMachineRelayTunnel`, the machine's one relay
+  tunnel client plus its authority gate. Both brains that can host phone sync
+  build it: `createAdeRuntime` for a project scope, and `runServe`'s projectless
+  path for a machine with nothing registered. They must produce the same thing,
+  because the relay Durable Object keeps one host control socket per
+  `machineKey` and evicts the previous holder with `4505` — two clients on one
+  machine evict each other in a loop and relay stays down for both. The client
+  is cached one-per-machine keyed by the relay config path, so a project scope
+  booting after the projectless brain adopts that brain's client instead of
+  registering the same `machineKey` twice. The host listener is attached
+  *outside* the factory and before the gate: whichever runtime actually owns the
+  listener wins regardless of who created the instance, and the gate's first
+  `start()` already has a bridge to validate. Only the reaction to a
+  publication-state change differs between the two callers, so that stays a
+  parameter.
 - `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes (an `auth_failed`
   rejection is attributed with the rejecting machine's
@@ -1095,6 +1214,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ComputerName` (`scutil`) and the Tailscale DNS name refresh asynchronously;
   Tailscale status is single-flight and retained for 30 seconds so periodic
   machine publication cannot block the brain event loop on an external CLI.
+  The identity defaults are exported as `localSyncDeviceDefaults()` so
+  `projectlessSyncSnapshot` can name the machine without a project database.
+  The Tailscale probe spawns with `windowsHide`, so a packaged Windows brain
+  never flashes a console window on its 30-second cadence.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
   against `syncPinStore`, mints the durable per-device secret, and
   persists it into the `paired_devices` row (SQLite). Each
@@ -2378,6 +2501,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
 | Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
+| Account publication + relay for a machine with no registered project | Implemented (`projectlessSyncSnapshot`, `machineRelayTunnel`, `runServe` publisher snapshot fallback) |
 | Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
 | Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
@@ -2415,6 +2539,12 @@ feature is merged or because a deliberately isolated-port host is running.
   authority subscription), and must tolerate the momentary `false` that a
   project switch produces by riding it out for
   `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` rather than reacting on the edge.
+- **A project is not a precondition for anything machine-level.** Hosting phone
+  sync, publishing to the account directory, and dialing the relay all gate on
+  the sync-host lease plus a bound shared listener — never on an open or
+  registered project. Copy that tells a user to open a project in order to link
+  or publish a machine is wrong, and per-state advice belongs in
+  `describeUnpublishedAccountDirectory` rather than in each surface.
 - **`ADE_ENABLE_DESKTOP_SYNC_HOST` is a diagnostics escape hatch.** If
   you turn it on, both an in-process host and the standing runtime can be
   alive simultaneously on the same machine — that's intentional for

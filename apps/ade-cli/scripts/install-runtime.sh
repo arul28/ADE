@@ -58,7 +58,17 @@ download_with_progress() {
   if command -v curl >/dev/null 2>&1; then
     curl -fL --progress-bar "$dl_url" -o "$dl_out"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress "$dl_url" -O "$dl_out"
+    # `--show-progress` is GNU wget >= 1.16 and busybox wget rejects it outright.
+    # That flag used to sit on a best-effort, Darwin-only path; it is now on the
+    # required Linux runtime download, where an Alpine or slim container image
+    # with no curl would fail the whole install over a progress bar. Plain
+    # busybox wget already reports progress on stderr, so the fallback loses
+    # nothing but GNU's verbose header noise.
+    if wget --help 2>&1 | grep -q -- '--show-progress'; then
+      wget -q --show-progress "$dl_url" -O "$dl_out"
+    else
+      wget "$dl_url" -O "$dl_out"
+    fi
   else
     die "missing curl or wget"
   fi
@@ -522,11 +532,18 @@ set -- "$@" --downloaded-bytes "${downloaded_bytes:-0}"
 # printing the follow-up commands instead of blocking on an unreadable stdin.
 [ "$interactive" -eq 1 ] || set -- "$@" --no-prompt
 
-setup_status=0
+# `|| true`, and a flat `exit 0` at the end of the script rather than ade setup's
+# own status: reaching here means the runtime is installed and the brain is
+# registered, which is the whole of what this script promises.
+# The steps `ade setup` owns past that are enhancement, and several are
+# documented non-fatal (the brain re-fetches the agent CLIs on every
+# `ade serve`), so propagating its exit code failed whole Dockerfiles and CI
+# provisioning runs over a flaky fetch. The summary tells the human what is left,
+# and `ade setup` still exits non-zero when a person runs it directly.
 if [ "$interactive" -eq 1 ]; then
-  "$dest_dir/ade" "$@" </dev/tty || setup_status="$?"
+  "$dest_dir/ade" "$@" </dev/tty || true
 else
-  "$dest_dir/ade" "$@" || setup_status="$?"
+  "$dest_dir/ade" "$@" || true
 fi
 
 # Only this script knows whether it edited a shell profile, so the "new
@@ -536,4 +553,4 @@ if [ "$path_profile_updated" -eq 1 ]; then
     "$(env_file_ref)"
 fi
 
-exit "$setup_status"
+exit 0

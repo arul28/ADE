@@ -91,6 +91,9 @@ function execFileText(
       encoding: "utf8",
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024,
+      // The Tailscale probe re-runs on the 30 s cache TTL for the life of the
+      // brain, so without this every refresh flashes a console window.
+      windowsHide: true,
     }, (error, stdout) => {
       resolve(error ? null : String(stdout ?? ""));
     });
@@ -232,6 +235,42 @@ function firstPreferredHost(ipAddresses: string[]): string {
   return ipAddresses[0] ?? os.hostname();
 }
 
+export type LocalSyncDeviceDefaults = {
+  name: string;
+  platform: SyncPeerPlatform;
+  deviceType: SyncPeerDeviceType;
+  ipAddresses: string[];
+  tailscaleIp: string | null;
+  lastHost: string;
+  metadata: Record<string, unknown>;
+};
+
+/**
+ * Everything this machine knows about itself without consulting a database:
+ * display name, platform, and the addresses a phone could dial. Module-scoped
+ * (not a closure over the registry) because a brain hosting sync WITHOUT a
+ * project scope has no project DB to read yet still has to describe the same
+ * machine — see `buildProjectlessSyncSnapshot`.
+ */
+export function localSyncDeviceDefaults(): LocalSyncDeviceDefaults {
+  const network = readLocalNetworkMetadata();
+  const metadata: Record<string, unknown> = {
+    hostname: os.hostname(),
+  };
+  if (network.tailscaleDnsName) {
+    metadata.tailscaleDnsName = network.tailscaleDnsName;
+  }
+  return {
+    name: resolveDeviceDisplayName(),
+    platform: mapPlatform(process.platform),
+    deviceType: "desktop" as SyncPeerDeviceType,
+    ipAddresses: network.lanIpAddresses,
+    tailscaleIp: network.tailscaleIp,
+    lastHost: firstPreferredHost(network.lanIpAddresses),
+    metadata,
+  };
+}
+
 export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const deviceIdPath = args.localDeviceIdPath ?? path.join(layout.secretsDir, DEVICE_ID_FILE);
@@ -264,25 +303,6 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
 
   const localDeviceId = readOrCreateLocalDeviceId();
   const localSiteId = args.db.sync.getSiteId();
-
-  const getLocalDefaults = () => {
-    const network = readLocalNetworkMetadata();
-    const metadata: Record<string, unknown> = {
-      hostname: os.hostname(),
-    };
-    if (network.tailscaleDnsName) {
-      metadata.tailscaleDnsName = network.tailscaleDnsName;
-    }
-    return {
-      name: resolveDeviceDisplayName(),
-      platform: mapPlatform(process.platform),
-      deviceType: "desktop" as SyncPeerDeviceType,
-      ipAddresses: network.lanIpAddresses,
-      tailscaleIp: network.tailscaleIp,
-      lastHost: firstPreferredHost(network.lanIpAddresses),
-      metadata,
-    };
-  };
 
   const upsertDeviceRecord = (record: {
     deviceId: string;
@@ -349,7 +369,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
 
   const ensureLocalDevice = (): SyncDeviceRecord => {
     const existing = mapDeviceRow(args.db.get<DeviceRow>("select * from devices where device_id = ? limit 1", [localDeviceId]));
-    const defaults = getLocalDefaults();
+    const defaults = localSyncDeviceDefaults();
     return upsertDeviceRecord({
       deviceId: localDeviceId,
       siteId: localSiteId,

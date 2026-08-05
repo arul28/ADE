@@ -234,9 +234,11 @@ describe("ThisMacCard", () => {
     };
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
+    // The brain's skipReason stays out of the card; the line says what is true.
     expect(screen.getByText(
-      "Signed in, but this computer is not published · The ADE brain is signed out of the ADE account.",
+      "Signed in — the ADE background service is signed out",
     )).toBeTruthy();
+    expect(screen.queryByText(/The ADE brain is signed out of the ADE account\./)).toBeNull();
   });
 
   it("surfaces a missing Windows CR-SQLite runtime before pairing is attempted", () => {
@@ -780,31 +782,80 @@ describe("accountDirectorySummary", () => {
     );
   });
 
-  it("names the publish failure reason instead of a bare state", () => {
-    const withState = (
-      state: SyncRoleSnapshot["routeHealth"]["accountDirectory"]["state"],
-      skipReason: string | null,
-    ) =>
-      accountDirectorySummary(
-        {
-          routeHealth: {
-            accountDirectory: { state, skipReason, reachableEndpointCount: 0 },
-          },
-        } as SyncRoleSnapshot,
-        true,
-      );
-
-    expect(
-      withState("token_unreadable", "The ADE brain could not read the stored account session."),
-    ).toEqual({
-      label:
-        "Signed in, but this computer is not published · The ADE brain could not read the stored account session.",
-      healthy: false,
-    });
-
-    // No reason from the brain: the state itself is spelled out, not snake_case.
-    expect(withState("http_error", null).label).toBe(
-      "Signed in, but this computer is not published · http error",
+  const summaryForState = (
+    state: SyncRoleSnapshot["routeHealth"]["accountDirectory"]["state"],
+    skipReason: string | null,
+  ) =>
+    accountDirectorySummary(
+      {
+        routeHealth: {
+          accountDirectory: { state, skipReason, reachableEndpointCount: 0 },
+        },
+      } as SyncRoleSnapshot,
+      true,
     );
+
+  it("never leaks the publisher's internal skipReason into user copy", () => {
+    // The regression: a real user was shown "Signed in, but this computer is
+    // not published · No active sync scope is available." — a fault report with
+    // no action in it.
+    const summary = summaryForState(
+      "no_active_sync_scope",
+      "No active sync scope is available.",
+    );
+    expect(summary.healthy).toBe(false);
+    expect(summary.label).not.toContain("No active sync scope is available.");
+    // NOT "open a project". A brain with no project registered now publishes on
+    // its own, so the only remaining way to reach this state is another ADE
+    // process on this computer holding the machine-wide sync-host lease.
+    expect(summary.label).toBe(
+      "Signed in — another ADE app on this computer owns sync for this machine",
+    );
+    expect(summary.label).not.toContain("open a project");
+  });
+
+  it("gives each actionable publish state its own instruction", () => {
+    expect(summaryForState("account_signed_out", "The ADE brain is signed out.").label).toBe(
+      "Signed in — the ADE background service is signed out",
+    );
+    expect(summaryForState("machine_key_unavailable", null).label).toBe(
+      "Signed in — this computer isn't registered yet",
+    );
+    expect(summaryForState("http_error", null).label).toBe(
+      "Signed in — can't reach your ADE account right now, retrying",
+    );
+  });
+
+  it("falls back without a raw state string or a claim of permanence", () => {
+    const label = summaryForState("snapshot_failed", "Snapshot build failed: EPERM").label;
+    expect(label).toBe("Signed in — this computer isn't published yet");
+    expect(label).not.toContain("snapshot_failed");
+    expect(label).not.toContain("snapshot failed");
+    expect(label).not.toContain("EPERM");
+  });
+
+  it("keeps every unpublished state free of underscores and skipReason text", () => {
+    const states = [
+      "sync_disabled",
+      "no_active_sync_scope",
+      "snapshot_failed",
+      "machine_key_unavailable",
+      "missing_pairing_connect_info",
+      "not_host",
+      "account_signed_out",
+      "token_unreadable",
+      "invalid_directory_url",
+      "http_error",
+      "token_timeout",
+      "http_timeout",
+      "timeout",
+      "transport_error",
+    ] as const;
+    for (const state of states) {
+      const { label, healthy } = summaryForState(state, "INTERNAL DIAGNOSTIC STRING");
+      expect(healthy).toBe(false);
+      expect(label).not.toContain("INTERNAL DIAGNOSTIC STRING");
+      expect(label).not.toContain("_");
+    }
   });
 });

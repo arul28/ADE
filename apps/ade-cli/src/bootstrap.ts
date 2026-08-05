@@ -1673,69 +1673,23 @@ export async function createAdeRuntime(args: {
   // Cloud tunnel relay (phone → Cloudflare DO → this brain). The store
   // instance is shared with the sync service so the relay candidate in
   // pairingConnectInfo and the tunnel client use one machine identity.
-  const { createSyncTunnelClientService, getSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-  // ONE tunnel client per machine (keyed by the config file): per-scope
-  // instances would re-register the same machineKey with the relay on every
-  // project open and churn the connection paired phones dial through.
-  const syncTunnelClientService = getSharedSyncTunnelClientService(cloudRelayFilePath, () => {
-    const service = createSyncTunnelClientService({
-      logger,
-      configStore: cloudRelayStore,
-      isAccountSignedIn: () => {
-        const status = accountAuthService.getStatus();
-        return status.signedIn && Boolean(status.userId?.trim());
-      },
-      getAccountLease: async () => {
-        const status = accountAuthService.getStatus();
-        const userId = status.signedIn ? status.userId?.trim() || null : null;
-        if (!userId) return null;
-        const token = (await accountAuthService.getAccessToken()).trim();
-        const refreshed = accountAuthService.getStatus();
-        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
-          ? { userId, expiresAt: refreshed.expiresAt }
-          : null;
-      },
-      onPublicationStateChanged: () => {
-        // Relay state changes are machine-level; without this nudge an idle
-        // machine emits no sync-status snapshot and the desktop relay banner
-        // never appears (or never clears).
-        syncService?.notifyRouteStateChanged();
-        resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
-      },
-      // The analytics service is machine-scoped and shared, so capturing it in
-      // this one-per-machine factory closure is safe (unlike the listener
-      // accessors above, which is why those moved to attachHostListener).
-      captureAnalytics: (input) => {
-        productAnalyticsService.captureInternal(input);
-      },
-    });
-    return service;
-  });
-  // Bind the listener OUTSIDE the factory. The client is cached one-per-machine
-  // and built by whichever runtime bootstrapped first, which is regularly a
-  // scope with no listener (headless one-shot, embedded fallback). Everything
-  // captured in that factory — the port accessor and the loopback retry hook —
-  // then pointed at null for the life of the process, so the bridge could never
-  // validate and Relay stayed fail-closed even though the listener was up.
-  // Attaching here means the runtime that actually owns the listener wins,
-  // whether or not it was the one that created the instance.
-  if (resolvedArgs.syncRuntime?.sharedSyncListener) {
-    syncTunnelClientService.attachHostListener(resolvedArgs.syncRuntime.sharedSyncListener);
-  }
-  // Only the runtime that holds the machine-wide sync host lease may register
-  // the relay tunnel. See relayTunnelAuthorityGate for why the old
-  // "has a listener" gate let secondary brains evict the real host.
-  const [{ createRelayTunnelAuthorityGate }, { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }] =
-    await Promise.all([
-      import("./services/sync/relayTunnelAuthorityGate"),
-      import("./services/sync/syncHostSingleton"),
-    ]);
-  const relayTunnelGate = createRelayTunnelAuthorityGate({
-    hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
-    tunnel: syncTunnelClientService,
-    holdsLease: holdsSyncHostSingleton,
-    subscribe: onSyncHostSingletonAuthorityChanged,
+  const { createMachineRelayTunnel } = await import("./services/sync/machineRelayTunnel");
+  const { tunnel: syncTunnelClientService, gate: relayTunnelGate } = await createMachineRelayTunnel({
     logger,
+    configStore: cloudRelayStore,
+    configPath: cloudRelayFilePath,
+    accountAuthService,
+    hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
+    onPublicationStateChanged: () => {
+      // Relay state changes are machine-level; without this nudge an idle
+      // machine emits no sync-status snapshot and the desktop relay banner
+      // never appears (or never clears).
+      syncService?.notifyRouteStateChanged();
+      resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
+    },
+    captureAnalytics: (input) => {
+      productAnalyticsService.captureInternal(input);
+    },
   });
 
   let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;

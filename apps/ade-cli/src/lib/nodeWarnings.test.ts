@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isSuppressedNodeWarning } from "./nodeWarnings";
+import {
+  installNodeWarningFilter,
+  isSuppressedNodeWarning,
+  resetNodeWarningFilterForTests,
+} from "./nodeWarnings";
 
 describe("isSuppressedNodeWarning", () => {
   it("suppresses the node:sqlite experimental notice users saw on every command", () => {
@@ -40,5 +44,20 @@ describe("isSuppressedNodeWarning", () => {
       ]),
     ).toBe(false);
     expect(isSuppressedNodeWarning("something broke")).toBe(false);
+  });
+});
+
+describe("resetNodeWarningFilterForTests", () => {
+  it("puts the original emitter back so a second install cannot double-wrap", () => {
+    // The module self-installs on import, so the first reset is what gets this
+    // process back to Node's own emitter.
+    resetNodeWarningFilterForTests();
+    const unwrapped = process.emitWarning;
+
+    installNodeWarningFilter({});
+    expect(process.emitWarning).not.toBe(unwrapped);
+
+    resetNodeWarningFilterForTests();
+    expect(process.emitWarning).toBe(unwrapped);
   });
 });

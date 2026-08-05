@@ -118,6 +118,16 @@ function Download-Asset(
   }
 
   Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+  # The Add-Type above is allowed to fail quietly, but the type resolution below
+  # is not: under $ErrorActionPreference = "Stop" it throws from inside the main
+  # install try block, so a host without the assembly would take the ROLLBACK
+  # path instead of just losing its progress bar. Degrade to a plain download.
+  if (-not ("System.Net.Http.HttpClient" -as [type])) {
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination
+    $script:DownloadedBytes += (Get-Item -LiteralPath $Destination).Length
+    return
+  }
+
   $client = [Net.Http.HttpClient]::new()
   try {
     $client.Timeout = [TimeSpan]::FromMinutes(30)
@@ -130,13 +140,15 @@ function Download-Asset(
       $total = if ($response.Content.Headers.ContentLength) {
         [double]$response.Content.Headers.ContentLength
       } else { 0 }
-      $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+      # Not $input: that is PowerShell's automatic pipeline enumerator, and
+      # assigning to it shadows the real one for the rest of the scope.
+      $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
       $output = [IO.File]::Create($Destination)
       try {
         $buffer = [byte[]]::new(1MB)
         $received = 0.0
         $lastReport = [Environment]::TickCount
-        while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
           $output.Write($buffer, 0, $read)
           $received += $read
           # Throttled: redrawing on every 1 MB chunk costs more than the socket.
@@ -149,7 +161,7 @@ function Download-Asset(
         $script:DownloadedBytes += $received
       } finally {
         $output.Dispose()
-        $input.Dispose()
+        $stream.Dispose()
       }
     } finally {
       $response.Dispose()
@@ -490,7 +502,10 @@ if ($installSucceeded) {
 
     $runtimeVersion = ""
     try {
-      $runtimeVersion = ((& $destinationBinary --version) | Out-String).Trim()
+      # Collapsed to one line, matching the sh side's `tr -d '\r\n'`: any stray
+      # warning line ahead of the version would otherwise embed a newline in the
+      # summary's step detail and break its layout.
+      $runtimeVersion = (((& $destinationBinary --version) -join " ") -replace '\s+', " ").Trim()
     } catch {
       $runtimeVersion = ""
     }
@@ -513,10 +528,8 @@ if ($installSucceeded) {
     # stdout/stderr are inherited on purpose: the step lines, the prompts and
     # the summary are meant for this console.
     & $destinationBinary @setupArgs
-    $setupExit = $LASTEXITCODE
   } catch {
     Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'ade setup' to try again."
-    $setupExit = 1
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {
       [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")
@@ -533,5 +546,12 @@ if ($installSucceeded) {
     Write-Host '  ade is on your PATH in new terminals. This one still needs a restart.'
   }
 
-  if ($setupExit -ne 0) { exit $setupExit }
+  # `ade setup`'s exit code is deliberately not propagated. Reaching here means
+  # the runtime is installed and the brain is registered, which is all this
+  # script promises; the steps `ade setup` owns past that are enhancement, and
+  # several are documented non-fatal (the brain re-fetches the agent CLIs on
+  # every `ade serve`). Propagating it failed whole Dockerfiles and CI
+  # provisioning runs over a flaky fetch. The summary tells the human what is
+  # left, and `ade setup` still exits non-zero when a person runs it directly.
+  exit 0
 }

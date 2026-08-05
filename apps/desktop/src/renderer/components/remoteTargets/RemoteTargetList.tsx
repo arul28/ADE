@@ -411,9 +411,11 @@ export function RemoteTargetList({
     }
   }, []);
 
-  // Warnings mean discovery is degraded and get the warning treatment. Info
-  // diagnostics ("Tailscale isn't installed") are normal on a plain Mac, so they
-  // render as muted secondary text with no warning glyph.
+  // Warnings mean discovery is degraded and get the warning treatment on the
+  // pane itself. Info diagnostics ("Tailscale isn't installed") are normal on a
+  // plain machine: they render as muted secondary text with no warning glyph,
+  // and only inside Add machine → Nearby, where the reader is actually looking
+  // for machines this list could be missing.
   const discoveryError = useMemo(
     () => discoveryFetchError ?? (joinDiagnosticMessages(discoveryDiagnostics, "warning") || null),
     [discoveryDiagnostics, discoveryFetchError],
@@ -1274,6 +1276,12 @@ export function RemoteTargetList({
                     No computers found. Open ADE on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
                   </div>
                 ) : null}
+                {/* Info diagnostics ("Tailscale isn't installed") explain what is
+                    missing from *this* list, so they belong here rather than on
+                    the resting pane, where they used to push the "No computers
+                    yet" call to action below two lines about a tool the reader
+                    never asked for. */}
+                {discoveryNote ? <div style={helperTextStyle}>{discoveryNote}</div> : null}
                 {nearbyMachines.map((machine) => (
                   <DiscoveredMachineRow
                     key={machine.id}
@@ -1306,8 +1314,6 @@ export function RemoteTargetList({
             {discoveryError}
           </div>
         ) : null}
-
-        {discoveryNote ? <div style={helperTextStyle}>{discoveryNote}</div> : null}
 
         {loading ? (
           <div
