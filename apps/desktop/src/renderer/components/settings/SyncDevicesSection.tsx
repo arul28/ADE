@@ -1,11 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppleLogo,
   ArrowSquareOut,
+  CaretRight,
   Check,
   Cloud,
   CloudSlash,
   Globe,
   Laptop,
+  LinuxLogo,
+  PencilSimple,
+  WindowsLogo,
+  X,
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { QRCodeSVG } from "qrcode.react";
@@ -130,7 +136,24 @@ function isCrdtSyncUnavailable(status: SyncRoleSnapshot): boolean {
 // This-Mac card — persistent header block above the Connections tabs.
 // ---------------------------------------------------------------------------
 
-function platformLabel(platform: string | undefined): string {
+// The platform mark that fills the identity tile. It replaces the old generic
+// laptop glyph *and* the "· Windows" suffix that used to trail the version — the
+// logo is the platform statement, so spelling it out again is pure duplication.
+function PlatformGlyph({ platform }: { platform: string | undefined }) {
+  const props = { size: 17, weight: "duotone" as const, color: COLORS.accent };
+  switch (platform) {
+    case "darwin":
+      return <AppleLogo {...props} />;
+    case "win32":
+      return <WindowsLogo {...props} />;
+    case "linux":
+      return <LinuxLogo {...props} />;
+    default:
+      return <Laptop {...props} />;
+  }
+}
+
+function platformAccessibleName(platform: string | undefined): string {
   switch (platform) {
     case "darwin":
       return "macOS";
@@ -139,32 +162,12 @@ function platformLabel(platform: string | undefined): string {
     case "linux":
       return "Linux";
     default:
-      return "this computer";
+      return "This computer";
   }
 }
 
-// Which of the three inbound routes are actually reachable right now. Unknown or
-// down routes are omitted so the line only ever advertises a working path.
-function reachableRouteLabels(status: SyncRoleSnapshot): string[] {
-  const routes: string[] = [];
-  const health = status.routeHealth;
-  if (health?.listener?.listenerBound && health.listener.loopbackAdeValidated) {
-    routes.push("Wi-Fi");
-  }
-  if (health?.tailscale?.tailscaleReachable) {
-    routes.push("Tailscale");
-  }
-  if (
-    health?.relay?.skipReason == null &&
-    health?.relay?.relayControlConnected &&
-    health?.relay?.relayBridgeValidated
-  ) {
-    routes.push("Relay");
-  }
-  return routes;
-}
-
-// One-shot fetch of the local build/platform for the This-Mac detail line.
+// One-shot fetch of the local build/platform. `platform` stays the raw Node
+// identifier because the glyph, not a label, is what consumes it.
 function useAppInfoLine(): { version: string; platform: string } | null {
   const [info, setInfo] = useState<{ version: string; platform: string } | null>(null);
   useEffect(() => {
@@ -173,7 +176,7 @@ function useAppInfoLine(): { version: string; platform: string } | null {
       ?.getInfo?.()
       ?.then((next) => {
         if (!cancelled && next) {
-          setInfo({ version: next.appVersion, platform: platformLabel(next.platform) });
+          setInfo({ version: next.appVersion, platform: next.platform });
         }
       })
       .catch(() => {});
@@ -196,6 +199,25 @@ export function ThisMacCard({
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   const repair = useBrainRepair(sync.refresh);
+
+  const { saveRuntimeName } = sync;
+  // The runtime name is what this card renders, so it is written first and the
+  // rename is visible immediately. The account directory then gets the same
+  // value so the account page and other clients agree — best effort, since a
+  // directory hiccup should not undo a rename the user already sees.
+  const saveMachineName = useCallback((next: string) => {
+    saveRuntimeName(next);
+    if (!accountSignedIn) return;
+    void (async () => {
+      try {
+        const account = window.ade?.account;
+        const identity = await account?.getLocalMachineIdentity?.();
+        if (identity?.machineKey) await account?.renameMachine?.(identity.machineKey, next);
+      } catch {
+        // Local rename already landed; the directory catches up on next publish.
+      }
+    })();
+  }, [saveRuntimeName, accountSignedIn]);
 
   if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
@@ -227,8 +249,11 @@ export function ThisMacCard({
   // copy of the literal is a place the next rename can miss.
   const machineName = status.runtimeName?.trim() || status.localDevice.name || THIS_MACHINE_NAME;
   const crdtUnavailable = isCrdtSyncUnavailable(status);
-  const acceptsConnections = acceptsConnectionsState(status, host);
-  const routeLabels = reachableRouteLabels(status);
+  // Only real, actionable faults render. A healthy host says nothing beyond its
+  // account line — "Ready to accept connections" and the route breakdown told
+  // the reader nothing they could act on, and a missing pairing code is a
+  // normal state now that the account is the primary way to connect.
+  const problem = connectionProblem(status, host);
   const directorySummary = accountDirectorySummary(status, accountSignedIn);
   // A brain-side unreadable account session is the one directory failure a
   // restart clears — same test RemoteTargetList runs on its publish health.
@@ -238,91 +263,89 @@ export function ThisMacCard({
 
   return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+      <div style={{ display: "grid", gap: 10 }}>
         <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 32,
-            height: 32,
-            borderRadius: 9,
-            flexShrink: 0,
-            background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-            border: `1px solid ${COLORS.accentBorder}`,
-          }}
+          style={inlineBadge(COLORS.accent, {
+            fontSize: 10,
+            padding: "2px 7px",
+            justifySelf: "start",
+          })}
         >
-          <Laptop size={17} weight="duotone" color={COLORS.accent} />
+          {THIS_MACHINE_NAME}
         </span>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-            <span
-              style={{
-                color: COLORS.textPrimary,
-                fontFamily: SANS_FONT,
-                fontSize: 14,
-                fontWeight: 700,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                minWidth: 0,
-              }}
-            >
-              {machineName}
-            </span>
-            <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-              {THIS_MACHINE_NAME}
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
-            {accountSignedIn ? (
-              <Cloud
-                size={13}
-                weight="fill"
-                color={directorySummary.healthy ? COLORS.accent : COLORS.warning}
-                style={{ flexShrink: 0 }}
-              />
-            ) : (
-              <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-            )}
-            <span
-              style={{
-                ...helperTextStyle,
-                lineHeight: 1.35,
-                color: directorySummary.healthy || !accountSignedIn
-                  ? helperTextStyle.color
-                  : COLORS.warning,
-              }}
-            >
-              {directorySummary.label}
-            </span>
-            {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
+
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
+          <span
+            aria-label={platformAccessibleName(appInfo?.platform)}
+            role="img"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 32,
+              height: 32,
+              borderRadius: 9,
+              flexShrink: 0,
+              background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+              border: `1px solid ${COLORS.accentBorder}`,
+            }}
+          >
+            <PlatformGlyph platform={appInfo?.platform} />
+          </span>
+          <div style={{ minWidth: 0, flex: 1, display: "grid", gap: 2 }}>
+            <MachineNameRow
+              name={machineName}
+              busy={busy}
+              accountSignedIn={accountSignedIn}
+              onSave={saveMachineName}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              {accountSignedIn ? (
+                <Cloud
+                  size={13}
+                  weight="fill"
+                  color={directorySummary.healthy ? COLORS.accent : COLORS.warning}
+                  style={{ flexShrink: 0 }}
+                />
+              ) : (
+                <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
+              )}
+              <span
+                style={{
+                  ...helperTextStyle,
+                  lineHeight: 1.35,
+                  color: directorySummary.healthy || !accountSignedIn
+                    ? helperTextStyle.color
+                    : COLORS.warning,
+                }}
+              >
+                {directorySummary.label}
+              </span>
+              {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
+            </div>
+            {/* Third line is one slot: the fault takes the version's place while
+                something is wrong, so the card never grows a line. */}
+            {problem ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span
+                  aria-hidden
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    background: COLORS.warning,
+                  }}
+                />
+                <span style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.warning }}>
+                  {problem}
+                </span>
+              </div>
+            ) : appInfo ? (
+              <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>ADE {appInfo.version}</div>
+            ) : null}
           </div>
         </div>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            flexShrink: 0,
-            background: acceptsConnections.ready ? COLORS.success : COLORS.warning,
-          }}
-        />
-        <span style={{ color: acceptsConnections.ready ? COLORS.textSecondary : COLORS.warning }}>
-          {acceptsConnections.label}
-        </span>
       </div>
 
       {crdtUnavailable ? (
@@ -341,38 +364,25 @@ export function ThisMacCard({
         </div>
       ) : null}
 
-      {(host && routeLabels.length > 0) || appInfo ? (
-        <div style={{ display: "grid", gap: 3, paddingLeft: 16, marginTop: -6 }}>
-          {host && routeLabels.length > 0 ? (
-            <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>
-              Reachable via {routeLabels.join(" · ")}
-            </div>
-          ) : null}
-          {appInfo ? (
-            <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>
-              ADE {appInfo.version} · {appInfo.platform}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
       {host && !crdtUnavailable ? (
-        isRemoteBound ? (
-          <PinManagerRemoteNote
-            pin={status.pairingPin}
-            pinConfigured={status.pairingPinConfigured}
-            boundMachineName={boundMachineName}
-          />
-        ) : (
-          <PinManager
-            pin={status.pairingPin}
-            pinConfigured={status.pairingPinConfigured}
-            busy={busy}
-            onSetPin={sync.setPinValue}
-            onGenerate={sync.generatePin}
-            onRemove={sync.clearPin}
-          />
-        )
+        <PairingDisclosure pinConfigured={status.pairingPinConfigured}>
+          {isRemoteBound ? (
+            <PinManagerRemoteNote
+              pin={status.pairingPin}
+              pinConfigured={status.pairingPinConfigured}
+              boundMachineName={boundMachineName}
+            />
+          ) : (
+            <PinManager
+              pin={status.pairingPin}
+              pinConfigured={status.pairingPinConfigured}
+              busy={busy}
+              onSetPin={sync.setPinValue}
+              onGenerate={sync.generatePin}
+              onRemove={sync.clearPin}
+            />
+          )}
+        </PairingDisclosure>
       ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
@@ -385,16 +395,21 @@ export function ThisMacCard({
   );
 }
 
-function acceptsConnectionsState(
-  status: SyncRoleSnapshot,
-  host: boolean,
-): { ready: boolean; label: string } {
+/**
+ * The one fault worth interrupting the reader for, or null when this computer is
+ * fine. A healthy host renders no status line at all.
+ *
+ * Deliberately *not* a fault: having no pairing code. Signing in to your ADE
+ * account is the primary way to connect now, so an unset code is an ordinary
+ * state, not something to nag about.
+ */
+function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | null {
   if (!host) {
-    return { ready: false, label: `${THIS_MACHINE_NAME} connects through your main ADE host` };
+    return `${THIS_MACHINE_NAME} connects through your main ADE host`;
   }
-  if (isCrdtSyncUnavailable(status)) {
-    return { ready: false, label: "Phone sync is unavailable" };
-  }
+  // The CRDT failure renders as its own alert block below, with the runtime's
+  // full explanation — repeating a one-liner here would just duplicate it.
+  if (isCrdtSyncUnavailable(status)) return null;
   if (!status.pairingConnectInfo) {
     // "Starting up" is only true while the listener is on its way up. When the
     // snapshot already knows why the listener is down (the background service
@@ -402,12 +417,204 @@ function acceptsConnectionsState(
     // reason is the whole point of this line and it never resolves on its own.
     const listener = status.routeHealth?.listener;
     const reason = listener?.listenerBound === false ? listener.reason?.trim() : null;
-    return { ready: false, label: reason || "Starting up — connection details will appear shortly" };
+    return reason || "Starting up — connection details will appear shortly";
   }
-  if (!status.pairingPinConfigured) {
-    return { ready: false, label: "Set a pairing code below so new devices can connect" };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Machine name + inline rename
+// ---------------------------------------------------------------------------
+
+/**
+ * The machine name with a pencil beside it, mirroring the rename affordance on
+ * the account page. Saving writes the runtime name — the same value this card
+ * displays — so the change is visible immediately.
+ *
+ * Signed out the pencil stays visible but inert: the name is account-wide, and a
+ * hidden control would leave no hint that renaming is possible at all.
+ */
+function MachineNameRow({
+  name,
+  busy,
+  accountSignedIn,
+  onSave,
+}: {
+  name: string;
+  busy: boolean;
+  accountSignedIn: boolean;
+  onSave: (name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(name);
+  useEffect(() => {
+    if (!editing) setValue(name);
+  }, [name, editing]);
+
+  const nameStyle: React.CSSProperties = {
+    color: COLORS.textPrimary,
+    fontFamily: SANS_FONT,
+    fontSize: 14,
+    fontWeight: 700,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  };
+
+  if (editing) {
+    return (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const next = value.trim();
+          if (!next) return;
+          onSave(next);
+          setEditing(false);
+        }}
+        style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+      >
+        <input
+          aria-label="Machine name"
+          autoFocus
+          maxLength={80}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          disabled={busy}
+          style={{
+            minWidth: 0,
+            flex: 1,
+            height: 28,
+            borderRadius: 8,
+            border: `1px solid ${COLORS.accentBorder}`,
+            background: "rgba(255,255,255,0.06)",
+            color: COLORS.textPrimary,
+            fontFamily: SANS_FONT,
+            fontSize: 13,
+            fontWeight: 600,
+            padding: "0 9px",
+            outline: "none",
+          }}
+        />
+        <button
+          type="submit"
+          aria-label="Save machine name"
+          disabled={busy || !value.trim()}
+          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 11 })}
+        >
+          <Check size={13} weight="bold" />
+        </button>
+        <button
+          type="button"
+          aria-label="Cancel rename"
+          disabled={busy}
+          onClick={() => setEditing(false)}
+          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 11 })}
+        >
+          <X size={13} weight="bold" />
+        </button>
+      </form>
+    );
   }
-  return { ready: true, label: "Ready to accept connections" };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+      <span style={nameStyle}>{name}</span>
+      <button
+        type="button"
+        aria-label={`Rename ${name}`}
+        title={accountSignedIn ? `Rename ${name}` : "Sign in to rename this computer"}
+        disabled={busy || !accountSignedIn}
+        onClick={() => setEditing(true)}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 22,
+          height: 22,
+          flexShrink: 0,
+          padding: 0,
+          borderRadius: 6,
+          border: "none",
+          background: "transparent",
+          color: COLORS.textMuted,
+          cursor: accountSignedIn ? "pointer" : "not-allowed",
+          opacity: accountSignedIn ? 1 : 0.45,
+        }}
+      >
+        <PencilSimple size={13} weight="bold" />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pairing-code disclosure
+// ---------------------------------------------------------------------------
+
+/**
+ * Collapsed wrapper around the pairing controls. Pairing codes are only needed
+ * for a manual connection to another ADE client, which is now the rare path —
+ * so the section starts closed every time the panel mounts and never remembers
+ * that it was opened.
+ */
+function PairingDisclosure({
+  pinConfigured,
+  children,
+}: {
+  pinConfigured: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ display: "grid", gap: open ? 10 : 0 }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          width: "100%",
+          height: 30,
+          padding: "0 4px",
+          border: "none",
+          borderRadius: 8,
+          background: "transparent",
+          color: COLORS.textSecondary,
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <CaretRight
+          size={12}
+          weight="bold"
+          style={{
+            flexShrink: 0,
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 120ms ease",
+          }}
+        />
+        Pairing code
+        <span style={{ color: COLORS.textMuted, fontWeight: 400 }}>
+          · {pinConfigured ? "Set" : "Not set"}
+        </span>
+      </button>
+      {open ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ ...helperTextStyle, paddingLeft: 4 }}>
+            This code sets up a manual connection between this computer and another ADE client, like
+            the mobile app. Most connections go through your ADE account instead.
+          </div>
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -461,10 +668,8 @@ function PinManager({
 
   return (
     <div style={{ ...panelStyle, gap: 10 }}>
-      <div style={LABEL_STYLE}>Pairing code</div>
-      <div style={{ ...helperTextStyle, marginTop: -2 }}>
-        New nearby devices enter this code the first time they connect to this computer.
-      </div>
+      {/* The disclosure header above already names the section and explains what
+          the code is for, so this panel opens straight into the controls. */}
       {!pinConfigured ? (
         <EmptyPinBlock
           busy={busy}
@@ -506,8 +711,7 @@ function PinManagerRemoteNote({
       : `${THIS_MACHINE_NAME} has a pairing code set.`;
   return (
     <div style={{ ...panelStyle, gap: 8 }}>
-      <div style={LABEL_STYLE}>Pairing code</div>
-      <div style={{ ...helperTextStyle, marginTop: -2 }}>{stateLine}</div>
+      <div style={helperTextStyle}>{stateLine}</div>
       <div style={{ ...helperTextStyle, color: COLORS.textMuted }}>
         Pairing changes aren&rsquo;t available while this window is connected to{" "}
         {boundMachineName ?? "another computer"}.

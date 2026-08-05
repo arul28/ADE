@@ -154,6 +154,14 @@ function unreadableSessionStatus(): SyncRoleSnapshot {
 
 const autoConfirm = async () => true;
 
+/**
+ * Pairing controls live behind a disclosure that is closed on every mount, so
+ * every test that touches them has to open it first.
+ */
+function openPairing() {
+  fireEvent.click(screen.getByRole("button", { name: /^Pairing code/ }));
+}
+
 describe("ThisMacCard", () => {
   afterEach(() => {
     cleanup();
@@ -165,8 +173,55 @@ describe("ThisMacCard", () => {
   it("shows the account state line for a signed-in Mac", () => {
     render(<ThisMacCard sync={makeSync()} accountSignedIn />);
     expect(screen.getByText("Studio")).toBeTruthy();
-    expect(screen.getByText("Connected to your ADE account · 1 route published")).toBeTruthy();
-    expect(screen.getByText("Ready to accept connections")).toBeTruthy();
+    expect(screen.getByText("Connected to your ADE account")).toBeTruthy();
+  });
+
+  it("says nothing about readiness or routes when this computer is healthy", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    // A healthy host has no actionable status, so it gets no status line at all.
+    expect(screen.queryByText("Ready to accept connections")).toBeNull();
+    expect(screen.queryByText(/Reachable via/)).toBeNull();
+  });
+
+  it("treats an unset pairing code as ordinary, not a fault", () => {
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: makeStatus({ pairingPinConfigured: false }) })}
+        accountSignedIn
+      />,
+    );
+    // Connecting runs through the ADE account now; no code is a normal state.
+    expect(screen.queryByText(/Set a pairing code/)).toBeNull();
+    expect(screen.getByRole("button", { name: /^Pairing code/ }).textContent)
+      .toContain("Not set");
+  });
+
+  it("renames this computer and mirrors the name into the account directory", async () => {
+    const saveRuntimeName = vi.fn();
+    const renameMachine = vi.fn(async () => {});
+    (globalThis.window as any).ade = {
+      account: {
+        getLocalMachineIdentity: vi.fn(async () => ({ machineKey: "mk-1", deviceId: "dev-1" })),
+        renameMachine,
+      },
+    };
+    render(<ThisMacCard sync={makeSync({ saveRuntimeName })} accountSignedIn />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Studio" }));
+    fireEvent.change(screen.getByLabelText("Machine name"), { target: { value: "Workshop" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save machine name" }));
+
+    // The runtime name is what this card renders, so it lands first…
+    expect(saveRuntimeName).toHaveBeenCalledWith("Workshop");
+    // …and the account directory catches up so other clients agree.
+    await waitFor(() => expect(renameMachine).toHaveBeenCalledWith("mk-1", "Workshop"));
+  });
+
+  it("keeps the pencil visible but inert while signed out", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn={false} />);
+    const pencil = screen.getByRole("button", { name: "Rename Studio" });
+    expect((pencil as HTMLButtonElement).disabled).toBe(true);
+    expect(pencil.getAttribute("title")).toBe("Sign in to rename this computer");
   });
 
   it("surfaces when desktop sign-in and brain publication disagree", () => {
@@ -195,7 +250,9 @@ describe("ThisMacCard", () => {
     expect(screen.getByRole("alert").textContent).toContain(
       "Phone sync is unavailable in this ADE installation.",
     );
-    expect(screen.getByText("Phone sync is unavailable")).toBeTruthy();
+    // The alert above carries the runtime's full explanation; the status line
+    // does not repeat a one-liner version of it.
+    expect(screen.queryByRole("button", { name: /^Pairing code/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Generate code/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
   });
@@ -268,7 +325,7 @@ describe("ThisMacCard", () => {
     ).toBeTruthy();
   });
 
-  it("prompts to set a pairing code and generates one", () => {
+  it("generates a code from inside the pairing disclosure", () => {
     const generatePin = vi.fn();
     render(
       <ThisMacCard
@@ -276,7 +333,9 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
-    expect(screen.getByText("Set a pairing code below so new devices can connect")).toBeTruthy();
+    // Closed on mount — nothing inside is reachable until it is opened.
+    expect(screen.queryByRole("button", { name: "Generate code" })).toBeNull();
+    openPairing();
     fireEvent.click(screen.getByRole("button", { name: "Generate code" }));
     expect(generatePin).toHaveBeenCalledTimes(1);
   });
@@ -290,6 +349,7 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
+    openPairing();
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith("123456"));
   });
@@ -303,49 +363,64 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
+    openPairing();
     fireEvent.click(screen.getByRole("button", { name: "Generate new code" }));
     expect(generatePin).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(clearPin).toHaveBeenCalledTimes(1);
   });
 
-  it("labels this computer with a chip and lists reachable routes plus the build line", async () => {
-    (globalThis.window as any).ade = {
-      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform: "darwin" })) },
-    };
-    const status = makeStatus({
-      routeHealth: {
-        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
-        tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
-        accountDirectory: makeStatus().routeHealth.accountDirectory,
-      },
-    });
-    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+  it("reopens the pairing disclosure closed every time, never remembering it", () => {
+    const { unmount } = render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    openPairing();
+    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+      .toBe("true");
+    unmount();
 
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+      .toBe("false");
+  });
+
+  it.each([
+    ["darwin", "macOS"],
+    ["win32", "Windows"],
+    ["linux", "Linux"],
+  ])("marks the identity tile with the %s platform logo", async (platform, accessibleName) => {
+    (globalThis.window as any).ade = {
+      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform })) },
+    };
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+
+    expect(await screen.findByRole("img", { name: accessibleName })).toBeTruthy();
+    // The logo is the platform statement, so the version line never repeats it.
+    expect(await screen.findByText("ADE 1.2.28")).toBeTruthy();
+    expect(screen.queryByText(new RegExp(`ADE 1\\.2\\.28.*${accessibleName}`))).toBeNull();
+  });
+
+  it("labels this computer with a chip", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
     // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
     // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
     // literal here is what let Settings and Account miss the rename.
     expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
-    expect(screen.getByText("Reachable via Wi-Fi · Tailscale · Relay")).toBeTruthy();
-    expect(await screen.findByText("ADE 1.2.28 · macOS")).toBeTruthy();
   });
 
-  it("omits unknown routes and only advertises the ones that are up", () => {
-    const status = makeStatus({
-      routeHealth: {
-        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
-        tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
-        // Relay control connected but bridge not yet validated → not reachable.
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
-        accountDirectory: makeStatus().routeHealth.accountDirectory,
-      },
-    });
+  it("swaps the version line for the fault while the listener is down", async () => {
+    (globalThis.window as any).ade = {
+      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform: "win32" })) },
+    };
+    const status = makeStatus({ pairingConnectInfo: null });
+    status.routeHealth.listener = {
+      ...status.routeHealth.listener,
+      listenerBound: false,
+      reason: "Port 8787 is already in use.",
+    };
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    expect(screen.getByText("Reachable via Wi-Fi")).toBeTruthy();
-    expect(screen.queryByText(/Tailscale/)).toBeNull();
-    expect(screen.queryByText(/Relay/)).toBeNull();
+    expect(await screen.findByText("Port 8787 is already in use.")).toBeTruthy();
+    // One slot, so the card never grows a line in the unhappy path.
+    expect(screen.queryByText("ADE 1.2.28")).toBeNull();
   });
 
   it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
@@ -379,6 +454,7 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
+    openPairing();
     expect(screen.getByText(`${THIS_MACHINE_NAME}'s pairing code is 123456.`)).toBeTruthy();
     expect(
       screen.getByText(/Pairing changes aren.t available while this window is connected to/),
