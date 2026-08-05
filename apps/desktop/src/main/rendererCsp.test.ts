@@ -35,17 +35,22 @@ describe("buildRendererCspPolicy", () => {
     expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
   });
 
-  it("allows only the welcome video YouTube embed hosts for external frames", () => {
+  it("allows no external frame sources -- the welcome video is a thumbnail link, not an embed", () => {
     const policy = buildRendererCspPolicy(false);
     const frameSrc = policy.split("; ").find((directive) => directive.startsWith("frame-src "));
     const frameTokens = frameSrc?.split(/\s+/).slice(1) ?? [];
     const externalFrameTokens = frameTokens.filter((token) => token.startsWith("https://"));
 
-    expect(externalFrameTokens).toEqual([
-      "https://www.youtube-nocookie.com",
-      "https://www.youtube.com",
-    ]);
+    expect(externalFrameTokens).toEqual([]);
     expect(frameTokens).not.toContain("https:");
+  });
+
+  it("allows the welcome video's YouTube thumbnail image", () => {
+    const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(imgTokens).toContain("https://img.youtube.com");
   });
 
   it("allows CodeRabbit review assets without allowing arbitrary Google Cloud Storage images", () => {

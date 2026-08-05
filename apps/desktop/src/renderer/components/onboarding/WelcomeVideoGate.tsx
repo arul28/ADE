@@ -6,13 +6,14 @@ import {
   Check,
   Copy,
   GithubLogo,
+  Play,
   X,
 } from "@phosphor-icons/react";
 import { docs } from "../../onboarding/docsLinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
-  ADE_WELCOME_VIDEO_EMBED_URL,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
+  ADE_WELCOME_VIDEO_THUMBNAIL_URL,
   ADE_WELCOME_VIDEO_WATCH_URL,
 } from "../../../shared/welcomeVideo";
 import {
@@ -343,43 +344,76 @@ export function WelcomeVideoGate({ onVisibilityChange, onDismissed }: WelcomeVid
   );
 }
 
+// YouTube's embed player rejects the packaged app's file:// origin as
+// unrecognized (error 153), so instead of an <iframe> this is a clickable
+// thumbnail that hands off to the system browser, which has a real origin.
 function VideoPanel() {
   return (
-    <div
+    <button
+      type="button"
+      onClick={() => openExternalUrl(ADE_WELCOME_VIDEO_WATCH_URL)}
+      aria-label="Open the ADE intro video on YouTube"
       style={{
         position: "relative",
+        display: "block",
+        width: "100%",
         overflow: "hidden",
         borderRadius: 12,
         border: "1px solid color-mix(in srgb, var(--color-fg, #fff) 12%, transparent)",
         background: "#050507",
         aspectRatio: "16 / 9",
         boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
+        padding: 0,
+        cursor: "pointer",
       }}
     >
-      <iframe
-        title="Welcome to ADE video"
-        src={ADE_WELCOME_VIDEO_EMBED_URL}
-        sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-        allow="encrypted-media; picture-in-picture"
-        allowFullScreen
-        referrerPolicy="strict-origin-when-cross-origin"
+      <img
+        src={ADE_WELCOME_VIDEO_THUMBNAIL_URL}
+        alt=""
+        draggable={false}
         style={{
           position: "absolute",
           inset: 0,
           width: "100%",
           height: "100%",
-          border: 0,
+          objectFit: "cover",
+          display: "block",
         }}
       />
-      <button
-        type="button"
-        onClick={() => openExternalUrl(ADE_WELCOME_VIDEO_WATCH_URL)}
-        aria-label="Open the ADE intro video on YouTube"
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "linear-gradient(180deg, rgba(5,5,7,0.15) 0%, rgba(5,5,7,0.55) 100%)",
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, -50%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 60,
+          height: 60,
+          borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,0.28)",
+          background: "rgba(8,6,18,0.72)",
+        }}
+      >
+        <Play size={22} weight="fill" color="#fff" />
+      </div>
+      <div
+        aria-hidden
         style={{
           position: "absolute",
           right: 10,
           bottom: 10,
-          zIndex: 1,
           display: "inline-flex",
           alignItems: "center",
           gap: 5,
@@ -391,13 +425,12 @@ function VideoPanel() {
           color: "#fff",
           fontSize: 11,
           fontWeight: 600,
-          cursor: "pointer",
         }}
       >
         YouTube
         <ArrowSquareOut size={11} />
-      </button>
-    </div>
+      </div>
+    </button>
   );
 }
 

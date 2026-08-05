@@ -68,7 +68,7 @@ describe("WelcomeVideoGate", () => {
     expect(screen.queryByRole("dialog", { name: DIALOG_NAME })).toBeNull();
   });
 
-  it("renders the privacy-enhanced YouTube player with its native thumbnail", async () => {
+  it("renders a YouTube thumbnail button instead of an embedded player", async () => {
     getWelcomeVideoState.mockResolvedValue({
       videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
@@ -80,13 +80,14 @@ describe("WelcomeVideoGate", () => {
 
     await screen.findByRole("dialog", { name: DIALOG_NAME });
 
-    const video = screen.getByTitle("Welcome to ADE video");
-    expect(video.getAttribute("sandbox")).toBe(
-      "allow-scripts allow-same-origin allow-presentation allow-popups",
+    expect(document.querySelector("iframe")).toBeNull();
+
+    const videoButton = screen.getByRole("button", {
+      name: /open the ade intro video on youtube/i,
+    });
+    expect(videoButton.querySelector("img")?.getAttribute("src")).toContain(
+      `img.youtube.com/vi/${ADE_WELCOME_VIDEO_ID}/`,
     );
-    expect(video.getAttribute("allow")).toBe("encrypted-media; picture-in-picture");
-    expect(video.getAttribute("src")).toContain("youtube-nocookie.com/embed/");
-    expect(video.getAttribute("src")).not.toContain("autoplay=1");
   });
 
   it("uses route-stable public asset URLs on nested browser routes", async () => {
