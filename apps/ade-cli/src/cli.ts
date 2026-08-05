@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// MUST stay the first import: it wraps process.emitWarning before anything can
+// pull in `node:sqlite`, whose experimental-feature warning would otherwise
+// print on every single `ade` invocation. See ./lib/nodeWarnings.
+import "./lib/nodeWarnings";
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -24,11 +28,12 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import {
+  readInstalledDesktopVersion,
   resolveDefaultDesktopAppName,
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
-export { readInstalledDesktopVersion } from "./commands/doctor";
+export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
@@ -329,6 +334,7 @@ type CliPlan =
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
   | { kind: "tools"; rest: string[] }
+  | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
   | { kind: "serve"; rest: string[] }
@@ -606,6 +612,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
 
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -12363,6 +12370,9 @@ function buildCliPlan(
   if (primary === "tools") {
     return { kind: "tools", rest: args };
   }
+  if (primary === "setup") {
+    return { kind: "setup", rest: args };
+  }
   if (primary === "serve") {
     return { kind: "serve", rest: args };
   }
@@ -15576,6 +15586,128 @@ async function readBrainSyncStatus(
     try {
       client?.close();
     } catch {}
+  }
+}
+
+/**
+ * Account state for `ade setup`, read straight off the machine brain.
+ *
+ * Deliberately non-throwing: setup uses this only to decide which prompt to
+ * show, and an unreachable brain should degrade to "offer sign-in", never
+ * abort an install that is otherwise fine.
+ */
+async function readSetupAccountStatus(
+  options: GlobalOptions,
+): Promise<{ signedIn: boolean; identity: string | null }> {
+  let connection: CliConnection | null = null;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+    const status = unwrapActionEnvelope(
+      await connection.request("account.call", { action: "status", args: {} }),
+    );
+    if (!isRecord(status)) return { signedIn: false, identity: null };
+    return {
+      signedIn: status.signedIn === true,
+      identity: asString(status.email) ?? asString(status.name),
+    };
+  } catch {
+    return { signedIn: false, identity: null };
+  } finally {
+    try {
+      await connection?.close();
+    } catch {}
+  }
+}
+
+/**
+ * `ade setup` — the interactive half of installation.
+ *
+ * The step orchestration and all rendering live in ./commands/setup; this
+ * function binds it to the real brain, tool cache and release feed. It runs the
+ * brain at `cto` for the same reason `ade connect` does: the account actions it
+ * drives are CTO-only.
+ */
+async function runSetupCli(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const { SetupUsageError, runSetupCommand } = await import("./commands/setup");
+  try {
+    const result = await runSetupCommand(rest, {
+      env: process.env,
+      ensureAgentTools: async (onProgress) => {
+        const { ensureTools, listPinnedTools } = await import("./services/tools/install");
+        const names = listPinnedTools();
+        await ensureTools(names, {
+          onProgress: (progress) => {
+            onProgress({
+              fraction:
+                typeof progress.receivedBytes === "number" &&
+                  typeof progress.totalBytes === "number" &&
+                  progress.totalBytes > 0
+                  ? progress.receivedBytes / progress.totalBytes
+                  : null,
+              receivedBytes: progress.receivedBytes ?? null,
+              totalBytes: progress.totalBytes ?? null,
+              item: progress.phase === "waiting"
+                ? `${progress.tool} (waiting for another ADE install)`
+                : progress.tool,
+            });
+          },
+        });
+        return { ok: true, detail: names.join(", ") };
+      },
+      getAccountStatus: () => readSetupAccountStatus(options),
+      // Delegates to the same `ade connect` implementation so the OAuth flow,
+      // the service step and the machine-directory wait stay in one place.
+      runConnect: async () => {
+        const connect = await runConnectCli([], options);
+        return connect.exitCode === 0
+          ? { ok: true, detail: "linked" }
+          : { ok: false, detail: "sign-in didn't finish", nextAction: "ade connect" };
+      },
+      readInstalledDesktop: () => readInstalledDesktopVersion(),
+      // "The files copied" is a different claim from "it works". This is the
+      // check whose absence let a failed sign-in still print a success line.
+      verify: async () => {
+        const { getRuntimeServiceStatus } = await import("./serviceManager");
+        const service = getRuntimeServiceStatus();
+        if (service.running === false) {
+          return {
+            ok: false,
+            detail: "the ADE brain is not running",
+            nextAction: "ade brain start",
+          };
+        }
+        const account = await readSetupAccountStatus(options);
+        if (!account.signedIn) {
+          return {
+            ok: false,
+            detail: "sign-in didn't finish",
+            nextAction: "ade connect",
+          };
+        }
+        return {
+          ok: true,
+          detail: `ade ${VERSION}, brain running, signed in as ${account.identity ?? "your account"}`,
+        };
+      },
+    });
+    return {
+      // Deliberately empty. `ade setup` is a human-facing flow whose entire
+      // output is the step list and summary already written to stderr; the
+      // installer inherits stdio, so echoing the result object here would dump
+      // a JSON blob onto the user's console right under the summary -- the
+      // exact kind of noise this command exists to remove.
+      output: "",
+      exitCode: result.ok ? 0 : 1,
+    };
+  } catch (error) {
+    if (error instanceof SetupUsageError) throw new CliUsageError(error.message);
+    throw error;
   }
 }
 
@@ -21051,6 +21183,9 @@ async function runCli(
     }
     if (plan.kind === "connect") {
       return await runConnectCli(plan.rest, parsed.options);
+    }
+    if (plan.kind === "setup") {
+      return await runSetupCli(plan.rest, parsed.options);
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
