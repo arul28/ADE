@@ -1,0 +1,34 @@
+---
+title: "v1.2.53"
+description: "Release notes for ADE v1.2.53 - August 5, 2026"
+---
+
+This release rebuilds how ADE is installed, downloaded, and updated. One command now installs the ADE brain on macOS, Windows, or a Linux server and connects it to your account; the desktop download is a fraction of its former size; and the macOS auto-update crash that v1.2.52 could trigger is fixed structurally, with CI gates that keep it fixed.
+
+---
+
+## Install ADE with one command
+
+- **`curl -fsSL https://ade-app.dev/install.sh | sh`** (macOS and Linux) or **`irm https://ade-app.dev/install.ps1 | iex`** (Windows) installs the ADE brain — the self-contained engine behind every ADE surface. No Node, npm, or any other prerequisite: the installer verifies checksums, stages with rollback, and registers the brain as a per-user background service (launchd, systemd, or a Windows startup entry — never an elevated shell).
+- **The installer signs you in and connects the machine.** After installing it offers `ade connect`: sign in (a copy-paste device flow when you're over SSH), publish the machine to your account, and it's reachable from ADE desktop, [the web client](https://app.ade-app.dev), and iOS. On macOS and Windows it can install the desktop app too.
+- **`ade connect` is idempotent.** Run it any time to check or repair the account → service → machine chain; `--status` reports without changing anything, `--no-login` keeps a machine local/LAN-only.
+- **Linux is now a first-class home for the brain.** Run one command on any Linux box (x64 or arm64) and drive it from your Mac, Windows machine, phone, or browser. There is no Linux desktop app — the brain is the whole engine.
+- The website now has an install dialog behind every download button: the one-liner, direct downloads per architecture, and Homebrew, side by side.
+
+## Downloads are a fraction of the size
+
+- **The macOS download is well under half its previous size, and the Windows installer shrank by more than a gigabyte.** Two structural fixes: every build previously shipped every platform's runtime (the Windows installer carried both macOS runtimes; macOS carried Windows), and the heavyweight agent CLIs were bundled twice per install.
+- **Agent CLIs are now fetched, pinned, and shared.** Codex, Claude Code, and OpenCode download on first run from the npm registry — exact versions pinned by a manifest with cryptographic integrity checks, stored once in a shared cache (`~/.ade/tools`) used by the desktop app and the brain alike. Updates stop re-downloading hundreds of megabytes of unchanged vendor binaries when nothing was repinned.
+- **Updates can never hit the crash cliff again.** v1.2.52's macOS package crossed 1 GiB and crashed Squirrel.Mac during auto-update. The updater now refuses oversized artifacts outright, and the release pipeline hard-fails any macOS package over 800 MiB before it can publish.
+
+## Fixes
+
+- Cross-platform remote provisioning works again: setting up a Linux or Windows machine over SSH from a Mac (or vice versa) downloads the exact-version runtime from the release, checksum-verified, instead of failing.
+- The auto-updater reports a typed, actionable error state instead of dying when an artifact is oversized, and preserves verified downloads across retries.
+- `ade tools status | ensure | gc` manages the shared agent-tools cache; the brain fetches missing tools in the background and repairs itself without a restart.
+- Dozens of correctness fixes from this release's review cycle, including Windows file-lock contention handling, per-tool fetch isolation, and a first-run state that says "downloading" instead of "not found" while agent runtimes are still arriving.
+
+## Under the hood
+
+- The packaged app dropped ~590 MiB of never-executed code: renderer libraries were shipping twice (bundled and raw), and dead packages are gone entirely.
+- Release CI now gates every build: target-purity checks in seconds before the build, size budgets after packaging, and archive-content assertions derived from one canonical package list.

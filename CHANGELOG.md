@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.53] - 2026-08-05
+
+### Added
+
+- One-command brain install: `curl -fsSL https://ade-app.dev/install.sh | sh` (macOS/Linux) and `irm https://ade-app.dev/install.ps1 | iex` (Windows), with checksum verification, staged rollback, background-service registration, sign-in, and optional desktop app install.
+- `ade connect` — idempotent sign-in → service → machine-publish chain; `ade tools status|ensure|gc` for the shared agent-tools cache.
+- Linux brain as a first-class target (x64/arm64), controllable from desktop, web, and iOS.
+- Website install dialog with per-platform one-liners, direct downloads, and Homebrew; stable `/install.sh`, `/install.ps1`, and `/download/*` endpoints on ade-app.dev.
+
+### Changed
+
+- Agent CLIs (Codex, Claude Code, OpenCode) are fetched on first run — manifest-pinned with sha512 integrity from the npm registry — into a shared versioned cache instead of being bundled twice per install; downloads and updates shrink by hundreds of megabytes.
+- Release packaging is target-only per platform/arch, enforced by pre-build purity gates and post-package size budgets (macOS ≤ 800 MiB, Windows ≤ 900 MiB).
+
+### Fixed
+
+- macOS auto-update crash on oversized archives (Squirrel.Mac CFData 1 GiB doubling cliff): the updater refuses oversized artifacts with a typed error, and CI prevents oversized packages from publishing.
+- Cross-platform SSH provisioning of a different-platform machine downloads the exact-version runtime from release assets, checksum-verified, instead of hard-failing.
+- Windows file-lock contention handling in the tools cache, per-tool fetch isolation, first-run "downloading" state for agent runtimes, and the packaged app dropped ~590 MiB of never-executed code.
+
+
 ## [1.2.52] - 2026-08-04
 
 ### Windows
@@ -1382,6 +1403,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.53]: https://github.com/arul28/ADE/compare/v1.2.52...v1.2.53
 [1.2.52]: https://github.com/arul28/ADE/compare/v1.2.51...v1.2.52
 [1.2.51]: https://github.com/arul28/ADE/compare/v1.2.50...v1.2.51
 [1.2.50]: https://github.com/arul28/ADE/compare/v1.2.49...v1.2.50
