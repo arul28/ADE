@@ -258,12 +258,20 @@ caches a miss — so a fetch that lands mid-session is picked up with no restart
 anything. `ensureTools` is itself cross-process locked, so racing the desktop app
 or a second brain is safe.
 
+Each pinned tool is fetched by its own `ensureTools` call with its own error
+handling, so one tool failing does not abandon the ones behind it — nothing kicks
+this again for the life of the brain, so a single shared `try` would have left a
+machine with no Claude and no opencode after one network blip on the first
+download.
+
 | Signal | Meaning |
 |---|---|
-| `tools.fetch_skipped` | `ADE_DISABLE_TOOLS_FETCH=1` |
+| `tools.fetch_skipped` | The fetch did not run. Either `ADE_DISABLE_TOOLS_FETCH=1`, or `ade serve` is running from a source checkout — where all three tools already resolve from the repo's own `node_modules`, so fetching ~600 MB on every dev-loop serve and every CI job buys nothing. `ADE_FORCE_TOOLS_FETCH=1` opts a checkout back in; `ADE_DISABLE_TOOLS_FETCH=1` still wins over it. |
 | `tools.fetch_progress` | One line per phase change — never per download chunk, because this goes to the brain's long-lived service log |
-| `tools.fetch_complete` | Tool names and count |
-| `tools.fetch_failed` | The typed `kind`, the tool, and the message |
+| `tools.fetch_complete` | The tools that succeeded, their count, and a `failed` count |
+| `tools.fetch_failed` | The typed `kind`, the tool, and the message. One line per failing tool. |
+| `tools.gc_complete` | Superseded versions collected after a *fully* successful pass, as removed/kept counts. A partial pass never collects: the superseded copy of a tool whose new version just failed to download is the only working one left on the machine. |
+| `tools.gc_failed` | The collection swept and failed; the fetch itself still succeeded. |
 
 ### `ade tools`
 
