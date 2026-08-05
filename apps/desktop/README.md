@@ -36,7 +36,7 @@ The mock stays the fallback for everything the bridge does not override. UI work
 > This section covers the **browser preview** of the renderer. For the full
 > Electron app, use `npm run dev` from the repo root — or, to run a specific lane
 > build in isolation (its own runtime + bridge endpoints), see
-> [Run a specific lane worktree](../../README.md#run-a-specific-lane-worktree) in
+> [Run a specific lane worktree](../../docs/development/local-development.md#run-a-specific-lane-worktree) in
 > the root README. Do not aim `dev:desktop --socket` at a runtime you do not want
 > `--auto` to shut down (e.g. the production `~/.ade/sock/ade.sock`).
 

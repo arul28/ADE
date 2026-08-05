@@ -89,12 +89,6 @@ Every worktree, agent, and PR synced to iOS. Start a task on the desktop, approv
 </tr>
 </table>
 
-<p align="center">
-  <img src="assets/readme/worktree-graph.webp" alt="The worktree graph — dependencies, conflict risk, and rebase order" width="900" />
-</p>
-
-Plus files, terminals, git history, the workspace graph, multi-tasking, Linear sync, cron automations, computer-use proofs, and the `ade` CLI.
-
 ## Install
 
 Think of ADE as having 4 UI clients (web, desktop app, terminal, and mobile app) you can interact and work with. Each one of those clients needs to connect to a machine, and it does that via "ADE Brain". You can install the Brain to any machine, and magically it will then be accessible and controllable by any of those UI clients. The machine just needs to stay on, and suddenly you get a full agentic development experience from anywhere. 
