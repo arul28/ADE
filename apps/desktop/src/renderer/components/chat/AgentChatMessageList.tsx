@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion } from "motion/react";
@@ -1409,42 +1409,21 @@ function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: 
 }
 
 /**
- * Whether anything is listening for `ade:chat:open-info`.
+ * True inside a host that owns a chat actions pane and listens for
+ * `ade:chat:open-info` — i.e. `AgentChatPane`, which provides it.
+ * `PersonalChatsPage` mounts the same transcript with no actions pane and
+ * therefore leaves it false, so an affordance that opens that pane never
+ * renders as a button that silently does nothing.
  *
- * The transcript is mounted by two hosts: `AgentChatPane`, which owns the chat
- * actions pane and listens, and `PersonalChatsPage`, which has no actions pane
- * and does not. An affordance that opens that pane must not render on the
- * second one — dispatching there is a silent no-op, which is worse than an
- * absent button. A registry rather than a prop because the alternative is
- * threading one boolean through six component layers.
+ * Deliberately a context and NOT a module-level "is any host alive" registry:
+ * `App` renders every `ProjectSurface` and only toggles `active`, so each
+ * `AgentChatPane` stays MOUNTED while Personal Chats is open. A global count
+ * would read true on exactly the surface that has no pane, and clicking would
+ * dispatch to a hidden pane that drops the event on the `sessionId` guard —
+ * recreating the dead affordance this is meant to prevent. Only the owning
+ * subtree can answer this question.
  */
-let chatInfoHostCount = 0;
-const chatInfoHostListeners = new Set<() => void>();
-
-export function registerChatInfoHost(): () => void {
-  chatInfoHostCount += 1;
-  chatInfoHostListeners.forEach((listener) => listener());
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    chatInfoHostCount -= 1;
-    chatInfoHostListeners.forEach((listener) => listener());
-  };
-}
-
-function subscribeChatInfoHost(onChange: () => void): () => void {
-  chatInfoHostListeners.add(onChange);
-  return () => chatInfoHostListeners.delete(onChange);
-}
-
-function useChatInfoHostAvailable(): boolean {
-  return useSyncExternalStore(
-    subscribeChatInfoHost,
-    () => chatInfoHostCount > 0,
-    () => false,
-  );
-}
+export const ChatInfoHostContext = React.createContext(false);
 
 function activityBundleDedupeKey(item: ChatActivityBundleItem): string {
   const event = item.event;
@@ -4682,7 +4661,7 @@ const EventRow = React.memo(function EventRow({
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
     && Boolean(isLatestWorkLog);
-  const chatInfoHostAvailable = useChatInfoHostAvailable();
+  const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   return (
     <div
       data-chat-anchored-row={anchored ? "true" : undefined}

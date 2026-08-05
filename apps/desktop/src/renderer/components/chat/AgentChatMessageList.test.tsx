@@ -66,7 +66,7 @@ import {
   deriveTurnModelState,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
-  registerChatInfoHost,
+  ChatInfoHostContext,
   getTranscriptCollapseCacheKeysForTests,
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
@@ -3268,22 +3268,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(line.querySelector("svg")).toBeTruthy();
     cleanup();
 
-    const release = registerChatInfoHost();
-    try {
-      const withHost = renderMessageList(runningJob);
-      const openButton = withHost.container.querySelector("[data-background-job] button")!;
-      expect(openButton).toBeTruthy();
+    // Inside a host that owns the actions pane, the affordance appears and works.
+    const withHost = render(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <ChatInfoHostContext.Provider value={true}>
+          <AgentChatMessageList events={runningJob} />
+        </ChatInfoHostContext.Provider>
+      </MemoryRouter>,
+    );
+    const openButton = withHost.container.querySelector("[data-background-job] button")!;
+    expect(openButton).toBeTruthy();
 
-      const openInfo = vi.fn();
-      window.addEventListener("ade:chat:open-info", openInfo);
-      try {
-        fireEvent.click(openButton);
-        expect(openInfo).toHaveBeenCalledTimes(1);
-      } finally {
-        window.removeEventListener("ade:chat:open-info", openInfo);
-      }
+    const openInfo = vi.fn();
+    window.addEventListener("ade:chat:open-info", openInfo);
+    try {
+      fireEvent.click(openButton);
+      expect(openInfo).toHaveBeenCalledTimes(1);
     } finally {
-      release();
+      window.removeEventListener("ade:chat:open-info", openInfo);
     }
   });
 
