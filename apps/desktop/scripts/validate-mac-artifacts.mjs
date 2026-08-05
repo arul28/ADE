@@ -89,35 +89,6 @@ function resolveAbsolute(input) {
   return path.isAbsolute(input) ? input : path.resolve(appDir, input);
 }
 
-async function collectMatchingPaths(rootPath, predicate, matches = []) {
-  let entries;
-  try {
-    entries = await fs.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return matches;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (predicate(entryPath, entry)) {
-      matches.push(entryPath);
-    }
-    if (entry.isDirectory()) {
-      await collectMatchingPaths(entryPath, predicate, matches);
-    }
-  }
-
-  return matches;
-}
-
-function formatRelativeSample(rootPath, entries) {
-  return entries
-    .slice(0, 12)
-    .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
-    .join(", ");
-}
-
 async function pathExists(targetPath) {
   try {
     await fs.access(targetPath);

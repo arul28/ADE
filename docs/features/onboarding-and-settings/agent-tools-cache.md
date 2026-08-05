@@ -273,6 +273,21 @@ download.
 | `tools.gc_complete` | Superseded versions collected after a *fully* successful pass, as removed/kept counts. A partial pass never collects: the superseded copy of a tool whose new version just failed to download is the only working one left on the machine. |
 | `tools.gc_failed` | The collection swept and failed; the fetch itself still succeeded. |
 
+### Desktop app launch
+
+`apps/desktop/src/main/services/tools/agentToolsCacheService.ts` kicks a
+coalesced ensure on packaged launch and feeds the onboarding AI Runtimes band.
+Same shape as the brain's pass — one `ensureTools` call per tool, GC only after a
+fully clean one — plus one rule of its own: **resolution failures are per tool,
+never per pass.** `tryResolveTool` swallows only `not-installed`, so a host with
+no pinned build (`unsupported-target`, i.e. `win32-arm64`) or a malformed
+manifest throws out of the resolver. That runs at the top of every
+`getSnapshot()` and every run, so an escaping throw would take down the whole
+pass including the tools that are fine; instead the tool gets a `failed` state
+carrying its `kind`, logged once per transition as `agentTools.resolve_failed`,
+and the band renders "No pinned build for this platform" next to that runtime
+only.
+
 ### `ade tools`
 
 `apps/ade-cli/src/commands/tools.ts`. The brain already fetches in the

@@ -141,35 +141,6 @@ function fail(message) {
   throw new Error(`[validate-win-artifacts] ${message}`);
 }
 
-async function collectMatchingPaths(rootPath, predicate, matches = []) {
-  let entries;
-  try {
-    entries = await fsp.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return matches;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (predicate(entryPath, entry)) {
-      matches.push(entryPath);
-    }
-    if (entry.isDirectory()) {
-      await collectMatchingPaths(entryPath, predicate, matches);
-    }
-  }
-
-  return matches;
-}
-
-function formatRelativeSample(rootPath, entries) {
-  return entries
-    .slice(0, 12)
-    .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
-    .join(", ");
-}
-
 // Resolver sources that name a concrete file on disk, so the smoke can stat and
 // run it. "fallback-command" (bare command name for PATH lookup) and OpenCode's
 // "missing" do not, and are the expected result on a package host whose tools

@@ -165,8 +165,15 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
     if (now() - startedAt < timeoutMs && isLockStale(lockPath, staleMs, now())) {
       // Best-effort takeover. Losing this race is fine: the loop re-attempts
       // the O_EXCL create and only one process can win it.
-      await fsp.rm(lockPath, { force: true }).catch(() => undefined);
-      continue;
+      const removed = await fsp.rm(lockPath, { force: true }).then(() => true).catch(() => false);
+      // Only retry immediately when the name is actually gone. A stale lock
+      // that cannot be removed — an unremovable file, a denied directory, a
+      // Windows handle still open on it — reads as stale on every pass, so an
+      // unconditional `continue` would spin this branch with no sleep for the
+      // whole (15 minute) deadline, burning a core in syscalls. Falling through
+      // makes that case poll like any other contention and still terminate on
+      // the timeout below.
+      if (removed) continue;
     }
 
     const waited = now() - startedAt;
@@ -185,6 +192,18 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
 
 function startHeartbeat(lockPath: string, staleMs: number, owned: LockRecord): () => Promise<void> {
   const timer = setInterval(() => {
+    // Only refresh a lock that is still ours. If this process stalled long
+    // enough to be declared stale, the path now holds another process's record,
+    // and touching it would keep *their* lock looking fresh for as long as this
+    // process lives — so if that holder then died, nobody could ever take it
+    // over. An unreadable record is left alone rather than treated as foreign:
+    // a half-written record is transient, and stopping on one would give up the
+    // heartbeat for a lock we still hold.
+    const current = readLockRecord(lockPath);
+    if (current && (current.pid !== owned.pid || current.host !== owned.host)) {
+      clearInterval(timer);
+      return;
+    }
     try {
       const stamp = new Date();
       fs.utimesSync(lockPath, stamp, stamp);

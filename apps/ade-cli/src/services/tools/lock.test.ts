@@ -120,6 +120,67 @@ describe("acquireToolLock", () => {
     expect(fs.readFileSync(lockPath, "utf8")).toBe(stolen);
   });
 
+  it("polls instead of spinning when a stale lock cannot be removed", async () => {
+    // A lock that reads as permanently stale but cannot be unlinked (an
+    // unremovable file, a denied directory, a Windows handle still open on it)
+    // used to retry the takeover with no sleep between attempts, spinning a core
+    // in syscalls for the whole 15-minute deadline.
+    const lockPath = path.join(root, "locks", "codex.lock");
+    await fsp.mkdir(path.dirname(lockPath), { recursive: true });
+    // This host, a pid far above any pid_max: the stale check sees a dead
+    // holder without depending on wall-clock mtime, which the fake clock below
+    // would otherwise make meaningless.
+    await fsp.writeFile(lockPath, lockRecord({ pid: 4_000_000 }));
+
+    let clock = 0;
+    let removeAttempts = 0;
+    vi.spyOn(fsp, "rm").mockImplementation(async () => {
+      removeAttempts += 1;
+      // Advance a little so a regression terminates on the deadline instead of
+      // hanging the suite; it just does so having never slept.
+      clock += 1;
+      throw errno("EPERM");
+    });
+    const sleep = vi.fn(async () => {
+      clock += 250;
+    });
+
+    await expect(
+      acquireToolLock({ lockPath, sleep, pollIntervalMs: 250, timeoutMs: 1_000, now: () => clock }),
+    ).rejects.toMatchObject({ name: "ToolError", kind: "lock-timeout" });
+
+    expect(sleep).toHaveBeenCalled();
+    expect(removeAttempts).toBeLessThan(10);
+  });
+
+  it("stops the heartbeat once another process has reclaimed the lock", async () => {
+    // The mirror of the release() guard: a stalled holder whose heartbeat kept
+    // running would keep refreshing the new owner's mtime, so that owner's lock
+    // could never age out if it died.
+    vi.useFakeTimers();
+    try {
+      const lockPath = path.join(root, "locks", "codex.lock");
+      const acquisition = await acquireToolLock({
+        lockPath,
+        sleep: async () => undefined,
+        staleMs: 4_000,
+      });
+      if (acquisition.kind !== "acquired") throw new Error("expected to acquire the lock");
+
+      const utimes = vi.spyOn(fs, "utimesSync");
+      vi.advanceTimersByTime(1_000);
+      expect(utimes).toHaveBeenCalledTimes(1);
+
+      fs.writeFileSync(lockPath, lockRecord({ pid: process.pid + 1_000, host: "some-other-host" }));
+      vi.advanceTimersByTime(10_000);
+
+      expect(utimes).toHaveBeenCalledTimes(1);
+      await acquisition.release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("release() removes the lock it actually wrote", async () => {
     const lockPath = path.join(root, "locks", "codex.lock");
     const acquisition = await acquireToolLock({ lockPath, sleep: async () => undefined });

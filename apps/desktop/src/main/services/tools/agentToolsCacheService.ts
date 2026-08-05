@@ -78,9 +78,31 @@ export function createAgentToolsCacheService(args: {
     for (const tool of pinned) {
       // Never downgrade a tool that is mid-fetch; the resolver only reports
       // installed/absent and would otherwise erase the progress state.
-      if (states.get(tool)?.status === "fetching") continue;
-      if (resolve(tool)) {
-        states.set(tool, { tool, status: "installed", percent: null, errorKind: null });
+      const previous = states.get(tool);
+      if (previous?.status === "fetching") continue;
+      try {
+        if (resolve(tool)) {
+          states.set(tool, { tool, status: "installed", percent: null, errorKind: null });
+        }
+      } catch (error) {
+        // `tryResolveTool` only swallows `not-installed`; anything else comes
+        // back out — a host with no pinned build (win32-arm64 raises
+        // `unsupported-target`), a malformed manifest. This runs on every
+        // getSnapshot() and at the top of every run(), so letting it escape
+        // would take down the whole tools-cache pass, including the tools that
+        // are perfectly fine. It is this tool's own failure, so record it as
+        // one and carry on.
+        const errorKind: ToolErrorKind = isToolError(error) ? error.kind : "filesystem";
+        states.set(tool, { tool, status: "failed", percent: null, errorKind });
+        // Once per transition, not once per snapshot read: getSnapshot() is
+        // called from IPC and would otherwise repeat this line forever.
+        if (previous?.status !== "failed" || previous.errorKind !== errorKind) {
+          args.logger.warn("agentTools.resolve_failed", {
+            tool,
+            errorKind,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     }
   }

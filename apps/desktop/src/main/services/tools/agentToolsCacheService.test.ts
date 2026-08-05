@@ -253,6 +253,41 @@ describe("createAgentToolsCacheService", () => {
       { tool: "opencode", status: "installed", percent: null, errorKind: null },
     ]);
   });
+  // Windows on ARM has no pinned build, so `tryResolveTool` raises
+  // `unsupported-target` rather than returning null. That used to escape
+  // refreshInstalled(), which runs at the top of every getSnapshot() and every
+  // run() -- one unsupported tool took the whole pass down with it, including
+  // the tools that resolve fine.
+  it("degrades an unsupported host to a per-tool failure instead of throwing", async () => {
+    const unsupported = new ToolError(
+      "ADE agent tools are published for macOS/Linux arm64/x64 and Windows x64; got win32/arm64.",
+      { kind: "unsupported-target", target: "win32-arm64" },
+    );
+    const ensure = vi.fn(async () => new Map());
+    const service = createAgentToolsCacheService({
+      logger,
+      gc: noopGc,
+      listPinned: () => ["codex", "opencode"],
+      resolve: ((tool: string) => {
+        if (tool === "codex") throw unsupported;
+        return null;
+      }) as never,
+      ensure: ensure as never,
+    });
+
+    expect(service.getSnapshot().tools).toEqual([
+      { tool: "codex", status: "failed", percent: null, errorKind: "unsupported-target" },
+      { tool: "opencode", status: "missing", percent: null, errorKind: null },
+    ]);
+
+    const snapshot = await service.ensureMissing();
+    // opencode is still fetched; only the unsupported tool stays failed.
+    expect(ensure.mock.calls.map((call) => (call as unknown[])[0])).toContainEqual(["opencode"]);
+    expect(snapshot.tools).toContainEqual({
+      tool: "opencode", status: "installed", percent: null, errorKind: null,
+    });
+    expect(snapshot.fetching).toBe(false);
+  });
 });
 
 describe("toolFetchDurationBucket", () => {

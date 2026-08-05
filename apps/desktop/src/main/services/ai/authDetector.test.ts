@@ -126,6 +126,20 @@ beforeEach(async () => {
 describe("authDetector", () => {
   const originalEnv = { ...process.env };
   let tempHomeDir: string | null = null;
+  /**
+   * Fixtures written while `process.platform` is faked to "win32".
+   *
+   * The `node:path` mock at the top of this file switches to win32 semantics
+   * there, so `path.join("/var/folders/…", "npm")` returns `"\var\folders\…\npm"`
+   * — which on a POSIX host is not a path at all but a single literal filename,
+   * created relative to the CWD (apps/desktop) rather than under the temp dir.
+   * That is exactly what the code under test computes, so the fixture has to use
+   * it, and vitest runs this suite in worker threads where `process.chdir()`
+   * throws ERR_WORKER_UNSUPPORTED_OPERATION. Remembering what was written and
+   * removing it here is what keeps the repo from collecting a `\var\folders\…`
+   * file on every single run.
+   */
+  const windowsStyleFixtures: string[] = [];
 
   beforeEach(() => {
     spawnMock.mockReset();
@@ -142,6 +156,9 @@ describe("authDetector", () => {
     if (tempHomeDir) {
       fs.rmSync(tempHomeDir, { recursive: true, force: true });
       tempHomeDir = null;
+    }
+    for (const fixture of windowsStyleFixtures.splice(0)) {
+      fs.rmSync(fixture, { recursive: true, force: true });
     }
   });
 
@@ -214,6 +231,9 @@ describe("authDetector", () => {
     const cursorAgentPath = path.join(npmBin, "cursor-agent.cmd");
     fs.mkdirSync(npmBin, { recursive: true });
     fs.writeFileSync(cursorAgentPath, "@echo off\r\n", "utf8");
+    // Both names are win32-joined and therefore CWD-relative here; see
+    // windowsStyleFixtures above. File first, then the directory.
+    windowsStyleFixtures.push(cursorAgentPath, npmBin);
     process.env.APPDATA = tempHomeDir;
     process.env.PATH = "C:\\Windows\\System32";
     process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
