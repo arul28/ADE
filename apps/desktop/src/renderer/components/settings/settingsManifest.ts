@@ -62,16 +62,16 @@ export type SettingsTab = {
 };
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  { id: "general", label: "General", description: "Project identity, launch behavior, updates, and privacy." },
+  { id: "general", label: "General", description: "Project identity, the ade command, launch behavior, updates, and privacy." },
   { id: "appearance", label: "Appearance", description: "How ADE looks and how the chat transcript reads." },
   { id: "agents", label: "Agents & Models", description: "Provider connections, model routing, and background helpers." },
   { id: "lanes-git", label: "Lanes & Git", description: "How lanes start, stay current, and tell you they fell behind." },
-  { id: "integrations", label: "Integrations", description: "GitHub, Linear, and the ADE command line." },
+  { id: "integrations", label: "Integrations", description: "GitHub and Linear." },
   { id: "notifications", label: "Notifications & Sound", description: "What ADE interrupts you for, and how." },
   { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it." },
   // Named "Secrets & Environment" while planning, on the assumption that
   // `EnvironmentSection` held environment-variable mappings. It doesn't — it
-  // was App version + ADE CLI, which now live in General and Integrations —
+  // was App version + ADE CLI, which now both live in General —
   // and ADE has no env-mapping UI. Secrets *are* the env-style values here
   // (they import straight from `.env`), so the tab is named for what it holds.
   { id: "secrets", label: "Secrets", description: "Encrypted key/value pairs for ADE agents, desktop, and the CLI." },
@@ -118,6 +118,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     showScopeChip: true,
     group: "Project",
+  },
+  {
+    id: "general.ade-cli",
+    label: "ADE command line",
+    keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],
+    tab: "general",
+    anchor: "ade-cli",
+    scope: "machine",
+    web: "hidden",
+    group: "Command line",
   },
   {
     id: "general.launch-prompt",
@@ -404,17 +414,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     showScopeChip: true,
     group: "Linear",
   },
-  {
-    id: "integrations.ade-cli",
-    label: "ADE command line",
-    keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],
-    tab: "integrations",
-    anchor: "ade-cli",
-    scope: "machine",
-    web: "hidden",
-    group: "Command line",
-  },
-
   // ── Notifications & Sound ────────────────────────────────────────────────
   {
     id: "notifications.events",

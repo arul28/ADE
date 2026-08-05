@@ -20325,7 +20325,7 @@ async function runAccountLogin(
       }
     }
     process.stderr.write(
-      `\nSign in to ADE in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
+      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
     );
     const deadlineMs = deadlineFor(expiresAt);
     while (true) {

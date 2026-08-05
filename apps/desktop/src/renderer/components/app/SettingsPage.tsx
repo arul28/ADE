@@ -138,6 +138,11 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           <WebSettingsSection entryIds={["general.project"]}>
             <ProjectSection />
           </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.ade-cli"]}>
+            <div id="ade-cli">
+              <AdeCliSection />
+            </div>
+          </WebSettingsSection>
           <WebSettingsSection entryIds={["general.launch-prompt"]}>
             <LaunchPromptSection />
           </WebSettingsSection>
@@ -203,11 +208,6 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["integrations.linear"]}>
             <LinearIntegrationSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["integrations.ade-cli"]}>
-            <div id="ade-cli">
-              <AdeCliSection />
-            </div>
           </WebSettingsSection>
         </>
       );

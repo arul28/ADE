@@ -136,7 +136,7 @@ export function Lede() {
             onClick={() => openInstall("linux")}
             className="inline-flex items-center gap-1 text-[color:var(--color-cream-muted)] underline decoration-[color:var(--color-hairline-strong)] underline-offset-4 transition-colors hover:text-[color:var(--color-cream)]"
           >
-            <Terminal className="h-3.5 w-3.5" aria-hidden /> Linux · install the brain
+            <Terminal className="h-3.5 w-3.5" aria-hidden /> Linux
           </button>
           <span aria-hidden>·</span>
           <a

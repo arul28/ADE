@@ -375,7 +375,8 @@ Renderer — settings:
   — toggles `prTranscriptGists.enabled` in project local config.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — About (version, runtime); rendered in General.
-  `AdeCliSection.tsx` is rendered in Integrations. The
+  `AdeCliSection.tsx` is rendered in General too, directly under Project —
+  CLI availability is app basics, not an integration. The
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
   — shared section headers (`SettingsSectionShell`) and toggle styling.
@@ -868,9 +869,18 @@ irm https://ade-app.dev/install.ps1 | iex          # Windows PowerShell
 
 The script downloads the static `ade-<platform-arch>` binary plus its
 native dependency archive, drops the binary in `$ADE_INSTALL_DIR` (or
-`~/.local/bin`), extracts native modules under `~/.ade/runtime/<arch>/`,
+`~/.ade/bin`), extracts native modules under `~/.ade/runtime/<arch>/`,
 and best-effort registers the login service. No Node or npm is required —
 the binary is a Node SEA.
+
+Both installers then put `ade` on `PATH` before anything else prompts:
+Windows updates the per-user `PATH` unless `-NoPath`; POSIX writes
+`~/.ade/env` and, with consent on a tty, appends one marker-commented
+`. "$HOME/.ade/env"` block to the shell profile (`~/.zshrc`,
+`~/.bash_profile` on macOS bash, `~/.bashrc` on Linux bash). The block is
+grep-guarded so re-running the installer never duplicates it; fish and
+unrecognized shells get printed instructions instead, as do
+non-interactive runs and `ADE_INSTALL_NO_PATH=1`.
 
 On an interactive terminal the script then offers to run `ade connect`,
 which signs the machine in, ensures the login service, and publishes the
@@ -902,11 +912,11 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `LaunchPromptSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | Project identity, launch behavior, updates, privacy, and version info. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `LaunchPromptSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | Project identity, the `ade` command line (`#ade-cli`), launch behavior, updates, privacy, and version info. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes & Git | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
-| Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx`, `AdeCliSection.tsx` | GitHub, Linear, and the `ade` command line — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here, as does `?integration=github|linear|cli`. |
+| Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications & Sound | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the agent completion sound, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |
 | Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode, expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |

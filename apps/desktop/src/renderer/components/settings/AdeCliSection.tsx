@@ -2,6 +2,16 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { ArrowsClockwise, CheckCircle, TerminalWindow, Warning } from "@phosphor-icons/react";
 import type { AdeCliStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { rendererPlatformAttribute } from "../../lib/platform";
+
+/**
+ * The terminal installer this card's button mirrors: it drops the same `ade`
+ * binary and, since it also manages shell PATH, is the answer for machines
+ * that never get the desktop app.
+ */
+const TERMINAL_INSTALL_COMMAND = rendererPlatformAttribute() === "win32"
+  ? "irm https://ade-app.dev/install.ps1 | iex"
+  : "curl -fsSL https://ade-app.dev/install.sh | sh";
 
 type Props = {
   compact?: boolean;
@@ -127,6 +137,14 @@ export function AdeCliSection({ compact = false, embedded = false }: Props) {
         {!status?.installTargetDirOnPath && status?.installTargetPath ? (
           <div style={{ ...infoBoxStyle(), marginTop: 14 }}>
             {installTargetDir} is not on this shell PATH. Agents still get the bundled command; add that directory to your shell PATH for Terminal use.
+            {embedded ? null : (
+              <>
+                {" "}Installing here puts the same <code style={codeStyle()}>ade</code> in your Terminal
+                that ADE uses everywhere else. On a machine without the desktop app,{" "}
+                <code style={codeStyle()}>{TERMINAL_INSTALL_COMMAND}</code> installs it and sets up
+                PATH for you.
+              </>
+            )}
           </div>
         ) : null}
 

@@ -190,6 +190,204 @@ ask() {
   esac
 }
 
+# --- ade path setup (start) -------------------------------------------------
+# Everything between these markers is self-contained: it reads `dest_dir`,
+# `ade_home`, `interactive` and `ADE_INSTALL_NO_PATH`, and it is extracted
+# verbatim by the installer's PATH tests. Keep it free of install-specific
+# state so it stays testable in isolation.
+
+path_marker_begin='# >>> ade >>>'
+path_marker_end='# <<< ade <<<'
+# Set to 1 only when this run appended the block to a profile file, which is
+# what makes the *current* shell stale.
+path_profile_updated=0
+# Filled in by detect_profile.
+path_shell=""
+path_profile=""
+
+env_file_path() {
+  printf '%s\n' "$ade_home/env"
+}
+
+# The literal line written into the profile. Kept `$HOME`-relative so it stays
+# readable, and so it survives a home directory mounted at a different path.
+# `$HOME` can legitimately be unset here (ADE_HOME set, no home directory: some
+# CI images, docker RUN, systemd units), so it is read defensively -- an
+# unbound expansion would abort the whole installer under `set -u`.
+env_file_ref() {
+  env_ref_file="$(env_file_path)"
+  env_ref_home="${HOME:-}"
+  if [ -n "$env_ref_home" ]; then
+    case "$env_ref_file" in
+      "$env_ref_home"/*)
+        printf '. "$HOME/%s"\n' "${env_ref_file#"$env_ref_home"/}"
+        return 0
+        ;;
+    esac
+  fi
+  printf '. "%s"\n' "$env_ref_file"
+}
+
+# rustup/bun/uv shape: a tiny POSIX-sh file that prepends the install dir to
+# PATH, guarded so sourcing it twice (or in an already-configured shell) is a
+# no-op rather than a growing PATH.
+# Returns non-zero instead of letting `set -e` kill the run: by the time this
+# is called the runtime is already installed, so a stale root-owned $ADE_HOME/env
+# must cost the user a PATH hint, not the sign-in and agent-CLI steps below.
+write_env_file() {
+  env_file="$(env_file_path)"
+  mkdir -p "$(dirname "$env_file")" 2>/dev/null || return 1
+  cat >"$env_file" <<EOF || return 1
+#!/bin/sh
+# Added by the ADE installer. Safe to source more than once.
+case ":\${PATH}:" in
+  *":$dest_dir:"*) ;;
+  *) export PATH="$dest_dir:\$PATH" ;;
+esac
+EOF
+  chmod 644 "$env_file" 2>/dev/null || true
+  return 0
+}
+
+# Prefer $SHELL (the login shell, which is what the user's next terminal will
+# start), and only fall back to sniffing dotfiles when it is absent or exotic.
+detect_profile() {
+  path_shell=""
+  path_profile=""
+  path_home="${HOME:-}"
+  if [ -n "${SHELL:-}" ]; then
+    path_shell="$(basename "$SHELL")"
+  fi
+  # No home directory means no profile to sniff for or write to. Leave
+  # path_profile empty and let the caller fall back to printing the hint.
+  if [ -z "$path_home" ]; then
+    return 0
+  fi
+  case "$path_shell" in
+    zsh | bash | fish) ;;
+    *)
+      if [ -f "$HOME/.zshrc" ] || [ -f "$HOME/.zprofile" ]; then
+        path_shell="zsh"
+      elif [ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]; then
+        path_shell="bash"
+      fi
+      ;;
+  esac
+
+  case "$path_shell" in
+    zsh)
+      # Every interactive zsh reads .zshrc, while .zprofile is login-shell only.
+      # Writing to .zprofile would leave PATH missing in the non-login shells
+      # editors and multiplexers spawn, so always target .zshrc and create it
+      # when it is absent.
+      path_profile="$HOME/.zshrc"
+      ;;
+    bash)
+      # macOS Terminal starts login shells, which read .bash_profile and never
+      # .bashrc; Linux terminals are the other way round.
+      if [ "$(uname -s)" = "Darwin" ]; then
+        path_profile="$HOME/.bash_profile"
+      else
+        path_profile="$HOME/.bashrc"
+      fi
+      ;;
+    *)
+      # fish and anything unrecognized: we do not know the syntax or the file,
+      # so we print instructions instead of guessing at someone's config.
+      path_profile=""
+      ;;
+  esac
+}
+
+profile_has_block() {
+  [ -f "$1" ] || return 1
+  grep -Fq "$path_marker_begin" "$1"
+}
+
+append_profile_block() {
+  append_target="$1"
+  mkdir -p "$(dirname "$append_target")" 2>/dev/null || return 1
+  # One printf, so the whole block lands in a single append -- three separate
+  # writes let a concurrently running installer interleave into the middle of
+  # ours and produce a nested, unreadable pair of blocks. The leading newline
+  # also terminates a profile whose last line has no newline of its own.
+  printf '\n%s\n%s\n%s\n' \
+    "$path_marker_begin" "$(env_file_ref)" "$path_marker_end" \
+    >>"$append_target" || return 1
+  return 0
+}
+
+print_path_hint() {
+  if [ "$path_shell" = "fish" ]; then
+    printf 'To use `ade` in your own terminal, run:\n  fish_add_path "%s"\n' "$dest_dir"
+  else
+    printf 'To use `ade` in your own terminal, add this line to your shell profile:\n  %s\n' "$(env_file_ref)"
+  fi
+}
+
+# Writes the env file always; edits a profile file only with consent, on a tty,
+# and only once (re-running the installer is the update path).
+setup_path() {
+  # Without the env file there is nothing for a profile line to source, so a
+  # failed write ends PATH setup here rather than pointing a dotfile at a file
+  # that does not exist.
+  if ! write_env_file; then
+    printf 'ade install: could not write %s; skipping PATH setup.\n' "$(env_file_path)" >&2
+    printf 'To use `ade` in your own terminal, add %s to your PATH.\n' "$dest_dir"
+    return 0
+  fi
+  detect_profile
+
+  case ":$PATH:" in
+    *":$dest_dir:"*) path_on_path=1 ;;
+    *) path_on_path=0 ;;
+  esac
+
+  # Already managed by a previous install: the block sources the env file we
+  # just rewrote, so there is nothing to do and nothing to ask.
+  if [ -n "$path_profile" ] && profile_has_block "$path_profile"; then
+    return 0
+  fi
+
+  if [ "${ADE_INSTALL_NO_PATH:-}" = "1" ]; then
+    [ "$path_on_path" -eq 1 ] || print_path_hint
+    return 0
+  fi
+
+  # The directory is already on PATH by some other arrangement the user owns.
+  # Adding our own block would be redundant noise in their profile.
+  if [ "$path_on_path" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ -z "$path_profile" ] || [ "$path_shell" = "fish" ]; then
+    print_path_hint
+    return 0
+  fi
+
+  # No terminal (CI, automation): never touch dotfiles unasked.
+  if [ "$interactive" -ne 1 ]; then
+    print_path_hint
+    return 0
+  fi
+
+  printf '\n'
+  if ! ask "Add ade to your PATH by updating $path_profile?" y; then
+    print_path_hint
+    return 0
+  fi
+
+  if append_profile_block "$path_profile"; then
+    path_profile_updated=1
+    printf 'Updated %s\n' "$path_profile"
+  else
+    printf 'ade install: could not update %s.\n' "$path_profile" >&2
+    print_path_hint
+  fi
+  return 0
+}
+# --- ade path setup (end) ---------------------------------------------------
+
 choose_install_dir() {
   if [ -n "$install_dir" ]; then
     printf '%s\n' "$install_dir"
@@ -264,14 +462,12 @@ elif [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 printf 'ADE runtime installed: %s\n' "$dest_dir/ade"
+# Commands we print must be runnable *now*, in this shell, so they name the
+# binary by path until the install dir is already on PATH here. A profile edit
+# made below only affects new shells.
 case ":$PATH:" in
-  *":$dest_dir:"*)
-    ade_cmd="ade"
-    ;;
-  *)
-    ade_cmd="$dest_dir/ade"
-    printf 'Add %s to PATH to run ade from new shells.\n' "$dest_dir"
-    ;;
+  *":$dest_dir:"*) ade_cmd="ade" ;;
+  *) ade_cmd="$dest_dir/ade" ;;
 esac
 
 # Under `curl | sh` the script's stdin is the download pipe, so every prompt --
@@ -304,7 +500,7 @@ offer_sign_in() {
   fi
 
   printf '\n'
-  if ! ask 'Sign in to link this machine to your ADE account?' y; then
+  if ! ask 'Sign in or create your ADE account to link this machine?' y; then
     printf 'Skipped. Run `%s connect` later to link this machine.\n' "$ade_cmd"
     return 0
   fi
@@ -414,8 +610,15 @@ offer_desktop_app() {
   return 0
 }
 
+# PATH first: the sign-in and agent-CLI steps below should run with a sane
+# environment, and the user should be asked about their shell profile before
+# they are asked about accounts and a 1 GB desktop download.
+setup_path
 ensure_agent_tools
 offer_sign_in
 offer_desktop_app
 
 printf '\nDone. Try: %s connect --status --text\n' "$ade_cmd"
+if [ "$path_profile_updated" -eq 1 ]; then
+  printf 'New terminals will find `ade` on PATH. To use it in this one, run: %s\n' "$(env_file_ref)"
+fi

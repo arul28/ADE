@@ -194,9 +194,11 @@ export function InstallDialog({
           >
             {target.title}
           </h2>
-          <p className="mt-2 max-w-[46ch] font-serif italic text-[15px] leading-[1.45] text-[color:var(--color-cream-muted)]">
-            {target.subtitle}
-          </p>
+          {target.subtitle ? (
+            <p className="mt-2 max-w-[46ch] font-serif italic text-[15px] leading-[1.45] text-[color:var(--color-cream-muted)]">
+              {target.subtitle}
+            </p>
+          ) : null}
 
           <div
             className={cn(
@@ -218,9 +220,11 @@ export function InstallDialog({
                   label={`Copy the ${target.platform} install command`}
                 />
               </div>
-              <p className="mt-3 max-w-[42ch] text-[13px] leading-[1.55] text-[color:var(--color-cream-muted)]">
-                {target.terminal.blurb}
-              </p>
+              {target.terminal.blurb ? (
+                <p className="mt-3 max-w-[42ch] text-[13px] leading-[1.55] text-[color:var(--color-cream-muted)]">
+                  {target.terminal.blurb}
+                </p>
+              ) : null}
             </section>
 
             {target.downloads ? (
@@ -254,17 +258,21 @@ export function InstallDialog({
                     </a>
                   ))}
                 </div>
-                <p className="mt-3 max-w-[36ch] text-[13px] leading-[1.55] text-[color:var(--color-cream-muted)]">
-                  {target.downloads.blurb}
-                </p>
+                {target.downloads.blurb ? (
+                  <p className="mt-3 max-w-[36ch] text-[13px] leading-[1.55] text-[color:var(--color-cream-muted)]">
+                    {target.downloads.blurb}
+                  </p>
+                ) : null}
               </section>
             ) : null}
           </div>
 
           <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[color:var(--color-hairline)] pt-4">
-            <p className="m-0 text-[12.5px] text-[color:var(--color-cream-faint)]">
-              {target.footnote.text}
-            </p>
+            {target.footnote.text ? (
+              <p className="m-0 text-[12.5px] text-[color:var(--color-cream-faint)]">
+                {target.footnote.text}
+              </p>
+            ) : null}
             {target.footnote.command ? (
               <>
                 <code className="font-mono text-[12px] text-[color:var(--color-cream-muted)]">
