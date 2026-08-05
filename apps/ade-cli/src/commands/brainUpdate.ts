@@ -8,12 +8,15 @@ import {
   DEFAULT_ADE_RELEASE_REPO,
   RELEASE_CHECKSUMS_ASSET,
   RELEASE_DOWNLOAD_TIMEOUT_MS,
+  detectRuntimeTargetResult,
   downloadReleaseAsset,
   readSha256SumsFile,
   releaseAssetUrl,
   runtimeBinaryAssetName,
+  runtimeNativeArchiveAssetName,
   sha256File,
 } from "../lib/releaseAssets";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 type BrainUpdateExecFile = (
@@ -28,13 +31,6 @@ const DEFAULT_RELEASE_REPO = DEFAULT_ADE_RELEASE_REPO;
 const CHECKSUMS_ASSET = RELEASE_CHECKSUMS_ASSET;
 const UPDATE_STATUS_FILE = "update-status.json";
 const UPDATE_USER_AGENT = "ADE brain updater";
-const SUPPORTED_TARGETS = new Set([
-  "darwin-arm64",
-  "darwin-x64",
-  "linux-arm64",
-  "linux-x64",
-  "win32-x64",
-]);
 
 export class BrainUpdateUsageError extends Error {}
 
@@ -103,31 +99,19 @@ function nowIso(deps: BrainUpdateDeps): string {
   return (deps.now?.() ?? new Date()).toISOString();
 }
 
-function normalizeArch(arch: string): "arm64" | "x64" | null {
-  const normalized = arch.trim().toLowerCase();
-  if (normalized === "arm64" || normalized === "aarch64") return "arm64";
-  if (normalized === "x64" || normalized === "x86_64" || normalized === "amd64") return "x64";
-  return null;
-}
-
+/** The published target list and its normalization live in `lib/releaseAssets.ts`. */
 export function detectRuntimeTarget(
   platform: NodeJS.Platform = process.platform,
   arch: string = os.arch(),
 ): string {
-  const normalizedArch = normalizeArch(arch);
-  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
-    ? platform
-    : null;
-  if (!normalizedPlatform || !normalizedArch) {
-    throw new BrainUpdateUsageError(
-      `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
-    );
+  const detected = detectRuntimeTargetResult(platform, arch);
+  if (detected.ok) return detected.target;
+  if (detected.reason === "unsupported-target") {
+    throw new BrainUpdateUsageError(`Unsupported ADE runtime target: ${detected.target}.`);
   }
-  const target = `${normalizedPlatform}-${normalizedArch}`;
-  if (!SUPPORTED_TARGETS.has(target)) {
-    throw new BrainUpdateUsageError(`Unsupported ADE runtime target: ${target}.`);
-  }
-  return target;
+  throw new BrainUpdateUsageError(
+    `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
+  );
 }
 
 export function brainUpdateAssetUrl(repo: string, version: string, assetName: string): string {
@@ -458,7 +442,11 @@ async function extractArchiveToDirectory(
   deps: BrainUpdateDeps,
 ): Promise<void> {
   await fsp.mkdir(targetDir, { recursive: true });
-  const result = (deps.runCommand ?? runCommand)("tar", ["-xzf", archivePath, "-C", targetDir]);
+  // A bare "tar" on Windows resolves through PATH, which a caller controls; pin
+  // it to System32's bsdtar so the extraction path cannot be shimmed.
+  const platform = deps.platform ?? process.platform;
+  const tarCommand = platform === "win32" ? resolveTrustedWindowsTool("tar") : "tar";
+  const result = (deps.runCommand ?? runCommand)(tarCommand, ["-xzf", archivePath, "-C", targetDir]);
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to extract ADE native runtime dependencies.");
   }
@@ -865,7 +853,7 @@ export async function runBrainUpdateCommand(
     );
   }
   const binaryName = runtimeBinaryAssetName(target);
-  const canonicalNativeArchiveName = `ade-${target}.native.tar.gz`;
+  const canonicalNativeArchiveName = runtimeNativeArchiveAssetName(target);
   const binaryUrl = brainUpdateAssetUrl(options.repo, options.version, binaryName);
   const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, canonicalNativeArchiveName);
   const checksumUrl = brainUpdateAssetUrl(options.repo, options.version, CHECKSUMS_ASSET);

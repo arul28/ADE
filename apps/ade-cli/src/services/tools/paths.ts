@@ -1,17 +1,24 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  RUNTIME_TARGETS,
+  type RuntimeTarget,
+  detectRuntimeTargetResult,
+  isRuntimeTarget,
+  normalizeRuntimeArch,
+} from "../../lib/releaseAssets";
 import { ToolError } from "./errors";
 
-export const TOOL_TARGETS = [
-  "darwin-arm64",
-  "darwin-x64",
-  "linux-arm64",
-  "linux-x64",
-  "win32-x64",
-] as const;
+/**
+ * The tools cache is only ever populated for a target the ADE runtime itself
+ * ships for, so the list, the arch normalization and the host detection are all
+ * the release-asset module's (`lib/releaseAssets.ts`). These stay exported under
+ * the tools-domain names their callers already use.
+ */
+export const TOOL_TARGETS = RUNTIME_TARGETS;
 
-export type ToolTarget = (typeof TOOL_TARGETS)[number];
+export type ToolTarget = RuntimeTarget;
 
 /**
  * Written into the version directory as the last step of an install, so a
@@ -26,37 +33,26 @@ const STAGING_DIR_NAME = ".staging";
 const LOCK_DIR_NAME = ".locks";
 
 export function isToolTarget(value: string): value is ToolTarget {
-  return (TOOL_TARGETS as readonly string[]).includes(value);
+  return isRuntimeTarget(value);
 }
 
 export function normalizeToolArch(arch: string): "arm64" | "x64" | null {
-  const normalized = arch.trim().toLowerCase();
-  if (normalized === "arm64" || normalized === "aarch64") return "arm64";
-  if (normalized === "x64" || normalized === "x86_64" || normalized === "amd64") return "x64";
-  return null;
+  return normalizeRuntimeArch(arch);
 }
 
-/**
- * The manifest target for the current host. Mirrors `detectRuntimeTarget` in
- * `commands/brainUpdate.ts` — the tools cache is only ever populated for a
- * target the ADE runtime itself ships for.
- */
+/** The manifest target for the current host, as a `ToolError` on failure. */
 export function detectToolTarget(
   platform: NodeJS.Platform = process.platform,
   arch: string = os.arch(),
 ): ToolTarget {
-  const normalizedArch = normalizeToolArch(arch);
-  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
-    ? platform
-    : null;
-  const candidate = normalizedPlatform && normalizedArch ? `${normalizedPlatform}-${normalizedArch}` : null;
-  if (!candidate || !isToolTarget(candidate)) {
+  const detected = detectRuntimeTargetResult(platform, arch);
+  if (!detected.ok) {
     throw new ToolError(
       `ADE agent tools are published for macOS/Linux arm64/x64 and Windows x64; got ${platform}/${arch}.`,
       { kind: "unsupported-target", target: `${platform}-${arch}` },
     );
   }
-  return candidate;
+  return detected.target;
 }
 
 function homeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {

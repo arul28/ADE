@@ -117,11 +117,14 @@ verify_asset_checksum() {
 
 try_install_service() {
   service_log="$tmp_dir/install-service.log"
-  if "$dest_dir/ade" serve --install-service >"$service_log" 2>&1; then
+  # Capture $? from the command itself: after a closing `fi` it would report the
+  # compound statement's status (always 0) and the warning would lie.
+  status=0
+  "$dest_dir/ade" serve --install-service >"$service_log" 2>&1 || status="$?"
+  if [ "$status" -eq 0 ]; then
     return 0
   fi
 
-  status="$?"
   printf 'ade install: warning: runtime service install failed with exit status %s; ADE was installed but the login service was not registered.\n' "$status" >&2
   if [ -s "$service_log" ]; then
     while IFS= read -r line; do
@@ -201,6 +204,11 @@ need tar
 need chmod
 need awk
 target="$(detect_target)"
+# detect_target runs in a command-substitution subshell, so the `cpu`/`platform`
+# it assigns are lost here. Re-derive `cpu` in this shell: `desktop_manifest_entry`
+# reads it, and under `set -u` an unset `cpu` would abort the whole install at the
+# desktop-app upsell.
+cpu="${target#*-}"
 binary_name="ade-$target"
 archive_name="$binary_name.native.tar.gz"
 dest_dir="$(choose_install_dir)"

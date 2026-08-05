@@ -15,6 +15,10 @@ import type {
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
+import {
+  runtimeBinaryAssetName,
+  runtimeNativeArchiveAssetName,
+} from "../../../../../ade-cli/src/lib/releaseAssets";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
@@ -400,7 +404,7 @@ function shellQuote(value: string): string {
 }
 
 function bundledRuntimePath(resourcesPath: string, archLabel: string): string | null {
-  const binaryName = archLabel === "win32-x64" ? `ade-${archLabel}.exe` : `ade-${archLabel}`;
+  const binaryName = runtimeBinaryAssetName(archLabel);
   const candidates = [
     path.join(resourcesPath, "runtime", binaryName),
     path.join(resourcesPath, "app.asar.unpacked", "runtime", binaryName),
@@ -416,7 +420,7 @@ function bundledRuntimePath(resourcesPath: string, archLabel: string): string | 
 }
 
 function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string | null {
-  const archiveName = `ade-${archLabel}.native.tar.gz`;
+  const archiveName = runtimeNativeArchiveAssetName(archLabel);
   const candidates = [
     path.join(resourcesPath, "runtime", archiveName),
     path.join(resourcesPath, "app.asar.unpacked", "runtime", archiveName),

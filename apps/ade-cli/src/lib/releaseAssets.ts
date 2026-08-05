@@ -17,6 +17,56 @@ import { pipeline } from "node:stream/promises";
  * both places.
  */
 
+/**
+ * The five targets every ADE release publishes. This is the single source of
+ * truth: the tools cache (`services/tools/paths.ts`) and the brain self-updater
+ * (`commands/brainUpdate.ts`) both wrap the detection below rather than keeping
+ * their own copy of the list. Keep this module a leaf — it must import nothing
+ * but node builtins so either consumer can depend on it without a cycle.
+ */
+export const RUNTIME_TARGETS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-x64",
+] as const;
+
+export type RuntimeTarget = (typeof RUNTIME_TARGETS)[number];
+
+export function isRuntimeTarget(value: string): value is RuntimeTarget {
+  return (RUNTIME_TARGETS as readonly string[]).includes(value);
+}
+
+export function normalizeRuntimeArch(arch: string): "arm64" | "x64" | null {
+  const normalized = arch.trim().toLowerCase();
+  if (normalized === "arm64" || normalized === "aarch64") return "arm64";
+  if (normalized === "x64" || normalized === "x86_64" || normalized === "amd64") return "x64";
+  return null;
+}
+
+/**
+ * `unsupported-host` = the platform or arch is not one ADE builds for at all;
+ * `unsupported-target` = both normalized, but the pair is not published (only
+ * `win32-arm64` can reach this today). Callers keep their own error types and
+ * distinguish the two so their existing messages stay byte-identical.
+ */
+export type RuntimeTargetDetection =
+  | { ok: true; target: RuntimeTarget }
+  | { ok: false; reason: "unsupported-host" }
+  | { ok: false; reason: "unsupported-target"; target: string };
+
+export function detectRuntimeTargetResult(platform: string, arch: string): RuntimeTargetDetection {
+  const normalizedArch = normalizeRuntimeArch(arch);
+  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
+    ? platform
+    : null;
+  if (!normalizedPlatform || !normalizedArch) return { ok: false, reason: "unsupported-host" };
+  const target = `${normalizedPlatform}-${normalizedArch}`;
+  if (!isRuntimeTarget(target)) return { ok: false, reason: "unsupported-target", target };
+  return { ok: true, target };
+}
+
 export const RELEASE_CHECKSUMS_ASSET = "SHA256SUMS";
 export const DEFAULT_ADE_RELEASE_REPO = "arul28/ADE";
 export const RELEASE_DOWNLOAD_TIMEOUT_MS = 30_000;

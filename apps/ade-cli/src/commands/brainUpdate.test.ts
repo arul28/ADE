@@ -38,8 +38,17 @@ function downloadRuntimeFixture(target: string, version = "v1.2.13") {
   };
 }
 
+/**
+ * On Windows the updater extracts with System32's bsdtar resolved through the
+ * kernel SystemRoot alias, not a bare PATH "tar", so fixtures must recognise
+ * both spellings.
+ */
+function isTarCommand(command: string): boolean {
+  return command === "tar" || command.toLowerCase().endsWith("\\tar.exe");
+}
+
 function extractRuntimeFixture(command: string, args: string[]) {
-  if (command === "tar") {
+  if (isTarCommand(command)) {
     const targetDir = args[args.indexOf("-C") + 1];
     fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
   }
@@ -135,7 +144,7 @@ describe("brain update command", () => {
           return { stdout: "ade 1.2.13\n", stderr: "" };
         },
         runCommand: (command, args) => {
-          if (command === "tar") {
+          if (isTarCommand(command)) {
             const targetDir = args[args.indexOf("-C") + 1];
             fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
           }
@@ -214,7 +223,7 @@ describe("brain update command", () => {
         execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
         runCommand: (command, args) => {
           tarCalls.push([command, ...args]);
-          if (command === "tar") {
+          if (isTarCommand(command)) {
             const targetDir = args[args.indexOf("-C") + 1];
             fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
           }
@@ -303,7 +312,7 @@ describe("brain update command", () => {
         },
         execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
         runCommand: (command, args) => {
-          if (command === "tar") {
+          if (isTarCommand(command)) {
             const targetDir = args[args.indexOf("-C") + 1];
             fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
           } else if (args.includes("--service-status")) {
@@ -470,7 +479,7 @@ describe("brain update command", () => {
         },
         execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
         runCommand: (command, args) => {
-          if (command === "tar") {
+          if (isTarCommand(command)) {
             const targetDir = args[args.indexOf("-C") + 1];
             fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
             fs.writeFileSync(path.join(targetDir, "node_modules", ".keep"), "new-native");
