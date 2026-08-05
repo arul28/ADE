@@ -133,7 +133,7 @@ describe("AiFeaturesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set up ai-feature-chat-auto-title" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("/settings?tab=ai#ai-providers");
+      expect(screen.getByTestId("location").textContent).toBe("/settings?tab=agents#ai-providers");
     });
   });
 

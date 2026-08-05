@@ -17,6 +17,7 @@ import {
 } from "../../../shared/types/recovery";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useAppStore } from "../../state/appStore";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 /**
  * Codes we can attempt an automatic repair for when a live diagnosis isn't
@@ -344,7 +345,7 @@ export function ProjectRecoveryScreen() {
                 // this screen and the route change alone would never reveal
                 // Settings.
                 clearProjectTransitionError();
-                navigate("/settings?tab=storage");
+                navigate(settingsRouteFor("storage.usage"));
               }}
               className="inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07]"
             >

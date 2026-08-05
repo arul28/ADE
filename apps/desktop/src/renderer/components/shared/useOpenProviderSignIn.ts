@@ -2,11 +2,12 @@ import { useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AuthType, ProviderFamily } from "../../../shared/modelRegistry";
 import { createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 export function useOpenProviderSignIn(): (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void {
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
+    navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
 
   return useCallback((family?: ProviderFamily, authTypes?: readonly AuthType[]) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getModelById, modelSupportsFastMode, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 export type CtoModelSelection = {
   provider: string;
@@ -74,7 +75,7 @@ export function useCtoModelOptions(): {
   }, []);
 
   const openProviderSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
+    navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
 
   return { availableModelIds, loadingModels, openProviderSettings };

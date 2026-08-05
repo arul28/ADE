@@ -56,6 +56,7 @@ import {
 import { GitHubTabView } from "./GitHubTabView";
 import { branchNameFromRef } from "./githubPrBranch";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
+import { settingsRouteFor } from "../../settings/settingsManifest";
 
 export type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -943,7 +944,7 @@ export function GitHubTab({
           syncedAt: snapshot?.syncedAt ?? null,
           onSync: () => { void handleSync(); },
           error,
-          onConnectGitHub: () => navigate("/settings?tab=general#github-connection"),
+          onConnectGitHub: () => navigate(settingsRouteFor("integrations.github")),
         }}
         list={{
           parentRef: listRef,

@@ -68,6 +68,7 @@ import {
   handoffLaunchTitle,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -3102,8 +3103,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           open={createLaneOpen}
           onOpenChange={setCreateLaneOpen}
           behavior="close-on-create"
-          onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
-          onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
+          onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
+          onOpenLinearSettings={() => navigate(settingsRouteFor("integrations.linear"))}
         />
       ) : null}
       {settleUndo ? (

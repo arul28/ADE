@@ -14,6 +14,7 @@ import {
   searchSettingsEntries,
   settingsEntryPath,
   settingsGroupsForTab,
+  settingsRouteFor,
 } from "./settingsManifest";
 
 /**
@@ -47,6 +48,29 @@ describe("settings manifest", () => {
     for (const entry of SETTINGS_ENTRIES) {
       expect(settingsEntryPath(entry)).toBe(`/settings?tab=${entry.tab}#${entry.anchor}`);
     }
+  });
+
+  it("builds a live route for every id in-app CTAs link to", () => {
+    // The banners, callouts and empty states across the app now name settings
+    // by manifest id instead of hand-writing `?tab=...#anchor`. If a setting is
+    // renamed or dropped, this list is where it fails — loudly — instead of a
+    // CTA quietly dumping the user on the settings root.
+    const ctaIds = [
+      "integrations.github",
+      "integrations.linear",
+      "agents.providers",
+      "agents.background-jobs",
+      "agents.dictation",
+      "general.launch-prompt",
+      "lanes-git.lane-templates",
+      "storage.usage",
+      "storage.diagnostics",
+    ];
+    for (const id of ctaIds) {
+      expect(settingsRouteFor(id), `${id} has no manifest entry`).not.toBe("/settings");
+    }
+    expect(settingsRouteFor("integrations.github")).toBe("/settings?tab=integrations#github-connection");
+    expect(settingsRouteFor("nope.missing")).toBe("/settings");
   });
 
   it("resolves current tab ids unchanged", () => {

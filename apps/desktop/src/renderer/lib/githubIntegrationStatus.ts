@@ -195,7 +195,7 @@ export function githubAccountIssueCopy(
   return {
     title: "GitHub App not authorized",
     detail: "Authorize ADE with GitHub to turn on real-time pull request updates.",
-    action: "Authorize",
+    action: "Set up ADE GitHub App",
   };
 }
 

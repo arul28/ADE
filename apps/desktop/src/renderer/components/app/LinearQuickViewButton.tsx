@@ -45,6 +45,7 @@ import {
 } from "../../lib/launchedLanesHighlight";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
@@ -169,7 +170,7 @@ export function LinearQuickViewButton({
 
   const openLinearSettings = useCallback(() => {
     setConnectionPrompt(null);
-    window.location.hash = "#/settings?tab=general#linear-connection";
+    window.location.hash = `#${settingsRouteFor("integrations.linear")}`;
   }, []);
 
   const handleQuickViewRequest = useCallback((request: LinearIssueQuickViewRequest) => {

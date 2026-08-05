@@ -198,6 +198,7 @@ import {
   releaseRetainedChatSession,
   retainChatSession,
 } from "./chatSessionRetention";
+import { settingsRouteFor } from "../settings/settingsManifest";
 import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
@@ -3356,13 +3357,13 @@ export function AgentChatPane({
   }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
+    navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
   const openLinearSettings = useCallback(() => {
-    navigate("/settings?tab=general#linear-connection");
+    navigate(settingsRouteFor("integrations.linear"));
   }, [navigate]);
   const openLaunchPromptClipboardSettings = useCallback(() => {
-    navigate("/settings?tab=general#chat-launch-clipboard");
+    navigate(settingsRouteFor("general.launch-prompt"));
   }, [navigate]);
   const copyPromptForLaunch = useCallback(async (promptText: string) => {
     if (!launchPromptClipboardEnabled) return;
@@ -12551,7 +12552,7 @@ export function AgentChatPane({
                 <button
                   type="button"
                   className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
-                  onClick={() => navigate("/settings?tab=background-jobs")}
+                  onClick={() => navigate(settingsRouteFor("agents.background-jobs"))}
                 >
                   Settings
                 </button>

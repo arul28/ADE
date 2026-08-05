@@ -44,6 +44,7 @@ import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 import { cn } from "../ui/cn";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
   {
@@ -574,7 +575,7 @@ export function WorkSidebar({
             <LaneGitActionsPane
               laneId={laneId}
               autoRebaseEnabled={false}
-              onOpenSettings={() => navigate("/settings?tab=lane-templates")}
+              onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
               onSelectFile={(path, mode) => {
                 setSelectedPath(path);
                 setSelectedMode(mode);

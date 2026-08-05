@@ -3,6 +3,7 @@ import { HardDrive } from "@phosphor-icons/react";
 import { isUrgentDiskPressure, type DiskPressureSnapshot } from "../../../shared/types/storage";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 const STORAGE_PRESSURE_SAMPLE_MS = 30_000;
 const WARNING_DESCRIPTION = "Storage is running low — ADE and your active projects may create more files while agents work. Click to review ADE storage.";
@@ -80,7 +81,7 @@ export function StoragePressureIndicator({ enabled }: { enabled: boolean }) {
           outline: "none",
         }}
         onClick={() => {
-          window.location.hash = "#/settings?tab=storage";
+          window.location.hash = `#${settingsRouteFor("storage.usage")}`;
         }}
       >
         <HardDrive size={14} weight="fill" />

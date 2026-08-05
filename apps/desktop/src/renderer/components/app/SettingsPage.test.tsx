@@ -97,6 +97,19 @@ describe("SettingsPage", () => {
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
   });
 
+  it("follows the hash's owning tab when ?tab= disagrees with it", async () => {
+    // Links written before GitHub moved out of General still say
+    // `?tab=general#github-connection`. The hash names one exact card, so it
+    // wins: landing on General (where the card no longer is) is what made the
+    // "Set up ADE GitHub App" banner look like it did nothing.
+    renderSettings("/settings?tab=general#github-connection");
+
+    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("?tab=integrations#github-connection");
+    });
+  });
+
   it("falls back to General for a tab id it has never shipped", async () => {
     renderSettings("/settings?tab=not-a-real-tab");
     expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();

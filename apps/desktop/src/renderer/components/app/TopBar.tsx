@@ -86,6 +86,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -330,7 +331,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
           outline: "none",
         }}
         onClick={() => {
-          window.location.hash = "#/settings?tab=storage#diagnostics";
+          window.location.hash = `#${settingsRouteFor("storage.diagnostics")}`;
         }}
       >
         <WarningCircle size={14} weight="fill" />
