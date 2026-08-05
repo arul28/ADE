@@ -211,21 +211,33 @@ env_file_path() {
 
 # The literal line written into the profile. Kept `$HOME`-relative so it stays
 # readable, and so it survives a home directory mounted at a different path.
+# `$HOME` can legitimately be unset here (ADE_HOME set, no home directory: some
+# CI images, docker RUN, systemd units), so it is read defensively -- an
+# unbound expansion would abort the whole installer under `set -u`.
 env_file_ref() {
   env_ref_file="$(env_file_path)"
-  case "$env_ref_file" in
-    "$HOME"/*) printf '. "$HOME/%s"\n' "${env_ref_file#"$HOME"/}" ;;
-    *) printf '. "%s"\n' "$env_ref_file" ;;
-  esac
+  env_ref_home="${HOME:-}"
+  if [ -n "$env_ref_home" ]; then
+    case "$env_ref_file" in
+      "$env_ref_home"/*)
+        printf '. "$HOME/%s"\n' "${env_ref_file#"$env_ref_home"/}"
+        return 0
+        ;;
+    esac
+  fi
+  printf '. "%s"\n' "$env_ref_file"
 }
 
 # rustup/bun/uv shape: a tiny POSIX-sh file that prepends the install dir to
 # PATH, guarded so sourcing it twice (or in an already-configured shell) is a
 # no-op rather than a growing PATH.
+# Returns non-zero instead of letting `set -e` kill the run: by the time this
+# is called the runtime is already installed, so a stale root-owned $ADE_HOME/env
+# must cost the user a PATH hint, not the sign-in and agent-CLI steps below.
 write_env_file() {
   env_file="$(env_file_path)"
-  mkdir -p "$(dirname "$env_file")"
-  cat >"$env_file" <<EOF
+  mkdir -p "$(dirname "$env_file")" 2>/dev/null || return 1
+  cat >"$env_file" <<EOF || return 1
 #!/bin/sh
 # Added by the ADE installer. Safe to source more than once.
 case ":\${PATH}:" in
@@ -234,6 +246,7 @@ case ":\${PATH}:" in
 esac
 EOF
   chmod 644 "$env_file" 2>/dev/null || true
+  return 0
 }
 
 # Prefer $SHELL (the login shell, which is what the user's next terminal will
@@ -241,8 +254,14 @@ EOF
 detect_profile() {
   path_shell=""
   path_profile=""
+  path_home="${HOME:-}"
   if [ -n "${SHELL:-}" ]; then
     path_shell="$(basename "$SHELL")"
+  fi
+  # No home directory means no profile to sniff for or write to. Leave
+  # path_profile empty and let the caller fall back to printing the hint.
+  if [ -z "$path_home" ]; then
+    return 0
   fi
   case "$path_shell" in
     zsh | bash | fish) ;;
@@ -291,12 +310,14 @@ profile_has_block() {
 
 append_profile_block() {
   append_target="$1"
-  mkdir -p "$(dirname "$append_target")" || return 1
-  {
-    printf '\n%s\n' "$path_marker_begin"
-    printf '%s\n' "$(env_file_ref)"
-    printf '%s\n' "$path_marker_end"
-  } >>"$append_target" || return 1
+  mkdir -p "$(dirname "$append_target")" 2>/dev/null || return 1
+  # One printf, so the whole block lands in a single append -- three separate
+  # writes let a concurrently running installer interleave into the middle of
+  # ours and produce a nested, unreadable pair of blocks. The leading newline
+  # also terminates a profile whose last line has no newline of its own.
+  printf '\n%s\n%s\n%s\n' \
+    "$path_marker_begin" "$(env_file_ref)" "$path_marker_end" \
+    >>"$append_target" || return 1
   return 0
 }
 
@@ -311,7 +332,14 @@ print_path_hint() {
 # Writes the env file always; edits a profile file only with consent, on a tty,
 # and only once (re-running the installer is the update path).
 setup_path() {
-  write_env_file
+  # Without the env file there is nothing for a profile line to source, so a
+  # failed write ends PATH setup here rather than pointing a dotfile at a file
+  # that does not exist.
+  if ! write_env_file; then
+    printf 'ade install: could not write %s; skipping PATH setup.\n' "$(env_file_path)" >&2
+    printf 'To use `ade` in your own terminal, add %s to your PATH.\n' "$dest_dir"
+    return 0
+  fi
   detect_profile
 
   case ":$PATH:" in
