@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 
 import {
   APP_TARGETS,
@@ -15,9 +15,9 @@ import {
   selectAssetUrl,
   stableAssetUrl,
   type VercelRes,
-} from "./releaseAssets.ts";
-import downloadHandler from "./download.ts";
-import installHandler from "./install.ts";
+} from "./releaseAssets";
+import downloadHandler from "./download";
+import installHandler from "./install";
 
 const DOWNLOAD_PREFIX = "https://github.com/arul28/ADE/releases/download/v1.2.52";
 
