@@ -47,6 +47,7 @@ vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
 type MessageListHarnessProps = {
   events: AgentChatEventEnvelope[];
   sessionId?: string | null;
+  sessionEnded?: boolean;
   hasOlderHistory?: boolean;
   loadingOlderHistory?: boolean;
   olderHistoryError?: string | null;
@@ -71,6 +72,7 @@ vi.mock("../chat/AgentChatMessageList", () => ({
         data-has-older={props.hasOlderHistory ? "true" : "false"}
         data-loading-older={props.loadingOlderHistory ? "true" : "false"}
         data-older-error={props.olderHistoryError ?? ""}
+        data-session-ended={props.sessionEnded ? "true" : "false"}
       >
         <button
           type="button"
@@ -263,6 +265,36 @@ describe("PersonalChatsPage", () => {
     expect(await screen.findByTestId("message-list")).toBeTruthy();
     const textarea = screen.getByLabelText("Message an ADE agent");
     expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("docked");
+  });
+
+  it("tells the transcript when an ended chat is ended", async () => {
+    // Rows that hold a live clock -- a background job left `running` by a
+    // restart -- freeze on an ended session. That only works if the host says
+    // the session ended; this one used to derive turnActive and nothing else,
+    // so an archived personal chat counted up forever.
+    state.sessions = [makeSession({ title: "Archived chat", status: "ended" })];
+    state.historyEvents = [
+      { sessionId: "s1", timestamp: new Date().toISOString(), sequence: 1, event: { type: "assistant", text: "hi" } },
+    ];
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Archived chat"));
+
+    const list = await screen.findByTestId("message-list");
+    expect(list.getAttribute("data-session-ended")).toBe("true");
+  });
+
+  it("leaves a live chat unmarked so its tickers keep running", async () => {
+    state.sessions = [makeSession({ title: "Live chat", status: "active" })];
+    state.historyEvents = [
+      { sessionId: "s1", timestamp: new Date().toISOString(), sequence: 1, event: { type: "assistant", text: "hi" } },
+    ];
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Live chat"));
+
+    const list = await screen.findByTestId("message-list");
+    expect(list.getAttribute("data-session-ended")).toBe("false");
   });
 
   it("pages through empty cursor windows and prepends older transcript events", async () => {
