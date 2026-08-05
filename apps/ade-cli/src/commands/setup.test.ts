@@ -427,6 +427,26 @@ describe("runSetupCommand", () => {
     expect(chunks.join("")).toContain("What's left");
   });
 
+  it("fails verification for a signed-in machine that never reached the account", async () => {
+    // The exact state a clean install lands in: brain healthy, account signed
+    // in, machine absent from the account directory because no project is
+    // registered. Verifying sign-in alone would call this a success.
+    const result = await runSetupCommand(["--continue", "--no-desktop"], deps({
+      reporter: reporter([]),
+      verify: async () => ({
+        ok: false,
+        detail: "signed in, but this machine isn't in your account yet",
+        nextAction: "open a project in ADE to finish linking this machine",
+      }),
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.verified).toBe(false);
+    const account = result.steps.find((s) => s.id === "account");
+    expect(account?.state).toBe("failed");
+    expect(account?.nextAction).toBe("open a project in ADE to finish linking this machine");
+  });
+
   it("downgrades a step that reported ok when verification disagrees", async () => {
     // This is the exact shape of the bug: the sign-in step believed it worked
     // and the installer printed a next step, while the machine was not linked.
@@ -545,4 +565,26 @@ describe("installer brain registration (regression)", () => {
       expect(source).toMatch(/"setup"|setup --continue/);
     });
   }
+});
+
+// The publisher's skipReason strings are internal diagnostics. The desktop
+// Connections pane concatenates them into user-facing copy verbatim, which is
+// how "No active sync scope is available." reached a real user's screen.
+describe("describeUnpublishedMachine", () => {
+  it("translates no_active_sync_scope into the action that clears it", async () => {
+    const { describeUnpublishedMachine } = await import("./setup");
+    const described = describeUnpublishedMachine(
+      "no_active_sync_scope",
+      "No active sync scope is available.",
+    );
+    expect(described.detail).not.toContain("sync scope");
+    expect(described.nextAction).toBe("open a project in ADE to finish linking this machine");
+  });
+
+  it("keeps the reason visible for states it has no specific advice for", async () => {
+    const { describeUnpublishedMachine } = await import("./setup");
+    expect(describeUnpublishedMachine("http_error", "directory returned 503").detail)
+      .toContain("directory returned 503");
+    expect(describeUnpublishedMachine("http_error", null).detail).toContain("http error");
+  });
 });

@@ -15623,6 +15623,63 @@ async function readSetupAccountStatus(
 }
 
 /**
+ * Has this machine actually reached the account directory?
+ *
+ * Read from the brain's own publisher health rather than re-polling the
+ * directory: it is the component that would have done the POST, so its state
+ * is the honest answer, and an unreachable brain degrades to "unknown" instead
+ * of a false negative.
+ */
+async function verifyMachinePublished(
+  options: GlobalOptions,
+  identity: string | null,
+): Promise<{ ok: boolean; detail: string; nextAction?: string }> {
+  let connection: CliConnection | null = null;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+    const status = unwrapActionEnvelope(
+      await connection.request("sync.getStatus", { includeTransferReadiness: false }),
+    );
+    const routeHealth = isRecord(status) && isRecord(status.routeHealth)
+      ? status.routeHealth
+      : null;
+    const directory = routeHealth && isRecord(routeHealth.accountDirectory)
+      ? routeHealth.accountDirectory
+      : null;
+    const state = asString(directory?.state);
+    if (!state) {
+      // No health yet is not proof of failure -- the publisher runs on a 30s
+      // heartbeat and a fresh install can outrun its first attempt.
+      return {
+        ok: true,
+        detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+      };
+    }
+    if (state === "published") {
+      return {
+        ok: true,
+        detail: `ade ${VERSION}, brain running, ${identity ?? "your account"} — machine published`,
+      };
+    }
+    const { describeUnpublishedMachine } = await import("./commands/setup");
+    const described = describeUnpublishedMachine(state, asString(directory?.skipReason));
+    return { ok: false, ...described };
+  } catch {
+    return {
+      ok: true,
+      detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+    };
+  } finally {
+    try {
+      await connection?.close();
+    } catch {}
+  }
+}
+
+/**
  * `ade setup` — the interactive half of installation.
  *
  * The step orchestration and all rendering live in ./commands/setup; this
@@ -15690,10 +15747,14 @@ async function runSetupCli(
             nextAction: "ade connect",
           };
         }
-        return {
-          ok: true,
-          detail: `ade ${VERSION}, brain running, signed in as ${account.identity ?? "your account"}`,
-        };
+        // Signed in is NOT the outcome the user wants -- published is. A
+        // machine can be signed in, with a healthy brain, and still be absent
+        // from the account directory, which is exactly what a clean install
+        // looks like today: the account-directory publisher's only snapshot
+        // source is a project-scoped sync host, so a machine with no project
+        // registered publishes nothing and never appears in the account.
+        // Verifying `signedIn` alone would report that broken install as ready.
+        return await verifyMachinePublished(options, account.identity);
       },
     });
     return {

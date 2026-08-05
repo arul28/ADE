@@ -42,6 +42,34 @@ import path from "node:path";
 
 export class SetupUsageError extends Error {}
 
+/**
+ * Turn an account-directory publisher state into copy a person can act on.
+ *
+ * The publisher's `skipReason` strings are internal diagnostics ("No active
+ * sync scope is available."). Surfacing them verbatim -- which is what the
+ * desktop Connections pane does today -- tells a user that a fault occurred
+ * and nothing whatsoever about how to clear it.
+ */
+export function describeUnpublishedMachine(
+  state: string,
+  skipReason: string | null,
+): { detail: string; nextAction: string } {
+  if (state === "no_active_sync_scope") {
+    return {
+      detail: "signed in, but this machine isn't in your account yet",
+      // The publisher's only snapshot source is the active project's sync host,
+      // so with no project registered there is nothing for it to publish.
+      nextAction: "open a project in ADE to finish linking this machine",
+    };
+  }
+  return {
+    detail: skipReason?.trim()
+      ? `not published to your account (${skipReason.trim()})`
+      : `not published to your account (${state.replaceAll("_", " ")})`,
+    nextAction: "ade connect",
+  };
+}
+
 export type SetupOptions = {
   /** Installer already printed the banner and steps 1-2. */
   continueFromInstaller: boolean;
