@@ -2866,6 +2866,33 @@ describe("subagent two-row rendering", () => {
     expect(lifecycleFirst.map((row) => row.event.type)).toEqual(["subagent_spawn_anchor"]);
   });
 
+  it("drops the job line when a real subagent's ONLY lifecycle event is its result", () => {
+    // Reachable from a truncated or replayed transcript: history paging can
+    // drop `subagent_started` while the scheduled-work update survives. The
+    // guard used to live only on the spawn path, so this ordering left the job
+    // line in the transcript beside the agent's card pair.
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "scheduled_work_update",
+        id: "background:agent-1",
+        kind: "background_task",
+        status: "running",
+        title: "Investigate route tree",
+        sourceTaskId: "agent-1",
+      }),
+      env("2026-06-01T10:00:30.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        agentType: "Explore",
+        status: "completed",
+        summary: "found it",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.event.type)).not.toContain("background_job_line");
+    expect(rows.map((row) => row.event.type)).toEqual(["subagent_result_card"]);
+  });
+
   it("settles the live background job line in place with a measured duration", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {

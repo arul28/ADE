@@ -302,8 +302,10 @@ type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }
 /**
  * Live per-subagent state threaded through the collapse pass. `rowIndex` lets an
  * appended progress/result event index back into the rows array and mutate the
- * anchor in place. Subagent lifecycle handling never splices rows; transcript
- * retractions repair every stored position after removing a text row.
+ * anchor in place. Subagent lifecycle handling splices exactly one kind of row —
+ * a stale background-job line the scheduled-work producer opened for what turns
+ * out to be a real subagent; transcript retractions remove text rows. Both
+ * repair every stored position afterwards.
  */
 type SubagentAnchorState = {
   agentKey: string;
@@ -1369,9 +1371,11 @@ function classificationInput(state: SubagentAnchorState) {
  * Handle one of the three subagent lifecycle events. Returns true if the event
  * was consumed (caller should stop). Mutates rows and context in place.
  *
- * INVARIANT: this never SPLICES rows — only pushes at the tail or replaces an
- * existing row by its stored index. Every replacement verifies the stable key
- * and repairs a stale position before mutating.
+ * INVARIANT: the ONLY splice is the stale background-job-line drop below, which
+ * repairs every stored position through `repairIndexedTranscriptRowsAfterSplice`.
+ * Card rows are never spliced — only pushed at the tail or replaced by their
+ * stored index, and every replacement verifies the stable key and repairs a
+ * stale position before mutating.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -1436,6 +1440,28 @@ function handleSubagentLifecycleEvent(
   const backgroundShell = state.backgroundLineOpened
     || isBackgroundShellCommand(classificationInput(state));
 
+  // The counterpart to the real-subagent guard in the `background_task` handler:
+  // scheduled-work and lifecycle ordering is unspecified, so the job line may
+  // already exist by the time this task proves itself a real subagent. Drop it
+  // before any card lands, or the agent renders as a job line AND a card pair.
+  //
+  // Hoisted above the event-type split deliberately: a truncated or replayed
+  // transcript can deliver `subagent_result` as a task's ONLY lifecycle event,
+  // which never passes through the spawn branch.
+  //
+  // Note the two guards are counterparts, NOT complements: that one requires
+  // `isRealSubagent`, this one only requires "not proven a background shell".
+  // A task with neither `taskType` nor `agentType` satisfies neither, so it can
+  // still have its line re-created by a later scheduled-work update. That gap is
+  // unreachable today — the runtime emits no lifecycle events for background
+  // tasks — so both sides are deliberately left as they are rather than flipped
+  // blind to a predicate the tests do not pin.
+  if (!backgroundShell) {
+    for (const identity of [state.renderKeyBase, agentKey, taskId]) {
+      if (identity) removeBackgroundJobLine(rows, context, backgroundChipKey(identity));
+    }
+  }
+
   if (event.type === "subagent_started" || event.type === "subagent_progress") {
     // Background shell → the single one-liner, never spawn/result cards. Pushed
     // on the first lifecycle event so the run is visible while it runs; the
@@ -1455,15 +1481,6 @@ function handleSubagentLifecycleEvent(
         });
       }
       return true;
-    }
-    // The other half of the real-subagent guard above: scheduled-work and
-    // lifecycle ordering is unspecified, so the job line may already exist by
-    // the time this task proves itself a real subagent. Drop it before the
-    // spawn anchor lands, or the agent renders as a job line AND a card pair.
-    if (context) {
-      for (const identity of [state.renderKeyBase, agentKey, taskId]) {
-        if (identity) removeBackgroundJobLine(rows, context, backgroundChipKey(identity));
-      }
     }
     if (state.rowIndex == null) {
       // First lifecycle → push the spawn anchor and record its index.
