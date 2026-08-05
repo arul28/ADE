@@ -97,21 +97,25 @@ Plus files, terminals, git history, the workspace graph, multi-tasking, Linear s
 
 ## Install
 
-One command. It installs the **ADE brain** — the always-on engine every surface talks to — offers you the desktop app, and signs you in. That is everything you need to get started.
+Think of ADE as having 4 UI clients (web, desktop app, terminal, and mobile app) you can interact and work with. Each one of those clients needs to connect to a machine, and it does that via "ADE Brain". You can install the Brain to any machine, and magically it will then be accessible and controllable by any of those UI clients. The machine just needs to stay on, and suddenly you get a full agentic development experience from anywhere. 
+
+This one command below installs the **ADE brain** — the always-on engine that every ADE UI client talks to. Running this command will also optionally ask you to install the desktop app, which is one of the four UI clients, and the most powerful one. This command will also ask you to sign up or login to your ADE account. Your ADE account is what lets you seamlessly connect to all other machines you use. Of course, you can use ADE without an account, you will just have to connect to your machines to an ADE Brain via LAN, Tailscale, or SSH. 
+
+**macOS and Linux**
 
 ```bash
 curl -fsSL https://ade-app.dev/install.sh | sh
 ```
 
+**Windows (PowerShell)**
+
 ```powershell
 irm https://ade-app.dev/install.ps1 | iex
 ```
 
-It downloads a self-contained binary, verifies it against the published `SHA256SUMS`, and installs under `~/.ade` with rollback on failure — no Node, npm, or any other prerequisite. It registers the brain as a per-user background service (launchd on macOS, a systemd user service on Linux, a startup entry on Windows — none need an elevated shell), offers to install the desktop app on macOS and Windows, and finishes by running `ade connect` to link the machine to your account.
+**Want to install the full Desktop App + Brain via a dmg or exe file?** Download it from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) or [ade-app.dev](https://ade-app.dev) instead. That gets you the same thing as the above command, but with the above command you can opt out of the desktop app and only install the Brain, these download files bundle it all together. Note - linux doesnt have a desktop app yet, only Brain.
 
-**Prefer a normal app install?** Download it from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) or [ade-app.dev](https://ade-app.dev) instead. That gets you the same three things — app, CLI, and brain — and connects the machine when you sign in. Either route leaves you ready to work.
-
-Re-running the one-liner is safe: it is also the update path, and it will offer the desktop app again if you skipped it.
+If you already have the Brain installed, and want the desktop app, you can safely run the command above, or install the appropriate download file. 
 
 ### Desktop app
 
@@ -119,49 +123,45 @@ macOS and Windows. Install it with the one-liner above, or download it directly:
 
 [**macOS · Apple Silicon**](https://ade-app.dev/download/mac-arm64) · [**macOS · Intel**](https://ade-app.dev/download/mac-x64) · [**Windows x64**](https://ade-app.dev/download/windows)
 
-Windows ships a per-user NSIS installer — no administrator rights — and lays down the app, the CLI, and the brain under your user profile. macOS builds are signed and notarized. Both keep themselves current through the built-in auto-updater.
+Requirements: macOS 13+, or Windows 10/11 **x64** (ARM64 unsupported)
 
-Open ADE on any git repo and add a provider key (or subscription) in Settings. It runs in Guest Mode without an account.
+Windows is in **beta** and may be a little buggy, PR's and bug reports are encouraged to help grow this project. Due to lack of support and general Windows quirks, some features are not available that work on MacOS, nothing major though. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
 
-Installed the brain only and want the app later? Re-run the one-liner, or download it — `ade desktop` only *launches* an app that is already installed.
+<sub>If you prefer Homebrew, this command installs the full desktop app + ADE Brain: `brew install --cask arul28/ade/ade`</sub>
 
-Requirements: macOS 13+, or Windows 10/11 **x64** (ARM64 unsupported); git on `PATH`.
+#### Linux
 
-Windows is in **beta** and the app says so on every launch. Not available there: native OS computer use (screenshot, video, GUI automation), the iOS Simulator drawer and Xcode Preview, and the Notch. App Control over CDP, the built-in browser, proof-file ingestion, phone pairing, and the local brain all work. Claude Code turns respawn the CLI instead of reattaching to a live background job, and the Claude Code sandbox is unavailable (permission modes still apply). Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
+There is no Linux desktop app yet, but it can run the Brain. You can install it on any x64 or arm64 box with the one-liner command from above, and that machine becomes reachable from any ADE UI Client. 
 
-<sub>Homebrew, if your machine is managed by a Brewfile: `brew install --cask arul28/ade/ade`</sub>
+Brain-only downloads, if you would rather not pipe a script: [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64) · [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64) · [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64) · [`linux-x64`](https://ade-app.dev/download/brain/linux-x64) · [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
 
 ### Terminal
 
-Nothing extra to install — `ade` *is* the brain, the CLI, and the TUI in one binary. Once the one-liner has run:
+Nothing extra to install — once you have the ADE Brain installed, either via the single command above or by installing the full desktop app, you can simply run:
 
 ```bash
 ade code
 ```
 
-On macOS and Linux the binary lands in `~/.ade/bin`; the installer leaves your shell profile alone, so add that directory to `PATH` yourself. The PowerShell installer updates your user `PATH` (skip with `-NoPath`). Other overrides: `ADE_VERSION` to pin a release tag, `ADE_INSTALL_DIR` for the binary destination, `ADE_HOME` for the state root.
+On macOS and Linux this binary lives in `~/.ade/bin`; the installer leaves your shell profile alone, so add that directory to `PATH` yourself. The PowerShell installer updates your user `PATH` (skip with `-NoPath`). Other overrides: `ADE_VERSION` to pin a release tag, `ADE_INSTALL_DIR` for the binary destination, `ADE_HOME` for the state root.
 
 With no terminal attached — CI, a provisioning script — the installer skips every prompt and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (`-NoPrompt` for PowerShell) opts out explicitly.
 
 ### Web client
 
-Nothing to install. Sign in at [**app.ade-app.dev**](https://app.ade-app.dev) and every machine on your account is right there — worktrees, chats, and PRs, streaming live. Any machine running the ADE brain is reachable from it, from any browser.
+Nothing to install. Sign in at [**app.ade-app.dev**](https://app.ade-app.dev) and every machine on your account is right there. Any machine running the ADE brain is reachable from it, from any browser.
 
 ### Mobile app
 
 Available now on [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). App Store coming soon; Android coming soon.
 
-Sign in on the phone and on your desktop to see your machines automatically and use ADE Relay away from home. Or choose **Continue without an account** and pair from desktop **Connections > Mobile** / `ade brain pin generate` — direct QR/link, Nearby, address/PIN, and SSH pairing all work without an account, and Tailscale keeps a direct pairing reachable across networks.
+Sign in on the phone to see your machines and connect automatically. If you choose not to create a free account, you can **Continue without an account** and pair to any machine via direct QR/link, Nearby LAN/Tailscale scan, or SSH pairing. To maintain and relay information between machines, ADE will prefer LAN, then Tailscale, and use its own relay service as fallback to maintain mobile to machine connections. Having an account makes the discovery of machines seamless, and will also allow you to connect off wifi or without Tailscale. But if you have access to internet, or have Tailscale setup on mobile and another machine, then ADE will automatically use that to maintain the connection, it's always a bit faster. 
 
-### Linux
 
-Linux runs the **headless brain** — there is no Linux desktop app yet. Install it on any x64 or arm64 box with the one-liner, and that machine becomes reachable from ADE on your Mac, Windows PC, phone, or the web. Your build server becomes an ADE machine: agents, builds, and tests run on it, against its filesystem and its own credentials. `ade code` gives you the full TUI on the box itself, over SSH.
 
-Brain-only downloads, if you would rather not pipe a script: [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64) · [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64) · [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64) · [`linux-x64`](https://ade-app.dev/download/brain/linux-x64) · [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
+#### What `ade connect` does
 
-### What `ade connect` does
-
-It connects a machine to your ADE account — nothing more. Once connected, that machine shows up in the desktop app, the web client, and iOS, and any of them can drive it.
+It links a machine to your ADE account — nothing more. Once linked, that machine shows up in every ADe client once you are signed in. 
 
 You rarely run it yourself. The install script runs it at the end, and the desktop app does the same job when you sign in. Reach for it when you declined the sign-in prompt, installed non-interactively, or want to check or repair an existing machine:
 
