@@ -414,7 +414,7 @@ if ($installSucceeded) {
       Write-Output "Next: run '$adeCommand connect' to link this machine to your ADE account."
     } else {
       Write-Output ""
-      if (Read-AdeConfirmation "Sign in to link this machine to your ADE account?" $true) {
+      if (Read-AdeConfirmation "Sign in or create your ADE account to link this machine?" $true) {
         try {
           & $destinationBinary connect
           if ($LASTEXITCODE -ne 0) {
@@ -477,7 +477,13 @@ if ($installSucceeded) {
     }
 
     Write-Output ""
-    if (-not $NoPath) { Write-Output "Open a new terminal and run: $adeCommand connect --status --text" }
+    # With -NoPath nothing was added to the user PATH, so `ade` resolves only by
+    # full path and a new terminal buys the user nothing.
+    if (-not $NoPath) {
+      Write-Output "Open a new terminal and run: $adeCommand connect --status --text"
+    } else {
+      Write-Output "Done. Try: $adeCommand connect --status --text"
+    }
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {
       [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")

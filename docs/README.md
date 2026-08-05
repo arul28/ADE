@@ -12,6 +12,10 @@ The mental model up front: ADE has a **brain** — the always-on, machine-owned 
 4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
 5. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
+Running ADE from a checkout starts with
+[`development/local-development.md`](./development/local-development.md) for the
+glossary, the dev command matrix, lane worktrees, and local Alpha/Beta packaging.
+
 Windows release engineering starts with
 [`development/windows-release-proof.md`](./development/windows-release-proof.md)
 for the exact-SHA evidence contract and
@@ -31,6 +35,7 @@ docs/
 │   ├── ship-lane.md                       # autonomous PR-to-merge driver
 │   └── windows-signed-release.md          # signed Windows publication
 ├── development/
+│   ├── local-development.md                # run, test, and package ADE locally
 │   ├── windows-release-proof.md            # exact-SHA evidence schema + validator
 │   ├── windows-full-system-scenarios.json  # external Windows acceptance inventory
 │   ├── windows-source-provenance.json      # #999 source/rebase/stack mapping

@@ -25,31 +25,28 @@ export type InstallTarget = {
   platform: InstallPlatform;
   /** Dialog heading. */
   title: string;
-  /** One line under the heading. */
-  subtitle: string;
+  /** One line under the heading, when there is one. */
+  subtitle?: string;
   terminal: {
     heading: string;
     command: string;
-    blurb: string;
+    blurb?: string;
     analyticsFeature: MarketingFeature;
   };
   /** Absent for Linux — there is no ADE desktop app for Linux. */
   downloads?: {
     heading: string;
-    blurb: string;
+    blurb?: string;
     options: InstallDownload[];
   };
   footnote: {
-    text: string;
+    text?: string;
     /** Copyable command rendered inside the footnote, when there is one. */
     command?: string;
     commandAnalyticsFeature?: MarketingFeature;
   };
   openAnalyticsFeature: MarketingFeature;
 };
-
-const TERMINAL_BLURB =
-  "Installs the ADE brain — the headless engine — signs you in, and can optionally install the desktop app. All from the terminal.";
 
 export const MAC_INSTALL_COMMAND = "curl -fsSL https://ade-app.dev/install.sh | sh";
 export const WINDOWS_INSTALL_COMMAND = "irm https://ade-app.dev/install.ps1 | iex";
@@ -60,16 +57,13 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   mac: {
     platform: "mac",
     title: "Get ADE for Mac",
-    subtitle: "Two ways in. Both end up in the same place.",
     terminal: {
       heading: "Install from your terminal",
       command: MAC_INSTALL_COMMAND,
-      blurb: TERMINAL_BLURB,
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_MAC,
     },
     downloads: {
-      heading: "Download the app",
-      blurb: "Signed and notarized. Updates itself from then on.",
+      heading: "or Download from file",
       options: [
         {
           href: LINKS.downloadMacArm64,
@@ -95,16 +89,13 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   windows: {
     platform: "windows",
     title: "Get ADE for Windows",
-    subtitle: "Two ways in. Both end up in the same place.",
     terminal: {
       heading: "Install from your terminal",
       command: WINDOWS_INSTALL_COMMAND,
-      blurb: TERMINAL_BLURB,
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_WINDOWS,
     },
     downloads: {
-      heading: "Download the app",
-      blurb: "Signed installer. Updates itself from then on.",
+      heading: "or Download from file",
       options: [
         {
           href: LINKS.downloadWindows,
@@ -122,7 +113,6 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   linux: {
     platform: "linux",
     title: "Run the ADE brain on Linux",
-    subtitle: "One command. No desktop app needed.",
     terminal: {
       heading: "Install from your terminal",
       command: LINUX_INSTALL_COMMAND,
@@ -130,9 +120,7 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
         "Run the brain on any Linux box and control it from ADE on your Mac, Windows, phone, or the web.",
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_LINUX,
     },
-    footnote: {
-      text: "x64 and arm64. The brain is the whole engine — the desktop app is just one of its faces.",
-    },
+    footnote: {},
     openAnalyticsFeature: MARKETING_FEATURES.INSTALL_DIALOG_LINUX,
   },
 });
