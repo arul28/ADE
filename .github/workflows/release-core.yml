@@ -736,8 +736,15 @@ jobs:
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
           grep -q '^\./node_modules/' "$archive_listing"
-          if grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-' "$archive_listing"; then
-            echo "Unexpected duplicate OpenCode platform package in native runtime archive"
+          # Derived from the canonical runtime-fetched package list rather than
+          # hardcoded: this gate used to name only opencode, leaving the other
+          # 25 packages -- every Codex and Claude agent SDK native -- unguarded.
+          leak_pattern="$(node apps/desktop/scripts/runtime-fetched-tool-packages.mjs --grep-pattern)"
+          if grep -Eq "$leak_pattern" "$archive_listing"; then
+            echo "Unexpected runtime-fetched tool package in native runtime archive:"
+            # Bounded sample: one leaked platform package is tens of thousands of
+            # entries, and the first few name it just as well as all of them.
+            grep -E "$leak_pattern" "$archive_listing" | head -20 || true
             exit 1
           fi
 
