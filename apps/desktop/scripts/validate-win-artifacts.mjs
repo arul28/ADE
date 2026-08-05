@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import runtimeResourceTargets from "./runtime-resource-targets.cjs";
@@ -15,6 +14,7 @@ import {
   runtimeFetchedToolPackageNames,
   RUNTIME_FETCHED_TOOL_EXPLANATION,
 } from "./runtime-fetched-tool-packages.mjs";
+import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
 import {
   isGithubSafeAssetName,
   resolveWindowsPackageIdentity,
@@ -53,18 +53,21 @@ const isLocalWindowsTestBuild =
   process.platform === "win32" &&
   process.env.ADE_WINDOWS_TEST_BUILD === "1" &&
   process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
-const bundledAgentSkills = [
-  "ade-cli-control-plane",
-  "ade-ios-simulator",
-  "ade-app-control",
-  "ade-browser",
-  "ade-pr-workflows",
-  "ade-lanes-git",
-  "ade-linear",
-  "ade-proof-artifacts",
-  "ade-deeplinks",
-  "ade-orchestrator",
-];
+
+// The cross-platform half of this validator. `fail` is injected so the shared
+// assertions keep this file's "[validate-win-artifacts]" prefix.
+const {
+  assertAsarEmbedsNoRuntimeFetchedToolPayload,
+  assertBundledAgentSkills,
+  assertNoRuntimeFetchedToolPackages,
+  assertPackagedTreeSizeBudget,
+  assertPackagedTuiEsmShims,
+  assertPathExists,
+  assertPathMissing,
+  assertRuntimeToolJsEntryPointsPresent,
+  readByteLimit,
+} = createPackagedTreeAssertions({ fail: (message) => fail(message) });
+
 function resolveBundledAdeCliFiles(options = {}) {
   return packagedAdeCliPayloadFiles({
     desktopRoot,
@@ -138,16 +141,6 @@ function fail(message) {
   throw new Error(`[validate-win-artifacts] ${message}`);
 }
 
-function readByteLimit(envName, fallback) {
-  const rawValue = process.env[envName];
-  if (!rawValue) return fallback;
-  const parsed = Number(rawValue);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    fail(`${envName} must be a positive byte count, received: ${rawValue}`);
-  }
-  return parsed;
-}
-
 async function collectMatchingPaths(rootPath, predicate, matches = []) {
   let entries;
   try {
@@ -170,105 +163,11 @@ async function collectMatchingPaths(rootPath, predicate, matches = []) {
   return matches;
 }
 
-async function computeRecursiveFileSize(rootPath) {
-  let totalBytes = 0;
-  let entries;
-  try {
-    entries = await fsp.readdir(rootPath, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return 0;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      totalBytes += await computeRecursiveFileSize(entryPath);
-    } else if (entry.isFile()) {
-      totalBytes += (await fsp.stat(entryPath)).size;
-    }
-  }
-
-  return totalBytes;
-}
-
 function formatRelativeSample(rootPath, entries) {
   return entries
     .slice(0, 12)
     .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
     .join(", ");
-}
-
-async function assertPathExists(targetPath, description) {
-  try {
-    await fsp.access(targetPath);
-  } catch {
-    fail(`Missing ${description}: ${targetPath}`);
-  }
-}
-
-async function assertBundledAgentSkills(agentSkillsRoot) {
-  await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
-  for (const skillName of bundledAgentSkills) {
-    await assertPathExists(
-      path.join(agentSkillsRoot, skillName, "SKILL.md"),
-      `bundled ADE agent skill ${skillName}`,
-    );
-  }
-}
-
-async function assertPathMissing(targetPath, description) {
-  try {
-    await fsp.access(targetPath);
-  } catch {
-    return;
-  }
-  fail(`Unexpected ${description}: ${targetPath}`);
-}
-
-function collectAsarEmbeddedFiles(node, prefix, out) {
-  for (const [name, entry] of Object.entries(node?.files ?? {})) {
-    const entryPath = `${prefix}/${name}`;
-    if (entry?.files) {
-      collectAsarEmbeddedFiles(entry, entryPath, out);
-    } else if (!entry?.unpacked) {
-      // `unpacked: true` entries are index stubs; their bytes live in
-      // app.asar.unpacked, not inside the archive.
-      out.push({ path: entryPath, size: Number(entry?.size) || 0 });
-    }
-  }
-}
-
-/**
- * The three fetched agent CLIs are single ~100-300 MB native executables per
- * platform. Dropping a package from `asarUnpack` without also excluding it in
- * `build.files` moves it *into* app.asar rather than removing it, which is
- * invisible in the unpacked-tree checks above; this catches that regression.
- */
-async function assertAsarEmbedsNoRuntimeFetchedToolPayload(appAsarPath) {
-  let header;
-  try {
-    header = asar.getRawHeader(appAsarPath).header;
-  } catch (error) {
-    fail(`Unable to read app.asar header for agent tool payload hygiene: ${error?.message ?? error}`);
-    return;
-  }
-  const embedded = [];
-  collectAsarEmbeddedFiles(header, "", embedded);
-  // Exact package prefixes, never a wildcard: the JS entry points
-  // (@anthropic-ai/claude-agent-sdk, @openai/codex, opencode-ai,
-  // @opencode-ai/sdk) legitimately live in the archive and a prefix test on the
-  // parent name would swallow them.
-  const prefixes = runtimeFetchedToolPackageNames.map((name) => `/node_modules/${name}/`);
-  const offenders = embedded.filter((entry) => prefixes.some((prefix) => entry.path.startsWith(prefix)));
-  if (offenders.length === 0) return;
-  const bytes = offenders.reduce((total, entry) => total + entry.size, 0);
-  fail(
-    `app.asar embeds ${offenders.length} runtime-fetched agent tool payload file(s) totalling ${bytes} bytes: `
-    + `${offenders.slice(0, 5).map((entry) => entry.path).join(", ")}. `
-    + RUNTIME_FETCHED_TOOL_EXPLANATION
-    + " Exclude them via build.files.",
-  );
 }
 
 // Resolver sources that name a concrete file on disk, so the smoke can stat and
@@ -632,56 +531,6 @@ async function assertRemoteRuntimeBundle(resourcesPath) {
   }
 }
 
-async function findFirstNodeAddon(rootPath) {
-  const entries = await fsp.readdir(rootPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      const nestedMatch = await findFirstNodeAddon(entryPath);
-      if (nestedMatch) return nestedMatch;
-      continue;
-    }
-    if (entry.isFile() && entry.name.endsWith(".node")) {
-      return entryPath;
-    }
-  }
-
-  return null;
-}
-
-async function findNodePtyAddon(moduleRootPath) {
-  const candidateRoots = [
-    path.join(moduleRootPath, "build", "Release"),
-    path.join(moduleRootPath, "build", "Debug"),
-  ];
-
-  try {
-    const prebuildRoot = path.join(moduleRootPath, "prebuilds");
-    const prebuildDirs = await fsp.readdir(prebuildRoot, { withFileTypes: true });
-    for (const entry of prebuildDirs) {
-      if (entry.isDirectory()) candidateRoots.push(path.join(prebuildRoot, entry.name));
-    }
-  } catch {
-    // Keep the explicit candidate roots only.
-  }
-
-  for (const candidateRoot of candidateRoots) {
-    try {
-      await fsp.access(candidateRoot);
-    } catch {
-      continue;
-    }
-
-    const addonPath = await findFirstNodeAddon(candidateRoot);
-    if (addonPath) {
-      return addonPath;
-    }
-  }
-
-  return null;
-}
-
 function createNodePathValue(paths, options = {}) {
   return paths.filter((entry) => options.includeMissing || fs.existsSync(entry)).join(";");
 }
@@ -695,18 +544,13 @@ function assertAdeCliHelp(stdout, label) {
 async function validatePackageHygiene(resourcesPath) {
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
-  const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
-  const maxUnpackedBytes = readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES);
-
-  const appAsarStat = await fsp.stat(appAsarPath);
-  if (appAsarStat.size > maxAppAsarBytes) {
-    fail(`app.asar is too large: ${appAsarStat.size} bytes (limit ${maxAppAsarBytes})`);
-  }
-
-  const unpackedBytes = await computeRecursiveFileSize(unpackedPath);
-  if (unpackedBytes > maxUnpackedBytes) {
-    fail(`app.asar.unpacked is too large: ${unpackedBytes} bytes (limit ${maxUnpackedBytes})`);
-  }
+  await assertPackagedTreeSizeBudget({
+    appAsarPath,
+    unpackedPaths: [unpackedPath],
+    maxAppAsarBytes: readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES),
+    maxUnpackedBytes: readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES),
+    unpackedLabel: "app.asar.unpacked",
+  });
 
   // Source-map and binary-package hygiene checks are paused until the
   // perf-fixes packaging changes are reapplied with proper exclusions.
@@ -719,12 +563,10 @@ async function validatePackageHygiene(resourcesPath) {
   // Every native platform variant of Codex, Claude Code and OpenCode, including
   // the win32-x64 ones: all three CLIs are fetched into the machine tools cache
   // at runtime, so no variant has any business in the package.
-  for (const packageName of runtimeFetchedToolPackageNames) {
-    await assertPathMissing(
-      path.join(unpackedPath, "node_modules", ...packageName.split("/")),
-      `runtime-fetched agent tool package ${packageName}`,
-    );
-  }
+  await assertNoRuntimeFetchedToolPackages({
+    nodeModulesPath: path.join(unpackedPath, "node_modules"),
+    report: "first-offender",
+  });
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
   await assertPathExists(path.join(unpackedPath, "node_modules", "@cursor", "sdk-win32-x64", "bin", "rg.exe"), "Cursor Windows x64 ripgrep helper");
@@ -739,9 +581,10 @@ async function validatePackageHygiene(resourcesPath) {
   // pruned: OpenCode comes from the tools cache now.
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
   // The JS entry points must survive the exclusions above.
-  await assertPathExists(path.join(unpackedPath, "node_modules", "opencode-ai"), "bundled OpenCode JS launcher package");
-  await assertPathExists(path.join(unpackedPath, "node_modules", "@openai", "codex"), "bundled Codex JS launcher package");
-  await assertPathExists(path.join(unpackedPath, "node_modules", "@anthropic-ai", "claude-agent-sdk"), "bundled Claude Agent SDK package");
+  await assertRuntimeToolJsEntryPointsPresent({
+    nodeModulesPath: path.join(unpackedPath, "node_modules"),
+    labelSuffix: " package",
+  });
   await assertAsarEmbedsNoRuntimeFetchedToolPayload(appAsarPath);
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-arm64"), "macOS arm64 cr-sqlite payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-x64"), "macOS x64 cr-sqlite payload in Windows package");
@@ -796,12 +639,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
-  const adeCliTuiContents = await fsp.readFile(adeCliTuiPath, "utf8");
-  for (const token of ["__dirname", "__filename"]) {
-    if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
-      fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
-    }
-  }
+  assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
     console.warn(
       "[validate-win-artifacts] Local test build: skipping the remote runtime sidecar assertion.",
