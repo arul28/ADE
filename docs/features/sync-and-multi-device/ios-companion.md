@@ -2687,7 +2687,18 @@ different machine's cached limits.
   and one result row per real subagent anchored where it started and
   ended, and a single finish chip for backgrounded shell commands —
   mirroring `deriveSubagentTimelineRows` in `chatSubagents.ts` so a
-  subagent never repaints per tick. `WorkChatRichCardViews` renders those
+  subagent never repaints per tick.
+- **Known divergence — a running background job has no mobile presence.**
+  Desktop folds `scheduled_work_update {kind: "background_task"}` into a
+  single live in-thread `background_job_line` (`chatTranscriptRows.ts`),
+  anchored at the job's first sighting and mutated in place at exit. iOS
+  still drops that event from the timeline
+  (`WorkTimelineHelpers.swift`). Because the live Claude runtime reports
+  a backgrounded shell *only* through that stream — never as subagent
+  lifecycle events — the mobile timeline shows nothing at all while a
+  background job runs; only legacy `subagent_*` transcripts produce the
+  finish chip above. This is unported work, not a platform decision.
+  `WorkChatRichCardViews` renders those
   rows plus the unified Chat Info sheet, whose ordered Subagents /
   Background / Schedule sections mirror the desktop Chat Info pane —
   including the same active caps (12 / 8 / 10), the single **Completed**

@@ -317,6 +317,11 @@ Shared types and IPC:
   and Activity surfaces and mirrored by iOS widgets/Activity drawer. Blue means
   work in flight, amber is reserved exclusively for `Needs you`, emerald is a
   clean unseen outcome, red is failure, and neutral is true but non-actionable.
+  An idle or ready session that still has live background jobs is named for what
+  it is — **Background work**, or **Background work ×N** — rather than reusing
+  the bare **Working** of a live turn, and it sets `showsElapsed`, so the row
+  carries a duration instead of an unfalsifiable claim that the model is still
+  thinking.
   It also owns the short working-duration formatter; renderer icon components
   map its dependency-free glyph ids to platform symbols.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze

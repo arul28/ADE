@@ -279,7 +279,7 @@ describe("terminalAttention", () => {
       expect(idle?.tone).toBe("emerald");
     });
 
-    it("keeps an idle chat Working while authoritative background tasks remain", () => {
+    it("names and times background work on an idle chat, and outranks a pending wake", () => {
       const presentation = sessionStatusDisplay({
         status: "running",
         runtimeState: "idle",
@@ -290,12 +290,15 @@ describe("terminalAttention", () => {
         nowMs: Date.parse("2026-08-01T10:00:00.000Z"),
       });
 
+      // Not a bare "Working": the foreground turn has ENDED, so claiming the
+      // model is working — with no duration to judge it by — reads exactly like
+      // a turn that has hung. Name the state and show how long it has run.
       expect(presentation).toMatchObject({
-        label: "Working",
+        label: "Background work ×2",
         tone: "blue",
         glyph: "working",
       });
-      expect(presentation?.showsElapsed).toBe(false);
+      expect(presentation?.showsElapsed).toBe(true);
     });
 
     it("shows Waiting only for an idle chat with a valid future wake", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CaretDown, CaretRight, Stop } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, CaretDown, CaretRight, Check, Gear, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
@@ -17,7 +17,7 @@ import {
 } from "./chatCardPrimitives";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import type {
-  BackgroundFinishChipRenderEvent,
+  BackgroundJobLineRenderEvent,
   SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
   SubagentStoppedGroupEvent,
@@ -54,13 +54,37 @@ export function spawnTypeAccent(
 // Two rows per real subagent — a spawn card anchored where it started, and a
 // result card at the settle position. Both inherit the chat accent
 // (`--chat-accent`) and mirror the calm styling idiom of AgentCliAuthCard
-// (soft-tinted card, no red error blocks). Background shell commands render a
-// single compact finish chip instead of cards.
+// (soft-tinted card, no red error blocks). Background shell commands get no
+// cards at all — just the single `BackgroundJobLine` one-liner below.
 
-function liveElapsedText(startedAt: string, nowMs: number): string | null {
-  const start = Date.parse(startedAt);
-  if (!Number.isFinite(start)) return null;
-  return formatSubagentDurationMs(Math.max(0, nowMs - start));
+/**
+ * Live elapsed since a start timestamp, ticking once a second while `running`.
+ * Shared by the spawn card and the background-job line — the one live-duration
+ * ticker in this file.
+ *
+ * Anchored to the real start timestamp rather than to mount time, so scrolling
+ * the row out of the virtualizer and back keeps the true elapsed instead of
+ * restarting from zero. Same shape as `useElapsedLabel` in `SessionStatusLabel`
+ * — a state tick on a leaf that renders one line, so the per-second re-render
+ * never reaches the memoized transcript rows around it. (`WorkingIndicator`'s
+ * ticker is deliberately NOT this: it mutates `textContent` through a ref to
+ * avoid a per-second commit on the message list itself.)
+ *
+ * Returns null for an absent or unparseable timestamp so callers render no
+ * duration rather than `NaN`.
+ */
+function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
+  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+  const anchored = Number.isFinite(startMs) ? startMs : null;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running || anchored == null) return undefined;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, [running, anchored]);
+  if (anchored == null) return null;
+  return Math.max(0, nowMs - anchored);
 }
 
 function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatSubagentSnapshot["status"] {
@@ -85,16 +109,11 @@ export function SubagentSpawnCard({
   laneId?: string | null;
 }) {
   const isRunning = event.status === "running";
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!isRunning) return;
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [isRunning]);
+  const liveMs = useLiveDurationMs(event.startedAt, isRunning);
 
   const color = chatSubagentColor(event.agentKey);
   const elapsed = isRunning
-    ? liveElapsedText(event.startedAt, nowMs)
+    ? formatSubagentDurationMs(liveMs)
     : formatSubagentDurationMs(
         event.endedAt ? Math.max(0, Date.parse(event.endedAt) - Date.parse(event.startedAt)) : null,
       );
@@ -366,34 +385,92 @@ export function SubagentResultCard({
 }
 
 /**
- * Compact single-line finish chip for a backgrounded shell command:
- * `✓ background command finished · exit <code?> · <duration>` (✗ variant for
- * failure/stopped). Calm styling, never a red error block.
+ * The whole in-thread presence of a backgrounded shell command: one quiet
+ * centered rule-line, in the same idiom as the scheduled-wake and spawn-return
+ * dividers — deliberately NOT a card. Background jobs are frequent and rarely
+ * the point of the turn, so they get a line, not a block.
+ *
+ * Running:  `⚙ Background · npm install · 47s        [open]`
+ * Finished: `✓ Background · npm install · exit 0 · 4m [open]`
+ *
+ * (`formatSubagentDurationMs` is lossy above a minute — `4m`, not `4m 11s`.)
+ *
+ * `open` reveals the chat actions pane, which is where a background job's full
+ * state and output already live — the line points at it rather than duplicating
+ * it inline.
  */
-export function BackgroundFinishChip({ event }: { event: BackgroundFinishChipRenderEvent }) {
+export function BackgroundJobLine({
+  event,
+  sessionEnded = false,
+  onOpenBackgroundJobs,
+}: {
+  event: BackgroundJobLineRenderEvent;
+  /**
+   * Freezes the ticker. A job whose terminal update was never written (app
+   * killed mid-run, provider crash) stays `running` in the transcript forever;
+   * without this, reopening that dead chat months later renders a live counter
+   * ticking up from a session that ended long ago — and holds an interval open
+   * for as long as the row is mounted.
+   */
+  sessionEnded?: boolean;
+  onOpenBackgroundJobs?: () => void;
+}) {
+  const running = event.status === "running";
+  // A frozen counter is still a wrong counter: an archived job that never got a
+  // terminal update would otherwise read "1440h" — accurate arithmetic, useless
+  // claim. Drop the duration entirely rather than assert a number nobody should
+  // read.
+  const stale = running && sessionEnded;
+  const liveMs = useLiveDurationMs(event.startedAt, running && !sessionEnded);
   const ok = event.status === "completed";
-  const duration = formatSubagentDurationMs(event.durationMs);
+  const duration = formatSubagentDurationMs(running ? (stale ? null : liveMs) : event.durationMs);
   const parts = [
-    "background command finished",
-    typeof event.exitCode === "number" ? `exit ${event.exitCode}` : null,
+    event.label,
+    !running && typeof event.exitCode === "number" ? `exit ${event.exitCode}` : null,
     duration,
+    !running && !ok ? event.status : null,
   ].filter((part): part is string => Boolean(part));
+
+  const skin = running
+    ? { tone: "text-sky-200/60", rule: "bg-sky-200/[0.09]" }
+    : ok
+      ? { tone: "text-fg/45", rule: "bg-white/[0.06]" }
+      : { tone: "text-amber-100/70", rule: "bg-amber-200/[0.10]" };
 
   return (
     <div
       className={cn(
-        "inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 overflow-hidden rounded-md border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
-        ok
-          ? "border-white/[0.07] bg-white/[0.025] text-fg/55"
-          : "border-amber-300/14 bg-amber-300/[0.05] text-amber-100/75",
+        "my-2 flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
+        skin.tone,
       )}
-      title={event.label}
+      data-background-job={event.agentKey}
+      data-background-job-status={event.status}
     >
-      <span aria-hidden className="shrink-0">{ok ? "✓" : "✗"}</span>
-      <span className="min-w-0 truncate">
-        {parts.join(" · ")}
-        {event.label ? <span className="ml-2 text-fg/38">· {event.label}</span> : null}
+      <span className={cn("h-px flex-1", skin.rule)} />
+      <span className="inline-flex min-w-0 shrink items-center gap-1.5" title={event.label}>
+        {/* Phosphor rather than raw codepoints: bare ⚙/✓/✗ resolve to Segoe UI
+            Emoji on Windows, rendering as heavier colour glyphs that sit off
+            the baseline of a 10.5px rule line. */}
+        {running
+          ? <Gear size={10} weight="bold" aria-hidden className="shrink-0" />
+          : ok
+            ? <Check size={10} weight="bold" aria-hidden className="shrink-0" />
+            : <X size={10} weight="bold" aria-hidden className="shrink-0" />}
+        <span className="min-w-0 truncate">
+          Background · {parts.join(" · ")}
+        </span>
       </span>
+      {onOpenBackgroundJobs ? (
+        <button
+          type="button"
+          onClick={onOpenBackgroundJobs}
+          className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded-full px-1.5 py-0.5 text-current opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-300/40"
+          title="Show background jobs in the chat actions pane"
+        >
+          open<CaretRight size={9} weight="bold" aria-hidden />
+        </button>
+      ) : null}
+      <span className={cn("h-px flex-1", skin.rule)} />
     </div>
   );
 }

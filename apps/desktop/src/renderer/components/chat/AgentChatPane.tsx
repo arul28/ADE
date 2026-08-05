@@ -116,6 +116,7 @@ import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCac
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
+  registerChatInfoHost,
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import {
@@ -4629,7 +4630,13 @@ export function AgentChatPane({
       });
     };
     window.addEventListener("ade:chat:open-info", handler);
-    return () => window.removeEventListener("ade:chat:open-info", handler);
+    // Advertise the listener so transcript affordances that open this pane can
+    // hide themselves on hosts that have no actions pane (PersonalChatsPage).
+    const releaseHost = registerChatInfoHost();
+    return () => {
+      releaseHost();
+      window.removeEventListener("ade:chat:open-info", handler);
+    };
   }, [selectedSessionId, selectedSubagentSnapshots]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
