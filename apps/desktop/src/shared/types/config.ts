@@ -1171,10 +1171,29 @@ export interface AiCustomProviderConfig {
  * them, so onboarding has to be able to say "still downloading" and "download
  * failed, retry" rather than "not detected".
  *
- * Mirrors AgentToolState in main/services/tools/agentToolsCacheService.ts; the
- * IPC handler is annotated with these types so the two cannot drift.
+ * The single definition of this wire shape: main/services/tools/
+ * agentToolsCacheService.ts builds the snapshot from these types and the IPC
+ * handler is annotated with them, so main and renderer cannot drift.
  */
 export type AgentToolCacheStatus = "installed" | "fetching" | "missing" | "failed";
+
+/**
+ * Mirror of `ToolErrorKind` in apps/ade-cli/src/services/tools/errors.ts, which
+ * is the source of truth. `shared/` is imported by the renderer bundle and by
+ * `apps/ade-cli` itself, so it deliberately imports nothing from another
+ * package — hence a re-declaration rather than a re-export. Any change to the
+ * union in errors.ts must be mirrored here.
+ */
+export type ToolErrorKind =
+  | "manifest"
+  | "unsupported-target"
+  | "network"
+  | "integrity"
+  | "disk-space"
+  | "extract"
+  | "lock-timeout"
+  | "filesystem"
+  | "not-installed";
 
 export type AgentToolCacheState = {
   /** Pinned tool name as it appears in the tools manifest, e.g. "claude-code". */
@@ -1182,8 +1201,8 @@ export type AgentToolCacheState = {
   status: AgentToolCacheStatus;
   /** 0-100 while fetching and the total size is known, else null. */
   percent: number | null;
-  /** ToolErrorKind from ade-cli/src/services/tools/errors.ts when status is "failed". */
-  errorKind: string | null;
+  /** The typed failure kind when status is "failed", else null. */
+  errorKind: ToolErrorKind | null;
 };
 
 export type AgentToolsCacheSnapshot = {

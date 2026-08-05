@@ -4,6 +4,13 @@ import { createAgentToolsCacheService, toolFetchDurationBucket } from "./agentTo
 
 const logger = { info: vi.fn(), warn: vi.fn() };
 
+/**
+ * Every test injects this. The real `gcTools` walks the machine-level tools
+ * cache, so leaving it un-stubbed would make the suite delete real directories
+ * under `~/.ade/tools`.
+ */
+const noopGc = (async () => ({ removed: [], kept: [] })) as never;
+
 function resolution(tool: string) {
   return {
     name: tool,
@@ -20,6 +27,7 @@ describe("createAgentToolsCacheService", () => {
     const ensure = vi.fn(async () => new Map());
     const service = createAgentToolsCacheService({
       logger,
+      gc: noopGc,
       listPinned: () => ["codex", "claude-code", "opencode"],
       // codex is already on disk; the other two are not.
       resolve: ((tool: string) => (tool === "codex" ? resolution(tool) : null)) as never,
@@ -37,6 +45,7 @@ describe("createAgentToolsCacheService", () => {
   it("reports a failed tool with its typed kind and keeps going", async () => {
     const service = createAgentToolsCacheService({
       logger,
+      gc: noopGc,
       listPinned: () => ["codex", "opencode"],
       resolve: (() => null) as never,
       ensure: (async (names: string[]) => {
@@ -62,6 +71,7 @@ describe("createAgentToolsCacheService", () => {
     let clock = 0;
     const service = createAgentToolsCacheService({
       logger,
+      gc: noopGc,
       productAnalyticsService: { captureInternal } as never,
       listPinned: () => ["claude-code", "opencode"],
       resolve: (() => null) as never,
@@ -104,6 +114,7 @@ describe("createAgentToolsCacheService", () => {
     );
     const service = createAgentToolsCacheService({
       logger,
+      gc: noopGc,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
       ensure: ensure as never,
@@ -121,6 +132,7 @@ describe("createAgentToolsCacheService", () => {
     const seen: Array<number | null> = [];
     const service = createAgentToolsCacheService({
       logger,
+      gc: noopGc,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
       ensure: (async (_names: string[], options: { onProgress?: (p: unknown) => void }) => {
@@ -142,6 +154,104 @@ describe("createAgentToolsCacheService", () => {
     await service.ensureMissing();
 
     expect(seen).toContain(25);
+  });
+
+  // A 300 MB tarball fires onProgress on every network chunk (~1700 per tool),
+  // but the snapshot only carries a status word and a whole percent. Every one
+  // of those that does not move either is an IPC frame with nothing behind it.
+  it("emits only when the visible status or whole percent actually changes", async () => {
+    const seen: Array<{ status: string; percent: number | null }> = [];
+    const chunk = (receivedBytes: number) => ({
+      tool: "opencode",
+      packageName: "opencode-darwin-arm64",
+      version: "1.15.5",
+      phase: "downloading" as const,
+      receivedBytes,
+      totalBytes: 1_000,
+    });
+    const service = createAgentToolsCacheService({
+      logger,
+      gc: noopGc,
+      listPinned: () => ["opencode"],
+      resolve: (() => null) as never,
+      ensure: (async (_names: string[], options: { onProgress?: (p: unknown) => void }) => {
+        // 0% and 1% straddle a percent boundary; the six between them do not.
+        for (const bytes of [0, 1, 2, 3, 9, 10, 11, 12]) options.onProgress?.(chunk(bytes));
+        // Phases that carry no byte counts must not re-emit the same state.
+        options.onProgress?.({ ...chunk(12), phase: "verifying" });
+        options.onProgress?.({ ...chunk(12), phase: "extracting" });
+        options.onProgress?.({ ...chunk(12), phase: "installed" });
+        return new Map();
+      }) as never,
+    });
+    service.onStateChange((snapshot) => {
+      const tool = snapshot.tools[0];
+      if (tool) seen.push({ status: tool.status, percent: tool.percent });
+    });
+
+    await service.ensureMissing();
+
+    // Three of the eleven callbacks move something visible; the other eight are
+    // dropped. The trailing duplicate is the run loop's own post-tool emit.
+    expect(seen).toEqual([
+      { status: "fetching", percent: 0 },
+      { status: "fetching", percent: 1 },
+      { status: "installed", percent: null },
+      { status: "installed", percent: null },
+    ]);
+  });
+
+  // The moment a new version lands is the moment the superseded copy is
+  // guaranteed to be dead weight, so collect it instead of waiting for the user
+  // to find `ade tools gc`.
+  it("collects superseded versions after a fully successful ensure", async () => {
+    const gc = vi.fn(async () => ({ removed: ["/cache/old"], kept: ["/cache/new"] }));
+    const service = createAgentToolsCacheService({
+      logger,
+      gc: gc as never,
+      listPinned: () => ["opencode"],
+      resolve: (() => null) as never,
+      ensure: (async () => new Map()) as never,
+    });
+
+    await service.ensureMissing();
+
+    expect(gc).toHaveBeenCalledTimes(1);
+  });
+
+  // A partial failure may well be disk-space, and the version gc would collect
+  // is the one a retry could still fall back to.
+  it("skips the sweep when any tool failed, and never fails the run over it", async () => {
+    const gc = vi.fn(async () => ({ removed: [], kept: [] }));
+    const service = createAgentToolsCacheService({
+      logger,
+      gc: gc as never,
+      listPinned: () => ["codex", "opencode"],
+      resolve: (() => null) as never,
+      ensure: (async (names: string[]) => {
+        if (names[0] === "codex") throw new ToolError("no space", { kind: "disk-space" });
+        return new Map();
+      }) as never,
+    });
+
+    await service.ensureMissing();
+    expect(gc).not.toHaveBeenCalled();
+
+    // And a sweep that throws must not turn a successful ensure into a failure.
+    const exploding = createAgentToolsCacheService({
+      logger,
+      gc: (async () => {
+        throw new Error("cache volume disappeared");
+      }) as never,
+      listPinned: () => ["opencode"],
+      resolve: (() => null) as never,
+      ensure: (async () => new Map()) as never,
+    });
+
+    const snapshot = await exploding.ensureMissing();
+    expect(snapshot.tools).toEqual([
+      { tool: "opencode", status: "installed", percent: null, errorKind: null },
+    ]);
   });
 });
 

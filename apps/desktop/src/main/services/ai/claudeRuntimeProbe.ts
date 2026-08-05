@@ -1,4 +1,7 @@
 import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+// Deep import rather than the `services/tools` barrel: this is the only symbol
+// the probe needs and the barrel pulls the whole fetch/install stack with it.
+import { pinnedToolFetchPending } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
@@ -17,6 +20,16 @@ export const CLAUDE_RUNTIME_AUTH_ERROR =
   "Claude Code is detected, but ADE chat could not authenticate it. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
 const DEFAULT_RUNTIME_FAILURE =
   "Claude Code is installed, but ADE could not confirm that the Claude chat runtime can start from this app session.";
+/**
+ * First run on a cold tools cache: nothing is wrong, the pinned runtime is
+ * simply still coming down. Surfacing the SDK's raw "not found" there reads as
+ * a broken install, which it is not.
+ */
+export const CLAUDE_RUNTIME_FETCH_PENDING_ERROR =
+  "ADE is still downloading the Claude Code runtime (first-run setup). "
+  + "It retries automatically — see Settings → AI Runtimes.";
+/** The pinned tool that backs the Claude runtime, as named in the tools manifest. */
+const CLAUDE_TOOL_NAME = "claude-code";
 
 type ClaudeRuntimeProbeResult =
   | { state: "ready"; message: null }
@@ -163,17 +176,22 @@ export async function probeClaudeRuntimeHealth(args: {
         message: DEFAULT_RUNTIME_FAILURE,
       });
     } catch (error) {
-      const missingMessageIsFalseNegative = claudeExecutable.source !== "fallback-command"
+      const resolvedToRealExecutable = claudeExecutable.source !== "fallback-command";
+      const missingMessageIsFalseNegative = resolvedToRealExecutable
         && isExecutablePath(claudeExecutable.path)
         && normalizeErrorMessage(error).toLowerCase().includes("native binary not found");
+      // Nothing resolved AND the pinned tool has not landed yet: this is the
+      // cold first-run window, not a broken machine. Say so instead of passing
+      // the SDK's raw "not found" through.
+      const fetchPending = !resolvedToRealExecutable && pinnedToolFetchPending(CLAUDE_TOOL_NAME);
+      const runtimeFailureMessage = fetchPending
+        ? CLAUDE_RUNTIME_FETCH_PENDING_ERROR
+        : missingMessageIsFalseNegative
+          ? `Claude runtime failed to spawn resolved executable ${claudeExecutable.path}: ${normalizeErrorMessage(error)}`
+          : normalizeErrorMessage(error);
       const result = isClaudeRuntimeAuthError(error)
         ? { state: "auth-failed", message: CLAUDE_RUNTIME_AUTH_ERROR } satisfies ClaudeRuntimeProbeResult
-        : {
-            state: "runtime-failed",
-            message: missingMessageIsFalseNegative
-              ? `Claude runtime failed to spawn resolved executable ${claudeExecutable.path}: ${normalizeErrorMessage(error)}`
-              : normalizeErrorMessage(error),
-          } satisfies ClaudeRuntimeProbeResult;
+        : { state: "runtime-failed", message: runtimeFailureMessage } satisfies ClaudeRuntimeProbeResult;
       return cacheResult(projectRoot, result);
     } finally {
       clearTimeout(timeout);

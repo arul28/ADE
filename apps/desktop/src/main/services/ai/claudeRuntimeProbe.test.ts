@@ -5,10 +5,21 @@ const mockState = vi.hoisted(() => ({
   reportProviderRuntimeReady: vi.fn(),
   reportProviderRuntimeAuthFailure: vi.fn(),
   reportProviderRuntimeFailure: vi.fn(),
+  claudeExecutable: { path: "claude", source: "fallback-command" } as { path: string; source: string },
+  pinnedToolFetchPending: vi.fn((_tool: string) => false),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (...args: unknown[]) => mockState.query(...args),
+}));
+
+vi.mock("./claudeCodeExecutable", () => ({
+  resolveClaudeCodeExecutable: () => mockState.claudeExecutable,
+  isExecutablePath: (candidate: string) => candidate.includes("/"),
+}));
+
+vi.mock("../../../../../ade-cli/src/services/tools/cacheLookup", () => ({
+  pinnedToolFetchPending: (tool: string) => mockState.pinnedToolFetchPending(tool),
 }));
 
 vi.mock("./providerRuntimeHealth", () => ({
@@ -40,6 +51,9 @@ beforeEach(async () => {
   mockState.reportProviderRuntimeReady.mockReset();
   mockState.reportProviderRuntimeAuthFailure.mockReset();
   mockState.reportProviderRuntimeFailure.mockReset();
+  mockState.claudeExecutable = { path: "claude", source: "fallback-command" };
+  mockState.pinnedToolFetchPending.mockReset();
+  mockState.pinnedToolFetchPending.mockReturnValue(false);
   const mod = await import("./claudeRuntimeProbe");
   probeClaudeRuntimeHealth = mod.probeClaudeRuntimeHealth;
   resetClaudeRuntimeProbeCache = mod.resetClaudeRuntimeProbeCache;
@@ -163,5 +177,43 @@ describe("claudeRuntimeProbe", () => {
 
     expect(mockState.reportProviderRuntimeFailure).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeAuthFailure).not.toHaveBeenCalled();
+    expect(mockState.reportProviderRuntimeFailure).toHaveBeenCalledWith("claude", "spawn ENOENT");
+  });
+
+  // First run on a cold tools cache: nothing resolved because the pinned
+  // runtime is still downloading. Passing the SDK's raw "not found" through
+  // there reads as a broken install, which it is not.
+  it("says the runtime is still downloading when the pinned fetch is pending", async () => {
+    mockState.query.mockImplementation(() => {
+      throw new Error("Claude Code native binary not found");
+    });
+    mockState.pinnedToolFetchPending.mockReturnValue(true);
+
+    await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
+
+    expect(mockState.pinnedToolFetchPending).toHaveBeenCalledWith("claude-code");
+    expect(mockState.reportProviderRuntimeFailure).toHaveBeenCalledWith(
+      "claude",
+      "ADE is still downloading the Claude Code runtime (first-run setup). "
+      + "It retries automatically — see Settings → AI Runtimes.",
+    );
+  });
+
+  // A resolved executable that fails to spawn is a real problem even mid-fetch,
+  // so the pending copy must not swallow it.
+  it("keeps the real diagnosis when an executable did resolve", async () => {
+    mockState.claudeExecutable = { path: "/opt/tools/claude", source: "tools-cache" };
+    mockState.query.mockImplementation(() => {
+      throw new Error("Claude Code native binary not found");
+    });
+    mockState.pinnedToolFetchPending.mockReturnValue(true);
+
+    await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
+
+    expect(mockState.pinnedToolFetchPending).not.toHaveBeenCalled();
+    expect(mockState.reportProviderRuntimeFailure).toHaveBeenCalledWith(
+      "claude",
+      expect.stringContaining("failed to spawn resolved executable /opt/tools/claude"),
+    );
   });
 });

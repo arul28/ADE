@@ -1,4 +1,5 @@
 import {
+  EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
   peerToRuntimeDeviceState,
   type AgentChatSession,
   type AiConfig,
@@ -404,6 +405,14 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     getStatus: (args?: unknown) => call("ai.getStatus", args, aiStatus()),
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
     isOpenCodeInstalled: async () => ({ installed: false, source: "missing" }),
+    // The pinned-tools cache is a property of the machine running the desktop
+    // app, so a web client has no cache of its own to report and no business
+    // kicking a 300 MB fetch on someone else's disk. An empty snapshot is the
+    // honest answer: `fetching: false` and no tools, which onboarding renders
+    // as the plain detected/not-detected treatment.
+    getToolsCache: async () => EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
+    ensureToolsCache: async () => EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
+    onToolsCacheEvent: () => () => {},
     storeApiKey: async (provider: string, key: string) => {
       await call("ai.storeApiKey", { provider, key: key ? "__redacted__" : "" }, undefined, false);
     },

@@ -1,33 +1,24 @@
 import {
   type ToolProgress,
   ensureTools,
+  gcTools,
   isToolError,
   listPinnedTools,
   tryResolveTool,
 } from "../../../../../ade-cli/src/services/tools";
+import type {
+  AgentToolCacheState,
+  AgentToolsCacheSnapshot,
+  ToolErrorKind,
+} from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 
-/** Per-tool state the renderer renders. Mirrors AgentToolsSnapshot in shared/types. */
-export type AgentToolState = {
-  tool: string;
-  status: "installed" | "fetching" | "missing" | "failed";
-  /** 0-100 while fetching and the total size is known, else null. */
-  percent: number | null;
-  errorKind: string | null;
-};
-
-export type AgentToolsSnapshot = {
-  tools: AgentToolState[];
-  /** True while any tool is still being fetched. */
-  fetching: boolean;
-};
-
 export type AgentToolsCacheService = {
-  getSnapshot(): AgentToolsSnapshot;
-  onStateChange(listener: (snapshot: AgentToolsSnapshot) => void): () => void;
+  getSnapshot(): AgentToolsCacheSnapshot;
+  onStateChange(listener: (snapshot: AgentToolsCacheSnapshot) => void): () => void;
   /** Fetch anything missing. Safe to call repeatedly; concurrent calls coalesce. */
-  ensureMissing(): Promise<AgentToolsSnapshot>;
+  ensureMissing(): Promise<AgentToolsCacheSnapshot>;
   dispose(): void;
 };
 
@@ -56,21 +47,23 @@ export function createAgentToolsCacheService(args: {
   ensure?: typeof ensureTools;
   resolve?: typeof tryResolveTool;
   listPinned?: typeof listPinnedTools;
+  gc?: typeof gcTools;
   now?: () => number;
 }): AgentToolsCacheService {
   const ensure = args.ensure ?? ensureTools;
   const resolve = args.resolve ?? tryResolveTool;
+  const gc = args.gc ?? gcTools;
   const now = args.now ?? Date.now;
   const pinned = (args.listPinned ?? listPinnedTools)();
 
-  const states = new Map<string, AgentToolState>(
+  const states = new Map<string, AgentToolCacheState>(
     pinned.map((tool) => [tool, { tool, status: "missing", percent: null, errorKind: null }]),
   );
-  const listeners = new Set<(snapshot: AgentToolsSnapshot) => void>();
-  let inFlight: Promise<AgentToolsSnapshot> | null = null;
+  const listeners = new Set<(snapshot: AgentToolsCacheSnapshot) => void>();
+  let inFlight: Promise<AgentToolsCacheSnapshot> | null = null;
   let disposed = false;
 
-  function snapshot(): AgentToolsSnapshot {
+  function snapshot(): AgentToolsCacheSnapshot {
     const tools = [...states.values()].map((state) => ({ ...state }));
     return { tools, fetching: tools.some((state) => state.status === "fetching") };
   }
@@ -94,13 +87,9 @@ export function createAgentToolsCacheService(args: {
 
   function applyProgress(progress: ToolProgress): void {
     const previous = states.get(progress.tool);
+    let next: AgentToolCacheState;
     if (progress.phase === "installed" || progress.phase === "cached") {
-      states.set(progress.tool, {
-        tool: progress.tool,
-        status: "installed",
-        percent: null,
-        errorKind: null,
-      });
+      next = { tool: progress.tool, status: "installed", percent: null, errorKind: null };
     } else {
       const percent =
         progress.phase === "downloading"
@@ -109,17 +98,48 @@ export function createAgentToolsCacheService(args: {
         && progress.totalBytes > 0
           ? Math.min(100, Math.floor((progress.receivedBytes / progress.totalBytes) * 100))
           : previous?.percent ?? null;
-      states.set(progress.tool, {
-        tool: progress.tool,
-        status: "fetching",
-        percent,
-        errorKind: null,
-      });
+      next = { tool: progress.tool, status: "fetching", percent, errorKind: null };
+    }
+    states.set(progress.tool, next);
+    // A 300 MB tarball reports progress on every network chunk -- roughly 1700
+    // callbacks per tool -- but the snapshot only carries a status word and a
+    // whole percent. Sending an IPC frame for a state the renderer cannot tell
+    // apart from the one it already has is pure cost, so coalesce to the
+    // transitions that actually move a pixel. Every distinct state, including
+    // the terminal one for each phase, still gets exactly one emit.
+    if (
+      previous
+      && previous.status === next.status
+      && previous.percent === next.percent
+      && previous.errorKind === next.errorKind
+    ) {
+      return;
     }
     emit();
   }
 
-  function captureOutcome(tool: string, outcome: "success" | "failed", durationMs: number, errorKind?: string): void {
+  /**
+   * A fetch that landed a new version is the one moment superseded copies are
+   * guaranteed to be dead weight, so collect them then rather than making the
+   * user find `ade tools gc`. Best effort by construction: the tools the caller
+   * asked for are already on disk, and a failed sweep must not turn a
+   * successful ensure into a failed one.
+   */
+  async function gcAfterSuccessfulEnsure(): Promise<void> {
+    try {
+      const result = await gc();
+      args.logger.info("agentTools.gc", {
+        removed: result.removed.length,
+        kept: result.kept.length,
+      });
+    } catch (error) {
+      args.logger.warn("agentTools.gc_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function captureOutcome(tool: string, outcome: "success" | "failed", durationMs: number, errorKind?: ToolErrorKind): void {
     const provider = analyticsProvider(tool);
     if (!provider) return;
     args.productAnalyticsService?.captureInternal({
@@ -134,7 +154,7 @@ export function createAgentToolsCacheService(args: {
     });
   }
 
-  async function run(): Promise<AgentToolsSnapshot> {
+  async function run(): Promise<AgentToolsCacheSnapshot> {
     refreshInstalled();
     const missing = pinned.filter((tool) => states.get(tool)?.status !== "installed");
     if (missing.length === 0) {
@@ -142,6 +162,7 @@ export function createAgentToolsCacheService(args: {
       return snapshot();
     }
 
+    let failures = 0;
     for (const tool of missing) {
       const startedAtMs = now();
       try {
@@ -150,7 +171,8 @@ export function createAgentToolsCacheService(args: {
         args.logger.info("agentTools.fetched", { tool });
         captureOutcome(tool, "success", now() - startedAtMs);
       } catch (error) {
-        const errorKind = isToolError(error) ? error.kind : "filesystem";
+        failures += 1;
+        const errorKind: ToolErrorKind = isToolError(error) ? error.kind : "filesystem";
         states.set(tool, { tool, status: "failed", percent: null, errorKind });
         args.logger.warn("agentTools.fetch_failed", {
           tool,
@@ -161,11 +183,14 @@ export function createAgentToolsCacheService(args: {
       }
       emit();
     }
+    // Only after a clean pass: a partial failure may well be disk-space, and
+    // the version we would collect is the one a retry could still fall back to.
+    if (failures === 0) await gcAfterSuccessfulEnsure();
     return snapshot();
   }
 
   return {
-    getSnapshot(): AgentToolsSnapshot {
+    getSnapshot(): AgentToolsCacheSnapshot {
       refreshInstalled();
       return snapshot();
     },
@@ -173,7 +198,7 @@ export function createAgentToolsCacheService(args: {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    ensureMissing(): Promise<AgentToolsSnapshot> {
+    ensureMissing(): Promise<AgentToolsCacheSnapshot> {
       // Coalesced: the app-start kick and a renderer-triggered retry must not
       // race two fetches of the same 300 MB tarball. The cross-process lock in
       // the tools module covers other processes; this covers this one.

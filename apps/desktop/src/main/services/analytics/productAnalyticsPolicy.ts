@@ -1,5 +1,6 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import type { ToolErrorKind } from "../../../shared/types";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -188,14 +189,21 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
   trigger: new Set(["work_session_completed"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
-  // ToolErrorKind from apps/ade-cli/src/services/tools/errors.ts. This is a
-  // closed, code-authored vocabulary with no user data in it, which is why it
+  // A closed, code-authored vocabulary with no user data in it, which is why it
   // gets an exact allowlist instead of going through `error_kind`'s coarsening
   // -- that would flatten integrity, disk-space and extract into "other" and
-  // lose the only signal worth collecting here.
-  tool_error_kind: new Set([
+  // lose the only signal worth collecting here. Typed as ToolErrorKind so a
+  // rename in errors.ts fails the build instead of silently dropping a value.
+  //
+  // `not-installed` is deliberately absent. The sole emitter of this property
+  // is captureOutcome() in services/tools/agentToolsCacheService.ts, which
+  // reports the kind of an `ensureTools` rejection; `not-installed` is thrown
+  // only by `resolveTool`, and the ensure path checks the install sentinel
+  // directly (readInstalledEntry returns null, it does not throw). Add it back
+  // if an ensure ever starts surfacing it.
+  tool_error_kind: new Set<ToolErrorKind>([
     "manifest", "unsupported-target", "network", "integrity", "disk-space", "extract",
-    "lock-timeout", "filesystem", "not-installed",
+    "lock-timeout", "filesystem",
   ]),
 };
 

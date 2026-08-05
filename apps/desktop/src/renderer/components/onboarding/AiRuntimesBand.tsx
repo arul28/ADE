@@ -6,6 +6,7 @@ import type {
   AiConfig,
   AiFeatureKey,
   AiSettingsStatus,
+  ToolErrorKind,
 } from "../../../shared/types";
 import { EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
 import { ArrowsClockwise, ArrowUpRight, Check, Copy, Key } from "@phosphor-icons/react";
@@ -101,8 +102,12 @@ export function runtimeToolState(
   return state;
 }
 
-/** Branch on `kind`, never on message text — see ade-cli/src/services/tools/errors.ts. */
-const TOOL_ERROR_TEXT: Record<string, string> = {
+/**
+ * Branch on `kind`, never on message text — see ade-cli/src/services/tools/errors.ts.
+ * Partial on purpose: the kinds with no entry are ones a user cannot act on
+ * differently, and they take the generic fallback below.
+ */
+const TOOL_ERROR_TEXT: Partial<Record<ToolErrorKind, string>> = {
   network: "Download failed — check your connection",
   "disk-space": "Not enough disk space to unpack",
   integrity: "Download failed its checksum check",
@@ -110,7 +115,7 @@ const TOOL_ERROR_TEXT: Record<string, string> = {
   "unsupported-target": "No pinned build for this platform",
 };
 
-export function toolFetchFailureText(errorKind: string | null): string {
+export function toolFetchFailureText(errorKind: ToolErrorKind | null): string {
   return (errorKind ? TOOL_ERROR_TEXT[errorKind] : null) ?? "Download failed";
 }
 
@@ -127,7 +132,7 @@ function useAgentToolsCache(): AgentToolsCacheSnapshot {
   useEffect(() => {
     let cancelled = false;
 
-    void window.ade.ai.getToolsCache?.()
+    void window.ade.ai.getToolsCache()
       .then((next) => {
         if (!cancelled) setSnapshot(next);
       })
@@ -135,13 +140,13 @@ function useAgentToolsCache(): AgentToolsCacheSnapshot {
         // Best effort only; live events will fill in.
       });
 
-    const unsubscribe = window.ade.ai.onToolsCacheEvent?.((next) => {
+    const unsubscribe = window.ade.ai.onToolsCacheEvent((next) => {
       if (!cancelled) setSnapshot(next);
     });
 
     return () => {
       cancelled = true;
-      unsubscribe?.();
+      unsubscribe();
     };
   }, []);
 
@@ -190,7 +195,7 @@ export function AiRuntimesBand() {
 
   const retryToolFetch = useCallback(() => {
     // Coalesced in the main process; progress lands through the push events.
-    void window.ade.ai.ensureToolsCache?.().catch(() => {
+    void window.ade.ai.ensureToolsCache().catch(() => {
       // Failures are already on the snapshot.
     });
   }, []);
@@ -375,29 +380,10 @@ function RuntimeCard({
   onRetryToolFetch: () => void;
   onSaveCursorKey: (key: string) => Promise<{ ok: boolean; message?: string }>;
 }) {
-  const phase = getPhase(meta, status);
-  const toolState = runtimeToolState(meta, toolsCache, phase);
-  const tone = toolState ? getToolTone(toolState) : getTone(phase);
+  const { tone, detail, cta } = resolveCardPresentation({
+    meta, status, toolsCache, onRetryToolFetch, onSaveCursorKey,
+  });
   const { Logo } = meta;
-  const detail = toolState
-    ? (toolState.status === "fetching"
-      ? <FetchProgress percent={toolState.percent} />
-      : toolFetchFailureText(toolState.errorKind))
-    : getDetailText(meta, status, phase);
-  // Mid-fetch there is nothing for the user to do; a failed fetch keeps the
-  // manual install path below the retry so a permanently broken download is
-  // never a dead end.
-  const baseCta = toolState?.status === "fetching"
-    ? null
-    : getCta(meta, status, phase, onSaveCursorKey);
-  const cta = toolState?.status === "failed"
-    ? (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <RetryFetchButton onClick={onRetryToolFetch} />
-        {baseCta}
-      </div>
-    )
-    : baseCta;
   return (
     <div style={brandCard(meta.brand, { padding: 12, display: "flex", flexDirection: "column" })}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -465,10 +451,64 @@ function getPhase(meta: RuntimeMeta, status: AiSettingsStatus | null): RuntimePh
   return "missing";
 }
 
-function getToolTone(state: AgentToolCacheState): { color: string; label: string } {
-  return state.status === "fetching"
-    ? { color: COLORS.accent, label: "Fetching" }
-    : { color: COLORS.danger, label: "Fetch failed" };
+export type CardPresentation = {
+  tone: { color: string; label: string };
+  detail: React.ReactNode;
+  cta: React.ReactNode;
+};
+
+/**
+ * The one dispatch behind a runtime card: every card slot comes out of a single
+ * pass over (readiness phase, cache fetch state) rather than each slot deciding
+ * for itself and hoping the three agree.
+ *
+ * A live fetch state wins outright, and `runtimeToolState` only ever returns one
+ * for a runtime that is NOT already ready, so a cache fetch can never overwrite
+ * a "Ready" card. Exactly three outcomes exist:
+ *
+ *   fetching — nothing for the user to do yet, so no CTA at all.
+ *   failed   — the retry, with the manual install path kept underneath it so a
+ *              permanently broken download is never a dead end.
+ *   neither  — the plain readiness treatment.
+ */
+export function resolveCardPresentation(args: {
+  meta: RuntimeMeta;
+  status: AiSettingsStatus | null;
+  toolsCache: AgentToolsCacheSnapshot;
+  onRetryToolFetch: () => void;
+  onSaveCursorKey: (key: string) => Promise<{ ok: boolean; message?: string }>;
+}): CardPresentation {
+  const { meta, status, toolsCache } = args;
+  const phase = getPhase(meta, status);
+  const toolState = runtimeToolState(meta, toolsCache, phase);
+
+  if (toolState?.status === "fetching") {
+    return {
+      tone: { color: COLORS.accent, label: "Fetching" },
+      detail: <FetchProgress percent={toolState.percent} />,
+      cta: null,
+    };
+  }
+
+  const readinessCta = getCta(meta, status, phase, args.onSaveCursorKey);
+  if (toolState?.status === "failed") {
+    return {
+      tone: { color: COLORS.danger, label: "Fetch failed" },
+      detail: toolFetchFailureText(toolState.errorKind),
+      cta: (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <RetryFetchButton onClick={args.onRetryToolFetch} />
+          {readinessCta}
+        </div>
+      ),
+    };
+  }
+
+  return {
+    tone: getTone(phase),
+    detail: getDetailText(meta, status, phase),
+    cta: readinessCta,
+  };
 }
 
 /**
