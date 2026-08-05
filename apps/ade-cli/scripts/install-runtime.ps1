@@ -6,7 +6,9 @@ param(
   [string]$InstallDir = $env:ADE_INSTALL_DIR,
   [string]$AdeHome = $env:ADE_HOME,
   [switch]$NoService,
-  [switch]$NoPath,
+  # `irm ... | iex` cannot take parameters, so the env var is the only way to
+  # opt out on the one-liner we actually promote.
+  [switch]$NoPath = ($env:ADE_INSTALL_NO_PATH -eq "1"),
   [switch]$NoPrompt
 )
 
@@ -376,6 +378,9 @@ try {
 # ---------------------------------------------------------------------------
 if ($installSucceeded) {
   $adeCommand = if ($NoPath) { $destinationBinary } else { "ade" }
+  # Without a PATH entry the command is an absolute path, which is not
+  # runnable as-is once it contains a space. Call operator + quotes fixes it.
+  $adeInvocation = if ($NoPath) { "& `"$destinationBinary`"" } else { "ade" }
   $interactive = Test-AdeInteractive
   $onboardingTemp = Join-Path ([IO.Path]::GetTempPath()) ("ade-onboard-" + [Guid]::NewGuid().ToString("N"))
   $onboardingPreviousEnvironment = @{
@@ -480,9 +485,9 @@ if ($installSucceeded) {
     # With -NoPath nothing was added to the user PATH, so `ade` resolves only by
     # full path and a new terminal buys the user nothing.
     if (-not $NoPath) {
-      Write-Output "Open a new terminal and run: $adeCommand connect --status --text"
+      Write-Output "Open a new terminal and run: $adeInvocation connect --status --text"
     } else {
-      Write-Output "Done. Try: $adeCommand connect --status --text"
+      Write-Output "Done. Try: $adeInvocation connect --status --text"
     }
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {

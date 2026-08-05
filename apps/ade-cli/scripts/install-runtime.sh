@@ -276,15 +276,11 @@ detect_profile() {
 
   case "$path_shell" in
     zsh)
-      # Interactive zsh always reads .zshrc; .zprofile is only the right target
-      # when the user has deliberately kept no .zshrc.
-      if [ -f "$HOME/.zshrc" ]; then
-        path_profile="$HOME/.zshrc"
-      elif [ -f "$HOME/.zprofile" ]; then
-        path_profile="$HOME/.zprofile"
-      else
-        path_profile="$HOME/.zshrc"
-      fi
+      # Every interactive zsh reads .zshrc, while .zprofile is login-shell only.
+      # Writing to .zprofile would leave PATH missing in the non-login shells
+      # editors and multiplexers spawn, so always target .zshrc and create it
+      # when it is absent.
+      path_profile="$HOME/.zshrc"
       ;;
     bash)
       # macOS Terminal starts login shells, which read .bash_profile and never
