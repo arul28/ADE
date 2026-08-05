@@ -58,7 +58,6 @@ The full workspace. Every agent and every worktree, tiled side by side. macOS an
 
 </td>
 <td width="50%" valign="top">
-  <!-- TODO(readme): replace with the real web-client capture -->
   <img src="assets/readme/web-client.png" alt="ADE web client running in a browser" width="100%" />
 
 **Web client**
