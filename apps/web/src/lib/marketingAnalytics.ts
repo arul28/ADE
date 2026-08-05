@@ -23,15 +23,14 @@ export const MARKETING_SCREENS = {
 export type MarketingScreen = (typeof MARKETING_SCREENS)[keyof typeof MARKETING_SCREENS];
 
 export const MARKETING_FEATURES = {
-  DOWNLOAD_MAC: "download_mac",
-  DOWNLOAD_WINDOWS: "download_windows",
+  // Mac and Windows have no feature label of their own: their buttons open the
+  // install dialog, which reports INSTALL_DIALOG_* below.
   DOWNLOAD_IOS: "download_ios",
   OPEN_WEB_CLIENT: "open_web_client",
   VIEW_DOCS: "view_docs",
   VIEW_GITHUB: "view_github",
   VIEW_RELEASES: "view_releases",
   VIEW_DOWNLOAD_PAGE: "view_download_page",
-  VIEW_PRD: "view_prd",
   VIEW_FEATURES: "view_features",
   GET_STARTED: "get_started",
   OPEN_IN_DESKTOP: "open_in_desktop",

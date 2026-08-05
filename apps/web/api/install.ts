@@ -18,7 +18,13 @@ import {
   SCRIPT_CACHE_CONTROL,
   FALLBACK_CACHE_CONTROL,
   installScript,
+  pickQuery,
+  rejectDisallowedMethod,
+  requestMethod,
+  sendRedirect,
   stableAssetUrl,
+  type VercelReq,
+  type VercelRes,
 } from "./releaseAssets.ts";
 import {
   MARKETING_DOWNLOAD_REDIRECT_EVENT,
@@ -26,38 +32,25 @@ import {
   referrerHost,
 } from "./marketingCapture.ts";
 
-type VercelReq = {
-  query: Record<string, string | string[] | undefined>;
-  headers: Record<string, string | string[] | undefined>;
-};
-
-type VercelRes = {
-  status: (code: number) => VercelRes;
-  setHeader: (name: string, value: string) => void;
-  end: (body?: string) => void;
-};
-
-function pickQuery(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
+  if (rejectDisallowedMethod(req, res)) return;
+
   const entry = installScript(pickQuery(req.query.script));
 
   const location = entry ? stableAssetUrl(entry.asset) : RELEASES_LATEST_PAGE;
   const cacheControl = entry ? SCRIPT_CACHE_CONTROL : FALLBACK_CACHE_CONTROL;
 
-  await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
-    action: "redirected",
-    artifact_kind: "install_script",
-    platform: entry?.platform ?? "unknown",
-    arch: "any",
-    outcome: entry ? "resolved" : "fallback",
-    referrer_host: referrerHost(pickQuery(req.headers.referer)),
-  });
+  // A HEAD is a probe, not an install, so it redirects without a funnel event.
+  if (requestMethod(req) === "GET") {
+    await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
+      action: "redirected",
+      artifact_kind: "install_script",
+      platform: entry?.platform ?? "unknown",
+      arch: "any",
+      outcome: entry ? "resolved" : "fallback",
+      referrer_host: referrerHost(pickQuery(req.headers.referer)),
+    });
+  }
 
-  res.setHeader("Location", location);
-  res.setHeader("Cache-Control", cacheControl);
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.status(302).end(`Redirecting to ${location}`);
+  sendRedirect(res, location, cacheControl);
 }

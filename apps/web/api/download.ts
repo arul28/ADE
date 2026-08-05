@@ -20,33 +20,22 @@ import {
   fallbackRedirect,
   fetchLatestRelease,
   parseDownloadRequest,
+  pickQuery,
+  rejectDisallowedMethod,
+  requestMethod,
   resolveStableRedirect,
   resolveVersionedRedirect,
+  sendRedirect,
   type ResolvedRedirect,
+  type VercelQuery,
+  type VercelReq,
+  type VercelRes,
 } from "./releaseAssets.ts";
 import {
   MARKETING_DOWNLOAD_REDIRECT_EVENT,
   captureMarketingEvent,
   referrerHost,
 } from "./marketingCapture.ts";
-
-type VercelQuery = Record<string, string | string[] | undefined>;
-
-type VercelReq = {
-  query: VercelQuery;
-  headers: Record<string, string | string[] | undefined>;
-};
-
-type VercelRes = {
-  status: (code: number) => VercelRes;
-  setHeader: (name: string, value: string) => void;
-  end: (body?: string) => void;
-};
-
-function pickQuery(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
 
 function flatQuery(query: VercelQuery): Record<string, string | undefined> {
   return {
@@ -58,6 +47,8 @@ function flatQuery(query: VercelQuery): Record<string, string | undefined> {
 }
 
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
+  if (rejectDisallowedMethod(req, res)) return;
+
   const request = parseDownloadRequest(flatQuery(req.query));
 
   let redirect: ResolvedRedirect;
@@ -92,16 +83,15 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
     redirect = fallbackRedirect();
   }
 
-  await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
-    ...properties,
-    outcome: redirect.resolved ? "resolved" : "fallback",
-    referrer_host: referrerHost(pickQuery(req.headers.referer)),
-  });
+  // A HEAD is a probe — a link checker, a CDN warming the path — not a
+  // download, so it gets the identical redirect without a funnel event.
+  if (requestMethod(req) === "GET") {
+    await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
+      ...properties,
+      outcome: redirect.resolved ? "resolved" : "fallback",
+      referrer_host: referrerHost(pickQuery(req.headers.referer)),
+    });
+  }
 
-  res.setHeader("Location", redirect.location);
-  res.setHeader("Cache-Control", redirect.cacheControl);
-  // Don't pass the visitor's page URL on to github.com when the browser
-  // follows this hop.
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.status(302).end(`Redirecting to ${redirect.location}`);
+  sendRedirect(res, redirect.location, redirect.cacheControl);
 }

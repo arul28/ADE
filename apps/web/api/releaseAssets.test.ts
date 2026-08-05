@@ -8,12 +8,16 @@ import {
   INSTALL_SCRIPTS,
   REDIRECT_CACHE_CONTROL,
   RELEASES_LATEST_PAGE,
+  SCRIPT_CACHE_CONTROL,
   parseDownloadRequest,
   resolveStableRedirect,
   resolveVersionedRedirect,
   selectAssetUrl,
   stableAssetUrl,
+  type VercelRes,
 } from "./releaseAssets.ts";
+import downloadHandler from "./download.ts";
+import installHandler from "./install.ts";
 import {
   buildCapturePayload,
   captureMarketingEvent,
@@ -252,6 +256,116 @@ test("capture payloads stay anonymous and match the browser client's shape", () 
   assert.equal(payload.properties.$process_person_profile, false);
   assert.equal(payload.properties.$geoip_disable, true);
   assert.equal(payload.properties.platform, "windows");
+});
+
+type CapturedResponse = {
+  res: VercelRes;
+  headers: Record<string, string>;
+  statusCode: number | null;
+  body: string | undefined;
+};
+
+function captureResponse(): CapturedResponse {
+  const captured: CapturedResponse = {
+    headers: {},
+    statusCode: null,
+    body: undefined,
+    res: undefined as unknown as VercelRes,
+  };
+  const res: VercelRes = {
+    status(code) {
+      captured.statusCode = code;
+      return res;
+    },
+    setHeader(name, value) {
+      captured.headers[name] = value;
+    },
+    end(body) {
+      captured.body = body;
+    },
+  };
+  captured.res = res;
+  return captured;
+}
+
+/** Runs a handler with analytics configured and every capture POST counted. */
+async function withCountedCaptures(
+  run: () => Promise<void>,
+): Promise<number> {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.ADE_POSTHOG_PROJECT_TOKEN;
+  const originalHost = process.env.ADE_POSTHOG_HOST;
+  let captures = 0;
+  process.env.ADE_POSTHOG_PROJECT_TOKEN = "phc_abcdefgh12345678";
+  delete process.env.ADE_POSTHOG_HOST;
+  globalThis.fetch = (async () => {
+    captures += 1;
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.ADE_POSTHOG_PROJECT_TOKEN;
+    else process.env.ADE_POSTHOG_PROJECT_TOKEN = originalToken;
+    if (originalHost !== undefined) process.env.ADE_POSTHOG_HOST = originalHost;
+  }
+  return captures;
+}
+
+test("a write verb is refused before it can redirect or record a download", async () => {
+  for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+    const download = captureResponse();
+    const install = captureResponse();
+    const captures = await withCountedCaptures(async () => {
+      await downloadHandler(
+        { method, query: { kind: "brain", target: "linux-x64" }, headers: {} },
+        download.res,
+      );
+      await installHandler({ method, query: { script: "sh" }, headers: {} }, install.res);
+    });
+    for (const answer of [download, install]) {
+      assert.equal(answer.statusCode, 405);
+      assert.equal(answer.headers.Allow, "GET, HEAD");
+      assert.equal(answer.headers.Location, undefined);
+      assert.equal(answer.headers["Cache-Control"], FALLBACK_CACHE_CONTROL);
+    }
+    assert.equal(captures, 0, `${method} must not reach analytics`);
+  }
+});
+
+test("HEAD gets the same redirect as GET but is never counted as a download", async () => {
+  const headDownload = captureResponse();
+  const getDownload = captureResponse();
+  const headInstall = captureResponse();
+  const getInstall = captureResponse();
+
+  const headCaptures = await withCountedCaptures(async () => {
+    await downloadHandler(
+      { method: "HEAD", query: { kind: "brain", target: "linux-x64" }, headers: {} },
+      headDownload.res,
+    );
+    await installHandler({ method: "HEAD", query: { script: "sh" }, headers: {} }, headInstall.res);
+  });
+  const getCaptures = await withCountedCaptures(async () => {
+    await downloadHandler(
+      { method: "GET", query: { kind: "brain", target: "linux-x64" }, headers: {} },
+      getDownload.res,
+    );
+    await installHandler({ method: "GET", query: { script: "sh" }, headers: {} }, getInstall.res);
+  });
+
+  assert.equal(headCaptures, 0);
+  assert.equal(getCaptures, 2);
+  assert.deepEqual(headDownload.headers, getDownload.headers);
+  assert.deepEqual(headInstall.headers, getInstall.headers);
+  assert.equal(headDownload.statusCode, 302);
+  assert.equal(headInstall.statusCode, 302);
+  assert.equal(getDownload.headers.Location, stableAssetUrl("ade-linux-x64"));
+  assert.equal(getDownload.headers["Cache-Control"], REDIRECT_CACHE_CONTROL);
+  assert.equal(getDownload.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(getInstall.headers.Location, stableAssetUrl("install.sh"));
+  assert.equal(getInstall.headers["Cache-Control"], SCRIPT_CACHE_CONTROL);
 });
 
 test("referrerHost keeps the host and drops everything else", () => {

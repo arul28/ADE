@@ -1,7 +1,8 @@
 /**
- * Pure resolution logic shared by the download endpoints. Kept free of any
- * request/response types so it can be unit tested directly (see
- * releaseAssets.test.ts).
+ * Resolution logic and handler plumbing shared by the download endpoints
+ * (download.ts, install.ts). Everything here is dependency-free and directly
+ * unit testable (see releaseAssets.test.ts) — the Vercel request/response
+ * types at the bottom are structural shapes, not imports of a runtime.
  *
  * Two shapes of release asset exist, and they need different handling:
  *
@@ -180,6 +181,67 @@ export async function resolveVersionedRedirect(
   const url = selectAssetUrl(assets, target.suffix);
   if (!url) return fallbackRedirect();
   return { location: url, resolved: true, cacheControl: REDIRECT_CACHE_CONTROL };
+}
+
+/* -------------------------------------------------------------------------
+ * Vercel handler plumbing.
+ *
+ * Both download endpoints answer with the same 302 shape, so the request and
+ * response types, the query flattener and the redirect writer live here rather
+ * than being hand-rolled in each handler.
+ * ---------------------------------------------------------------------- */
+
+export type VercelQuery = Record<string, string | string[] | undefined>;
+
+export type VercelReq = {
+  query: VercelQuery;
+  method?: string;
+  headers: Record<string, string | string[] | undefined>;
+};
+
+export type VercelRes = {
+  status: (code: number) => VercelRes;
+  setHeader: (name: string, value: string) => void;
+  end: (body?: string) => void;
+};
+
+/** Vercel hands repeated query params through as arrays; take the first. */
+export function pickQuery(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** The only verbs a redirect endpoint has an answer for. */
+export const REDIRECT_ALLOWED_METHODS = "GET, HEAD";
+
+/** Normalized verb. A missing method is treated as GET, which is what a bare
+ *  fetch means; Vercel always supplies one in production. */
+export function requestMethod(req: VercelReq): string {
+  return (typeof req.method === "string" ? req.method : "GET").toUpperCase();
+}
+
+/**
+ * Answers anything that is not GET or HEAD with 405 and reports that it did.
+ * Callers must run this *before* resolving a redirect and before recording any
+ * analytics: a POST to a download route is not a download, and counting one
+ * would inflate the funnel with traffic no human generated.
+ */
+export function rejectDisallowedMethod(req: VercelReq, res: VercelRes): boolean {
+  const method = requestMethod(req);
+  if (method === "GET" || method === "HEAD") return false;
+  res.setHeader("Allow", REDIRECT_ALLOWED_METHODS);
+  // Never let a CDN pin a 405 to the path.
+  res.setHeader("Cache-Control", FALLBACK_CACHE_CONTROL);
+  res.status(405).end("Method Not Allowed");
+  return true;
+}
+
+/** The shared 302. Referrer-Policy keeps the visitor's page URL off github.com
+ *  when the browser follows the hop. */
+export function sendRedirect(res: VercelRes, location: string, cacheControl: string): void {
+  res.setHeader("Location", location);
+  res.setHeader("Cache-Control", cacheControl);
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.status(302).end(`Redirecting to ${location}`);
 }
 
 /** Fetches the latest release JSON, bounded and unauthenticated. */

@@ -30,9 +30,9 @@ export function serviceMechanismLabel(platform: NodeJS.Platform): string {
 }
 
 /** The command that removes the service again, per platform. */
-export const UNINSTALL_SERVICE_COMMAND = "ade runtime uninstall-service";
+const UNINSTALL_SERVICE_COMMAND = "ade runtime uninstall-service";
 
-export const DEFAULT_WEB_CLIENT_URL = "https://app.ade-app.dev";
+const DEFAULT_WEB_CLIENT_URL = "https://app.ade-app.dev";
 
 const DEFAULT_MACHINE_WAIT_MS = 60_000;
 const MACHINE_POLL_INTERVAL_MS = 2_000;
@@ -92,7 +92,6 @@ export type ConnectPublishHealth = {
 };
 
 export type ConnectDeps = {
-  env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -269,7 +268,7 @@ function formatStepLine(id: string, state: string, detail: string): string {
  * lands here straight from `curl | sh` must see prose, not a JSON blob. It
  * mirrors how `ade login` reports "Signed in as ..." on stderr.
  */
-export function renderConnectEpilogue(result: ConnectResult): string {
+function renderConnectEpilogue(result: ConnectResult): string {
   const lines: string[] = [""];
   if (result.connected) {
     lines.push(

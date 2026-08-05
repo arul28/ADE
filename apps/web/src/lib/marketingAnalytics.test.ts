@@ -85,7 +85,7 @@ test("routes an annotated browser CTA once without duplicating its feature event
   const attributes = new Map([
     ["data-ade-analytics-cta", MARKETING_CTA_LABELS.DOWNLOAD_MAC],
     ["data-ade-analytics-position", MARKETING_CTA_POSITIONS.HERO],
-    ["data-ade-analytics-feature", MARKETING_FEATURES.DOWNLOAD_MAC],
+    ["data-ade-analytics-feature", MARKETING_FEATURES.INSTALL_DIALOG_MAC],
   ]);
   const annotatedTarget = {
     closest(selector: string) {
@@ -107,7 +107,7 @@ test("routes the Windows download CTA through the allowlists", () => {
   const attributes = new Map([
     ["data-ade-analytics-cta", MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS],
     ["data-ade-analytics-position", MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE],
-    ["data-ade-analytics-feature", MARKETING_FEATURES.DOWNLOAD_WINDOWS],
+    ["data-ade-analytics-feature", MARKETING_FEATURES.INSTALL_DIALOG_WINDOWS],
   ]);
   const annotatedTarget = {
     closest(selector: string) {
@@ -125,7 +125,7 @@ test("routes the Windows download CTA through the allowlists", () => {
 });
 test("manual payload contains only anonymous allowlisted properties", () => {
   const { analytics, payloads } = createHarness();
-  assert.equal(analytics.captureFeature(MARKETING_FEATURES.DOWNLOAD_MAC, MARKETING_SCREENS.HOME), "sent");
+  assert.equal(analytics.captureFeature(MARKETING_FEATURES.INSTALL_DIALOG_MAC, MARKETING_SCREENS.HOME), "sent");
   assert.equal(payloads.length, 1);
   assert.deepEqual(payloads[0], {
     api_key: "phc_public_project_token",
@@ -137,7 +137,7 @@ test("manual payload contains only anonymous allowlisted properties", () => {
       $process_person_profile: false,
       $geoip_disable: true,
       action: "clicked",
-      feature: MARKETING_FEATURES.DOWNLOAD_MAC,
+      feature: MARKETING_FEATURES.INSTALL_DIALOG_MAC,
       screen: MARKETING_SCREENS.HOME,
     },
   });
