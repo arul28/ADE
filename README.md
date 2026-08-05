@@ -37,84 +37,54 @@
   <a href="https://ade-app.dev"><img src="assets/readme/hero.png" alt="ADE — every AI coding tool, one app that runs everywhere" width="900" /></a>
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** (more coming soon) in one workspace that you can open from any machine you own, the web, or a mobile app. The best part? It's completely free. Simply sign in to ADE on a machine you own, and you can magically run and manage agents from any other ADE client. In real time, every single ADE chat or CLI session (yes even your CLI sessions) sync to every other device. I can start a thread on my desktop at home, pick it up on my phone at the gym, and then finish it off from a website on my friends computer. It works like magic, and removes the friction of managing agents on the go. 
+ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** (more coming soon) in one workspace that you can open from any machine you own, the web, or a mobile app. The best part? It's completely free.
 
-Beyond agent management, ADE (like the name implies) offers a full development environment. This means git management, a full file editing/viewing experience like vscode, pr management, automations, gitcracken inspired history, and more. This one app is mean to replace every single modern dev tool. 
+Simply sign in to ADE on a machine you own, and you can magically run and manage agents from any other ADE client. In real time, every single ADE chat or CLI session (yes even your CLI sessions) syncs to every other device.
+
+I can start a thread on my desktop at home, pick it up on my phone at the gym, and then finish it off from a website on my friend's computer. It works like magic, and removes the friction of managing agents on the go.
+
+Beyond agent management, ADE (like the name implies) offers a full development environment. This means git management, a full file editing/viewing experience like VS Code, PR management, automations, GitKraken inspired history, and more. This one app is meant to replace every single modern dev tool.
 
 ---
 
 <table>
 <tr>
-<td width="55%" valign="middle">
-  <img src="assets/readme/auto-worktrees.gif" alt="Auto-create a git worktree from a task" />
-</td>
-<td width="45%" valign="middle">
+<td width="50%" valign="top">
+  <img src="assets/readme/grid-view.gif" alt="ADE desktop app — parallel agents in grid view" width="100%" />
 
-### Manage worktrees. In parallel.
-Every task gets its own git worktree. Describe it and ADE spins up the branch — edit, test, and commit side by side, with no stashing, no rebasing, no context switch.
+**Desktop app**
 
-</td>
-</tr>
-
-<tr>
-<td width="45%" valign="middle">
-
-### Every coding agent. One workspace.
-Claude Code, Codex, Cursor, Factory Droid, OpenCode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates. Grid view tiles every run side by side.
+The full workspace. Every agent and every worktree, tiled side by side. macOS and Windows.
 
 </td>
-<td width="55%" valign="middle">
-  <img src="assets/readme/grid-view.gif" alt="Grid view — multiple agents running in parallel" />
-</td>
-</tr>
+<td width="50%" valign="top">
+  <!-- TODO(readme): replace with the real web-client capture -->
+  <img src="assets/readme/web-client.png" alt="ADE web client running in a browser" width="100%" />
 
-<tr>
-<td width="55%" valign="middle">
-  <img src="assets/readme/ade-code-tui.gif" alt="ADE Code — the terminal-native TUI" />
-</td>
-<td width="45%" valign="middle">
+**Web client**
 
-### The whole IDE. In your terminal.
-`ade code` is ADE, terminal-native — the same worktrees, chats, and PRs in a fast TUI. Start in the shell, finish on the desktop or your phone.
+The same workspace in a browser at [app.ade-app.dev](https://app.ade-app.dev). Nothing to install — sign in and your machines are there.
 
 </td>
 </tr>
-
 <tr>
-<td width="45%" valign="middle">
+<td width="50%" valign="top">
+  <img src="assets/readme/ade-code-tui.gif" alt="ade code — the terminal-native TUI" width="100%" />
 
-### Open, review, and merge PRs.
-Every PR your agents open lands in ADE — diff, CI, comments, merge button. No GitHub tab. Auto-merge when green.
+**Terminal**
 
-</td>
-<td width="55%" valign="middle">
-  <img src="assets/readme/pr-review.webp" alt="Pull request review inside ADE" />
-</td>
-</tr>
-
-<tr>
-<td width="55%" valign="middle">
-  <img src="assets/readme/cto.webp" alt="The CTO — a team of worker agents" />
-</td>
-<td width="45%" valign="middle">
-
-### The conductor for your agents.
-An always-on CTO with context across every worktree. Pulls work from Linear, dispatches to the right worker, reports back when it's done.
+`ade code` is ADE, terminal-native — the same worktrees, chats, and PRs in a fast TUI. Works over SSH.
 
 </td>
-</tr>
-
-<tr>
-<td width="45%" valign="middle">
-
-### Everything above. On your phone.
-Every worktree, every agent, every PR — synced to iOS. Start a task on the desktop, approve the diff from the train.
-
-</td>
-<td width="55%" valign="middle" align="center">
-  <img src="assets/readme/mobile-chat.webp" alt="ADE on iOS — agent chat" width="216" />
+<td width="50%" valign="top" align="center">
+  <img src="assets/readme/mobile-chat.webp" alt="ADE on iOS" width="47%" />
   &nbsp;
-  <img src="assets/readme/mobile-pr.webp" alt="ADE on iOS — pull requests" width="216" />
+  <img src="assets/readme/mobile-pr.webp" alt="ADE on iOS — pull requests" width="47%" />
+
+**Mobile app**
+
+Every worktree, agent, and PR synced to iOS. Start a task on the desktop, approve the diff from the train.
+
 </td>
 </tr>
 </table>
@@ -127,31 +97,73 @@ Plus files, terminals, git history, the workspace graph, multi-tasking, Linear s
 
 ## Install
 
-One command installs the **brain** — ADE's always-on engine — and offers you everything else.
-
-macOS and Linux:
+One command. It installs the **ADE brain** — the always-on engine every surface talks to — offers you the desktop app, and signs you in. That is everything you need to get started.
 
 ```bash
 curl -fsSL https://ade-app.dev/install.sh | sh
 ```
 
-Windows (PowerShell):
-
 ```powershell
 irm https://ade-app.dev/install.ps1 | iex
 ```
 
-The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and installs it under `~/.ade` with rollback on failure — no Node, npm, or other prerequisite. It then registers the brain as a per-user background service (launchd on macOS, a systemd user service on Linux, a startup entry on Windows — none of them need an elevated shell), offers to sign you in, and on macOS and Windows offers the desktop app too.
+It downloads a self-contained binary, verifies it against the published `SHA256SUMS`, and installs under `~/.ade` with rollback on failure — no Node, npm, or any other prerequisite. It registers the brain as a per-user background service (launchd on macOS, a systemd user service on Linux, a startup entry on Windows — none need an elevated shell), offers to install the desktop app on macOS and Windows, and finishes by running `ade connect` to link the machine to your account.
 
-With no terminal attached — CI, a provisioning script — it skips the prompts and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (`-NoPrompt` for PowerShell) opts out explicitly, and `ade connect` can always be run later.
+**Prefer a normal app install?** Download it from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) or [ade-app.dev](https://ade-app.dev) instead. That gets you the same three things — app, CLI, and brain — and connects the machine when you sign in. Either route leaves you ready to work.
 
-On macOS and Linux the script installs `ade` to `~/.ade/bin` and leaves your shell profile alone — add that directory to `PATH` yourself. The PowerShell installer updates your user `PATH` (skip with `-NoPath`). Other overrides: `ADE_VERSION` to pin a release tag, `ADE_INSTALL_DIR` for the binary destination, `ADE_HOME` for the state root.
+Re-running the one-liner is safe: it is also the update path, and it will offer the desktop app again if you skipped it.
 
-Then open ADE on any git repo and add a provider key (or subscription) in Settings. ADE runs in Guest Mode without an account.
+### Desktop app
 
-### Connect a machine
+macOS and Windows. Install it with the one-liner above, or download it directly:
 
-`ade connect` is the one command that puts a machine on your ADE account. It signs you in, installs the login service, and waits for the machine to reach your account directory — after which you can reach it from ADE desktop, the [web client](https://app.ade-app.dev), and iOS. It is idempotent; re-running it on a connected machine just reports status.
+[**macOS · Apple Silicon**](https://ade-app.dev/download/mac-arm64) · [**macOS · Intel**](https://ade-app.dev/download/mac-x64) · [**Windows x64**](https://ade-app.dev/download/windows)
+
+Windows ships a per-user NSIS installer — no administrator rights — and lays down the app, the CLI, and the brain under your user profile. macOS builds are signed and notarized. Both keep themselves current through the built-in auto-updater.
+
+Open ADE on any git repo and add a provider key (or subscription) in Settings. It runs in Guest Mode without an account.
+
+Installed the brain only and want the app later? Re-run the one-liner, or download it — `ade desktop` only *launches* an app that is already installed.
+
+Requirements: macOS 13+, or Windows 10/11 **x64** (ARM64 unsupported); git on `PATH`.
+
+Windows is in **beta** and the app says so on every launch. Not available there: native OS computer use (screenshot, video, GUI automation), the iOS Simulator drawer and Xcode Preview, and the Notch. App Control over CDP, the built-in browser, proof-file ingestion, phone pairing, and the local brain all work. Claude Code turns respawn the CLI instead of reattaching to a live background job, and the Claude Code sandbox is unavailable (permission modes still apply). Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
+
+<sub>Homebrew, if your machine is managed by a Brewfile: `brew install --cask arul28/ade/ade`</sub>
+
+### Terminal
+
+Nothing extra to install — `ade` *is* the brain, the CLI, and the TUI in one binary. Once the one-liner has run:
+
+```bash
+ade code
+```
+
+On macOS and Linux the binary lands in `~/.ade/bin`; the installer leaves your shell profile alone, so add that directory to `PATH` yourself. The PowerShell installer updates your user `PATH` (skip with `-NoPath`). Other overrides: `ADE_VERSION` to pin a release tag, `ADE_INSTALL_DIR` for the binary destination, `ADE_HOME` for the state root.
+
+With no terminal attached — CI, a provisioning script — the installer skips every prompt and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (`-NoPrompt` for PowerShell) opts out explicitly.
+
+### Web client
+
+Nothing to install. Sign in at [**app.ade-app.dev**](https://app.ade-app.dev) and every machine on your account is right there — worktrees, chats, and PRs, streaming live. Any machine running the ADE brain is reachable from it, from any browser.
+
+### Mobile app
+
+Available now on [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). App Store coming soon; Android coming soon.
+
+Sign in on the phone and on your desktop to see your machines automatically and use ADE Relay away from home. Or choose **Continue without an account** and pair from desktop **Connections > Mobile** / `ade brain pin generate` — direct QR/link, Nearby, address/PIN, and SSH pairing all work without an account, and Tailscale keeps a direct pairing reachable across networks.
+
+### Linux
+
+Linux runs the **headless brain** — there is no Linux desktop app yet. Install it on any x64 or arm64 box with the one-liner, and that machine becomes reachable from ADE on your Mac, Windows PC, phone, or the web. Your build server becomes an ADE machine: agents, builds, and tests run on it, against its filesystem and its own credentials. `ade code` gives you the full TUI on the box itself, over SSH.
+
+Brain-only downloads, if you would rather not pipe a script: [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64) · [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64) · [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64) · [`linux-x64`](https://ade-app.dev/download/brain/linux-x64) · [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
+
+### What `ade connect` does
+
+It connects a machine to your ADE account — nothing more. Once connected, that machine shows up in the desktop app, the web client, and iOS, and any of them can drive it.
+
+You rarely run it yourself. The install script runs it at the end, and the desktop app does the same job when you sign in. Reach for it when you declined the sign-in prompt, installed non-interactively, or want to check or repair an existing machine:
 
 ```bash
 ade connect                  # sign in, install the service, publish this machine
@@ -161,47 +173,6 @@ ade connect --no-login       # service only; stay local/LAN-only
 ```
 
 `ade logout` undoes the account half; `ade runtime uninstall-service` removes the service.
-
-### macOS
-
-Download the desktop app for [**Apple Silicon**](https://ade-app.dev/download/mac-arm64) or [**Intel**](https://ade-app.dev/download/mac-x64), or use [Homebrew](https://brew.sh):
-
-```bash
-brew install --cask arul28/ade/ade
-```
-
-Both paths install the same signed + notarized app; ADE keeps itself current afterwards through its built-in auto-updater.
-
-Requirements: macOS 13+, git on `PATH`.
-
-### Linux
-
-Linux runs the **brain**, not a desktop app — and that is the point. Install it on any x64 or arm64 Linux box with the one-liner above, run `ade connect`, and drive that machine from ADE on your Mac, Windows PC, phone, or the web. Your build server becomes an ADE machine; agents, builds, and tests run on it, against its filesystem and its own credentials.
-
-`ade code` gives you the full TUI over SSH on the box itself. There is no ADE desktop app for Linux.
-
-Brain-only downloads, if you'd rather not pipe a script: [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64) · [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64) · [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64) · [`linux-x64`](https://ade-app.dev/download/brain/linux-x64) · [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
-
-### iOS
-
-Install ADE Mobile from [TestFlight](https://testflight.apple.com/join/ZSdJGKPy).
-Sign in on the phone and Mac to see your machines automatically and use ADE
-Relay away from home, or choose **Continue without an account** and pair from
-desktop **Connections > Mobile** / `ade brain pin generate`. Direct QR/link,
-Nearby, address/PIN, and SSH pairing work without an account; Tailscale keeps a
-direct pairing reachable when the devices are on different networks.
-
-### Windows
-
-Windows 10/11 **x64** is supported in beta. ARM64 is not supported.
-
-Download the [**signed Windows installer**](https://ade-app.dev/download/windows) or run the PowerShell one-liner above. It is a per-user NSIS installer — no administrator rights — and lays down the app, the `ade` CLI, `ade code`, and the background ADE brain under your user profile. The brain runs from a per-user startup entry, so it returns at the next sign-in without a service install or an elevated shell.
-
-Beta means the gaps are written down rather than papered over, and the app says so on every launch. Everything below is a real limitation, not a rough edge.
-
-What is not on Windows: native OS computer use (screenshot, video, GUI automation), the iOS Simulator drawer and Xcode Preview, and the Notch. App Control over CDP, the built-in browser, proof-file ingestion, phone pairing, and the local brain all work. Claude Code turns respawn the CLI instead of reattaching to a live background job, and the Claude Code sandbox is unavailable (permission modes still apply). A Windows machine can drive a remote macOS, Linux, or Windows runtime over SSH, and Windows 10 22H2 / Windows 11 x64 can itself be an SSH bootstrap target (OpenSSH Server and PowerShell 5.1+ required; WSL, ARM64, and Windows Server are out of scope).
-
-Requirements: Windows 10 or 11 x64, Git for Windows on `PATH`. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
 
 ## CLI
 
