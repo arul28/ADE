@@ -20,6 +20,7 @@ export const EVENTS = Object.freeze({
   UPDATE_AUTO_APPLIED: "ade_update_auto_applied",
   UPDATE_AUTO_APPLY_CANCELLED: "ade_update_auto_apply_cancelled",
   UPDATE_PROMPTED: "ade_update_prompted",
+  TOOL_FETCHED: "ade_tool_fetched",
   BRAIN_RECOVERED: "ade_brain_recovered",
   PUBLISH_FAILING: "ade_publish_failing",
   RELAY_SUPPRESSED: "ade_relay_suppressed",

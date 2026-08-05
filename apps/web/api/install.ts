@@ -11,6 +11,10 @@
  * the final hop itself, GitHub supplies the Content-Type. Nothing here proxies
  * script bytes, so a compromised function cannot rewrite what people pipe into
  * a shell.
+ *
+ * Deliberately analytics-free: docs/logging.md pins the public site to direct
+ * browser-to-PostHog capture with zero Vercel-side analytics compute, and the
+ * install dialog already records the click that produced this request.
  */
 
 import {
@@ -20,17 +24,11 @@ import {
   installScript,
   pickQuery,
   rejectDisallowedMethod,
-  requestMethod,
   sendRedirect,
   stableAssetUrl,
   type VercelReq,
   type VercelRes,
 } from "./releaseAssets.ts";
-import {
-  MARKETING_DOWNLOAD_REDIRECT_EVENT,
-  captureMarketingEvent,
-  referrerHost,
-} from "./marketingCapture.ts";
 
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
   if (rejectDisallowedMethod(req, res)) return;
@@ -39,18 +37,6 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
 
   const location = entry ? stableAssetUrl(entry.asset) : RELEASES_LATEST_PAGE;
   const cacheControl = entry ? SCRIPT_CACHE_CONTROL : FALLBACK_CACHE_CONTROL;
-
-  // A HEAD is a probe, not an install, so it redirects without a funnel event.
-  if (requestMethod(req) === "GET") {
-    await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
-      action: "redirected",
-      artifact_kind: "install_script",
-      platform: entry?.platform ?? "unknown",
-      arch: "any",
-      outcome: entry ? "resolved" : "fallback",
-      referrer_host: referrerHost(pickQuery(req.headers.referer)),
-    });
-  }
 
   sendRedirect(res, location, cacheControl);
 }

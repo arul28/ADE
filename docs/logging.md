@@ -90,6 +90,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_update_auto_applied`
 - `ade_update_auto_apply_cancelled`
 - `ade_update_prompted`
+- `ade_tool_fetched`
 - `ade_brain_recovered`
 - `ade_publish_failing`
 - `ade_relay_suppressed`
@@ -117,6 +118,17 @@ the read path — `decrypt_failure`, `no_os_key_material`, `store_format`,
 `session_parse`, `read_error`, or `unknown`. No paths, key material, ciphertext,
 or account identifiers reach the payload, and a 24-hour deduplication window per
 code bounds it further.
+
+`ade_tool_fetched` records the outcome of fetching a pinned agent CLI (Codex,
+Claude, or OpenCode) into the shared tools cache — a first-run or pin-bump
+fact, not a progress stream. It fires once per completed per-tool attempt at
+the service boundary (desktop `agentToolsCacheService`, brain
+`backgroundFetch`) with only the closed properties `provider`, `outcome`
+(`success`/`failed`), a coarse `duration_bucket`, and on failure a
+`tool_error_kind` from the closed `ToolErrorKind` union. No URLs, paths,
+versions, byte counts, or error text reach the payload. Caps: 12 per UTC day
+and 3 per minute; download progress, retries, and integrity-verify mechanics
+stay in local logs.
 
 Clicking "Repair" on the Connections pane's unreadable-session banner records
 the existing `ade_feature_used` event at the IPC owner boundary (where the
@@ -180,14 +192,20 @@ The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
-The gated Windows download uses the existing CTA event with the closed
-`cta_label: "download_for_windows"`, `screen: "download"`, and
-`position: "download_page"` values. It carries no installer URL, release tag,
-platform fingerprint, or referrer. The same CTA key is limited to three
-accepted events per UTC day with a 1.5-second deduplication window, inside the
-unchanged 12-CTA and 40-event public-site ceilings. Because annotated CTA
-clicks suppress the companion feature event, one click still consumes one
-event.
+The install dialog (the modal behind every Mac/Windows download button and the
+Linux brain link) uses the existing taxonomy: opening it records one feature
+event per platform (`install_dialog_mac` / `install_dialog_windows` /
+`install_dialog_linux`, emitted once from the dialog provider so every trigger
+reports identically), copying a command records
+`copy_install_command_<platform>` or `copy_brew_command`, and the direct
+download buttons record the CTA event with closed labels
+(`download_mac_arm64`, `download_mac_x64`, `download_windows_x64`) at position
+`install_dialog`. Events carry no installer URL, release tag, platform
+fingerprint, or referrer, and fit inside the unchanged 12-CTA / 16-feature /
+40-event public-site ceilings. The `/install.sh`, `/install.ps1`, and
+`/download/*` Vercel redirect endpoints are deliberately analytics-free — the
+dialog's client-side click is the funnel signal, and a test pins that the
+handlers make no analytics call for any method.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

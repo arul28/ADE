@@ -18,12 +18,6 @@ import {
 } from "./releaseAssets.ts";
 import downloadHandler from "./download.ts";
 import installHandler from "./install.ts";
-import {
-  buildCapturePayload,
-  captureMarketingEvent,
-  captureUrlFromEnv,
-  referrerHost,
-} from "./marketingCapture.ts";
 
 const DOWNLOAD_PREFIX = "https://github.com/arul28/ADE/releases/download/v1.2.52";
 
@@ -181,82 +175,9 @@ test("resolveVersionedRedirect falls back to the releases page, uncached", async
   }
 });
 
-test("captureUrlFromEnv only accepts a public token over https", () => {
-  assert.equal(captureUrlFromEnv({}), null);
-  assert.equal(captureUrlFromEnv({ ADE_POSTHOG_PROJECT_TOKEN: "   " }), null);
-  assert.equal(captureUrlFromEnv({ ADE_POSTHOG_PROJECT_TOKEN: "phx_personalkey123" }), null);
-  assert.equal(
-    captureUrlFromEnv({
-      ADE_POSTHOG_PROJECT_TOKEN: "phc_abcdefgh12345678",
-      ADE_POSTHOG_HOST: "http://us.i.posthog.com",
-    }),
-    null,
-  );
-  assert.equal(
-    captureUrlFromEnv({
-      ADE_POSTHOG_PROJECT_TOKEN: "phc_abcdefgh12345678",
-      ADE_POSTHOG_HOST: "https://user:pass@us.i.posthog.com",
-    }),
-    null,
-  );
-  assert.equal(
-    captureUrlFromEnv({ ADE_POSTHOG_PROJECT_TOKEN: "phc_abcdefgh12345678" }),
-    "https://us.i.posthog.com/i/v0/e/",
-  );
-  assert.equal(
-    captureUrlFromEnv({
-      ADE_POSTHOG_PROJECT_TOKEN: "phc_abcdefgh12345678",
-      ADE_POSTHOG_HOST: "https://ph.ade-app.dev/",
-    }),
-    "https://ph.ade-app.dev/i/v0/e/",
-  );
-});
 
-test("captureMarketingEvent is a silent no-op when unconfigured", async () => {
-  const originalFetch = globalThis.fetch;
-  let called = false;
-  globalThis.fetch = (async () => {
-    called = true;
-    return new Response(null, { status: 200 });
-  }) as typeof fetch;
-  try {
-    await captureMarketingEvent({}, "ade_marketing_download_redirect", { artifact_kind: "x" });
-    assert.equal(called, false);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
 
-test("captureMarketingEvent swallows transport failures", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => {
-    throw new Error("posthog unreachable");
-  }) as typeof fetch;
-  try {
-    await captureMarketingEvent(
-      { ADE_POSTHOG_PROJECT_TOKEN: "phc_abcdefgh12345678" },
-      "ade_marketing_download_redirect",
-      { artifact_kind: "app_installer" },
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
 
-test("capture payloads stay anonymous and match the browser client's shape", () => {
-  const payload = buildCapturePayload(
-    "phc_abcdefgh12345678",
-    "ade_marketing_download_redirect",
-    { artifact_kind: "app_installer", platform: "windows", arch: "x64" },
-    "id-1",
-  ) as { event: string; properties: Record<string, unknown> };
-  assert.equal(payload.event, "ade_marketing_download_redirect");
-  assert.equal(payload.properties.surface, "web");
-  assert.equal(payload.properties.route_kind, "marketing");
-  assert.equal(payload.properties.$process_person_profile, false);
-  assert.equal(payload.properties.$geoip_disable, true);
-  assert.equal(payload.properties.platform, "windows");
-});
 
 type CapturedResponse = {
   res: VercelRes;
@@ -334,7 +255,9 @@ test("a write verb is refused before it can redirect or record a download", asyn
   }
 });
 
-test("HEAD gets the same redirect as GET but is never counted as a download", async () => {
+// docs/logging.md pins the public site to browser-only PostHog capture, so the
+// redirect endpoints must never reach analytics for ANY method.
+test("HEAD gets the same redirect as GET and neither reaches analytics", async () => {
   const headDownload = captureResponse();
   const getDownload = captureResponse();
   const headInstall = captureResponse();
@@ -356,7 +279,7 @@ test("HEAD gets the same redirect as GET but is never counted as a download", as
   });
 
   assert.equal(headCaptures, 0);
-  assert.equal(getCaptures, 2);
+  assert.equal(getCaptures, 0);
   assert.deepEqual(headDownload.headers, getDownload.headers);
   assert.deepEqual(headInstall.headers, getInstall.headers);
   assert.equal(headDownload.statusCode, 302);
@@ -368,10 +291,3 @@ test("HEAD gets the same redirect as GET but is never counted as a download", as
   assert.equal(getInstall.headers["Cache-Control"], SCRIPT_CACHE_CONTROL);
 });
 
-test("referrerHost keeps the host and drops everything else", () => {
-  assert.equal(referrerHost(undefined), "direct");
-  assert.equal(referrerHost(""), "direct");
-  assert.equal(referrerHost("https://ade-app.dev/?utm_source=secret&email=a@b.c"), "ade-app.dev");
-  assert.equal(referrerHost("https://news.ycombinator.com/item?id=1"), "news.ycombinator.com");
-  assert.equal(referrerHost("nonsense"), "unknown");
-});

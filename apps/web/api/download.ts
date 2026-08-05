@@ -31,11 +31,6 @@ import {
   type VercelReq,
   type VercelRes,
 } from "./releaseAssets.ts";
-import {
-  MARKETING_DOWNLOAD_REDIRECT_EVENT,
-  captureMarketingEvent,
-  referrerHost,
-} from "./marketingCapture.ts";
 
 function flatQuery(query: VercelQuery): Record<string, string | undefined> {
   return {
@@ -46,51 +41,25 @@ function flatQuery(query: VercelQuery): Record<string, string | undefined> {
   };
 }
 
+// Deliberately analytics-free: docs/logging.md pins the public site to direct
+// browser-to-PostHog capture with zero Vercel-side analytics compute, and the
+// install dialog already records the click that produced this request.
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
   if (rejectDisallowedMethod(req, res)) return;
 
   const request = parseDownloadRequest(flatQuery(req.query));
 
   let redirect: ResolvedRedirect;
-  let properties: Record<string, string> = {
-    action: "redirected",
-    artifact_kind: "unknown",
-    platform: "unknown",
-    arch: "unknown",
-  };
-
   if (!request) {
     redirect = fallbackRedirect();
   } else if (request.kind === "brain") {
     redirect = resolveStableRedirect(request.asset, REDIRECT_CACHE_CONTROL);
-    properties = {
-      action: "redirected",
-      artifact_kind: "brain_binary",
-      platform: request.platform,
-      arch: request.arch,
-    };
   } else if (request.kind === "app") {
     redirect = await resolveVersionedRedirect(request.target, fetchLatestRelease);
-    properties = {
-      action: "redirected",
-      artifact_kind: "app_installer",
-      platform: request.target.platform,
-      arch: request.target.arch,
-    };
   } else {
     // /install.sh and /install.ps1 have their own entry point; a script request
     // arriving here means a stale or hand-written URL.
     redirect = fallbackRedirect();
-  }
-
-  // A HEAD is a probe — a link checker, a CDN warming the path — not a
-  // download, so it gets the identical redirect without a funnel event.
-  if (requestMethod(req) === "GET") {
-    await captureMarketingEvent(process.env, MARKETING_DOWNLOAD_REDIRECT_EVENT, {
-      ...properties,
-      outcome: redirect.resolved ? "resolved" : "fallback",
-      referrer_host: referrerHost(pickQuery(req.headers.referer)),
-    });
   }
 
   sendRedirect(res, redirect.location, redirect.cacheControl);
