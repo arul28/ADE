@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.54] - 2026-08-05
+
+### Added
+
+- The POSIX installer writes `~/.ade/env` and, with consent, adds one marker-guarded line to your shell profile so `ade` is on PATH in new terminals. Idempotent across re-runs; `ADE_INSTALL_NO_PATH=1` opts out; fish and unrecognized shells get a printed hint instead of an edit.
+
+### Changed
+
+- The "ADE command" settings card moved from Integrations to General.
+- README reorganized around the four surfaces (desktop, web, terminal, mobile), with the install section split the same way. Local development detail moved to `docs/development/local-development.md`; CONTRIBUTING condensed.
+- Installer and CLI sign-in prompts now say "sign in or create your ADE account".
+
+### Fixed
+
+- `ADE_INSTALL_NO_PATH` is now honored by `install.ps1`; it was documented but unread, and `irm ... | iex` cannot pass `-NoPath`.
+- An unset `HOME` with `ADE_HOME` set, or an unwritable env file, no longer aborts the installer after the binary is in place.
+- Concurrent installs can no longer interleave their shell-profile edits.
+- Under `-NoPath` the printed next-step command is quoted, so it runs when the install path contains a space.
+- zsh always targets `.zshrc` instead of a login-shell-only `.zprofile`.
+
+
 ## [1.2.53] - 2026-08-05
 
 ### Added
@@ -1403,6 +1424,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.54]: https://github.com/arul28/ADE/compare/v1.2.53...v1.2.54
 [1.2.53]: https://github.com/arul28/ADE/compare/v1.2.52...v1.2.53
 [1.2.52]: https://github.com/arul28/ADE/compare/v1.2.51...v1.2.52
 [1.2.51]: https://github.com/arul28/ADE/compare/v1.2.50...v1.2.51

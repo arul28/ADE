@@ -1,0 +1,25 @@
+---
+title: "v1.2.54"
+description: "Release notes for ADE v1.2.54 - August 5, 2026"
+---
+
+The one-command install now finishes the job: `ade` lands on your PATH instead of leaving you to wire it up yourself.
+
+---
+
+## Install
+
+- **The installer puts `ade` on your PATH.** On macOS and Linux it writes `~/.ade/env` and, after asking, adds one marked line to your shell profile, so new terminals just find `ade`. It never touches a profile without consent, never duplicates the block when you re-run it, and prints the line to add yourself for fish or an unrecognized shell. `ADE_INSTALL_NO_PATH=1` skips the whole thing.
+- **`ADE_INSTALL_NO_PATH` works on Windows too.** It was documented but never read, and since `irm ... | iex` cannot take parameters, that environment variable was the only way to opt out of the PATH change on the command we actually promote.
+- **Sign-in copy says what it does.** Both installers and the CLI now offer to "sign in or create your ADE account", because the browser page has always handled both.
+- Fixed three ways a successful install could still end badly: an unset `HOME` alongside `ADE_HOME` aborted the script after the binary was already in place (Docker, systemd units, some CI images), an unwritable env file aborted it the same way, and two installs racing could interleave their profile edits. Under `-NoPath` on Windows the printed next step is now runnable when the install path contains a space.
+- zsh setups now always get `.zshrc` rather than an existing `.zprofile`, which is login-shell only and left `ade` missing from the terminals editors and multiplexers open.
+
+## Desktop
+
+- The **ADE command** card moved from Integrations to General. Whether `ade` is available in your terminal is not an integration, and it was buried at the bottom of the wrong page.
+
+## Docs
+
+- The README is organized around the four ways you use ADE: desktop app, web client, terminal, and mobile. The install section follows the same split, so each heading answers one question instead of mixing "which OS" with "which surface".
+- Local development detail moved to [docs/development/local-development.md](https://github.com/arul28/ADE/blob/main/docs/development/local-development.md), and CONTRIBUTING is down to the part that matters: contributions are wanted, and good pull requests get merged.
