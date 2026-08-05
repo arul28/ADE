@@ -882,12 +882,30 @@ grep-guarded so re-running the installer never duplicates it; fish and
 unrecognized shells get printed instructions instead, as do
 non-interactive runs and `ADE_INSTALL_NO_PATH=1`.
 
-On an interactive terminal the script then offers to run `ade connect`,
-which signs the machine in, ensures the login service, and publishes the
-machine to the account directory so desktop, web, and iOS can reach it.
+The shell scripts own only what must happen before the `ade` binary
+exists: downloading and verifying the runtime, and registering the brain
+service. They register it through `ade brain start`, which pins the
+runtime's default role to `cto` — the role `ade connect` and the desktop
+app both require. Registering through `serve --install-service` instead
+inherits an unset `ADE_DEFAULT_ROLE`, which lands on `agent` and makes
+sign-in fail on every clean install.
+
+Everything after that is `ade setup`, one implementation both platforms
+hand off to, so Windows and macOS cannot drift. It runs the remaining
+steps — pinned agent CLIs, account, desktop app — then verifies the
+install end to end (brain running, machine linked) and prints a summary
+recapping all five steps. A step that fails names the command that fixes
+it, inline and again under "What's left"; a clean run prints neither.
+
+The account step checks first: an already-linked machine is offered
+keep / switch / skip rather than being asked to sign in blind. The
+desktop step skips its ~1 GB download when that exact version is already
+installed, resumes an interrupted download via a Range request, and
+launches the app detached so a Windows console is never inherited.
 Use `ade connect --headless` when there is no browser. Non-interactive
 contexts skip the prompts and print the follow-up commands;
-`ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt`) opts out explicitly.
+`ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt`) opts out explicitly. Running
+`ade setup` later re-runs the same flow on its own.
 
 See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md)
 for the full flow and environment overrides.

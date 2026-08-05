@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// MUST stay the first import: it wraps process.emitWarning before anything can
+// pull in `node:sqlite`, whose experimental-feature warning would otherwise
+// print on every single `ade` invocation. See ./lib/nodeWarnings.
+import "./lib/nodeWarnings";
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -24,11 +28,12 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import {
+  readInstalledDesktopVersion,
   resolveDefaultDesktopAppName,
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
-export { readInstalledDesktopVersion } from "./commands/doctor";
+export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
@@ -133,6 +138,8 @@ import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
+import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
+import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
 import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
@@ -329,6 +336,7 @@ type CliPlan =
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
   | { kind: "tools"; rest: string[] }
+  | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
   | { kind: "serve"; rest: string[] }
@@ -606,6 +614,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
 
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -12363,6 +12372,9 @@ function buildCliPlan(
   if (primary === "tools") {
     return { kind: "tools", rest: args };
   }
+  if (primary === "setup") {
+    return { kind: "setup", rest: args };
+  }
   if (primary === "serve") {
     return { kind: "serve", rest: args };
   }
@@ -15580,6 +15592,189 @@ async function readBrainSyncStatus(
 }
 
 /**
+ * Account state for `ade setup`, read straight off the machine brain.
+ *
+ * Deliberately non-throwing: setup uses this only to decide which prompt to
+ * show, and an unreachable brain should degrade to "offer sign-in", never
+ * abort an install that is otherwise fine.
+ */
+async function readSetupAccountStatus(
+  options: GlobalOptions,
+): Promise<{ signedIn: boolean; identity: string | null }> {
+  let connection: CliConnection | null = null;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+    const status = unwrapActionEnvelope(
+      await connection.request("account.call", { action: "status", args: {} }),
+    );
+    if (!isRecord(status)) return { signedIn: false, identity: null };
+    return {
+      signedIn: status.signedIn === true,
+      identity: asString(status.email) ?? asString(status.name),
+    };
+  } catch {
+    return { signedIn: false, identity: null };
+  } finally {
+    try {
+      await connection?.close();
+    } catch {}
+  }
+}
+
+/**
+ * Has this machine actually reached the account directory?
+ *
+ * Read from the brain's own publisher health rather than re-polling the
+ * directory: it is the component that would have done the POST, so its state
+ * is the honest answer, and an unreachable brain degrades to "unknown" instead
+ * of a false negative.
+ */
+async function verifyMachinePublished(
+  options: GlobalOptions,
+  identity: string | null,
+): Promise<{ ok: boolean; detail: string; nextAction?: string }> {
+  let connection: CliConnection | null = null;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+    const status = unwrapActionEnvelope(
+      await connection.request("sync.getStatus", { includeTransferReadiness: false }),
+    );
+    const routeHealth = isRecord(status) && isRecord(status.routeHealth)
+      ? status.routeHealth
+      : null;
+    const directory = routeHealth && isRecord(routeHealth.accountDirectory)
+      ? routeHealth.accountDirectory
+      : null;
+    const state = asString(directory?.state);
+    if (!state) {
+      // No health yet is not proof of failure -- the publisher runs on a 30s
+      // heartbeat and a fresh install can outrun its first attempt.
+      return {
+        ok: true,
+        detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+      };
+    }
+    if (state === "published") {
+      return {
+        ok: true,
+        detail: `ade ${VERSION}, brain running, ${identity ?? "your account"} — machine published`,
+      };
+    }
+    const { describeUnpublishedMachine } = await import("./commands/setup");
+    const described = describeUnpublishedMachine(state, asString(directory?.skipReason));
+    return { ok: false, ...described };
+  } catch {
+    return {
+      ok: true,
+      detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+    };
+  } finally {
+    try {
+      await connection?.close();
+    } catch {}
+  }
+}
+
+/**
+ * `ade setup` — the interactive half of installation.
+ *
+ * The step orchestration and all rendering live in ./commands/setup; this
+ * function binds it to the real brain, tool cache and release feed. It runs the
+ * brain at `cto` for the same reason `ade connect` does: the account actions it
+ * drives are CTO-only.
+ */
+async function runSetupCli(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const { SetupUsageError, runSetupCommand } = await import("./commands/setup");
+  try {
+    const result = await runSetupCommand(rest, {
+      env: process.env,
+      ensureAgentTools: async (onProgress) => {
+        const { ensureTools, listPinnedTools } = await import("./services/tools/install");
+        const names = listPinnedTools();
+        await ensureTools(names, {
+          onProgress: (progress) => {
+            onProgress({
+              fraction:
+                typeof progress.receivedBytes === "number" &&
+                  typeof progress.totalBytes === "number" &&
+                  progress.totalBytes > 0
+                  ? progress.receivedBytes / progress.totalBytes
+                  : null,
+              receivedBytes: progress.receivedBytes ?? null,
+              totalBytes: progress.totalBytes ?? null,
+              item: progress.phase === "waiting"
+                ? `${progress.tool} (waiting for another ADE install)`
+                : progress.tool,
+            });
+          },
+        });
+        return { ok: true, detail: names.join(", ") };
+      },
+      getAccountStatus: () => readSetupAccountStatus(options),
+      // Delegates to the same `ade connect` implementation so the OAuth flow,
+      // the service step and the machine-directory wait stay in one place.
+      runConnect: async () => {
+        const connect = await runConnectCli([], options);
+        return connect.exitCode === 0
+          ? { ok: true, detail: "linked" }
+          : { ok: false, detail: "sign-in didn't finish", nextAction: "ade connect" };
+      },
+      readInstalledDesktop: () => readInstalledDesktopVersion(),
+      // "The files copied" is a different claim from "it works". This is the
+      // check whose absence let a failed sign-in still print a success line.
+      verify: async () => {
+        const { getRuntimeServiceStatus } = await import("./serviceManager");
+        const service = getRuntimeServiceStatus();
+        if (service.running === false) {
+          return {
+            ok: false,
+            detail: "the ADE brain is not running",
+            nextAction: "ade brain start",
+          };
+        }
+        const account = await readSetupAccountStatus(options);
+        if (!account.signedIn) {
+          return {
+            ok: false,
+            detail: "sign-in didn't finish",
+            nextAction: "ade connect",
+          };
+        }
+        // Signed in is NOT the outcome the user wants -- published is. A
+        // machine can be signed in, with a healthy brain, and still be absent
+        // from the account directory, which is exactly what a clean install
+        // looks like today: the account-directory publisher's only snapshot
+        // source is a project-scoped sync host, so a machine with no project
+        // registered publishes nothing and never appears in the account.
+        // Verifying `signedIn` alone would report that broken install as ready.
+        return await verifyMachinePublished(options, account.identity);
+      },
+    });
+    return {
+      // Deliberately empty. `ade setup` is a human-facing flow whose entire
+      // output is the step list and summary already written to stderr; the
+      // installer inherits stdio, so echoing the result object here would dump
+      // a JSON blob onto the user's console right under the summary -- the
+      // exact kind of noise this command exists to remove.
+      output: "",
+      exitCode: result.ok ? 0 : 1,
+    };
+  } catch (error) {
+    if (error instanceof SetupUsageError) throw new CliUsageError(error.message);
+    throw error;
+  }
+}
+
+/**
  * `ade connect` — link this machine to the user's ADE account.
  *
  * The step orchestration lives in ./commands/connect; this function only binds
@@ -16113,6 +16308,7 @@ async function runServe(
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
     { createSyncCloudRelayStore },
     { setSyncRuntimeRpcHandlerFactory },
+    { buildProjectlessSyncSnapshot },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -16124,6 +16320,7 @@ async function runServe(
     import("./services/sync/rosterBuilder"),
     import("./services/sync/syncCloudRelayStore"),
     import("./services/sync/syncPairedChannelService"),
+    import("./services/sync/projectlessSyncSnapshot"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -16503,21 +16700,52 @@ async function runServe(
     secretsDir: layout.secretsDir,
   });
   // Same file the per-scope sync services read; another store instance is fine
-  // because every read reloads the file.
+  // because every read reloads the file. The path doubles as the machine-wide
+  // key for the shared relay tunnel client, so a projectless brain and a later
+  // project scope resolve to the SAME client instead of two racing dialers.
+  const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
+    filePath: machineCloudRelayFilePath,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // Relay tunnel for that same projectless case. `createAdeRuntime` builds one
+  // per project scope; with no scope there is nobody to build it, which left a
+  // projectless machine reachable only on the LAN.
+  let brainSyncTunnelClient: SyncTunnelClientService | null = null;
+  let brainRelayTunnelGate: RelayTunnelAuthorityGate | null = null;
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
       "sync_disabled",
       "Account-directory publishing has not started.",
     );
+  // What this machine looks like when no project scope owns sync. Hosting is
+  // the projectless lease AND a bound shared listener; the builder reports the
+  // honest all-down shape otherwise.
+  const projectlessSyncSnapshot = (): SyncRoleSnapshot => {
+    const accountStatus = brainAccountAuthService.getStatus();
+    const tunnelStatus = brainSyncTunnelClient?.getStatus() ?? null;
+    return buildProjectlessSyncSnapshot({
+      secretsDir: layout.secretsDir,
+      listener: sharedSyncListener,
+      holdsSyncHostLease: brainSyncHostLease != null,
+      relay: {
+        accountSignedIn: accountStatus.signedIn && Boolean(accountStatus.userId?.trim()),
+        // Same gate the scoped path applies: never advertise a relay URL the
+        // tunnel has deliberately stopped dialing, or a phone that saved it
+        // keeps retrying a route only this machine knows is dead.
+        wssUrl: tunnelStatus?.accountLeaseValid && !tunnelStatus.controlSuppressed
+          ? machineCloudRelayStore.getRelayWssUrl()
+          : null,
+        status: tunnelStatus,
+      },
+      accountDirectory: getAccountDirectoryHealth(),
+    });
+  };
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -16596,6 +16824,7 @@ async function runServe(
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
+      getProjectlessSyncSnapshot: projectlessSyncSnapshot,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -16612,6 +16841,44 @@ async function runServe(
       onShutdown: finish,
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
+  // A machine that hosts sync without a project must still be reachable off the
+  // LAN. `createAdeRuntime` builds the relay tunnel per project scope, so with
+  // no scope nothing ever dialled it and the target user for this path — a
+  // headless box or a fresh machine with no desktop app — was LAN-only. Built
+  // lazily, on the same event that takes the projectless lease.
+  const ensureProjectlessRelayTunnel = async (): Promise<void> => {
+    const listener = sharedSyncListener;
+    if (!listener || brainRelayTunnelGate) return;
+    try {
+      const { createMachineRelayTunnel } = await import("./services/sync/machineRelayTunnel");
+      const { tunnel, gate } = await createMachineRelayTunnel({
+        logger: headlessProjectLogger,
+        configStore: machineCloudRelayStore,
+        configPath: machineCloudRelayFilePath,
+        accountAuthService: brainAccountAuthService,
+        hostListener: listener,
+        onPublicationStateChanged: () => {
+          // Relay reachability is part of what this machine publishes, so a
+          // control/bridge transition has to re-publish rather than wait out
+          // the heartbeat.
+          accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+        },
+        captureAnalytics: (input) => {
+          brainProductAnalytics.captureInternal(input);
+        },
+      });
+      brainRelayTunnelGate = gate;
+      brainSyncTunnelClient = tunnel;
+    } catch (error) {
+      // Relay is an extra route, never a precondition for hosting sync. This
+      // runs inside the sync-host startup loop, which retries forever on
+      // failure, so letting a relay error escape would keep a perfectly good
+      // LAN host from ever finishing startup.
+      headlessProjectLogger.warn("sync.projectless_relay_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const startSyncHost = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
@@ -16638,11 +16905,18 @@ async function runServe(
         ),
       );
       brainSyncHostLease.updatePort(listenerPort);
+      await ensureProjectlessRelayTunnel();
     } else if (activeScope && brainSyncHostLease) {
       // A scope took over hosting and holds its own lease; drop the
       // projectless one so the lock file describes the real owner.
       brainSyncHostLease.dispose();
       brainSyncHostLease = null;
+      // The scope's own runtime builds a gate over the SAME shared tunnel
+      // client, so hand ownership over instead of leaving two gates reacting to
+      // the same lease transitions. Disposing a gate never stops the tunnel.
+      brainRelayTunnelGate?.dispose();
+      brainRelayTunnelGate = null;
+      brainSyncTunnelClient = null;
     }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
@@ -16655,6 +16929,9 @@ async function runServe(
     releaseAccountPublisherAuthoritySubscription = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
+    brainRelayTunnelGate?.dispose();
+    brainRelayTunnelGate = null;
+    brainSyncTunnelClient = null;
     brainSyncHostLease?.dispose();
     brainSyncHostLease = null;
     // Before scopes detach (which clears the run map): best-effort Live
@@ -16670,9 +16947,10 @@ async function runServe(
     }
     try {
       const { peekSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-      await peekSharedSyncTunnelClientService(
-        path.join(layout.secretsDir, "sync-cloud-relay.json"),
-      )?.dispose();
+      // Same constant the tunnel was created under. That path IS the cache key
+      // for the machine-wide client, so a second spelling here would silently
+      // look up nothing and leak the tunnel past shutdown.
+      await peekSharedSyncTunnelClientService(machineCloudRelayFilePath)?.dispose();
     } catch {
       // Best-effort tunnel teardown; the process exit closes sockets anyway.
     }
@@ -16878,9 +17156,18 @@ async function runServe(
         logger: headlessProjectLogger,
         getSnapshot: async () => {
           const activeScope = await scopeRegistry.resolveActiveSyncHost();
-          return await activeScope?.runtime.syncService?.getStatus({
+          const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
           }) ?? null;
+          if (scoped) return scoped;
+          // Hosting sync without a project is a supported state, not the
+          // absence of one. Falling through to null here is what kept a
+          // signed-in machine with an empty projects.json out of the account
+          // directory forever: the publisher reported `no_active_sync_scope`
+          // and returned before it ever made a request. Only report a snapshot
+          // while this brain actually holds the projectless lease — otherwise
+          // `no_active_sync_scope` remains the honest diagnosis.
+          return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
@@ -21051,6 +21338,9 @@ async function runCli(
     }
     if (plan.kind === "connect") {
       return await runConnectCli(plan.rest, parsed.options);
+    }
+    if (plan.kind === "setup") {
+      return await runSetupCli(plan.rest, parsed.options);
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);

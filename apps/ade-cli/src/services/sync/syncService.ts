@@ -75,6 +75,7 @@ import {
   buildPairingConnectInfo,
   tailscaleDnsNameFromDevice,
 } from "./syncPairingConnectInfo";
+import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
@@ -1331,16 +1332,17 @@ export function createSyncService(args: SyncServiceArgs) {
           reason: "The ADE sync listener has not started.",
           lastSuccessAt: listenerValidationHistory.lastSuccessAt,
         };
-      const listenerBound = listenerPort != null;
-      const loopbackAdeValidated = listenerBound
-        && rawListenerValidation.port === listenerPort
-        && rawListenerValidation.loopbackAdeValidated;
-      const listenerReason = !listenerBound
-        ? "The ADE sync listener is not bound."
-        : loopbackAdeValidated
-          ? null
-          : rawListenerValidation.reason
-            ?? `127.0.0.1:${listenerPort} did not answer as ADE.`;
+      const {
+        loopbackAdeValidated,
+        listenerReason,
+        listener: listenerRouteHealth,
+      } = deriveListenerHealth({
+        listenerPort,
+        rawValidation: rawListenerValidation,
+        bound: listenerPort != null,
+        notBoundReason: "The ADE sync listener is not bound.",
+        validationHistory: listenerValidationHistory,
+      });
       const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
       const tailscalePublished = tailnetDiscovery.state === "published";
       const tailscaleEnabled = canHostPhonePairing
@@ -1354,31 +1356,6 @@ export function createSyncService(args: SyncServiceArgs) {
           : tailscalePublished
             ? null
             : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
-      const relayConfigured = canHostPhonePairing;
-      const relayAccountSignedIn = isRelayAccountSignedIn()
-        && (tunnelStatus?.accountLeaseValid ?? true);
-      const relayEnabled = relayConfigured && relayAccountSignedIn;
-      const relayControlConnected = tunnelStatus?.connected === true;
-      const relayBridgeValidated = tunnelStatus?.relayBridgeValidated === true;
-      const relayReason = relayConfigured && !relayAccountSignedIn
-        ? "Sign in to ADE to use ADE Relay."
-        : !relayEnabled
-        ? null
-        : !loopbackAdeValidated
-          ? `Relay route is unusable because ${listenerReason ?? "the loopback ADE check failed"}`
-          : !tunnelStatus
-            ? "Relay tunnel status is unavailable in this ADE process."
-            : !relayControlConnected
-              // A 4505 eviction is a machine-local ownership conflict, not a
-              // network fault, and its reason is the only one that tells the
-              // user what to actually do — so it outranks the raw close text.
-              ? tunnelStatus.controlSuppressedReason
-                ?? tunnelStatus.lastControlError
-                ?? tunnelStatus.lastError
-                ?? "Relay control is not connected."
-              : !relayBridgeValidated
-                ? tunnelStatus.lastError ?? `Relay bridge to 127.0.0.1:${listenerPort} has not been validated against the current sync port.`
-                : tunnelStatus.bridgeOpenFailure ?? null;
       let accountDirectory: SyncAccountDirectoryHealth;
       try {
         accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
@@ -1391,32 +1368,18 @@ export function createSyncService(args: SyncServiceArgs) {
           "Account-directory publisher health is unavailable.",
         );
       }
-      const relayRouteHealth = {
-        enabled: relayEnabled,
-        relayControlConnected,
-        relayBridgeValidated,
-        lastFailureAt: tunnelStatus?.lastFailureAt
-          ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
-        skipReason: relayReason,
-        lastControlError: tunnelStatus?.lastControlError ?? null,
-        lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
-        lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
-        relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
-        relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
-        relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
-        relayControlSuppressed: tunnelStatus?.controlSuppressed === true,
-        relayControlSuppressedReason: tunnelStatus?.controlSuppressedReason ?? null,
-        relayControlFailingSinceMs: tunnelStatus?.controlFailingSinceMs ?? null,
-      };
+      const relayRouteHealth = buildRelayRouteHealth({
+        relayConfigured: canHostPhonePairing,
+        relayAccountSignedIn: isRelayAccountSignedIn()
+          && (tunnelStatus?.accountLeaseValid ?? true),
+        loopbackAdeValidated,
+        listenerReason,
+        listenerPort,
+        tunnelStatus,
+        lastFailureAtFallback: rawListenerValidation.lastFailureAt,
+      });
       const routeHealth: SyncRouteHealth = {
-        listener: {
-          listenerBound,
-          loopbackAdeValidated,
-          port: listenerPort,
-          lastFailureAt: rawListenerValidation.lastFailureAt ?? listenerValidationHistory.lastFailureAt,
-          reason: listenerReason,
-          lastSuccessAt: rawListenerValidation.lastSuccessAt ?? listenerValidationHistory.lastSuccessAt,
-        },
+        listener: listenerRouteHealth,
         tailscale: {
           enabled: tailscaleEnabled,
           tailscalePublished,

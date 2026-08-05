@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_MACHINE_HEARTBEAT_MS,
@@ -12,7 +15,10 @@ import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
 } from "../../../../desktop/src/shared/accountDirectory";
+import { buildProjectlessSyncSnapshot } from "../sync/projectlessSyncSnapshot";
+import { createSyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
+import { removeTestTree } from "../../test/filesystem";
 import {
   createEpisodeAnalytics,
   EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
@@ -132,10 +138,15 @@ function routeSnapshot(
   return value;
 }
 
-afterEach(() => {
+const projectlessSecretsDirs: string[] = [];
+
+afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  for (const dir of projectlessSecretsDirs.splice(0)) {
+    await removeTestTree(dir);
+  }
 });
 
 describe("account machine publisher health", () => {
@@ -1059,6 +1070,59 @@ describe("account machine publisher health", () => {
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(service.getPublisherHealth().state).toBe("published");
+    service.dispose();
+  });
+
+  it("publishes a machine that hosts sync with no project registered", async () => {
+    // The bug this pins: a signed-in machine with an empty projects.json never
+    // reached the network at all. The publisher bailed at `no_active_sync_scope`
+    // because the only snapshot source was the active project scope, even though
+    // the brain was hosting phone sync on a real, bound, loopback-validated port.
+    const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-projectless-publish-"));
+    projectlessSecretsDirs.push(secretsDir);
+    fs.writeFileSync(path.join(secretsDir, "sync-device-id"), "device-headless\n");
+    fs.writeFileSync(path.join(secretsDir, "sync-site-id"), "site-headless\n");
+    const projectless = buildProjectlessSyncSnapshot({
+      secretsDir,
+      listener: {
+        getPort: () => 8791,
+        getLoopbackValidationStatus: () => ({
+          port: 8791,
+          loopbackAdeValidated: true,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: "2026-07-16T00:00:00.000Z",
+        }),
+      },
+      holdsSyncHostLease: true,
+      relay: { accountSignedIn: true, wssUrl: null, status: null },
+      accountDirectory: createSyncAccountDirectoryHealth("sync_disabled", null),
+    });
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => projectless,
+      getMachineKey: () => "machine-headless",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    expect(service.getPublisherHealth().state).toBe("published");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)) as {
+      machineKey: string;
+      deviceId: string;
+      name: string;
+    };
+    expect(body.machineKey).toBe("machine-headless");
+    expect(body.deviceId).toBe("device-headless");
+    expect(body.name.trim().length).toBeGreaterThan(0);
     service.dispose();
   });
 

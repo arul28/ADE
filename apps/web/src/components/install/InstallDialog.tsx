@@ -267,6 +267,26 @@ export function InstallDialog({
             ) : null}
           </div>
 
+          {/* Full width, below both columns: these prompts appear whichever
+              install path you took, so they cannot live in either column. */}
+          {target.prompts ? (
+            <section className="mt-7 border-t border-[color:var(--color-hairline)] pt-4">
+              <h3 className="m-0 text-[13px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-cream)]">
+                {target.prompts.heading}
+              </h3>
+              <ul className="mt-2 flex list-none flex-col gap-1.5 p-0">
+                {target.prompts.items.map((item) => (
+                  <li
+                    key={item}
+                    className="max-w-[68ch] text-[13px] leading-[1.55] text-[color:var(--color-cream-muted)]"
+                  >
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[color:var(--color-hairline)] pt-4">
             {target.footnote.text ? (
               <p className="m-0 text-[12.5px] text-[color:var(--color-cream-faint)]">

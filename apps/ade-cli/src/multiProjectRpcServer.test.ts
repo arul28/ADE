@@ -13,7 +13,11 @@ import {
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
-import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
+import { buildProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncRoleSnapshot,
+} from "../../desktop/src/shared/types";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { JsonRpcErrorCode } from "./jsonrpc";
@@ -1784,6 +1788,62 @@ describe("multi-project RPC server", () => {
     });
     expect(status.localDevice.name).not.toBe("");
     expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+    handler.dispose();
+  });
+
+  it("reports the brain's real projectless sync state instead of the all-down placeholder", async () => {
+    // A brain hosting sync with no project holds the machine lease and has the
+    // shared listener bound. It injects that truth; the handler must report it
+    // rather than the hardcoded pessimistic snapshot that made `ade doctor`
+    // call a reachable machine unreachable.
+    const { registry } = createRegistry();
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const projectless = buildProjectlessSyncSnapshot({
+      secretsDir: path.join(os.tmpdir(), "ade-projectless-rpc-missing"),
+      listener: {
+        getPort: () => 8791,
+        getLoopbackValidationStatus: () => ({
+          port: 8791,
+          loopbackAdeValidated: true,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: "2026-07-16T00:00:00.000Z",
+        }),
+      },
+      holdsSyncHostLease: true,
+      relay: { accountSignedIn: true, wssUrl: null, status: null },
+      accountDirectory: createSyncAccountDirectoryHealth("published", null),
+    });
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      getProjectlessSyncSnapshot: () => projectless,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    const status = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getStatus",
+      params: {},
+    }) as SyncRoleSnapshot;
+
+    expect(status.routeHealth.listener).toMatchObject({
+      listenerBound: true,
+      loopbackAdeValidated: true,
+      port: 8791,
+    });
+    expect(status.pairingConnectInfo?.port).toBe(8791);
+    expect(status.routeHealth.relay.enabled).toBe(true);
+    expect(status.runtimeRole).toBe("host");
     handler.dispose();
   });
 

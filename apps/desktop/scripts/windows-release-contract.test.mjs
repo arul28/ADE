@@ -762,6 +762,26 @@ test("the Windows install dialog keeps both install paths and their wording", ()
   assert.match(installTargets, /MARKETING_FEATURES\.COPY_INSTALL_COMMAND_WINDOWS/);
 });
 
+test("the Windows install dialog warns about both OS prompts", () => {
+  // Neither prompt is a bug we can code away, so telling the user up front is
+  // the whole mitigation -- which makes this copy a support claim like the
+  // no-admin promise above, not decoration.
+  //
+  // SmartScreen: the Azure Trusted Signing certificate is a Public Trust
+  // (individual) profile, so it accrues publisher reputation rather than being
+  // trusted on sight the way an EV certificate is. A correctly signed build
+  // still warns until that reputation builds.
+  assert.match(installTargets, /Windows protected your PC/);
+  assert.match(installTargets, /Run anyway/);
+  // Firewall: Windows has no per-user firewall rule store and ADE installs
+  // per-user without elevation, so installer.nsh's netsh call cannot succeed
+  // and Windows raises its own allow dialog on first sync. See
+  // apps/desktop/scripts/windows-firewall-rules.ps1 -- it exits 0 on that path
+  // by design.
+  assert.match(installTargets, /Firewall/);
+  assert.match(installTargets, /private networks/);
+});
+
 test("the /download/windows endpoint is routed and resolves the signed installer", () => {
   // The rewrite has to exist or the SPA catch-all swallows /download/windows
   // and the dialog's download button lands on the marketing page.

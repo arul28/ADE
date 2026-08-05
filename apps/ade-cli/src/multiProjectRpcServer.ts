@@ -80,7 +80,7 @@ import {
   AccountMachineDirectoryService,
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
-import { mapPlatform } from "./services/sync/syncProtocol";
+import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 type HandlerEntry = {
@@ -140,6 +140,8 @@ export type MultiProjectRpcHandlerOptions = {
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
+  /** Truthful sync status for a brain hosting (or not hosting) sync with no project scope. */
+  getProjectlessSyncSnapshot?: () => SyncRoleSnapshot;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -1077,112 +1079,17 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
-  const readMachineSyncIdentity = (fileName: string): string => {
-    try {
-      return fs.readFileSync(
-        path.join(resolveMachineAdeLayout().secretsDir, fileName),
-        "utf8",
-      ).trim();
-    } catch {
-      return "";
-    }
-  };
-
-  const getMachineOnlySyncStatus = (): SyncRoleSnapshot => {
-    const now = new Date().toISOString();
-    const localDevice: SyncRoleSnapshot["localDevice"] = {
-      deviceId: readMachineSyncIdentity("sync-device-id"),
-      siteId: readMachineSyncIdentity("sync-site-id"),
-      name: os.hostname(),
-      platform: mapPlatform(process.platform),
-      deviceType: "desktop",
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: now,
-      lastHost: os.hostname(),
-      lastPort: null,
-      tailscaleIp: null,
-      ipAddresses: [],
-      metadata: { hostname: os.hostname() },
-    };
-    return {
-      mode: "standalone",
-      role: "brain",
-      runtimeMode: "standalone",
-      runtimeRole: "host",
-      localDevice,
-      currentBrain: localDevice,
-      currentRuntime: localDevice,
-      clusterState: null,
-      bootstrapToken: null,
-      pairingPin: null,
-      pairingPinConfigured: false,
-      runtimeName: null,
-      pairingConnectInfo: null,
-      connectedPeers: [],
-      tailnetDiscovery: {
-        state: "disabled",
-        serviceName: "svc:ade-sync",
-        servicePort: 8787,
-        target: null,
-        updatedAt: null,
-        error: "Tailnet discovery is waiting for an active sync project scope.",
-        stderr: null,
-      },
-      routeHealth: {
-        listener: {
-          listenerBound: false,
-          loopbackAdeValidated: false,
-          port: null,
-          lastFailureAt: null,
-          reason: "No active sync project scope.",
-          lastSuccessAt: null,
-        },
-        tailscale: {
-          enabled: false,
-          tailscalePublished: false,
-          tailscaleReachable: false,
-          lastFailureAt: null,
-          reason: null,
-          lastSuccessAt: null,
-        },
-        relay: {
-          enabled: false,
-          relayControlConnected: false,
-          relayBridgeValidated: false,
-          lastFailureAt: null,
-          skipReason: null,
-          lastControlError: null,
-          lastControlOpenAt: null,
-          lastBridgeValidationAt: null,
-        },
-        accountDirectory: getAccountDirectoryHealth(),
-      },
-      client: {
-        state: "disconnected",
-        host: null,
-        port: null,
-        connectedAt: null,
-        lastSeenAt: null,
-        latencyMs: null,
-        syncLag: null,
-        lastRemoteDbVersion: 0,
-        brainDeviceId: null,
-        hostDeviceId: null,
-        hostName: null,
-        error: null,
-        message: "No active sync project scope.",
-        savedDraft: null,
-      },
-      transferReadiness: {
-        ready: false,
-        blockers: [],
-        survivableState: [],
-      },
-      survivableStateText: "No active sync project scope.",
-      blockingStateText: "Register or open a project to start machine sync.",
-    };
-  };
+  // A brain with no project scope can still be hosting phone sync — it holds
+  // the machine-wide lease and the shared listener is bound on a real port. The
+  // brain that owns those facts injects `getProjectlessSyncSnapshot`; a handler
+  // built without it (tests, embedded runtimes) has no listener to describe and
+  // falls back to the honest all-down shape.
+  const getMachineOnlySyncStatus = (): SyncRoleSnapshot =>
+    options.getProjectlessSyncSnapshot?.()
+    ?? buildDegradedProjectlessSyncSnapshot({
+      secretsDir: resolveMachineAdeLayout().secretsDir,
+      accountDirectory: getAccountDirectoryHealth(),
+    });
 
   const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];

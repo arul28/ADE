@@ -26,7 +26,80 @@ function Resolve-AssetUrl([string]$Name) {
   return "https://github.com/$Repo/releases/download/$Version/$Name"
 }
 
-function Download-Asset([string]$Name, [string]$Destination) {
+# Only these first two steps live in PowerShell -- everything after the runtime
+# exists on disk is handed to `ade setup`, which renders the remaining steps and
+# the summary once, in TypeScript, for both platforms.
+$script:StepAnsi = $false
+try {
+  # IsErrorRedirected, not IsOutputRedirected: the progress line and step lines
+  # are written to [Console]::Error, so stderr is the stream that decides
+  # whether an in-place redraw is safe.
+  $script:StepAnsi = [Console]::IsErrorRedirected -eq $false -and $Host.UI.SupportsVirtualTerminal
+} catch {
+  $script:StepAnsi = $false
+}
+$script:DownloadedBytes = 0
+$script:ActiveLine = $false
+# Started here so the summary's elapsed time covers the whole install, not just
+# the `ade setup` half that renders it.
+$script:InstallStopwatch = [Diagnostics.Stopwatch]::StartNew()
+
+function Format-AdeBytes([double]$Bytes) {
+  if ($Bytes -lt 1MB) { return "{0:N0} KB" -f ($Bytes / 1KB) }
+  if ($Bytes -lt 1GB) { return "{0:N1} MB" -f ($Bytes / 1MB) }
+  return "{0:N1} GB" -f ($Bytes / 1GB)
+}
+
+function Write-AdeBanner {
+  Write-Host ""
+  Write-Host "     _    ____  _____"
+  Write-Host "    / \  |  _ \| ____|"
+  Write-Host "   / _ \ | | | |  _|"
+  Write-Host "  / ___ \| |_| | |___"
+  Write-Host " /_/   \_\____/|_____|"
+  Write-Host ""
+}
+
+# Clears the in-place progress line before any static output, so a completed
+# step never prints on top of a half-drawn bar.
+function Clear-AdeActiveLine {
+  if (-not $script:ActiveLine) { return }
+  $script:ActiveLine = $false
+  if ($script:StepAnsi) {
+    [Console]::Error.Write("`r" + (" " * 78) + "`r")
+  }
+}
+
+function Write-AdeStep([string]$Symbol, [string]$Label, [string]$Detail) {
+  Clear-AdeActiveLine
+  [Console]::Error.WriteLine(("  {0} {1} {2}" -f $Symbol, $Label.PadRight(20), $Detail).TrimEnd())
+}
+
+function Write-AdeProgress([string]$Label, [double]$Received, [double]$Total) {
+  if (-not $script:StepAnsi) { return }
+  if ($Total -gt 0) {
+    $fraction = [Math]::Max(0.0, [Math]::Min(1.0, $Received / $Total))
+    $filled = [int][Math]::Round($fraction * 12)
+    $bar = ("#" * $filled) + ("." * (12 - $filled))
+    $line = "  {0}  {1,3}%  {2} - {3}/{4}" -f $bar, [int]($fraction * 100), $Label,
+      (Format-AdeBytes $Received), (Format-AdeBytes $Total)
+  } else {
+    $line = "  > {0} - {1}" -f $Label, (Format-AdeBytes $Received)
+  }
+  if ($line.Length -gt 78) { $line = $line.Substring(0, 78) }
+  [Console]::Error.Write("`r" + $line.PadRight(78))
+  $script:ActiveLine = $true
+}
+
+# Streams the body so a 118 MB download reports bytes instead of sitting silent.
+# `Invoke-WebRequest` cannot do this here: the script sets
+# $ProgressPreference = SilentlyContinue (required, or its own progress bar
+# corrupts the console under `irm | iex`), which also suppresses any feedback.
+function Download-Asset(
+  [string]$Name,
+  [string]$Destination,
+  [string]$ProgressLabel = ""
+) {
   if (-not [string]::IsNullOrWhiteSpace($AssetDirectory)) {
     $source = Join-Path ([IO.Path]::GetFullPath($AssetDirectory)) $Name
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -39,7 +112,63 @@ function Download-Asset([string]$Name, [string]$Destination) {
   if (-not $url.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
     Fail "refusing non-HTTPS runtime asset URL: $url"
   }
-  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination
+  if ([string]::IsNullOrWhiteSpace($ProgressLabel)) {
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination
+    return
+  }
+
+  Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+  # The Add-Type above is allowed to fail quietly, but the type resolution below
+  # is not: under $ErrorActionPreference = "Stop" it throws from inside the main
+  # install try block, so a host without the assembly would take the ROLLBACK
+  # path instead of just losing its progress bar. Degrade to a plain download.
+  if (-not ("System.Net.Http.HttpClient" -as [type])) {
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination
+    $script:DownloadedBytes += (Get-Item -LiteralPath $Destination).Length
+    return
+  }
+
+  $client = [Net.Http.HttpClient]::new()
+  try {
+    $client.Timeout = [TimeSpan]::FromMinutes(30)
+    $response = $client.GetAsync($url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).
+      GetAwaiter().GetResult()
+    try {
+      if (-not $response.IsSuccessStatusCode) {
+        Fail "download failed for $Name (HTTP $([int]$response.StatusCode))"
+      }
+      $total = if ($response.Content.Headers.ContentLength) {
+        [double]$response.Content.Headers.ContentLength
+      } else { 0 }
+      # Not $input: that is PowerShell's automatic pipeline enumerator, and
+      # assigning to it shadows the real one for the rest of the scope.
+      $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+      $output = [IO.File]::Create($Destination)
+      try {
+        $buffer = [byte[]]::new(1MB)
+        $received = 0.0
+        $lastReport = [Environment]::TickCount
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+          $output.Write($buffer, 0, $read)
+          $received += $read
+          # Throttled: redrawing on every 1 MB chunk costs more than the socket.
+          if (([Environment]::TickCount - $lastReport) -ge 100) {
+            $lastReport = [Environment]::TickCount
+            Write-AdeProgress $ProgressLabel $received $total
+          }
+        }
+        Write-AdeProgress $ProgressLabel $received $total
+        $script:DownloadedBytes += $received
+      } finally {
+        $output.Dispose()
+        $stream.Dispose()
+      }
+    } finally {
+      $response.Dispose()
+    }
+  } finally {
+    $client.Dispose()
+  }
 }
 
 function Read-Checksum([string]$ManifestPath, [string]$AssetName) {
@@ -82,50 +211,10 @@ function Test-AdeInteractive {
   return $true
 }
 
-function Read-AdeConfirmation([string]$Question, [bool]$DefaultYes) {
-  $hint = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
-  $reply = Read-Host "$Question $hint"
-  if ([string]::IsNullOrWhiteSpace($reply)) { return $DefaultYes }
-  switch -Regex ($reply.Trim()) {
-    '^(y|yes)$' { return $true }
-    '^(n|no)$' { return $false }
-    default { return $DefaultYes }
-  }
-}
-
-# The published SHA256SUMS covers only the standalone runtime assets, so the
-# desktop installer is verified against the base64 SHA-512 in latest.yml -- the
-# same digest electron-updater checks.
-function Get-Sha512Base64([string]$Path) {
-  $sha = [Security.Cryptography.SHA512]::Create()
-  try {
-    $stream = [IO.File]::OpenRead($Path)
-    try {
-      return [Convert]::ToBase64String($sha.ComputeHash($stream))
-    } finally {
-      $stream.Dispose()
-    }
-  } finally {
-    $sha.Dispose()
-  }
-}
-
-function Get-DesktopInstallerEntry([string]$ManifestPath) {
-  $url = $null
-  foreach ($line in Get-Content -LiteralPath $ManifestPath -ErrorAction Stop) {
-    if ($line -match '^\s*-\s+url:\s*(\S+)\s*$') {
-      $url = $Matches[1]
-      continue
-    }
-    if ($line -match '^\s*sha512:\s*(\S+)\s*$') {
-      if ($url -and $url.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
-        return [pscustomobject]@{ Name = $url; Sha512 = $Matches[1] }
-      }
-      $url = $null
-    }
-  }
-  return $null
-}
+# Prompting, desktop-installer discovery and its SHA-512 verification all moved
+# into `ade setup` (apps/ade-cli/src/commands/setup*.ts) so Windows and macOS
+# share one implementation. This script now owns only what has to happen before
+# the `ade` binary exists on disk.
 
 function Get-ShortSha256([string]$Value) {
   $sha = [Security.Cryptography.SHA256]::Create()
@@ -262,8 +351,11 @@ $installSucceeded = $false
 
 try {
   New-Item -ItemType Directory -Force -Path $tempRoot, $stagedRuntime | Out-Null
-  Download-Asset $binaryAsset $stagedBinary
-  Download-Asset $nativeAsset $stagedArchive
+  Write-AdeBanner
+  Write-Host "  Installing ADE to $AdeHome"
+  Write-Host ""
+  Download-Asset $binaryAsset $stagedBinary "ADE runtime"
+  Download-Asset $nativeAsset $stagedArchive "Native dependencies"
   Download-Asset "SHA256SUMS" $checksumManifest
   Verify-Checksum $checksumManifest $binaryAsset $stagedBinary
   Verify-Checksum $checksumManifest $nativeAsset $stagedArchive
@@ -317,13 +409,20 @@ try {
   & $destinationBinary --version | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "installed ADE runtime failed its version check" }
   if (-not $NoService) {
-    & $destinationBinary serve --install-service | Out-Null
+    # `brain start`, NOT `serve --install-service`. The latter registers the
+    # service at whatever ADE_DEFAULT_ROLE happens to be, and in a fresh install
+    # that is unset, so the machine brain came up as role `agent`. `ade connect`
+    # runs at `cto`, and an `agent` brain can never serve a `cto` caller -- so
+    # sign-in failed on every clean install, on Windows and macOS alike.
+    # `brain start` pins `cto` internally, matching what the desktop app spawns
+    # and what it refuses to attach to anything else.
+    & $destinationBinary brain start | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "ADE installed, but its per-user brain service could not be registered" }
   }
   if (-not $NoPath) { Install-UserPath $InstallDir }
 
-  Write-Output "ADE runtime installed: $destinationBinary"
-  Write-Output "ADE native runtime: $runtimeDir"
+  Write-AdeStep "+" "ADE runtime" $destinationBinary
+  Write-AdeStep "+" "Native dependencies" $runtimeDir
   $installSucceeded = $true
 } catch {
   $installError = $_
@@ -350,7 +449,11 @@ try {
   if ($previousServiceWasStopped -and (Test-Path -LiteralPath $destinationBinary -PathType Leaf)) {
     try {
       Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
-      & $destinationBinary serve --install-service | Out-Null
+      # Same `cto` reasoning as the install path above: restoring the previous
+      # service through `serve --install-service` would put it back at role
+      # `agent`, leaving the user rolled back onto a brain their own `ade
+      # connect` cannot talk to.
+      & $destinationBinary brain start | Out-Null
       if ($LASTEXITCODE -ne 0) {
         $rollbackErrors.Add("previous brain service restore exited with code $LASTEXITCODE")
       } elseif (-not $previousServiceWasRunning) {
@@ -375,14 +478,14 @@ try {
 # ---------------------------------------------------------------------------
 # Onboarding. Runs only after a fully successful install, and outside the
 # install's try/catch so nothing here can trigger a rollback of a good install.
+#
+# Everything past this point -- agent CLIs, account, desktop app, end-to-end
+# verification and the closing summary -- is `ade setup`. That is the same
+# implementation the macOS installer hands off to, written once in TypeScript
+# and unit-tested, so the two platforms cannot drift the way they had (macOS
+# had a download progress bar here; Windows silently downloaded a gigabyte).
 # ---------------------------------------------------------------------------
 if ($installSucceeded) {
-  $adeCommand = if ($NoPath) { $destinationBinary } else { "ade" }
-  # Without a PATH entry the command is an absolute path, which is not
-  # runnable as-is once it contains a space. Call operator + quotes fixes it.
-  $adeInvocation = if ($NoPath) { "& `"$destinationBinary`"" } else { "ade" }
-  $interactive = Test-AdeInteractive
-  $onboardingTemp = Join-Path ([IO.Path]::GetTempPath()) ("ade-onboard-" + [Guid]::NewGuid().ToString("N"))
   $onboardingPreviousEnvironment = @{
     ADE_HOME = $env:ADE_HOME
     ADE_PACKAGE_CHANNEL = $env:ADE_PACKAGE_CHANNEL
@@ -392,107 +495,63 @@ if ($installSucceeded) {
   }
 
   try {
-    New-Item -ItemType Directory -Force -Path $onboardingTemp | Out-Null
-    # `ade connect` needs the runtime sidecar environment; the install's finally
-    # deliberately restored the caller's copy, so re-apply it just for these
-    # child processes and put it back afterwards.
+    # `ade setup` needs the runtime sidecar environment; the install's finally
+    # deliberately restored the caller's copy, so re-apply it just for this
+    # child process and put it back afterwards.
     Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
 
-    # --- agent CLIs ---
-    # Pinned but not bundled: fetch them into the shared machine cache now so
-    # the first agent run is not a surprise multi-hundred-megabyte download.
-    # Non-fatal -- the brain retries in the background on every `ade serve`.
-    Write-Output ""
-    Write-Output "Fetching pinned agent CLIs (Codex, Claude Code, OpenCode)..."
+    $runtimeVersion = ""
     try {
-      & $destinationBinary tools ensure --text
-      if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Could not fetch the agent CLIs now; ADE will fetch them on first run."
-      }
+      # Collapsed to one line, matching the sh side's `tr -d '\r\n'`: any stray
+      # warning line ahead of the version would otherwise embed a newline in the
+      # summary's step detail and break its layout.
+      $runtimeVersion = (((& $destinationBinary --version) -join " ") -replace '\s+', " ").Trim()
     } catch {
-      Write-Warning "Could not fetch the agent CLIs ($($_.Exception.Message)); ADE will fetch them on first run."
+      $runtimeVersion = ""
     }
 
-    # --- sign in ---
-    if (-not $interactive) {
-      Write-Output ""
-      Write-Output "Next: run '$adeCommand connect' to link this machine to your ADE account."
-    } else {
-      Write-Output ""
-      if (Read-AdeConfirmation "Sign in or create your ADE account to link this machine?" $true) {
-        try {
-          & $destinationBinary connect
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Sign-in did not finish. Run '$adeCommand connect' to try again."
-          }
-        } catch {
-          Write-Warning "Sign-in did not finish ($($_.Exception.Message)). Run '$adeCommand connect' to try again."
-        }
-      } else {
-        Write-Output "Skipped. Run '$adeCommand connect' later to link this machine."
-      }
+    $setupArgs = @(
+      "setup",
+      "--continue",
+      "--runtime-path", $destinationBinary,
+      "--native-path", $runtimeDir,
+      "--elapsed-ms", ([string][int]$script:InstallStopwatch.ElapsedMilliseconds),
+      "--downloaded-bytes", ([string][int64]$script:DownloadedBytes)
+    )
+    if (-not [string]::IsNullOrWhiteSpace($runtimeVersion)) {
+      $setupArgs += @("--runtime-version", $runtimeVersion)
     }
+    # No console means no prompts: `ade setup` falls through to printing the
+    # follow-up commands instead of blocking on a read that can never return.
+    if (-not (Test-AdeInteractive)) { $setupArgs += "--no-prompt" }
 
-    # --- desktop app ---
-    try {
-      $desktopManifest = Join-Path $onboardingTemp "latest.yml"
-      Download-Asset "latest.yml" $desktopManifest
-      $desktopEntry = Get-DesktopInstallerEntry $desktopManifest
-      if ($null -eq $desktopEntry) { throw "latest.yml did not name a Windows installer" }
-
-      if (-not $interactive) {
-        Write-Output "Desktop app for Windows: $(Resolve-AssetUrl $desktopEntry.Name)"
-      } else {
-        $desktopApp = Join-Path $env:LOCALAPPDATA "Programs\ADE\ADE.exe"
-        $desktopInstalled = Test-Path -LiteralPath $desktopApp -PathType Leaf
-        $question = if ($desktopInstalled) {
-          "Reinstall the ADE desktop app for Windows?"
-        } else {
-          "Install the ADE desktop app for Windows? (about 1 GB download)"
-        }
-        if (Read-AdeConfirmation $question (-not $desktopInstalled)) {
-          $desktopInstaller = Join-Path $onboardingTemp $desktopEntry.Name
-          Write-Output "Downloading $($desktopEntry.Name)"
-          Download-Asset $desktopEntry.Name $desktopInstaller
-          $actualSha = Get-Sha512Base64 $desktopInstaller
-          if (-not [string]::Equals($actualSha, $desktopEntry.Sha512, [StringComparison]::Ordinal)) {
-            throw "checksum mismatch for $($desktopEntry.Name)"
-          }
-          # oneClick:false + perMachine:false + allowElevation:false, so /S is a
-          # silent per-user install that never raises a UAC prompt.
-          $process = Start-Process -FilePath $desktopInstaller -ArgumentList "/S" -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "the desktop installer exited with code $($process.ExitCode)"
-          }
-          if (Test-Path -LiteralPath $desktopApp -PathType Leaf) {
-            Write-Output "ADE desktop app installed: $desktopApp"
-            Start-Process -FilePath $desktopApp | Out-Null
-          } else {
-            Write-Output "ADE desktop app installed."
-          }
-        } else {
-          # Only /, /open, /pair, /privacy and /terms are real SPA routes
-          # (apps/web/src/app/SiteRoutes.tsx); anything else renders NotFound.
-          # The homepage carries the install modal.
-          Write-Output "Skipped. Download it later from https://ade-app.dev"
-        }
-      }
-    } catch {
-      Write-Warning "Desktop app step skipped ($($_.Exception.Message)). The ADE runtime is still installed."
-    }
-
-    Write-Output ""
-    # With -NoPath nothing was added to the user PATH, so `ade` resolves only by
-    # full path and a new terminal buys the user nothing.
-    if (-not $NoPath) {
-      Write-Output "Open a new terminal and run: $adeInvocation connect --status --text"
-    } else {
-      Write-Output "Done. Try: $adeInvocation connect --status --text"
-    }
+    # stdout/stderr are inherited on purpose: the step lines, the prompts and
+    # the summary are meant for this console.
+    & $destinationBinary @setupArgs
+  } catch {
+    Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'ade setup' to try again."
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {
       [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")
     }
-    Remove-Item -LiteralPath $onboardingTemp -Recurse -Force -ErrorAction SilentlyContinue
   }
+
+  # Only this script knows whether it edited the user PATH, so the "new
+  # terminal" note belongs here rather than in the shared summary. With -NoPath
+  # nothing was added and a new terminal would buy the user nothing.
+  if (-not $NoPath) {
+    Write-Host ""
+    # Single-quoted: a backtick inside a double-quoted PowerShell string is an
+    # escape character, so "`ade`" would emit a BEL instead of the word.
+    Write-Host '  ade is on your PATH in new terminals. This one still needs a restart.'
+  }
+
+  # `ade setup`'s exit code is deliberately not propagated. Reaching here means
+  # the runtime is installed and the brain is registered, which is all this
+  # script promises; the steps `ade setup` owns past that are enhancement, and
+  # several are documented non-fatal (the brain re-fetches the agent CLIs on
+  # every `ade serve`). Propagating it failed whole Dockerfiles and CI
+  # provisioning runs over a flaky fetch. The summary tells the human what is
+  # left, and `ade setup` still exits non-zero when a person runs it directly.
+  exit 0
 }

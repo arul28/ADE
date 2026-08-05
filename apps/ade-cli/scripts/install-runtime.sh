@@ -46,33 +46,58 @@ download() {
   fi
 }
 
-# Like download(), but a failure is reported to the caller instead of aborting
-# the install. Used only for the optional desktop-app upsell, which must never
-# turn a successful runtime install into a failed one.
-try_download() {
-  try_url="$1"
-  try_out="$2"
+# Same as download(), but with a visible progress bar on stderr. The runtime
+# binary and its native archive are ~150 MB together, and downloading them
+# silently is what made the installer look frozen for the first 30 seconds.
+# stdout/stderr still point at the terminal under `curl | sh`.
+download_with_progress() {
+  dl_url="$1"
+  dl_out="$2"
+  dl_label="$3"
+  printf '  %s\n' "$dl_label" >&2
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$try_url" -o "$try_out" 2>/dev/null
+    curl -fL --progress-bar "$dl_url" -o "$dl_out"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$try_url" -O "$try_out" 2>/dev/null
+    # `--show-progress` is GNU wget >= 1.16 and busybox wget rejects it outright.
+    # That flag used to sit on a best-effort, Darwin-only path; it is now on the
+    # required Linux runtime download, where an Alpine or slim container image
+    # with no curl would fail the whole install over a progress bar. Plain
+    # busybox wget already reports progress on stderr, so the fallback loses
+    # nothing but GNU's verbose header noise.
+    if wget --help 2>&1 | grep -q -- '--show-progress'; then
+      wget -q --show-progress "$dl_url" -O "$dl_out"
+    else
+      wget "$dl_url" -O "$dl_out"
+    fi
   else
-    return 1
+    die "missing curl or wget"
   fi
 }
 
-# The desktop app zip is ~1GB, so show a progress bar rather than appearing to
-# hang. stdout/stderr still point at the terminal under `curl | sh`.
-try_download_progress() {
-  try_url="$1"
-  try_out="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fL --progress-bar "$try_url" -o "$try_out"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress "$try_url" -O "$try_out"
-  else
-    return 1
+file_size_bytes() {
+  if [ ! -f "$1" ]; then
+    printf '0\n'
+    return 0
   fi
+  wc -c <"$1" | tr -d ' '
+}
+
+print_banner() {
+  cat >&2 <<'BANNER'
+
+     _    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+BANNER
+}
+
+# Matches the step lines `ade setup` prints for steps 3-5, so the whole install
+# reads as one list even though it spans two processes.
+print_step() {
+  printf '  %s %-20s %s\n' "$1" "$2" "$3" >&2
 }
 
 sha256_file() {
@@ -120,7 +145,14 @@ try_install_service() {
   # Capture $? from the command itself: after a closing `fi` it would report the
   # compound statement's status (always 0) and the warning would lie.
   status=0
-  "$dest_dir/ade" serve --install-service >"$service_log" 2>&1 || status="$?"
+  # `brain start`, NOT `serve --install-service`. The latter registers the
+  # service at whatever ADE_DEFAULT_ROLE happens to be, and on a fresh install
+  # that is unset, so the machine brain came up as role `agent`. `ade connect`
+  # runs at `cto`, and an `agent` brain can never serve a `cto` caller -- so
+  # sign-in failed on every clean install, on macOS exactly as on Windows.
+  # `brain start` pins `cto` internally, matching what the desktop app spawns
+  # and what it refuses to attach to anything else.
+  "$dest_dir/ade" brain start >"$service_log" 2>&1 || status="$?"
   if [ "$status" -eq 0 ]; then
     return 0
   fi
@@ -143,20 +175,8 @@ asset_url() {
   fi
 }
 
-sha512_base64_file() {
-  # electron-updater manifests carry base64 SHA-512, not hex SHA-256, so the
-  # desktop app is verified against latest-mac.yml rather than SHA256SUMS
-  # (which only covers the standalone runtime assets).
-  sha_file="$1"
-  if command -v openssl >/dev/null 2>&1; then
-    openssl dgst -sha512 -binary "$sha_file" | openssl base64 -A
-  elif command -v shasum >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1 &&
-    command -v base64 >/dev/null 2>&1; then
-    shasum -a 512 "$sha_file" | awk '{ print $1 }' | xxd -r -p | base64 | tr -d '\n'
-  else
-    return 1
-  fi
-}
+# The desktop app's SHA-512 verification moved into `ade setup`; SHA256SUMS
+# above still covers the standalone runtime assets this script downloads.
 
 # Prompts must come from the terminal: under `curl | sh` the script's own stdin
 # is the download pipe, so reading it would consume the script or see EOF.
@@ -402,11 +422,9 @@ need tar
 need chmod
 need awk
 target="$(detect_target)"
-# detect_target runs in a command-substitution subshell, so the `cpu`/`platform`
-# it assigns are lost here. Re-derive `cpu` in this shell: `desktop_manifest_entry`
-# reads it, and under `set -u` an unset `cpu` would abort the whole install at the
-# desktop-app upsell.
-cpu="${target#*-}"
+# `cpu` used to be re-derived here for the desktop-app upsell's manifest match.
+# That moved into `ade setup`, which reads the architecture from its own
+# process, so nothing in this script needs it any more.
 binary_name="ade-$target"
 archive_name="$binary_name.native.tar.gz"
 dest_dir="$(choose_install_dir)"
@@ -416,11 +434,19 @@ trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
 mkdir -p "$dest_dir" "$runtime_dir" "$ade_home/bin"
 
-download "$(asset_url "$binary_name")" "$tmp_dir/ade"
-download "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz"
+install_started_at="$(date +%s)"
+print_banner
+printf '  Installing ADE to %s\n\n' "$ade_home" >&2
+
+download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "ADE runtime"
+download_with_progress "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz" \
+  "Native dependencies"
 download "$(asset_url "SHA256SUMS")" "$tmp_dir/SHA256SUMS"
 verify_asset_checksum "$binary_name" "$tmp_dir/ade"
 verify_asset_checksum "$archive_name" "$tmp_dir/native.tar.gz"
+downloaded_bytes="$((
+  $(file_size_bytes "$tmp_dir/ade") + $(file_size_bytes "$tmp_dir/native.tar.gz")
+))"
 
 chmod 755 "$tmp_dir/ade"
 cp "$tmp_dir/ade" "$dest_dir/ade"
@@ -461,14 +487,11 @@ elif [ "$(uname -s)" = "Darwin" ]; then
   try_install_service
 fi
 
-printf 'ADE runtime installed: %s\n' "$dest_dir/ade"
-# Commands we print must be runnable *now*, in this shell, so they name the
-# binary by path until the install dir is already on PATH here. A profile edit
-# made below only affects new shells.
-case ":$PATH:" in
-  *":$dest_dir:"*) ade_cmd="ade" ;;
-  *) ade_cmd="$dest_dir/ade" ;;
-esac
+print_step "+" "ADE runtime" "$dest_dir/ade"
+print_step "+" "Native dependencies" "$runtime_dir"
+# The recovery commands in the closing summary are printed by `ade setup`, which
+# resolves its own invocation, so this script no longer needs to work out
+# whether `ade` is on PATH yet.
 
 # Under `curl | sh` the script's stdin is the download pipe, so every prompt --
 # and every command that prompts -- must be wired to /dev/tty instead. With no
@@ -479,146 +502,55 @@ if [ "${ADE_INSTALL_NO_PROMPT:-}" != "1" ] && tty_is_usable; then
   interactive=1
 fi
 
-# The agent CLIs (Codex, Claude Code, OpenCode) are pinned but not bundled --
-# the installer fetches them into the shared machine cache so the first agent
-# run is not a surprise multi-hundred-megabyte download. Non-fatal by design:
-# the brain retries this in the background on every `ade serve`, so a flaky
-# network here costs nothing but the wait.
-ensure_agent_tools() {
-  printf '\nFetching pinned agent CLIs (Codex, Claude Code, OpenCode)...\n'
-  if "$dest_dir/ade" tools ensure --text; then
-    return 0
-  fi
-  printf 'ade install: could not fetch the agent CLIs now; ADE will fetch them on first run.\n' >&2
-  return 0
-}
-
-offer_sign_in() {
-  if [ "$interactive" -ne 1 ]; then
-    printf '\nNext: run `%s connect` to link this machine to your ADE account.\n' "$ade_cmd"
-    return 0
-  fi
-
-  printf '\n'
-  if ! ask 'Sign in or create your ADE account to link this machine?' y; then
-    printf 'Skipped. Run `%s connect` later to link this machine.\n' "$ade_cmd"
-    return 0
-  fi
-
-  # `ade connect` inherits the terminal, so its own prompts and the browser /
-  # device-code flow work normally.
-  if "$dest_dir/ade" connect </dev/tty; then
-    return 0
-  fi
-  printf 'ade install: sign-in did not finish. Run `%s connect` to try again.\n' "$ade_cmd" >&2
-  return 0
-}
-
-# macOS desktop app upsell. The published SHA256SUMS covers only the standalone
-# runtime assets, so the app zip is verified against the base64 SHA-512 in
-# latest-mac.yml -- the same digest electron-updater checks.
-desktop_manifest_entry() {
-  awk -v arch="$cpu" '
-    $1 == "-" && $2 == "url:" { url = $3; next }
-    $1 == "sha512:" {
-      if (url != "" && url ~ ("-" arch "\\.zip$")) { print url; print $2; found = 1; exit }
-      url = ""
-      next
-    }
-    END { if (!found) exit 1 }
-  ' "$1"
-}
-
-offer_desktop_app() {
-  [ "$(uname -s)" = "Darwin" ] || return 0
-
-  desktop_manifest="$tmp_dir/latest-mac.yml"
-  try_download "$(asset_url "latest-mac.yml")" "$desktop_manifest" || return 0
-  desktop_entry="$(desktop_manifest_entry "$desktop_manifest")" || return 0
-  desktop_zip="$(printf '%s\n' "$desktop_entry" | sed -n 1p)"
-  desktop_sha="$(printf '%s\n' "$desktop_entry" | sed -n 2p)"
-  [ -n "$desktop_zip" ] && [ -n "$desktop_sha" ] || return 0
-
-  if [ "$interactive" -ne 1 ]; then
-    printf 'Desktop app for macOS: %s\n' "$(asset_url "$desktop_zip")"
-    return 0
-  fi
-
-  apps_dir="/Applications"
-  [ -w "$apps_dir" ] || apps_dir="$HOME/Applications"
-  installed_app="$apps_dir/ADE.app"
-
-  printf '\n'
-  if [ -e "$installed_app" ]; then
-    if ! ask "Replace the existing ADE desktop app at $installed_app?" n; then
-      return 0
-    fi
-  elif ! ask 'Install the ADE desktop app for macOS? (about 1 GB download)' y; then
-    # The site is a single-page app whose only routes are /, /open, /pair,
-    # /privacy and /terms (apps/web/src/app/SiteRoutes.tsx); every other path
-    # renders NotFoundPage. The homepage carries the install modal, so link
-    # there rather than at a /download path that does not exist.
-    printf 'Skipped. Download it later from https://ade-app.dev\n'
-    return 0
-  fi
-
-  printf 'Downloading %s\n' "$desktop_zip"
-  if ! try_download_progress "$(asset_url "$desktop_zip")" "$tmp_dir/$desktop_zip"; then
-    printf 'ade install: could not download the desktop app; the ADE runtime is still installed.\n' >&2
-    return 0
-  fi
-  desktop_actual="$(sha512_base64_file "$tmp_dir/$desktop_zip")" || {
-    printf 'ade install: cannot verify the desktop app on this system; skipping it.\n' >&2
-    return 0
-  }
-  if [ "$desktop_actual" != "$desktop_sha" ]; then
-    printf 'ade install: checksum mismatch for %s; skipping the desktop app.\n' "$desktop_zip" >&2
-    return 0
-  fi
-
-  desktop_stage="$tmp_dir/desktop"
-  rm -rf "$desktop_stage"
-  mkdir -p "$desktop_stage"
-  if ! ditto -x -k "$tmp_dir/$desktop_zip" "$desktop_stage" 2>/dev/null; then
-    printf 'ade install: could not expand the desktop app archive; skipping it.\n' >&2
-    return 0
-  fi
-  [ -d "$desktop_stage/ADE.app" ] || {
-    printf 'ade install: desktop app archive did not contain ADE.app; skipping it.\n' >&2
-    return 0
-  }
-
-  # Move the existing app aside rather than deleting it first, so a failed
-  # promotion leaves the user's working app in place.
-  mkdir -p "$apps_dir"
-  desktop_backup="$tmp_dir/ADE.app.previous"
-  rm -rf "$desktop_backup"
-  if [ -e "$installed_app" ] && ! mv "$installed_app" "$desktop_backup"; then
-    printf 'ade install: could not replace %s; skipping the desktop app.\n' "$installed_app" >&2
-    return 0
-  fi
-  if ! mv "$desktop_stage/ADE.app" "$installed_app"; then
-    if [ -e "$desktop_backup" ]; then
-      mv "$desktop_backup" "$installed_app" || true
-    fi
-    printf 'ade install: could not install the desktop app into %s.\n' "$apps_dir" >&2
-    return 0
-  fi
-  rm -rf "$desktop_backup"
-  printf 'ADE desktop app installed: %s\n' "$installed_app"
-  open "$installed_app" 2>/dev/null || true
-  return 0
-}
-
-# PATH first: the sign-in and agent-CLI steps below should run with a sane
-# environment, and the user should be asked about their shell profile before
-# they are asked about accounts and a 1 GB desktop download.
+# PATH first: `ade setup` should run with a sane environment, and the user
+# should be asked about their shell profile before they are asked about
+# accounts and a 1 GB desktop download.
 setup_path
-ensure_agent_tools
-offer_sign_in
-offer_desktop_app
 
-printf '\nDone. Try: %s connect --status --text\n' "$ade_cmd"
-if [ "$path_profile_updated" -eq 1 ]; then
-  printf 'New terminals will find `ade` on PATH. To use it in this one, run: %s\n' "$(env_file_ref)"
+# Everything past this point -- agent CLIs, account, desktop app, end-to-end
+# verification and the closing summary -- is `ade setup`. That is the same
+# implementation the Windows installer hands off to, written once in TypeScript
+# and unit-tested, so the two platforms cannot drift the way they had (this
+# script had a desktop download progress bar; the PowerShell one did not).
+#
+# stdin is wired to /dev/tty because under `curl | sh` this script's own stdin
+# is the download pipe: prompts reading it would consume the script or see EOF.
+# stdout/stderr stay inherited so the step lines and summary reach the terminal.
+# Built with positional parameters rather than a space-joined string: an
+# ADE_INSTALL_DIR containing a space would otherwise word-split into two broken
+# arguments, and `--runtime-path` is exactly the flag that carries such a path.
+set -- setup --continue --runtime-path "$dest_dir/ade" --native-path "$runtime_dir"
+if runtime_version="$("$dest_dir/ade" --version 2>/dev/null)"; then
+  runtime_version="$(printf '%s' "$runtime_version" | tr -d '\r\n')"
+  if [ -n "$runtime_version" ]; then
+    set -- "$@" --runtime-version "$runtime_version"
+  fi
 fi
+set -- "$@" --elapsed-ms "$(( ($(date +%s) - install_started_at) * 1000 ))"
+set -- "$@" --downloaded-bytes "${downloaded_bytes:-0}"
+# No terminal (CI, automation) means no prompts: `ade setup` falls through to
+# printing the follow-up commands instead of blocking on an unreadable stdin.
+[ "$interactive" -eq 1 ] || set -- "$@" --no-prompt
+
+# `|| true`, and a flat `exit 0` at the end of the script rather than ade setup's
+# own status: reaching here means the runtime is installed and the brain is
+# registered, which is the whole of what this script promises.
+# The steps `ade setup` owns past that are enhancement, and several are
+# documented non-fatal (the brain re-fetches the agent CLIs on every
+# `ade serve`), so propagating its exit code failed whole Dockerfiles and CI
+# provisioning runs over a flaky fetch. The summary tells the human what is left,
+# and `ade setup` still exits non-zero when a person runs it directly.
+if [ "$interactive" -eq 1 ]; then
+  "$dest_dir/ade" "$@" </dev/tty || true
+else
+  "$dest_dir/ade" "$@" || true
+fi
+
+# Only this script knows whether it edited a shell profile, so the "new
+# terminal" note belongs here rather than in the shared summary.
+if [ "$path_profile_updated" -eq 1 ]; then
+  printf '\n  ade is on your PATH in new terminals. To use it in this one, run:\n    %s\n' \
+    "$(env_file_ref)"
+fi
+
+exit 0
