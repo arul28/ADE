@@ -31,10 +31,9 @@ export function accountDirectorySummary(
         healthy: false,
       };
     }
-    return {
-      label: `Connected to your ADE account · ${health.reachableEndpointCount} route${health.reachableEndpointCount === 1 ? "" : "s"} published`,
-      healthy: true,
-    };
+    // Deliberately just the fact of the connection. The published-route count was
+    // plumbing detail the reader could neither act on nor interpret.
+    return { label: "Connected to your ADE account", healthy: true };
   }
   const reason = health.skipReason ?? health.state.replaceAll("_", " ");
   return {
