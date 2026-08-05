@@ -913,3 +913,28 @@ describe("describeUnpublishedMachine", () => {
     }
   });
 });
+
+describe("truncateToVisibleWidth", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("measures columns occupied, not bytes, so colour does not truncate early", async () => {
+    const { truncateToVisibleWidth, visibleWidth } = await import("./setupRender");
+    const coloured = `${ESC}[32mOK${ESC}[0m plain text`;
+    expect(visibleWidth(coloured)).toBe("OK plain text".length);
+    // Byte length is far larger; a length-based cut would lose real characters.
+    expect(truncateToVisibleWidth(coloured, 13)).toContain("plain text");
+  });
+
+  it("never cuts inside an escape, so colour cannot bleed into later output", async () => {
+    const { truncateToVisibleWidth } = await import("./setupRender");
+    const out = truncateToVisibleWidth(`${ESC}[32mABCDEFGH${ESC}[0m`, 3);
+    // Both sequences survive whole; only visible characters are dropped.
+    expect(out).toBe(`${ESC}[32mABC${ESC}[0m`);
+    expect(out.endsWith(`${ESC}[0m`)).toBe(true);
+  });
+
+  it("leaves a line that already fits completely alone", async () => {
+    const { truncateToVisibleWidth } = await import("./setupRender");
+    expect(truncateToVisibleWidth("short", 80)).toBe("short");
+  });
+});

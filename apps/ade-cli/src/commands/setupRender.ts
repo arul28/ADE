@@ -200,7 +200,53 @@ export function formatActiveLine(
     : `  ${parts.join("  ")}`;
   // Never wrap: a wrapped line cannot be erased by a single clear-line, which
   // would leave orphaned progress bars scrolling up the screen.
-  return line.length > caps.columns ? line.slice(0, caps.columns - 1) : line;
+  return truncateToVisibleWidth(line, caps.columns - 1);
+}
+
+/** Matches a CSI sequence, which occupies no columns on screen. */
+const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+export function visibleWidth(text: string): number {
+  return text.replace(ANSI_PATTERN, "").length;
+}
+
+/**
+ * Truncate by columns actually occupied, never mid-escape.
+ *
+ * Nothing reaching `formatActiveLine` is coloured today -- `stateSymbol` only
+ * paints the `ok` and `failed` symbols and that line passes a literal
+ * `"active"`. Measuring by `String.length` therefore happens to be right, which
+ * is exactly the problem: it is right by coincidence. Colour one more component
+ * later and the line silently truncates early, and a naive slice through a reset
+ * sequence leaves the colour bleeding into everything printed afterwards.
+ */
+export function truncateToVisibleWidth(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (visibleWidth(text) <= maxWidth) return text;
+
+  let out = "";
+  let width = 0;
+  ANSI_PATTERN.lastIndex = 0;
+  for (let index = 0; index < text.length;) {
+    ANSI_PATTERN.lastIndex = index;
+    const match = ANSI_PATTERN.exec(text);
+    if (match?.index === index) {
+      // Escapes are copied whole and cost no width, so a trailing reset still
+      // makes it out even once the visible budget is spent.
+      out += match[0];
+      index += match[0].length;
+      continue;
+    }
+    // Past the visible budget we keep scanning rather than breaking: stopping
+    // here would drop the trailing reset and leave the colour applied to
+    // everything printed afterwards, which is the failure this exists to avoid.
+    if (width < maxWidth) {
+      out += text[index];
+      width += 1;
+    }
+    index += 1;
+  }
+  return out;
 }
 
 /** A finished step, as it scrolls away: `+ Agent CLIs   codex, claude-code`. */
