@@ -179,15 +179,30 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
  * else - a populated cache, a user install, or the not-yet-fetched fallback - is
  * a working resolver.
  */
-function assertFetchedToolResolution(label, source, executablePath) {
+function assertFetchedToolResolution(label, source, executablePath, appPath) {
   if (typeof source !== "string" || source.trim().length === 0) {
     throw new Error(`[release:mac] Packaged smoke did not report a ${label} executable source`);
   }
   if (source === "bundled") {
-    throw new Error(
-      `[release:mac] ${label} resolved to a bundled copy (source="bundled") at ${String(executablePath)}; `
-      + `the packaged app must not carry the native platform packages. ${RUNTIME_FETCHED_TOOL_EXPLANATION}`,
+    // Only a bundled copy INSIDE the app under validation is a packaging leak.
+    // On a build/CI host the packaged app sits inside the repo checkout, so the
+    // resolvers' dev fallback legitimately finds the checkout's node_modules —
+    // an environmental artifact, not shipped bytes. The asar/unpacked content
+    // gates (assertNoRuntimeFetchedToolPayload) prove the artifact itself is
+    // clean either way.
+    const resolved = path.resolve(String(executablePath ?? ""));
+    const appRoot = path.resolve(appPath) + path.sep;
+    if (resolved.startsWith(appRoot)) {
+      throw new Error(
+        `[release:mac] ${label} resolved to a bundled copy inside the packaged app at ${resolved}; `
+        + `the packaged app must not carry the native platform packages. ${RUNTIME_FETCHED_TOOL_EXPLANATION}`,
+      );
+    }
+    console.log(
+      `[release:mac] ${label} resolved to the build host's checkout copy at ${resolved} (outside the app); `
+      + "environmental on CI, absent on user machines.",
     );
+    return;
   }
   console.log(`[release:mac] ${label} executable resolved from "${source}".`);
 }
@@ -480,7 +495,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
   }
-  assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath);
+  assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath, appPath);
   if (pathReferencesPackedAsar(payload.claudeExecutablePath)) {
     throw new Error(
       `[release:mac] Packaged smoke resolved Claude to a packed app.asar path instead of app.asar.unpacked: ${payload.claudeExecutablePath}`
@@ -505,8 +520,8 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (payload?.openCodeExecutable !== "function") {
     throw new Error(`[release:mac] Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
-  assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath);
-  assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath);
+  assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath, appPath);
+  assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath, appPath);
 
   const { stdout: adeCliHelp } = await execFileAsync(adeCliBinPath, ["--help"], {
     cwd: resourcesPath,
