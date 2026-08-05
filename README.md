@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>A single native workspace for every AI coding agent.</strong><br />
-  <em>macOS, Windows, iOS, CLI — synced in real time.</em>
+  <strong>Your workspace for every AI coding agent.</strong><br />
+  <em>macOS, Windows, iOS, and CLI all synced in real time. (android mobile app almost ready)</em>
 </p>
 
 <p align="center">
@@ -37,9 +37,9 @@
   <a href="https://ade-app.dev"><img src="assets/readme/hero.png" alt="ADE — every AI coding tool, one app that runs everywhere" width="900" /></a>
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same worktree-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your desktop.
+ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** (more coming soon) in one workspace that you can open from any machine you own, the web, or a mobile app. The best part? It's completely free. Simply sign in to ADE on a machine you own, and you can magically run and manage agents from any other ADE client. In real time, every single ADE chat or CLI session (yes even your CLI sessions) sync to every other device. I can start a thread on my desktop at home, pick it up on my phone at the gym, and then finish it off from a website on my friends computer. It works like magic, and removes the friction of managing agents on the go. 
 
-Generally available on macOS. Windows 10/11 x64 is in beta. On Linux, ADE runs headless as the brain and you drive it from anywhere else. Free, open source, local-first. Bring your own keys or subs.
+Beyond agent management, ADE (like the name implies) offers a full development environment. This means git management, a full file editing/viewing experience like vscode, pr management, automations, gitcracken inspired history, and more. This one app is mean to replace every single modern dev tool. 
 
 ---
 
