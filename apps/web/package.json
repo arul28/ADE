@@ -9,8 +9,9 @@
     "build": "node scripts/check-entities.mjs && npm run typecheck && vite build",
     "preview": "vite preview",
     "test": "npm run test:analytics",
-    "test:analytics": "node --experimental-strip-types --test src/lib/marketingAnalytics.test.ts api/releaseAssets.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p api/tsconfig.json --noEmit"
+    "test:analytics": "node --experimental-strip-types --test src/lib/marketingAnalytics.test.ts && npm run test:api",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p api/tsconfig.json --noEmit",
+    "test:api": "vitest run api/releaseAssets.test.ts"
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.84.0",
@@ -32,6 +33,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.7.3",
-    "vite": "^4.5.3"
+    "vite": "^4.5.3",
+    "vitest": "^3.2.7"
   }
 }

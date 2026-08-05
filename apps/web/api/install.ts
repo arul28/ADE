@@ -28,7 +28,7 @@ import {
   stableAssetUrl,
   type VercelReq,
   type VercelRes,
-} from "./releaseAssets.ts";
+} from "./releaseAssets";
 
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
   if (rejectDisallowedMethod(req, res)) return;

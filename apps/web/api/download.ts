@@ -22,7 +22,6 @@ import {
   parseDownloadRequest,
   pickQuery,
   rejectDisallowedMethod,
-  requestMethod,
   resolveStableRedirect,
   resolveVersionedRedirect,
   sendRedirect,
@@ -30,7 +29,7 @@ import {
   type VercelQuery,
   type VercelReq,
   type VercelRes,
-} from "./releaseAssets.ts";
+} from "./releaseAssets";
 
 function flatQuery(query: VercelQuery): Record<string, string | undefined> {
   return {
