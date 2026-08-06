@@ -32,6 +32,7 @@ import {
   type GitHubFilter,
   type GitHubFilterCounts,
 } from "./githubTabModel";
+import { prRouteCoordinatesMatch } from "../prsRouteState";
 
 const FILTER_ACCENTS: Record<GitHubFilter, string> = {
   open: "#60A5FA",
@@ -347,8 +348,10 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                   <GitHubStackInspector
                     stack={selectedStack}
                     items={detail.displayedItems.filter(
-                      (item) => item.repoOwner === selectedStack.repoOwner
-                        && item.repoName === selectedStack.repoName,
+                      (item) => prRouteCoordinatesMatch(
+                        { prNumber: item.githubPrNumber, repoOwner: item.repoOwner, repoName: item.repoName },
+                        { prNumber: null, repoOwner: selectedStack.repoOwner, repoName: selectedStack.repoName },
+                      ),
                     )}
                     selectedPrNumber={selectedItem.githubPrNumber}
                     syncing={chrome.syncing}

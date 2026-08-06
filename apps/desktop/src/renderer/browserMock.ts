@@ -1457,6 +1457,20 @@ const ALL_PRS = USE_ADE_DB_SNAPSHOT
     : []
   : [...NORMAL_PRS, ...INTEGRATION_PRS];
 
+function getAdeDbPrSnapshotByGithubCoordinates(args: any): any | null {
+  const repoOwner = String(args?.repoOwner ?? "").trim().toLowerCase();
+  const repoName = String(args?.repoName ?? "").trim().toLowerCase();
+  const githubPrNumber = Number(args?.githubPrNumber);
+  if (!repoOwner || !repoName || !Number.isInteger(githubPrNumber) || githubPrNumber <= 0) return null;
+
+  const pr = ALL_PRS.find((candidate: any) =>
+    String(candidate.repoOwner ?? "").trim().toLowerCase() === repoOwner
+    && String(candidate.repoName ?? "").trim().toLowerCase() === repoName
+    && Number(candidate.githubPrNumber) === githubPrNumber,
+  );
+  return pr ? ADE_DB_PR_SNAPSHOT_BY_ID.get(String(pr.id)) ?? null : null;
+}
+
 // ── Merge Contexts ────────────────────────────────────────────
 const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Normal PRs — no group
@@ -6065,6 +6079,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         MOCK_REVIEWS_BY_PR[prId] ??
         [],
       getReviewThreads: resolvedArg([]),
+      getDetailByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.detail ?? null,
+      getFilesByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.files ?? [],
+      getCommitsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.commits ?? [],
+      getActionRunsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.actionRuns ?? [],
+      getActivityByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.activity ?? [],
+      getStatusByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.status ?? null,
+      getChecksByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.checks ?? [],
+      getReviewsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.reviews ?? [],
+      getCommentsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.comments ?? [],
+      getReviewThreadsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.reviewThreads ?? [],
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
       draftDescription: resolvedArg({

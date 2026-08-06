@@ -78,6 +78,18 @@ describe("buildTimelineVisibleEventSearch", () => {
       eventId: "comment-new",
     })).toBe("?tab=normal&prId=pr-1&eventId=comment-new&detailTab=overview");
   });
+
+  it("keeps coordinate-only routes coordinate-based while replacing the visible event", () => {
+    const current = parsePrsRouteState({
+      search: "?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&detailTab=overview",
+    });
+
+    expect(buildTimelineVisibleEventSearch({
+      current,
+      prId: "gh:ade-dev/ade#123",
+      eventId: "comment-new",
+    })).toBe("?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&eventId=comment-new&detailTab=overview");
+  });
 });
 
 describe("buildTimelineEvents fold", () => {

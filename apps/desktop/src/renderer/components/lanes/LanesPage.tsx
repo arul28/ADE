@@ -83,7 +83,7 @@ import {
   DEFAULT_REBASE_SUGGESTIONS,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
-import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
+import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
@@ -129,6 +129,22 @@ export function shouldMountGitActionsPane({
   surface: LanePaneSurface;
 }): boolean {
   return surface !== "inline" || !laneId || expandedGitActionsLaneId !== laneId;
+}
+
+export function shouldRetryLaneGithubSnapshotForceRefresh({
+  currentProjectRoot,
+  markedProjectRoot,
+  refreshSucceeded,
+  startedProjectRoot,
+}: {
+  currentProjectRoot: string | null;
+  markedProjectRoot: string | null;
+  refreshSucceeded: boolean;
+  startedProjectRoot: string;
+}): boolean {
+  return !refreshSucceeded
+    && currentProjectRoot === startedProjectRoot
+    && markedProjectRoot === startedProjectRoot;
 }
 
 type RebasePushReviewState = {
@@ -482,6 +498,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const laneGithubPrTagsRequestRef = useRef(0);
   const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
   const laneVisiblePrRefreshProjectRootRef = useRef<string | null>(null);
+  const laneGithubSnapshotForceRefreshProjectRootRef = useRef<string | null>(null);
   const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
@@ -911,7 +928,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [getActiveProjectRoot]);
 
-  const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }) => {
+  const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
     try {
@@ -919,13 +936,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         { force: options?.force === true },
         { projectRoot: startedRoot },
       );
-      if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if (getActiveProjectRoot() !== startedRoot) return;
+      if (requestId !== laneGithubPrTagsRequestRef.current) return false;
+      if (getActiveProjectRoot() !== startedRoot) return false;
       setLaneGithubPrTags(snapshot.repoPullRequests);
+      return true;
     } catch {
-      if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if (getActiveProjectRoot() !== startedRoot) return;
+      if (requestId !== laneGithubPrTagsRequestRef.current) return false;
+      if (getActiveProjectRoot() !== startedRoot) return false;
       // Keep the last usable GitHub snapshot visible on transient refresh failures.
+      return false;
     }
   }, [getActiveProjectRoot]);
 
@@ -1075,22 +1094,56 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     lanePrTagsRequestRef.current += 1;
     laneGithubPrTagsRequestRef.current += 1;
+    laneGithubSnapshotForceRefreshProjectRootRef.current = null;
     setLanePrTags([]);
     setLaneGithubPrTags([]);
     if (!active || !activeProjectRoot) {
       return;
     }
-    void refreshLanePrTags({ refreshMapped: true });
-    void refreshLaneGithubPrTags({ force: true });
-    void warmPrSurfaceCoalesced({
-      projectRoot: activeProjectRoot,
-      includeGithubSnapshot: false,
-    });
+    // Keep the lane surface local-first. Visible stale rows are refreshed by
+    // the debounced viewport pass below; a forced snapshot and per-lane PR
+    // refresh here made opening the next PR surface compete with GitHub work.
+    void refreshLanePrTags();
+    void refreshLaneGithubPrTags();
     return () => {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
     };
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature]);
+
+  useEffect(() => {
+    if (!active || !activeProjectRoot || document.visibilityState !== "visible") return;
+    if (laneGithubSnapshotForceRefreshProjectRootRef.current === activeProjectRoot) return;
+    const hasVisibleGithubOnlyPr = visibleLaneIds.some((laneId) =>
+      lanePrTagsByLaneId.get(laneId)?.some((tag) => tag.source === "github" && !tag.linkedPrId) ?? false,
+    );
+    if (!hasVisibleGithubOnlyPr) return;
+
+    const startedRoot = activeProjectRoot;
+    const timer = window.setTimeout(() => {
+      if (getActiveProjectRoot() !== startedRoot) return;
+      laneGithubSnapshotForceRefreshProjectRootRef.current = startedRoot;
+      void refreshLaneGithubPrTags({ force: true }).then((refreshSucceeded) => {
+        if (shouldRetryLaneGithubSnapshotForceRefresh({
+          currentProjectRoot: getActiveProjectRoot(),
+          markedProjectRoot: laneGithubSnapshotForceRefreshProjectRootRef.current,
+          refreshSucceeded,
+          startedProjectRoot: startedRoot,
+        })) {
+          laneGithubSnapshotForceRefreshProjectRootRef.current = null;
+        }
+      });
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [
+    active,
+    activeProjectRoot,
+    getActiveProjectRoot,
+    lanePrTagsByLaneId,
+    laneVisiblePrRefreshVisibilityToken,
+    refreshLaneGithubPrTags,
+    visibleLaneIds,
+  ]);
 
   useEffect(() => {
     if (!active) return;
@@ -3289,6 +3342,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       navigate(`/prs${buildPrsRouteSearch({
                         activeTab: "normal",
                         selectedPrId: target.linkedPrId,
+                        selectedPrNumber: target.githubPrNumber,
+                        repoOwner: target.repoOwner,
+                        repoName: target.repoName,
                         selectedRebaseItemId: null,
                       })}`);
                       return;

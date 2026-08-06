@@ -20,7 +20,11 @@ import {
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
-import { buildLaneSplitColumnsKey, shouldMountGitActionsPane } from "./LanesPage";
+import {
+  buildLaneSplitColumnsKey,
+  shouldMountGitActionsPane,
+  shouldRetryLaneGithubSnapshotForceRefresh,
+} from "./LanesPage";
 import type {
   GitHubPrListItem,
   LaneSummary,
@@ -93,6 +97,23 @@ function makeGitHubPr(overrides: Partial<GitHubPrListItem> = {}): GitHubPrListIt
     ...overrides,
   };
 }
+
+describe("lane GitHub snapshot force refresh", () => {
+  it("retries after a transient forced refresh failure for the same project", () => {
+    expect(shouldRetryLaneGithubSnapshotForceRefresh({
+      currentProjectRoot: "/project",
+      markedProjectRoot: "/project",
+      refreshSucceeded: false,
+      startedProjectRoot: "/project",
+    })).toBe(true);
+    expect(shouldRetryLaneGithubSnapshotForceRefresh({
+      currentProjectRoot: "/project",
+      markedProjectRoot: "/project",
+      refreshSucceeded: true,
+      startedProjectRoot: "/project",
+    })).toBe(false);
+  });
+});
 
 describe("resolveCreateLaneRequest", () => {
   it("creates an independent lane from the selected primary branch", () => {

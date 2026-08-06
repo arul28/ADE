@@ -6,8 +6,12 @@ import type {
 } from "../../../../shared/types";
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { isTerminalPrState } from "../../../lib/prState";
+import {
+  prRouteCoordinatesKey,
+  prRouteCoordinatesMatch,
+  type PrRouteSelectionTarget,
+} from "../prsRouteState";
 
-export const LINKED_HYDRATION_LIMIT = 8;
 export const GITHUB_TAB_VIRTUALIZE_AT = 50;
 export const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 export const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
@@ -145,7 +149,11 @@ export function githubCoordKey(item: {
   repoName: string;
   githubPrNumber: number;
 }): string {
-  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
+  return prRouteCoordinatesKey({
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    prNumber: Number(item.githubPrNumber),
+  });
 }
 
 function buildOverlayRowFromLastSeen(lastSeen: GitHubPrListItem, linkedPr: PrSummary): GitHubPrListItem {
@@ -185,7 +193,7 @@ export function mergeGitHubListItems(snapshot: GitHubPrSnapshot): GitHubPrListIt
   const combined = [...snapshot.repoPullRequests, ...snapshot.externalPullRequests];
   const seen = new Set<string>();
   return combined.filter((item) => {
-    const key = `${item.scope}:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
+    const key = `${item.scope}:${githubCoordKey(item)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -202,6 +210,90 @@ export function countGitHubItemsByState(items: GitHubPrListItem[]): GitHubFilter
 
 export function syntheticUnmappedPrId(item: GitHubPrListItem): string {
   return syntheticGithubPrId(item);
+}
+
+export function selectionTargetForItem(item: GitHubPrListItem): PrRouteSelectionTarget {
+  return {
+    prId: item.linkedPrId ?? null,
+    prNumber: item.githubPrNumber,
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+  };
+}
+
+export function itemMatchesSelectionTarget(
+  item: GitHubPrListItem,
+  target: PrRouteSelectionTarget,
+): boolean {
+  const itemId = item.linkedPrId ?? syntheticUnmappedPrId(item);
+  const coordinatesMatch = prRouteCoordinatesMatch(
+    {
+      prNumber: item.githubPrNumber,
+      repoOwner: item.repoOwner,
+      repoName: item.repoName,
+    },
+    target,
+  );
+  const idMatches = Boolean(target.prId && itemId === target.prId && coordinatesMatch);
+  return idMatches || (coordinatesMatch && target.prNumber != null);
+}
+
+export function selectionTargetKey(
+  selectedPrId: string | null,
+  selectedPrTarget: PrRouteSelectionTarget | null | undefined,
+): string | null {
+  if (selectedPrTarget) {
+    return [
+      selectedPrTarget.prId ?? "",
+      prRouteCoordinatesKey(selectedPrTarget),
+    ].join("/");
+  }
+  return selectedPrId;
+}
+
+export function buildProvisionalGithubPrItem(target: {
+  prNumber: number | null;
+  repoOwner: string | null;
+  repoName: string | null;
+}): GitHubPrListItem | null {
+  if (
+    typeof target.prNumber !== "number"
+    || !Number.isFinite(target.prNumber)
+    || !Number.isInteger(target.prNumber)
+    || target.prNumber <= 0
+    || !target.repoOwner?.trim()
+    || !target.repoName?.trim()
+  ) return null;
+  const repoOwner = target.repoOwner.trim();
+  const repoName = target.repoName.trim();
+  const githubPrNumber = target.prNumber;
+  const item = {
+    id: "",
+    scope: "repo" as const,
+    repoOwner,
+    repoName,
+    githubPrNumber,
+    githubUrl: `https://github.com/${repoOwner}/${repoName}/pull/${githubPrNumber}`,
+    title: `Pull request #${githubPrNumber}`,
+    state: "open" as const,
+    isDraft: false,
+    baseBranch: null,
+    headBranch: null,
+    author: null,
+    createdAt: "",
+    updatedAt: "",
+    linkedPrId: null,
+    linkedGroupId: null,
+    linkedLaneId: null,
+    linkedLaneName: null,
+    adeKind: null,
+    workflowDisplayState: null,
+    cleanupState: null,
+    labels: [],
+    isBot: false,
+    commentCount: 0,
+  } satisfies GitHubPrListItem;
+  return { ...item, id: syntheticUnmappedPrId(item) };
 }
 
 export function buildSyntheticUnmappedPr(item: GitHubPrListItem, projectId: string): PrWithConflicts {

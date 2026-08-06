@@ -7,6 +7,21 @@ import {
   selectGithubLanePrTags,
   selectLanePrs,
 } from "../lanes/lanePageModel";
+import { prRouteCoordinatesKey } from "../prs/prsRouteState";
+
+type LanePrCoordinateInput = {
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+};
+
+function lanePrCoordinateKey(pr: LanePrCoordinateInput): string {
+  return prRouteCoordinatesKey({
+    prNumber: pr.githubPrNumber,
+    repoOwner: pr.repoOwner,
+    repoName: pr.repoName,
+  });
+}
 
 function githubItemToLanePr(item: GitHubPrListItem, laneId: string): PrSummary {
   return {
@@ -75,19 +90,15 @@ export function buildLanePrsByLaneId(args: {
       .map((pr) => ({
         ...pr,
         stack: githubPrs.find((githubPr) => (
-          githubPr.githubPrNumber === pr.githubPrNumber
-          && githubPr.repoOwner.toLowerCase() === pr.repoOwner.toLowerCase()
-          && githubPr.repoName.toLowerCase() === pr.repoName.toLowerCase()
+          lanePrCoordinateKey(githubPr) === lanePrCoordinateKey(pr)
         ))?.stack
           ?? pr.stack
           ?? null,
       }));
     const mappedIds = new Set(mapped.map((pr) => pr.id));
-    const mappedRepoPrKeys = new Set(mapped.map((pr) => (
-      `${pr.repoOwner.toLowerCase()}/${pr.repoName.toLowerCase()}#${pr.githubPrNumber}`
-    )));
+    const mappedRepoPrKeys = new Set(mapped.map(lanePrCoordinateKey));
     const unmappedGithubPrs = githubPrs.filter((githubPr) => {
-      const repoPrKey = `${githubPr.repoOwner.toLowerCase()}/${githubPr.repoName.toLowerCase()}#${githubPr.githubPrNumber}`;
+      const repoPrKey = lanePrCoordinateKey(githubPr);
       return !mappedIds.has(githubPr.linkedPrId ?? "") && !mappedRepoPrKeys.has(repoPrKey);
     });
     const combined = [

@@ -12,6 +12,7 @@ import type {
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
 import { isTerminalPrState } from "../../lib/prState";
+import { prRouteCoordinatesMatch } from "../prs/prsRouteState";
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -30,6 +31,9 @@ export type LaneTabPrTag = {
   linkedPrId: string | null;
   githubPrNumber: number;
   githubUrl: string;
+  /** Repository coordinates keep badge deep links usable before local hydration. */
+  repoOwner: string;
+  repoName: string;
   title: string;
   state: PrSummary["state"];
   /** A live PR follows the lane's current branch; previous PRs remain history on the lane. */
@@ -280,8 +284,10 @@ export function githubPrMatchesCurrentBranch(
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
   const headRepoOwner = pr.headRepoOwner?.trim();
   const headRepoName = pr.headRepoName?.trim();
-  if (headRepoOwner && pr.repoOwner && headRepoOwner.toLowerCase() !== pr.repoOwner.toLowerCase()) return false;
-  if (headRepoName && pr.repoName && headRepoName.toLowerCase() !== pr.repoName.toLowerCase()) return false;
+  if (!prRouteCoordinatesMatch(
+    { prNumber: null, repoOwner: headRepoOwner ?? null, repoName: headRepoName ?? null },
+    { prNumber: null, repoOwner: pr.repoOwner, repoName: pr.repoName },
+  )) return false;
   if (lane.laneType === "primary") {
     const baseBranch = normalizeLanePrBranch(lane.baseRef);
     if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
@@ -312,6 +318,8 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary, laneRole?: "active" | "previ
     linkedPrId: pr.id,
     githubPrNumber: pr.githubPrNumber,
     githubUrl: pr.githubUrl,
+    repoOwner: pr.repoOwner,
+    repoName: pr.repoName,
     title: pr.title,
     state: pr.state,
     laneRole,
@@ -341,6 +349,8 @@ function toLaneTabPrTagFromGithubItem(
     linkedPrId,
     githubPrNumber: pr.githubPrNumber,
     githubUrl: pr.githubUrl,
+    repoOwner: pr.repoOwner,
+    repoName: pr.repoName,
     title: pr.title,
     state: pr.isDraft ? "draft" : pr.state,
     laneRole,

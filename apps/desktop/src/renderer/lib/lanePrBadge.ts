@@ -1,5 +1,6 @@
 import type { LaneSummary, PrState, PrSummary } from "../../shared/types";
 import { selectLanePrs } from "../components/lanes/lanePageModel";
+import { buildPrsRouteSearch } from "../components/prs/prsRouteState";
 import { COLORS } from "../components/lanes/laneDesignTokens";
 
 /**
@@ -163,7 +164,14 @@ export function lanePrStateColor(state: PrState): string {
 
 /** Deep link the PR chip opens, identical from every host so the target cannot drift. */
 export function lanePrDeepLinkPath(pr: PrSummary): string {
-  return `/prs?tab=normal&prId=${encodeURIComponent(pr.id)}`;
+  return `/prs${buildPrsRouteSearch({
+    activeTab: "normal",
+    selectedPrId: pr.id,
+    selectedPrNumber: pr.githubPrNumber,
+    repoOwner: pr.repoOwner,
+    repoName: pr.repoName,
+    selectedRebaseItemId: null,
+  })}`;
 }
 
 /**

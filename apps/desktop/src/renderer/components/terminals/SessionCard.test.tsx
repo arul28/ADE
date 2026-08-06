@@ -1340,6 +1340,8 @@ describe("SessionCard where line", () => {
     id: "pr-1",
     laneId: "lane-1",
     githubPrNumber: 959,
+    repoOwner: "ade-dev",
+    repoName: "ade",
     state: "open",
     updatedAt: "2026-07-28T10:00:00.000Z",
   } as PrSummary;
@@ -1483,7 +1485,7 @@ describe("SessionCard where line", () => {
     expect(laneIdentity.parentElement?.nextElementSibling).toBe(titleSlot);
 
     fireEvent.click(badge);
-    expect(navigateMock).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-1");
+    expect(navigateMock).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-1&pr=959&repoOwner=ade-dev&repoName=ade");
     // The chip is nested inside the row's own click target, so it must not also
     // select the session.
     expect(onSelect).not.toHaveBeenCalled();

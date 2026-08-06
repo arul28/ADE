@@ -1609,6 +1609,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               const search = buildPrsRouteSearch({
                                 activeTab: "normal",
                                 selectedPrId: toast.event.prId,
+                                selectedPrNumber: toast.event.prNumber,
+                                repoOwner: toast.event.repoOwner,
+                                repoName: toast.event.repoName,
                                 selectedRebaseItemId: null,
                                 detailTab,
                               });

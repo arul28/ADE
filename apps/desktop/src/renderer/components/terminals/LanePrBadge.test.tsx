@@ -40,6 +40,8 @@ function tag(overrides: Partial<LaneTabPrTag> = {}): LaneTabPrTag {
     linkedPrId: "pr-1",
     githubPrNumber: 101,
     githubUrl: "https://github.com/ade/desktop/pull/101",
+    repoOwner: "ade",
+    repoName: "desktop",
     title: "Current work",
     state: "open",
     checksStatus: "passing",

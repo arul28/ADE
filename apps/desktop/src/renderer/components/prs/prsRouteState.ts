@@ -9,17 +9,93 @@ function scopedPrsRouteStorageKey(projectRoot?: string | null): string {
   return root ? `${PRS_LAST_ROUTE_STORAGE_KEY}:${root}` : PRS_LAST_ROUTE_STORAGE_KEY;
 }
 
+export type PrRouteSelectionTarget = {
+  /** ADE's local row id, when this PR is already mapped in the active project. */
+  prId: string | null;
+  /** GitHub coordinates remain usable when the local row is absent or foreign. */
+  prNumber: number | null;
+  repoOwner: string | null;
+  repoName: string | null;
+};
+
 export type ParsedPrsRouteState = {
   tab: "github" | "normal" | "workflows" | PrWorkflowTab | null;
   workflowTab: PrWorkflowTab | null;
   laneId: string | null;
   prId: string | null;
   prNumber: number | null;
+  repoOwner: string | null;
+  repoName: string | null;
   eventId: string | null;
   threadId: string | null;
   commitSha: string | null;
   detailTab: PrDetailRouteTab | null;
 };
+
+export function prRouteSelectionTarget(route: ParsedPrsRouteState): PrRouteSelectionTarget | null {
+  const hasTarget = Boolean(route.prId || route.prNumber != null);
+  if (!hasTarget) return null;
+  return {
+    prId: route.prId,
+    prNumber: route.prNumber,
+    repoOwner: route.repoOwner,
+    repoName: route.repoName,
+  };
+}
+
+export function prRouteTargetsEqual(
+  left: PrRouteSelectionTarget | null,
+  right: PrRouteSelectionTarget | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.prId === right.prId && prRouteCoordinatesEqual(left, right);
+}
+
+export type PrRouteCoordinates = Pick<PrRouteSelectionTarget, "prNumber" | "repoOwner" | "repoName">;
+
+function normalizePrRouteCoordinates(coordinates: PrRouteCoordinates): PrRouteCoordinates {
+  const normalizeRepoPart = (value: string | null): string | null => {
+    const normalized = value?.trim().toLowerCase() ?? "";
+    return normalized || null;
+  };
+  return {
+    prNumber: coordinates.prNumber ?? null,
+    repoOwner: normalizeRepoPart(coordinates.repoOwner),
+    repoName: normalizeRepoPart(coordinates.repoName),
+  };
+}
+
+/** Stable, case-insensitive key for one GitHub PR coordinate. */
+export function prRouteCoordinatesKey(coordinates: PrRouteCoordinates): string {
+  const normalized = normalizePrRouteCoordinates(coordinates);
+  return `${normalized.repoOwner ?? ""}/${normalized.repoName ?? ""}#${normalized.prNumber ?? ""}`;
+}
+
+export function prRouteCoordinatesEqual(left: PrRouteCoordinates, right: PrRouteCoordinates): boolean {
+  return prRouteCoordinatesKey(left) === prRouteCoordinatesKey(right);
+}
+
+export function prRouteCoordinatesMatch(
+  left: PrRouteCoordinates,
+  right: PrRouteCoordinates,
+): boolean {
+  const normalizedLeft = normalizePrRouteCoordinates(left);
+  const normalizedRight = normalizePrRouteCoordinates(right);
+  return (normalizedLeft.prNumber == null || normalizedRight.prNumber == null || normalizedLeft.prNumber === normalizedRight.prNumber)
+    && (!normalizedLeft.repoOwner || !normalizedRight.repoOwner || normalizedLeft.repoOwner === normalizedRight.repoOwner)
+    && (!normalizedLeft.repoName || !normalizedRight.repoName || normalizedLeft.repoName === normalizedRight.repoName);
+}
+
+export function hasExplicitPrsRouteState(route: ParsedPrsRouteState): boolean {
+  return Boolean(
+    route.tab
+    || route.workflowTab
+    || prRouteSelectionTarget(route)
+    || route.laneId
+    || route.detailTab
+  );
+}
 
 function parseSearch(search: string): URLSearchParams {
   return new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -84,6 +160,8 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
     laneId: pick("laneId"),
     prId: pick("prId"),
     prNumber: parseOptionalNumber(routeParams.get("pr")),
+    repoOwner: pick("repoOwner"),
+    repoName: pick("repoName"),
     eventId: pick("eventId"),
     threadId: pick("threadId"),
     commitSha: pick("commitSha"),

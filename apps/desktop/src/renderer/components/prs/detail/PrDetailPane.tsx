@@ -371,6 +371,8 @@ type PrDetailPaneProps = {
    */
   githubCoords?: PrGithubCoords | null;
   unmapped?: boolean;
+  /** The route has coordinates but GitHub has not resolved the row yet. */
+  provisional?: boolean;
   /**
    * Create-lane / map-to-lane controls surfaced as an in-pane banner when the
    * PR is unmapped. Provided by GitHubTab so this pane stays presentational.
@@ -498,6 +500,7 @@ export function PrDetailPane({
   unmapBusy = false,
   githubCoords = null,
   unmapped = false,
+  provisional = false,
   unmappedAffordance = null,
 }: PrDetailPaneProps) {
   const {
@@ -1456,7 +1459,9 @@ export function PrDetailPane({
                   {pr.title}
                 </span>
                 <span style={{ flexShrink: 0 }}>
-                  <InlinePrBadge {...getPrStateBadge(pr.state)} />
+                  <InlinePrBadge {...(provisional
+                    ? { label: "RESOLVING", color: COLORS.textMuted, bg: `${COLORS.textMuted}18`, border: `${COLORS.textMuted}30` }
+                    : getPrStateBadge(pr.state))} />
                 </span>
                 {pr.laneId ? (
                   <button

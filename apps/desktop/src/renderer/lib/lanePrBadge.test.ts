@@ -145,6 +145,9 @@ describe("lane PR attention", () => {
 describe("openLanePr", () => {
   const foreignPr = {
     id: "pr-on-other-machine",
+    repoOwner: "arul28",
+    repoName: "ADE",
+    githubPrNumber: 91,
     githubUrl: "https://github.com/arul28/ADE/pull/91",
   } as unknown as Parameters<typeof openLanePr>[0];
 
@@ -160,7 +163,9 @@ describe("openLanePr", () => {
     openLanePr(foreignPr, { foreign: false, navigate });
 
     expect(navigate).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-on-other-machine");
+    expect(navigate).toHaveBeenCalledWith(
+      "/prs?tab=normal&prId=pr-on-other-machine&pr=91&repoOwner=arul28&repoName=ADE",
+    );
     expect(window.ade.app.openExternal).not.toHaveBeenCalled();
   });
 

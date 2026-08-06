@@ -22,6 +22,7 @@ export function useGitHubTabListModel({
   snapshot,
   searchQuery,
   prsByIdMap,
+  prsByCoordinateMap,
   filter,
   renderedHydrationItems,
   lastSeenRowByCoordRef,
@@ -30,6 +31,7 @@ export function useGitHubTabListModel({
   snapshot: GitHubPrSnapshot | null;
   searchQuery: string;
   prsByIdMap: Map<string, PrSummary>;
+  prsByCoordinateMap: Map<string, PrSummary>;
   filter: GitHubFilter;
   renderedHydrationItems: GitHubPrListItem[];
   lastSeenRowByCoordRef: React.MutableRefObject<Map<string, GitHubPrListItem>>;
@@ -51,10 +53,12 @@ export function useGitHubTabListModel({
     [snapshot],
   );
   const reconciledItems = React.useMemo(
-    () => allItems.map((item) =>
-      reconcileLinkedPrState(item, item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null)
-    ),
-    [allItems, prsByIdMap],
+    () => allItems.map((item) => {
+      const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null;
+      const coordinatePr = prsByCoordinateMap.get(githubCoordKey(item));
+      return reconcileLinkedPrState(item, linkedPr ?? coordinatePr);
+    }),
+    [allItems, prsByCoordinateMap, prsByIdMap],
   );
 
   React.useEffect(() => {

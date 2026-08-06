@@ -249,7 +249,7 @@ describe("PrsContext refresh", () => {
     expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
-    expect(window.ade.prs.refresh).toHaveBeenCalledWith({}, null);
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
 
   it("replays a hidden lane lifecycle refresh when the PRs tab becomes visible", async () => {
