@@ -21,14 +21,18 @@ export const LOBE_PROVIDER_ICON_SRC: Record<string, string> = {
   anthropic,
   openai,
   google: googleColor,
+  "google-vertex": googleColor,
+  "google-vertex-anthropic": googleColor,
   mistral: mistralColor,
   deepseek: deepseekColor,
   xai,
+  grok: xai,
   openrouter,
   ollama,
   lmstudio,
   groq,
   together: togetherColor,
+  togetherai: togetherColor,
   meta: metaColor,
 };
 

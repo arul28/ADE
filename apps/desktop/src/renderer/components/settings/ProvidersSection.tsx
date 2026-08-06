@@ -5,13 +5,11 @@ import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
   AiProviderConnectionStatus,
-  AiRuntimeConnectionStatus,
   AiSettingsStatus,
   ProjectConfigSnapshot,
 } from "../../../shared/types";
 import type {
   AiCustomProviderConfig,
-  OpenCodeProviderAuthMethod,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import {
@@ -27,7 +25,6 @@ import {
   CheckCircle,
   Copy,
   Cpu,
-  DotsThree,
   Info,
   MagnifyingGlass,
   WarningCircle,
@@ -45,29 +42,21 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
-import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
 import { ClaudeLoginPromptButton, revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
-import { OAuthConnectModal } from "./OAuthConnectModal";
+import {
+  OpenCodeProviderDetailModal,
+  type ApiKeySource,
+  type OpenCodeProviderDetail,
+} from "./OpenCodeProviderDetailModal";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
-type ApiKeySource = "config" | "env" | "store";
-
-/**
- * Status payload plus the OpenCode inventory freshness fields the AI service
- * adds alongside the provider catalog. Typed locally as optional so this file
- * stays correct before those additive members land in shared types.
- */
-type ProvidersStatus = AiSettingsStatus & {
-  runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
-  opencodeProvidersStale?: boolean;
-  modelsDevLastFetchedAt?: number | null;
-};
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
+const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio"]);
 
 /**
  * OpenCode's own documented install methods, per platform. Windows has neither
@@ -165,18 +154,17 @@ const API_KEY_PROVIDERS: Array<{
   label: string;
   envVar: string;
   placeholder: string;
-  accent: string;
 }> = [
-  { provider: "anthropic", label: "Anthropic", envVar: "ANTHROPIC_API_KEY", placeholder: "sk-ant-...", accent: "#D97757" },
-  { provider: "openai", label: "OpenAI", envVar: "OPENAI_API_KEY", placeholder: "sk-...", accent: "#10A37F" },
-  { provider: "google", label: "Google AI", envVar: "GOOGLE_API_KEY", placeholder: "AIza...", accent: "#60A5FA" },
-  { provider: "mistral", label: "Mistral", envVar: "MISTRAL_API_KEY", placeholder: "mistral-...", accent: "#F59E0B" },
-  { provider: "deepseek", label: "DeepSeek", envVar: "DEEPSEEK_API_KEY", placeholder: "sk-...", accent: "#38BDF8" },
-  { provider: "xai", label: "xAI", envVar: "XAI_API_KEY", placeholder: "xai-...", accent: "#A3A3A3" },
-  { provider: "groq", label: "Groq", envVar: "GROQ_API_KEY", placeholder: "gsk_...", accent: "#F43F5E" },
-  { provider: "together", label: "Together AI", envVar: "TOGETHER_API_KEY", placeholder: "tg_...", accent: "#22C55E" },
-  { provider: "openrouter", label: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-...", accent: "#A78BFA" },
-  { provider: "moonshotai", label: "Moonshot AI", envVar: "MOONSHOT_API_KEY", placeholder: "sk-...", accent: "#7C5CFF" },
+  { provider: "anthropic", label: "Anthropic", envVar: "ANTHROPIC_API_KEY", placeholder: "sk-ant-..." },
+  { provider: "openai", label: "OpenAI", envVar: "OPENAI_API_KEY", placeholder: "sk-..." },
+  { provider: "google", label: "Google AI", envVar: "GOOGLE_API_KEY", placeholder: "AIza..." },
+  { provider: "mistral", label: "Mistral", envVar: "MISTRAL_API_KEY", placeholder: "mistral-..." },
+  { provider: "deepseek", label: "DeepSeek", envVar: "DEEPSEEK_API_KEY", placeholder: "sk-..." },
+  { provider: "xai", label: "xAI", envVar: "XAI_API_KEY", placeholder: "xai-..." },
+  { provider: "groq", label: "Groq", envVar: "GROQ_API_KEY", placeholder: "gsk_..." },
+  { provider: "together", label: "Together AI", envVar: "TOGETHER_API_KEY", placeholder: "tg_..." },
+  { provider: "openrouter", label: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-..." },
+  { provider: "moonshotai", label: "Moonshot AI", envVar: "MOONSHOT_API_KEY", placeholder: "sk-..." },
 ];
 
 type LocalProviderDraft = {
@@ -236,18 +224,6 @@ function prettifyProviderId(id: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function formatSyncedAgo(ts: number | null | undefined): string {
-  if (ts == null) return "—";
-  const diffMs = Date.now() - ts;
-  if (diffMs < 60_000) return "just now";
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
 }
 
 function AlertBanner({
@@ -347,6 +323,61 @@ function ConnectedTag() {
     >
       <CheckCircle size={12} weight="fill" /> Connected
     </span>
+  );
+}
+
+function OpenCodeProviderCard({
+  provider,
+  onOpen,
+}: {
+  provider: OpenCodeProviderDetail;
+  onOpen: () => void;
+}) {
+  const badge = provider.connected
+    ? "Connected"
+    : provider.hasKey
+      ? "Key"
+      : provider.methods.some((m) => m.type === "oauth")
+        ? "OAuth"
+        : "Add";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={provider.connected || provider.hasKey ? `Open ${provider.name}` : `Connect ${provider.name}`}
+      style={{
+        ...panel({ padding: 10 }),
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        textAlign: "left",
+        cursor: "pointer",
+        width: "100%",
+        minHeight: 72,
+        background: COLORS.recessedBg,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <ProviderLogo family={provider.id} size={22} />
+          <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {provider.name}
+          </span>
+        </div>
+        {provider.connected ? (
+          <ConnectedTag />
+        ) : (
+          <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.6px" }}>
+            {badge}
+          </span>
+        )}
+      </div>
+      {typeof provider.modelCount === "number" ? (
+        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+          {provider.modelCount} model{provider.modelCount === 1 ? "" : "s"}
+        </div>
+      ) : null}
+    </button>
   );
 }
 
@@ -452,7 +483,7 @@ function formatLocalModelLabel(modelId: string): string {
 
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
-  status: ProvidersStatus | null | undefined,
+  status: AiSettingsStatus | null | undefined,
 ): Record<LocalProviderFamily, LocalProviderDraft> {
   const configured = snapshot?.effective.ai?.localProviders ?? {};
   return Object.fromEntries(
@@ -475,7 +506,7 @@ function buildLocalProviderDrafts(
 
 export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefreshOnMount?: boolean }) {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<ProvidersStatus | null>(null);
+  const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [storedProviders, setStoredProviders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -492,15 +523,15 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
   const [authMethods, setAuthMethods] = useState<OpenCodeProviderAuthMethods | null>(null);
-  const [oauthTarget, setOauthTarget] = useState<{ providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] } | null>(null);
-  const [kimiDialogOpen, setKimiDialogOpen] = useState(false);
+  const [authMethodsError, setAuthMethodsError] = useState<string | null>(null);
+  const [detailProviderId, setDetailProviderId] = useState<string | null>(null);
   const [providerSearch, setProviderSearch] = useState("");
-  const [verifyingAll, setVerifyingAll] = useState(false);
-  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null);
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
   const [customProviderDraft, setCustomProviderDraft] = useState<CustomProviderDraft>(EMPTY_CUSTOM_PROVIDER);
   const [customModelSlugs, setCustomModelSlugs] = useState("");
   const [savingAdvanced, setSavingAdvanced] = useState(false);
+  const [statusLoadError, setStatusLoadError] = useState<string | null>(null);
+  const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
   // (replace semantics), so the field must start from what's persisted or a
@@ -510,9 +541,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     revealTerminalSessionInWork(navigate, terminal);
   }, [navigate]);
 
-  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<ProvidersStatus | null> => {
+  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
       setLoading(true);
+      if (!statusKnownRef.current) setStatusLoadError(null);
     }
     setError(null);
     try {
@@ -524,15 +556,19 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         window.ade.ai.listApiKeys(),
         window.ade.projectConfig.get(),
       ]);
-      setStatus(nextStatus as ProvidersStatus);
+      statusKnownRef.current = true;
+      setStatusLoadError(null);
+      setStatus(nextStatus as AiSettingsStatus);
       setProjectConfigSnapshot(nextProjectConfig);
       if (editingLocalProvider == null && savingLocalProvider == null) {
-        setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus as ProvidersStatus));
+        setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus as AiSettingsStatus));
       }
       setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
-      return nextStatus as ProvidersStatus;
+      return nextStatus as AiSettingsStatus;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (!statusKnownRef.current) setStatusLoadError(message);
+      setError(message);
       return null;
     } finally {
       if (!options?.silent) {
@@ -545,9 +581,11 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     try {
       const result = await window.ade.ai.opencodeAuthMethods();
       setAuthMethods(result.methods ?? {});
-    } catch {
-      // Best-effort — subscription connect rows simply stay hidden if this
-      // capability is not available yet.
+      setAuthMethodsError(null);
+    } catch (err) {
+      // Keep any previously loaded methods so an intermittent failure does not
+      // wipe SuperGrok / ChatGPT OAuth rows mid-session.
+      setAuthMethodsError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -589,8 +627,11 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   const providerConnections = status?.providerConnections;
-  const isInitialCheckInFlight = loading && status == null;
-  const catalogModelIds = useMemo(() => deriveConfiguredModelIds(status), [status]);
+  // Keep provider cards neutral while the status payload is unavailable. A
+  // failed first probe must not be presented as a real "Binary Missing" state.
+  const isInitialCheckInFlight = status == null;
+  const opencodeStatusKnown = status !== null;
+  const opencodeStatusLoadFailed = !opencodeStatusKnown && !loading && statusLoadError !== null;
   const opencodeInstalled = status?.opencodeBinaryInstalled !== false;
   const opencodeProviders = useMemo(() => status?.opencodeProviders ?? [], [status?.opencodeProviders]);
   const providersStale = status?.opencodeProvidersStale === true;
@@ -660,61 +701,108 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       ? apiKeyStoreWarning
       : null;
 
-  // ── Subscription (OAuth + Kimi membership) rows ──
-  const subscriptionRows = useMemo(() => {
-    const nameById = new Map(opencodeProviders.map((p) => [p.id, p.name] as const));
-    const oauthIds = authMethods
-      ? Object.keys(authMethods).filter((id) => authMethods[id]?.some((m) => m.type === "oauth"))
-      : [];
-    const rows: Array<{
-      id: string;
-      name: string;
-      methods: OpenCodeProviderAuthMethod[];
-      kind: "oauth" | "kimi";
-      connected: boolean;
-    }> = oauthIds
-      .sort((a, b) => a.localeCompare(b))
-      .map((id) => ({
+  // Unified OpenCode provider catalog: inventory + auth methods + known API key rows.
+  const openCodeCatalog = useMemo((): OpenCodeProviderDetail[] => {
+    const byId = new Map<string, OpenCodeProviderDetail>();
+    const inventoryById = new Map(
+      opencodeProviders.map((p) => [p.id, p] as const),
+    );
+    const apiById = new Map(API_KEY_PROVIDERS.map((p) => [p.provider, p] as const));
+
+    const upsert = (id: string, patch: Partial<OpenCodeProviderDetail> = {}) => {
+      if (OPENCODE_CATALOG_EXCLUDED_IDS.has(id)) return;
+      const apiSpec = apiById.get(id);
+      const inventory = inventoryById.get(id);
+      const prev = byId.get(id);
+      const methods = patch.methods ?? prev?.methods ?? authMethods?.[id] ?? [];
+      byId.set(id, {
         id,
-        name: nameById.get(id) ?? prettifyProviderId(id),
-        methods: authMethods?.[id] ?? [],
-        kind: "oauth" as const,
-        connected: opencodeProviders.find((p) => p.id === id)?.connected === true,
-      }));
-    // Kimi for Coding is an API-membership key, not OAuth — always surfaced here.
-    rows.push({
-      id: KIMI_PROVIDER_ID,
+        name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
+        methods,
+        connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
+        hasKey: hasKeyFor(id),
+        modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
+        envVar: patch.envVar ?? prev?.envVar ?? apiSpec?.envVar,
+        placeholder: patch.placeholder ?? prev?.placeholder ?? apiSpec?.placeholder,
+      });
+    };
+
+    for (const p of opencodeProviders) {
+      upsert(p.id, { name: p.name, modelCount: p.modelCount, connected: p.connected });
+    }
+    for (const [id, methods] of Object.entries(authMethods ?? {})) {
+      upsert(id, { methods });
+    }
+    for (const api of API_KEY_PROVIDERS) {
+      upsert(api.provider, {
+        name: api.label,
+        envVar: api.envVar,
+        placeholder: api.placeholder,
+      });
+    }
+    // Kimi for Coding is ADE's known API-key path; keep OpenCode-advertised methods if present.
+    const kimiInventory = inventoryById.get(KIMI_PROVIDER_ID);
+    upsert(KIMI_PROVIDER_ID, {
       name: "Kimi for Coding",
-      methods: [],
-      kind: "kimi" as const,
-      connected:
-        opencodeProviders.find((p) => p.id === KIMI_PROVIDER_ID)?.connected === true
-        || hasKeyFor(KIMI_PROVIDER_ID),
+      envVar: "KIMI_API_KEY",
+      placeholder: "sk-…",
+      connected: kimiInventory?.connected === true || hasKeyFor(KIMI_PROVIDER_ID),
     });
-    return rows;
+
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [authMethods, opencodeProviders, hasKeyFor]);
 
-  const keyCount = useMemo(() => {
-    const ids = new Set<string>();
-    for (const p of API_KEY_PROVIDERS) {
-      if (hasKeyFor(p.provider)) ids.add(p.provider);
-    }
-    for (const id of storedProviders) ids.add(id);
-    for (const id of apiKeySources.keys()) ids.add(id);
-    return ids.size;
-  }, [hasKeyFor, storedProviders, apiKeySources]);
-
-  const connectedSubscriptionCount = useMemo(
-    () => subscriptionRows.filter((row) => row.connected).length,
-    [subscriptionRows],
+  const openCodeCatalogById = useMemo(
+    () => new Map(openCodeCatalog.map((row) => [row.id, row] as const)),
+    [openCodeCatalog],
   );
+
+  const connectedOpenCodeProviders = useMemo(
+    () => openCodeCatalog.filter((p) => p.connected || p.hasKey),
+    [openCodeCatalog],
+  );
+
+  const popularOpenCodeProviders = useMemo(() => {
+    const popularIds = [
+      ...API_KEY_PROVIDERS.map((p) => p.provider),
+      ...Object.keys(authMethods ?? {}).filter((id) => authMethods?.[id]?.some((m) => m.type === "oauth")),
+      KIMI_PROVIDER_ID,
+    ];
+    const connectedIds = new Set(
+      openCodeCatalog.filter((p) => p.connected || p.hasKey).map((p) => p.id),
+    );
+    const seen = new Set<string>();
+    const list: OpenCodeProviderDetail[] = [];
+    for (const id of popularIds) {
+      if (seen.has(id) || connectedIds.has(id)) continue;
+      seen.add(id);
+      const row = openCodeCatalogById.get(id);
+      if (row) list.push(row);
+    }
+    return list;
+  }, [openCodeCatalog, openCodeCatalogById, authMethods]);
+
+  const searchableOpenCodeProviders = useMemo(() => {
+    const query = providerSearch.trim().toLowerCase();
+    return openCodeCatalog
+      .filter((p) => !query || p.id.toLowerCase().includes(query) || p.name.toLowerCase().includes(query))
+      .sort((a, b) => (b.modelCount ?? 0) - (a.modelCount ?? 0));
+  }, [openCodeCatalog, providerSearch]);
+
+  const detailProvider = useMemo(
+    () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
+    [detailProviderId, openCodeCatalog],
+  );
+  const openProviderDetail = useCallback((id: string) => {
+    // Always use the unified provider modal (OAuth + API key), including Kimi.
+    setDetailProviderId(id);
+  }, []);
 
   const beginEditing = (provider: string) => {
     setEditingProvider(provider);
     setEditValue("");
     setError(null);
     setNotice(null);
-    setOpenRowMenu(null);
   };
 
   const cancelEditing = () => {
@@ -722,39 +810,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setEditValue("");
   };
 
-  const saveApiKey = async (provider: string, options?: { alsoOpenCode?: boolean }) => {
-    const trimmed = editValue.trim();
-    if (!trimmed) return;
-
-    setError(null);
-    setNotice(null);
-    try {
-      if (options?.alsoOpenCode) {
-        const result = await window.ade.ai.setOpencodeProviderKey({ providerId: provider, key: trimmed });
-        if (!result.ok) {
-          throw new Error(result.error || "OpenCode rejected the provider key.");
-        }
-      } else {
-        await window.ade.ai.storeApiKey(provider, trimmed);
-      }
-      invalidateAiDiscoveryCache();
-      setVerificationByProvider((prev) => {
-        const next = { ...prev };
-        delete next[provider];
-        return next;
-      });
-      setNotice(`${provider} key saved.`);
-      cancelEditing();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   const deleteApiKey = async (provider: string, options?: { alsoOpenCode?: boolean }) => {
     setError(null);
     setNotice(null);
-    setOpenRowMenu(null);
     try {
       if (options?.alsoOpenCode) {
         const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider });
@@ -764,7 +822,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       }
       await window.ade.ai.deleteApiKey(provider);
       invalidateAiDiscoveryCache();
-      setNotice(`${provider} key removed.`);
+      const label =
+        API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
+        ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
+      setNotice(`${label} disconnected.`);
       if (editingProvider === provider) cancelEditing();
       setVerificationByProvider((prev) => {
         const next = { ...prev };
@@ -774,13 +835,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
+      throw err instanceof Error ? err : new Error(String(err));
     }
   };
 
   const verifyApiKey = async (provider: string) => {
     setError(null);
     setNotice(null);
-    setOpenRowMenu(null);
     setVerifyingProvider(provider);
     setVerificationByProvider((prev) => {
       const next = { ...prev };
@@ -802,30 +864,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setVerifyingProvider(null);
-    }
-  };
-
-  const verifyAllKeys = async () => {
-    const targets = API_KEY_PROVIDERS.filter((p) => hasKeyFor(p.provider)).map((p) => p.provider);
-    if (!targets.length) return;
-    setVerifyingAll(true);
-    setError(null);
-    setNotice(null);
-    try {
-      for (const provider of targets) {
-        setVerifyingProvider(provider);
-        try {
-          const result = await window.ade.ai.verifyApiKey(provider);
-          setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
-        } catch {
-          // Continue verifying the remaining providers.
-        }
-      }
-      invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-    } finally {
-      setVerifyingProvider(null);
-      setVerifyingAll(false);
     }
   };
 
@@ -888,26 +926,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       message: `${modelCount} model${modelCount === 1 ? "" : "s"} added`,
     });
   }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
-
-  const saveKimiKey = async (key: string) => {
-    const trimmed = key.trim();
-    if (!trimmed) return;
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await window.ade.ai.setOpencodeProviderKey({ providerId: KIMI_PROVIDER_ID, key: trimmed });
-      if (result && result.ok === false) {
-        setError(result.error || "Failed to save Kimi for Coding key.");
-        return;
-      }
-      invalidateAiDiscoveryCache();
-      setKimiDialogOpen(false);
-      setNotice("Kimi for Coding connected.");
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   const saveAdvancedProvider = async () => {
     const draft = customProviderDraft;
@@ -1021,19 +1039,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       setSavingLocalProvider(null);
     }
   }, [localProviderDrafts, refreshStatus]);
-
-  // ── More Providers chip cloud ──
-  const moreProviders = useMemo(() => {
-    const query = providerSearch.trim().toLowerCase();
-    const filtered = opencodeProviders
-      .filter((p) => !p.connected
-        && p.id !== "cursor"
-        && !API_KEY_PROVIDERS.some((a) => a.provider === p.id)
-        && !["ollama", "lmstudio"].includes(p.id))
-      .filter((p) => !query || p.id.toLowerCase().includes(query) || p.name.toLowerCase().includes(query))
-      .sort((a, b) => b.modelCount - a.modelCount);
-    return { list: filtered, query };
-  }, [opencodeProviders, providerSearch]);
 
   return (
     <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -1229,9 +1234,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                   ) : keySource ? (
                     <>
                       {isKeyConnected ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)" }}>
-                          <CheckCircle size={13} weight="fill" /> Connected
-                        </span>
+                        <ConnectedTag />
                       ) : (
                         <button type="button" aria-label="Verify Cursor API key" style={outlineButton()} disabled={isVerifying} onClick={() => void verifyApiKey("cursor")}>
                           {isVerifying ? "Verifying..." : "Verify"}
@@ -1240,7 +1243,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                       {keySource === "store" ? (
                         <>
                           <button type="button" style={outlineButton()} disabled={isVerifying} onClick={() => beginEditing("cursor")}>Replace</button>
-                          <button type="button" style={outlineButton()} disabled={isVerifying} onClick={() => void deleteApiKey("cursor")}>Delete</button>
+                          <button type="button" style={outlineButton()} disabled={isVerifying} onClick={() => void deleteApiKey("cursor").catch(() => undefined)}>Delete</button>
                         </>
                       ) : null}
                     </>
@@ -1294,19 +1297,38 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 OpenCode — Universal Model Access
               </div>
               <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.4 }}>
-                {status?.opencodeBinarySource ? `${status.opencodeBinarySource} · ` : ""}managed by ADE
+                SuperGrok OAuth, ChatGPT, Copilot, or API keys — same /connect providers as OpenCode
               </div>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, color: opencodeInstalled ? (status?.opencodeInventoryError ? COLORS.danger : COLORS.success) : COLORS.warning }}>
-            {!opencodeInstalled ? <WarningCircle size={14} weight="fill" /> : status?.opencodeInventoryError ? <XCircle size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />}
+          <div style={{ display: "flex", alignItems: "center", gap: 4, color: !opencodeStatusKnown ? (opencodeStatusLoadFailed ? COLORS.danger : COLORS.info) : opencodeInstalled ? (status?.opencodeInventoryError ? COLORS.danger : COLORS.success) : COLORS.warning }}>
+            {!opencodeStatusKnown ? (opencodeStatusLoadFailed ? <XCircle size={14} weight="fill" /> : <Info size={14} weight="fill" />) : !opencodeInstalled ? <WarningCircle size={14} weight="fill" /> : status?.opencodeInventoryError ? <XCircle size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />}
             <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
-              {!opencodeInstalled ? "Not found" : status?.opencodeInventoryError ? "Error" : "Installed"}
+              {!opencodeStatusKnown ? (opencodeStatusLoadFailed ? "Error" : "Checking") : !opencodeInstalled ? "Not found" : status?.opencodeInventoryError ? "Error" : "Installed"}
             </span>
           </div>
         </div>
 
-        {!opencodeInstalled ? (
+        {!opencodeStatusKnown && opencodeStatusLoadFailed ? (
+          <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, lineHeight: 1.5 }}>
+              Could not load OpenCode status.
+            </div>
+            <button
+              type="button"
+              aria-label="Re-check OpenCode"
+              style={outlineButton()}
+              disabled={loading}
+              onClick={() => void refreshStatus({ force: true, refreshOpenCodeInventory: true })}
+            >
+              <ArrowsClockwise size={12} weight="bold" /> {loading ? "Checking..." : "Re-check OpenCode"}
+            </button>
+          </div>
+        ) : !opencodeStatusKnown ? (
+          <div style={{ padding: 14, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+            Checking OpenCode and its provider catalog…
+          </div>
+        ) : !opencodeInstalled ? (
           /* Collapsed install card */
           <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.55 }}>
@@ -1330,12 +1352,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column" }}>
-            {/* Summary strip + catalog freshness */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 5%, transparent)" }}>
-              <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
-                {connectedSubscriptionCount} subscription{connectedSubscriptionCount === 1 ? "" : "s"} · {keyCount} key{keyCount === 1 ? "" : "s"} · {catalogModelIds.length} model{catalogModelIds.length === 1 ? "" : "s"} unlocked
-                {providersStale ? <span style={{ marginLeft: 8, color: COLORS.textDim, fontStyle: "italic" }}>updating…</span> : null}
-              </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, flexWrap: "wrap", padding: "8px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+              {providersStale ? (
+                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic", marginRight: "auto" }}>
+                  Updating provider catalog…
+                </span>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void handleRefreshCatalog()}
@@ -1344,221 +1366,66 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none", cursor: "pointer", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}
               >
                 <ArrowsClockwise size={11} weight="bold" />
-                {refreshingCatalog ? "syncing…" : `catalog synced ${formatSyncedAgo(status?.modelsDevLastFetchedAt)} · refresh`}
+                {refreshingCatalog ? "syncing…" : `catalog · refresh`}
               </button>
             </div>
 
             <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 22 }}>
-              {/* ── a. Subscriptions ── */}
+              {/* ── Connected ── */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={sectionLabelStyle}>Subscriptions</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 8 }}>
-                  {subscriptionRows.map((row) => (
-                    <div key={row.id} style={panel({ padding: 10, display: "flex", flexDirection: "column", gap: 6 })}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                          <ProviderLogo family={row.id} size={20} />
-                          <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.name}</span>
-                        </div>
-                        {row.connected ? (
-                          <ConnectedTag />
-                        ) : (
-                          <button
-                            type="button"
-                            aria-label={`Connect ${row.name}`}
-                            style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
-                            onClick={() => {
-                              if (row.kind === "kimi") {
-                                setKimiDialogOpen(true);
-                              } else {
-                                setOauthTarget({ providerId: row.id, providerName: row.name, methods: row.methods });
-                              }
-                            }}
-                          >
-                            Connect
-                          </button>
-                        )}
-                      </div>
-                      {row.id === "openai" ? (
-                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.4 }}>
-                          Also powers OpenAI models inside OpenCode. For the Codex agent, connect the Codex CLI above.
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-                {subscriptionRows.length <= 1 && !authMethods ? (
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                    {providersStale ? "Loading available subscriptions…" : "No OAuth subscriptions are available from OpenCode yet."}
-                  </div>
-                ) : null}
-              </div>
-
-              {/* ── b. API Provider Keys ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={sectionLabelStyle}>API Provider Keys</div>
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
-                    disabled={verifyingAll || keyCount === 0}
-                    onClick={() => void verifyAllKeys()}
-                  >
-                    {verifyingAll ? "Verifying…" : "Verify all"}
-                  </button>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: 8 }}>
-                  {API_KEY_PROVIDERS.map((provider) => {
-                    const keySource = apiKeySources.get(provider.provider) ?? (storedProviders.includes(provider.provider) ? "store" : undefined);
-                    const verification = verificationByProvider[provider.provider];
-                    const isEditing = editingProvider === provider.provider;
-                    const isVerifying = verifyingProvider === provider.provider;
-                    const menuOpen = openRowMenu === provider.provider;
-                    return (
-                      <div
-                        key={provider.provider}
-                        style={{ position: "relative", display: "flex", flexDirection: "column", gap: isEditing ? 8 : 0, minHeight: 44, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: "8px 10px", justifyContent: "center" }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <ProviderLogo family={provider.provider} size={24} />
-                          <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.label}</div>
-                            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{provider.envVar}</div>
-                          </div>
-                          {!isEditing ? (
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              {isVerifying ? (
-                                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info }}>Checking…</span>
-                              ) : verification?.ok ? (
-                                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.success }} title="Verified">
-                                  <CheckCircle size={12} weight="fill" /> Verified
-                                </span>
-                              ) : verification && !verification.ok ? (
-                                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger }} title={verification.message}>
-                                  <XCircle size={12} weight="fill" /> Failed
-                                </span>
-                              ) : keySource ? (
-                                <SourceBadge source={keySource} />
-                              ) : (
-                                <button type="button" aria-label={`Add ${provider.label} key`} style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })} onClick={() => beginEditing(provider.provider)}>Add</button>
-                              )}
-                              {keySource ? (
-                                <button
-                                  type="button"
-                                  aria-label={`More actions for ${provider.label}`}
-                                  onClick={() => setOpenRowMenu(menuOpen ? null : provider.provider)}
-                                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textSecondary, cursor: "pointer" }}
-                                >
-                                  <DotsThree size={16} weight="bold" />
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-
-                        {isEditing ? (
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <input
-                              autoFocus
-                              aria-label={`${provider.label} API key`}
-                              value={editValue}
-                              onChange={(event) => setEditValue(event.target.value)}
-                              placeholder={provider.placeholder}
-                              type="password"
-                              style={{ flex: 1, minWidth: 0, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-                            />
-                            <button type="button" style={primaryButton({ height: 28 })} onClick={() => void saveApiKey(provider.provider, { alsoOpenCode: true })}>Save</button>
-                            <button type="button" style={outlineButton({ height: 28 })} onClick={cancelEditing}>Cancel</button>
-                          </div>
-                        ) : null}
-
-                        {menuOpen && keySource ? (
-                          <>
-                            <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setOpenRowMenu(null)} />
-                            <div style={{ position: "absolute", top: 40, right: 8, zIndex: 41, minWidth: 130, background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, boxShadow: "0 14px 40px -18px rgba(0,0,0,0.7)", display: "flex", flexDirection: "column" }}>
-                              <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => void verifyApiKey(provider.provider)}>Verify</button>
-                              {keySource === "store" ? (
-                                <>
-                                  <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => beginEditing(provider.provider)}>Replace</button>
-                                  <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => void deleteApiKey(provider.provider, { alsoOpenCode: true })}>Delete</button>
-                                </>
-                              ) : null}
-                            </div>
-                          </>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* ── c. More Providers ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  <div style={sectionLabelStyle}>More Providers</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px", minWidth: 180 }}>
-                    <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
-                    <input
-                      aria-label="Search providers"
-                      value={providerSearch}
-                      onChange={(event) => setProviderSearch(event.target.value)}
-                      placeholder="Search providers"
-                      style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}
-                    />
-                  </div>
-                </div>
-                {moreProviders.list.length === 0 ? (
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                    {moreProviders.query ? "No providers match your search." : "No additional providers available."}
+                <div style={sectionLabelStyle}>Connected</div>
+                {connectedOpenCodeProviders.length === 0 ? (
+                  <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                    No providers connected yet. Pick one below to sign in or add a key.
                   </div>
                 ) : (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {(moreProviders.query ? moreProviders.list : moreProviders.list.slice(0, 30)).map((p) => {
-                      const hasKey = hasKeyFor(p.id);
-                      const isEditing = editingProvider === `__custom:${p.id}`;
-                      return isEditing ? (
-                        <div key={p.id} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, minWidth: 120 }}>{p.name}</span>
-                          <input
-                            autoFocus
-                            aria-label={`${p.name} API key`}
-                            value={editValue}
-                            onChange={(event) => setEditValue(event.target.value)}
-                            placeholder="API key"
-                            type="password"
-                            style={{ flex: 1, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-                          />
-                          <button type="button" style={primaryButton()} onClick={() => void saveApiKey(p.id, { alsoOpenCode: true })}>Save</button>
-                          <button type="button" style={outlineButton()} onClick={cancelEditing}>Cancel</button>
-                        </div>
-                      ) : (
-                        <button
-                          key={p.id}
-                          type="button"
-                          style={{
-                            ...outlineButton({ height: 28 }),
-                            fontSize: 10,
-                            padding: "4px 8px",
-                            opacity: hasKey ? 1 : 0.72,
-                            borderColor: hasKey ? COLORS.success : undefined,
-                          }}
-                          onClick={() => { if (!hasKey) beginEditing(`__custom:${p.id}`); }}
-                          title={`${p.name} · ${p.id} — ${p.modelCount} models`}
-                        >
-                          {p.name} {hasKey ? "✓" : `(${p.modelCount})`}
-                        </button>
-                      );
-                    })}
-                    {!moreProviders.query && moreProviders.list.length > 30 ? (
-                      <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, alignSelf: "center" }}>
-                        +{moreProviders.list.length - 30} more — search to filter
-                      </span>
-                    ) : null}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 200px), 1fr))", gap: 8 }}>
+                    {connectedOpenCodeProviders.map((row) => (
+                      <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
+                    ))}
                   </div>
                 )}
               </div>
 
-              {/* ── d. Local Model Servers ── */}
+              {/* ── All providers ── */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <div style={sectionLabelStyle}>All providers</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px", minWidth: 220 }}>
+                    <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+                    <input
+                      aria-label="Search all OpenCode providers"
+                      value={providerSearch}
+                      onChange={(event) => setProviderSearch(event.target.value)}
+                      placeholder="Search all OpenCode providers"
+                      style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}
+                    />
+                  </div>
+                </div>
+
+                {!providerSearch.trim() ? (
+                  <>
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Popular</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 200px), 1fr))", gap: 8 }}>
+                      {popularOpenCodeProviders.map((row) => (
+                        <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
+                      ))}
+                    </div>
+                  </>
+                ) : searchableOpenCodeProviders.length === 0 ? (
+                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                    No providers match your search.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 200px), 1fr))", gap: 8 }}>
+                    {searchableOpenCodeProviders.map((row) => (
+                      <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Local Model Servers ── */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <div style={sectionLabelStyle}>Local Model Servers</div>
@@ -1726,69 +1593,36 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         )}
       </section>
 
-      {oauthTarget ? (
-        <OAuthConnectModal
-          providerId={oauthTarget.providerId}
-          providerName={oauthTarget.providerName}
-          methods={oauthTarget.methods}
-          onClose={() => setOauthTarget(null)}
-          onConnected={() => void handleSubscriptionConnected(oauthTarget.providerId, oauthTarget.providerName)}
+      {detailProvider ? (
+        <OpenCodeProviderDetailModal
+          provider={detailProvider}
+          keySource={apiKeySources.get(detailProvider.id) ?? (storedProviders.includes(detailProvider.id) ? "store" : undefined)}
+          verification={verificationByProvider[detailProvider.id]}
+          verifying={verifyingProvider === detailProvider.id}
+          authMethodsError={authMethodsError}
+          onClose={() => setDetailProviderId(null)}
+          onConnected={() => void handleSubscriptionConnected(detailProvider.id, detailProvider.name)}
+          onRetryAuthMethods={() => void loadAuthMethods()}
+          onSaveKey={async (key) => {
+            const result = await window.ade.ai.setOpencodeProviderKey({ providerId: detailProvider.id, key });
+            if (!result.ok) throw new Error(result.error || "OpenCode rejected the provider key.");
+            invalidateAiDiscoveryCache();
+            setVerificationByProvider((prev) => {
+              const next = { ...prev };
+              delete next[detailProvider.id];
+              return next;
+            });
+            setNotice(`${detailProvider.name} key saved.`);
+            await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+          }}
+          onDeleteKey={async () => {
+            await deleteApiKey(detailProvider.id, { alsoOpenCode: true });
+          }}
+          onVerifyKey={async () => {
+            await verifyApiKey(detailProvider.id);
+          }}
         />
       ) : null}
-
-      {kimiDialogOpen ? (
-        <KimiKeyDialog
-          onClose={() => setKimiDialogOpen(false)}
-          onSave={(key) => void saveKimiKey(key)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function KimiKeyDialog({ onClose, onSave }: { onClose: () => void; onSave: (key: string) => void }) {
-  const [value, setValue] = useState("");
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.70)" }}
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-label="Connect Kimi for Coding"
-        className="w-full max-w-sm"
-        style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)" }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", height: 52, borderBottom: `1px solid ${COLORS.border}` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <ProviderLogo family={KIMI_PROVIDER_ID} size={22} />
-            <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Connect Kimi for Coding</div>
-          </div>
-          <button type="button" aria-label="Close" onClick={onClose} style={{ border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textSecondary, width: 26, height: 26, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-            <X size={13} weight="bold" />
-          </button>
-        </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Paste your Kimi for Coding membership key. It is stored via OpenCode.
-          </div>
-          <input
-            autoFocus
-            aria-label="Kimi for Coding key"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            placeholder="sk-..."
-            type="password"
-            style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-          />
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button type="button" style={outlineButton()} onClick={onClose}>Cancel</button>
-            <button type="button" style={primaryButton()} disabled={!value.trim()} onClick={() => onSave(value)}>Connect</button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

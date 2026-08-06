@@ -129,7 +129,7 @@ profile — 650 MB must never roam.
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.220/
-  opencode-darwin-arm64/1.15.5/
+  opencode-darwin-arm64/1.18.14/
   .staging/
   .locks/
 ```
@@ -242,10 +242,11 @@ manifest both answer false, because nothing is pending when nothing will ever
 be fetched. The probe deep-imports it rather than going through the barrel,
 which would pull the whole fetch/install stack in with it.
 
-OpenCode's bundled probe walks, in order, `ADE_OPENCODE_BUNDLE_ROOT`, the
-packaged `resourcesPath` roots (`app.asar.unpacked`, `app-<arch>.asar.unpacked`,
-`app`), every `NODE_PATH` entry, `process.cwd()`, and then every `node_modules`
-directory up the module's ancestor chain.
+OpenCode's bundled probe uses `ADE_OPENCODE_BUNDLE_ROOT` as an explicit bundle
+override when it is set. Otherwise it walks the packaged `resourcesPath` roots
+(`app.asar.unpacked`, `app-<arch>.asar.unpacked`, `app`), every `NODE_PATH`
+entry, `process.cwd()`, and then every `node_modules` directory up the module's
+ancestor chain.
 
 ### Opt-outs
 
@@ -446,7 +447,7 @@ Verified spawns from the cache:
 |---|---|---|
 | `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
 | `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `1.15.5` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
+| `opencode` | `1.18.14` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
 
 OpenCode runs anyway. Its execution therefore depends entirely on the
 no-quarantine property above, not on notarization — if anything ever caused the
