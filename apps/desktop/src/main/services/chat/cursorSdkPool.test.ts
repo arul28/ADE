@@ -395,6 +395,7 @@ describe("Cursor SDK pool paths", () => {
         sandbox: "ade" as const,
         force: false,
         hardGuards: true,
+        orchestrationLead: false,
       },
     };
 
@@ -430,6 +431,7 @@ describe("Cursor SDK pool paths", () => {
         sandbox: "ade" as const,
         force: false,
         hardGuards: true,
+        orchestrationLead: false,
       },
     });
 
@@ -468,6 +470,7 @@ describe("Cursor SDK pool paths", () => {
         sandbox: "ade" as const,
         force: false,
         hardGuards: true,
+        orchestrationLead: false,
       },
     };
 
@@ -501,6 +504,7 @@ describe("Cursor SDK pool paths", () => {
         sandbox: "ade" as const,
         force: false,
         hardGuards: true,
+        orchestrationLead: false,
       },
     })).rejects.toThrow("Cursor SDK worker exited (1).");
   });
@@ -521,6 +525,7 @@ describe("Cursor SDK pool paths", () => {
         sandbox: "ade" as const,
         force: false,
         hardGuards: true,
+        orchestrationLead: false,
       },
     })).rejects.toThrow(/NGHTTP2_ENHANCE_YOUR_CALM/);
   });

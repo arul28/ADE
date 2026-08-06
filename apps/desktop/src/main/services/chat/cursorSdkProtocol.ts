@@ -27,6 +27,12 @@ export type CursorSdkPermissionPolicy = {
   sandbox: CursorSdkSandboxMode;
   force: boolean;
   hardGuards: boolean;
+  /**
+   * Orchestrator-lead sessions may only ever run read-risk tools. Carried on
+   * the policy (rather than derived at the hook) so it reaches the out-of-band
+   * hook server in `cursorSdkWorker` through the existing policy plumbing.
+   */
+  orchestrationLead: boolean;
 };
 
 export type CursorSdkModelParameterValue = {

@@ -35,6 +35,19 @@ export type OrchestrationPermissionProfile = Partial<Pick<
 
 export const ORCHESTRATION_LOCKED_PERMISSION_MODE = "full-auto" satisfies AgentChatPermissionMode;
 
+// ---------------------------------------------------------------------------
+// Orchestrator-lead provider-native tool denials
+//
+// The lead plans and delegates; it never edits code or runs shell (see
+// resources/agent-skills/ade-orchestrator/SKILL.md). ADE's own orchestration
+// toolset already withholds editFile/writeFile/bash from leads, but that
+// toolset is *additive* — it rides alongside each provider's built-in tools.
+// So every provider needs its own denial expressed in that provider's native
+// mechanism. All of those definitions live here so the lead's blast radius is
+// reviewable in one place.
+// ---------------------------------------------------------------------------
+
+/** Claude Agent SDK tool names — enforced via `canUseTool` + `disallowedTools`. */
 export const ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS = [
   "Agent",
   "Bash",
@@ -46,6 +59,250 @@ export const ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS = [
   "Write",
   "NotebookEdit",
 ] as const;
+
+/**
+ * OpenCode built-in tool ids — enforced via the `tools` map on
+ * `session.prompt` (`{ [toolName]: false }` withholds the tool from the model).
+ */
+export const ORCHESTRATION_LEAD_DENIED_OPENCODE_TOOLS = [
+  "bash",
+  "edit",
+  "write",
+  "patch",
+  "multiedit",
+  "task",
+  "todowrite",
+  "todoread",
+] as const;
+
+/** Spread-ready OpenCode `tools` selection that withholds every denied tool. */
+export function orchestrationLeadOpenCodeToolSelection(): Record<string, boolean> {
+  const selection: Record<string, boolean> = {};
+  for (const name of ORCHESTRATION_LEAD_DENIED_OPENCODE_TOOLS) selection[name] = false;
+  return selection;
+}
+
+/** Droid tool categories (`ListToolsResult.tools[].category`) withheld from leads. */
+export const ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES = ["edit", "execute"] as const;
+
+export type DroidToolCategory = "read" | "edit" | "execute" | "other";
+
+/**
+ * Cursor tool-call risk classes a lead may use. Cursor's SDK has no tool
+ * allow/deny list, so the denial is enforced in ADE's own hook evaluator
+ * (`evaluateCursorSdkHook`), which classifies every tool call by risk. Leads
+ * are allow-listed rather than deny-listed so an unrecognised tool name
+ * (risk `"unknown"`) fails closed.
+ */
+export const ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS = ["read"] as const;
+
+/**
+ * Codex has no tool allow/deny knob: the pinned app-server protocol
+ * (`ThreadStartParams`) exposes no tools field, and the `tools` config table
+ * only covers `web_search` / `experimental_request_user_input`. Its sandbox is
+ * the only enforcement point, so leads run threads read-only with approvals
+ * off (so the lead cannot escalate a write through an approval prompt).
+ */
+export const ORCHESTRATION_LEAD_CODEX_POLICY = {
+  approvalPolicy: "never" satisfies AgentChatCodexApprovalPolicy,
+  sandbox: "read-only" satisfies AgentChatCodexSandbox,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Orchestrator-lead MCP isolation
+//
+// The tool denials above only cover each provider's *built-in* tools. A
+// user-configured MCP server (filesystem, shell, git, …) hands the same
+// capability back through a different door, so a lead must see ADE-managed MCP
+// servers only. Every provider that receives MCP configuration is registered
+// below with the mechanism it is isolated by — a provider added to ADE without
+// an entry here is a compile error, not a silent hole.
+// ---------------------------------------------------------------------------
+
+export type OrchestrationLeadMcpIsolation = {
+  /** How user/project MCP servers are withheld from a lead on this provider. */
+  mechanism: string;
+  /** False when no mechanism exists — the residual hole is described in `note`. */
+  gated: boolean;
+  note: string;
+};
+
+export type McpCapableProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
+
+export const ORCHESTRATION_LEAD_MCP_ISOLATION = {
+  claude: {
+    mechanism: "strictMcpConfig + managedSettings.allowManagedMcpServersOnly",
+    gated: true,
+    note:
+      "strictMcpConfig makes the Agent SDK ignore ~/.claude.json and project .mcp.json even though "
+      + "settingSources still loads the user's rules/commands; the programmatic ADE server stays.",
+  },
+  codex: {
+    mechanism: "thread config override: mcp_servers.<name>.enabled = false",
+    gated: true,
+    note:
+      "Codex merges the thread `config` overlay into config.toml rather than replacing it "
+      + "(verified against codex-cli: `-c mcp_servers={}` is a no-op, `-c mcp_servers.x.enabled=false` "
+      + "disables x), so ADE enumerates the configured servers and disables each one. Codex leads "
+      + "receive no ADE-managed MCP server at all — their ADE tools ride the app-server dynamicTools "
+      + "channel — so the lead's MCP surface is empty. Residual: a server contributed by a Codex "
+      + "*plugin* is not listed in config.toml's mcp_servers table and cannot be enumerated.",
+  },
+  cursor: {
+    mechanism: "local.settingSources (project + plugin layers dropped)",
+    gated: true,
+    note:
+      "The Cursor SDK derives includeProjectMcp/includePluginMcp from settingSources, so dropping "
+      + "those layers drops their MCP servers while `mcpServers` (ADE's inline lease) is unaffected. "
+      + "The `user` layer must stay: ADE's own preToolUse tool-gate hook is a user-layer artifact "
+      + "(~/.cursor/hooks.json) and is the enforcement point for every Cursor lead denial. Residual: "
+      + "user-level MCP servers still load, but their calls reach the gate as `MCP:<tool>`, classify "
+      + "as risk `unknown`, and are denied by the fail-closed allow-list above.",
+  },
+  droid: {
+    mechanism: "none",
+    gated: false,
+    note:
+      "Droid's SDK exposes no session-scoped MCP restriction. `disabledToolIds` covers the exec tool "
+      + "catalog only, and toggleMcpServer/toggleMcpTool write the user's global Factory settings "
+      + "(ToggleMcpServerRequestParams pins settingsLevel: User), which would disable a server for "
+      + "every other droid session on the machine. ADE will not mutate user config to fake a "
+      + "session gate, so a droid lead still sees the user's MCP servers.",
+  },
+  opencode: {
+    mechanism: "ADE-authored server config + OPENCODE_DISABLE_PROJECT_CONFIG",
+    gated: true,
+    note:
+      "Every ADE OpenCode server runs with an ADE-owned XDG_CONFIG_HOME, OPENCODE_CONFIG_CONTENT "
+      + "built by buildOpenCodeConfig, and OPENCODE_DISABLE_PROJECT_CONFIG=1, so the only MCP servers "
+      + "any session (lead or worker) can see are ADE's own leases.",
+  },
+} as const satisfies Record<McpCapableProvider, OrchestrationLeadMcpIsolation>;
+
+export function orchestrationLeadMcpIsolation(
+  provider: AgentChatProvider | string,
+): OrchestrationLeadMcpIsolation | null {
+  return (ORCHESTRATION_LEAD_MCP_ISOLATION as Record<string, OrchestrationLeadMcpIsolation>)[provider]
+    ?? null;
+}
+
+/**
+ * Cursor setting layers a lead may load. `project` and `plugins` are dropped
+ * (they carry MCP servers); `user` stays because ADE's tool-gate hook lives
+ * there, and `team`/`mdm` stay because they only ever *restrict*.
+ */
+export const ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES = ["user", "team", "mdm"] as const;
+
+/**
+ * Extracts the server names declared under Codex's `mcp_servers` config table.
+ *
+ * Codex has no "managed servers only" switch; the only per-server knob is
+ * `mcp_servers.<name>.enabled`, so a lead's isolation is expressed as an
+ * explicit `enabled = false` for every configured server. Handles the three
+ * shapes `config.toml` can use: `[mcp_servers.name]` headers, dotted
+ * `mcp_servers.name.key = …` assignments, and an inline
+ * `mcp_servers = { name = { … } }` table.
+ */
+export function codexConfiguredMcpServerNames(configText: string): string[] {
+  const names: string[] = [];
+  const add = (raw: string): void => {
+    const name = raw.trim().replace(/^["']|["']$/g, "").trim();
+    if (!name || names.includes(name)) return;
+    names.push(name);
+  };
+  const firstSegment = (path: string): string | null => {
+    const trimmed = path.trim();
+    if (trimmed.startsWith("\"") || trimmed.startsWith("'")) {
+      const quote = trimmed[0]!;
+      const end = trimmed.indexOf(quote, 1);
+      return end > 0 ? trimmed.slice(1, end) : null;
+    }
+    const segment = trimmed.split(".")[0]?.trim() ?? "";
+    return segment.length ? segment : null;
+  };
+
+  for (const line of configText.replace(/\r\n?/g, "\n").split("\n")) {
+    const withoutComment = line.replace(/^\s*#.*$/, "").trim();
+    if (!withoutComment.length) continue;
+
+    const header = withoutComment.match(/^\[\[?\s*mcp_servers\s*\.\s*(.+?)\s*\]\]?$/)?.[1];
+    if (header) {
+      const segment = firstSegment(header);
+      if (segment) add(segment);
+      continue;
+    }
+
+    const dotted = withoutComment.match(/^mcp_servers\s*\.\s*(.+?)\s*=/)?.[1];
+    if (dotted) {
+      const segment = firstSegment(dotted);
+      if (segment) add(segment);
+      continue;
+    }
+
+    const inline = withoutComment.match(/^mcp_servers\s*=\s*\{(.*)\}\s*$/)?.[1];
+    if (inline !== undefined) {
+      for (const key of inlineTableKeys(inline)) add(key);
+    }
+  }
+  return names;
+}
+
+/** Top-level `key =` names of a single-line TOML inline table body. */
+function inlineTableKeys(body: string): string[] {
+  const keys: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let token = "";
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index]!;
+    if (quote) {
+      if (char === quote && body[index - 1] !== "\\") quote = null;
+      else token += char;
+      continue;
+    }
+    if (char === "\"" || char === "'") { quote = char; continue; }
+    if (char === "{" || char === "[") { depth += 1; continue; }
+    if (char === "}" || char === "]") { depth -= 1; continue; }
+    if (depth === 0 && char === "=") {
+      const key = token.trim();
+      if (key.length) keys.push(key);
+      token = "";
+      // Skip the value until the next top-level comma.
+      let valueDepth = 0;
+      let valueQuote: string | null = null;
+      index += 1;
+      for (; index < body.length; index += 1) {
+        const valueChar = body[index]!;
+        if (valueQuote) {
+          if (valueChar === valueQuote && body[index - 1] !== "\\") valueQuote = null;
+          continue;
+        }
+        if (valueChar === "\"" || valueChar === "'") { valueQuote = valueChar; continue; }
+        if (valueChar === "{" || valueChar === "[") { valueDepth += 1; continue; }
+        if (valueChar === "}" || valueChar === "]") { valueDepth -= 1; continue; }
+        if (valueChar === "," && valueDepth === 0) break;
+      }
+      continue;
+    }
+    if (depth === 0) token += char;
+  }
+  return keys;
+}
+
+/**
+ * The `mcp_servers` overlay a lead's Codex thread config carries: every
+ * user-configured server explicitly switched off.
+ */
+export function orchestrationLeadCodexMcpOverrides(
+  configuredServerNames: readonly string[],
+): Record<string, { enabled: false }> {
+  const overrides: Record<string, { enabled: false }> = {};
+  for (const name of configuredServerNames) {
+    const trimmed = name.trim();
+    if (trimmed.length) overrides[trimmed] = { enabled: false };
+  }
+  return overrides;
+}
 
 const ORCHESTRATION_INTERACTION_MODE_TO_ROLE: Record<OrchestrationInteractionMode, OrchestrationRole> = {
   "orchestrator-lead": "lead",

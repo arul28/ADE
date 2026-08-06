@@ -607,8 +607,12 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import {
+  ORCHESTRATION_LEAD_CODEX_POLICY,
   ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+  ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES,
   applyOrchestrationPermissionProfile,
+  codexConfiguredMcpServerNames,
+  orchestrationLeadCodexMcpOverrides,
   isOrchestrationInteractionMode,
   isOrchestrationLeadSession,
   lockedOrchestrationPermissionMode,
@@ -3220,17 +3224,27 @@ function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexSe
 function codexThreadConfigArgs(
   reasoningEffort: string | null | undefined,
   computerUse: CodexComputerUseMcpConfig | null = null,
+  /**
+   * Orchestrator leads plan and delegate — they get no MCP at all. Codex merges
+   * this overlay into the user's config.toml instead of replacing it, so the
+   * isolation is an explicit `enabled = false` per configured server (see
+   * ORCHESTRATION_LEAD_MCP_ISOLATION.codex). Computer Use is an MCP server too,
+   * so a lead does not receive it either.
+   */
+  leadConfiguredMcpServerNames: readonly string[] | null = null,
 ): { config?: Record<string, unknown> } {
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
-  if (!effort && !computerUse) return {};
+  const leadMcpOverrides = leadConfiguredMcpServerNames
+    ? orchestrationLeadCodexMcpOverrides(leadConfiguredMcpServerNames)
+    : null;
+  const mcpServers = leadMcpOverrides
+    ? (Object.keys(leadMcpOverrides).length ? leadMcpOverrides : null)
+    : (computerUse ? { computer_use: computerUse } : null);
+  if (!effort && !mcpServers) return {};
   return {
     config: {
       ...(effort ? { model_reasoning_effort: effort } : {}),
-      ...(computerUse ? {
-        mcp_servers: {
-          computer_use: computerUse,
-        },
-      } : {}),
+      ...(mcpServers ? { mcp_servers: mcpServers } : {}),
     },
   };
 }
@@ -5949,8 +5963,15 @@ function enforceOrchestrationLockedPermissionMode(
     : null;
   // Use the per-provider profile directly — each provider has its own
   // "most permissive" mode name (bypassPermissions, danger-full-access,
-  // full-auto, auto-high, etc.). The lead's security comes from the tool-set
-  // restriction, not the permission mode.
+  // full-auto, auto-high, etc.).
+  //
+  // This profile is intentionally permissive for EVERY orchestration role,
+  // leads included. A lead's protection is a per-provider tool deny applied at
+  // the runtime boundary — Claude `canUseTool`/`disallowedTools`, OpenCode's
+  // prompt `tools` map, Droid's `disabledToolIds`, Cursor's hook risk gate, and
+  // (Codex having no tool knob) a read-only thread sandbox. Narrowing this
+  // profile instead was considered and rejected; see
+  // shared/orchestrationRuntimePolicy.ts for the per-provider deny sets.
   const profile = applyOrchestrationPermissionProfile(session.provider);
   Object.assign(session, profile);
   session.permissionMode = lockedMode;
@@ -6723,6 +6744,12 @@ export function createAgentChatService(args: {
     | CodexComputerUseMcpConfig
     | null
     | Promise<CodexComputerUseMcpConfig | null>;
+  /**
+   * Names of the MCP servers the user configured in Codex's `config.toml`.
+   * Orchestrator leads carry an explicit `enabled = false` for each of them
+   * (see ORCHESTRATION_LEAD_MCP_ISOLATION.codex).
+   */
+  resolveCodexConfiguredMcpServerNames?: () => readonly string[] | Promise<readonly string[]>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
@@ -6771,6 +6798,7 @@ export function createAgentChatService(args: {
     getAdeCliAgentEnv,
     getLocalGitHubToken,
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
+    resolveCodexConfiguredMcpServerNames: resolveCodexConfiguredMcpServerNamesOverride,
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
@@ -6782,6 +6810,30 @@ export function createAgentChatService(args: {
   } = args;
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
+  const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
+    ?? ((): string[] => {
+      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+      try {
+        return codexConfiguredMcpServerNames(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"));
+      } catch {
+        return [];
+      }
+    });
+
+  /**
+   * Thread-level Codex config for one session. Orchestrator leads never get MCP
+   * (user servers are switched off one by one and Computer Use is skipped);
+   * every other session keeps the user's Codex config untouched.
+   */
+  const codexThreadConfigArgsFor = async (
+    managed: ManagedChatSession,
+    reasoningEffort: string | null | undefined,
+  ): Promise<{ config?: Record<string, unknown> }> => {
+    if (isOrchestrationLeadSession(managed.session)) {
+      return codexThreadConfigArgs(reasoningEffort, null, await resolveCodexConfiguredMcpServerNames());
+    }
+    return codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp());
+  };
   const notifiedSettledTurns = new Set<string>();
   const cancelledQueueRecoveries = new Map<string, {
     sessionId: string;
@@ -10967,6 +11019,12 @@ export function createAgentChatService(args: {
       }
     }
     const opencodeMcpLeases = await ensureHttpMcpLeases(managed);
+    // OpenCode needs no lead-specific MCP isolation: every ADE OpenCode server
+    // runs with an ADE-owned XDG_CONFIG_HOME, an ADE-authored
+    // OPENCODE_CONFIG_CONTENT, and OPENCODE_DISABLE_PROJECT_CONFIG=1
+    // (openCodeServerManager.buildIsolatedOpenCodeEnv), so the servers below are
+    // the only MCP any session can reach — see
+    // ORCHESTRATION_LEAD_MCP_ISOLATION.opencode.
     const opencodeOrchestrationMcp = opencodeMcpLeases.length
       ? Object.fromEntries(opencodeMcpLeases.map((lease) => [
           lease.serverName,
@@ -21548,7 +21606,9 @@ export function createAgentChatService(args: {
           filename: path.basename(attachment._resolvedPath),
         }))
         .filter((entry) => fs.existsSync(entry.path));
-      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle);
+      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle, {
+        orchestrationLead: isOrchestrationLeadSession(managed.session),
+      });
       const openCodeReasoningVariant =
         managed.session.reasoningEffort
         && runtime.modelDescriptor.reasoningTiers?.includes(managed.session.reasoningEffort)
@@ -26868,8 +26928,13 @@ export function createAgentChatService(args: {
     const config = resolveChatConfig();
     const lockedMode = lockedOrchestrationPermissionMode(managed.session);
     if (lockedMode) {
-      const codexPolicy: CodexPolicy = lockedMode === "plan"
-        ? { approvalPolicy: "on-request", sandbox: "read-only" }
+      // Codex exposes no tool allow/deny list (see ORCHESTRATION_LEAD_CODEX_POLICY),
+      // so the lead's "never edits code, never runs shell" invariant is enforced
+      // by running its thread read-only with approvals off. Workers and
+      // validators keep full access. This covers `turn/start` too — the turn
+      // path resolves its policy through this same function.
+      const codexPolicy: CodexPolicy = isOrchestrationLeadSession(managed.session)
+        ? { ...ORCHESTRATION_LEAD_CODEX_POLICY }
         : { approvalPolicy: "never", sandbox: "danger-full-access" };
       managed.session.codexConfigSource = "flags";
       managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
@@ -26939,7 +27004,7 @@ export function createAgentChatService(args: {
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
-      ...codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp()),
+      ...(await codexThreadConfigArgsFor(managed, reasoningEffort)),
       developerInstructions: buildCodexDeveloperInstructions({
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
@@ -32180,6 +32245,7 @@ export function createAgentChatService(args: {
     stableStringify((modelParams ?? []).map((entry) => [entry.id, entry.value])),
     policy.chatMode,
     policy.approvalPolicy,
+    policy.orchestrationLead ? "lead-gated" : "unrestricted",
     policy.force ? "force" : "guarded",
     buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
@@ -32827,6 +32893,11 @@ export function createAgentChatService(args: {
       modelId,
       autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
       interactionMode,
+      // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
+      // has to have them withheld natively as well.
+      ...(isOrchestrationLeadSession(managed.session)
+        ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
+        : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(interactionMode === "spec"
         ? {
@@ -33295,6 +33366,10 @@ export function createAgentChatService(args: {
     }
 
     const cursorMcpLeases = await ensureHttpMcpLeases(managed);
+    // These inline servers are additive. A lead's isolation from the user's own
+    // MCP servers rides on `policy.orchestrationLead`, which the worker turns
+    // into a trimmed `local.settingSources` (cursorSdkSettingSources) — see
+    // ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
     const cursorOrchestrationMcpServers = cursorMcpLeases.length
       ? Object.fromEntries(cursorMcpLeases.map((lease) => [
           lease.serverName,
@@ -34561,6 +34636,15 @@ export function createAgentChatService(args: {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
       const droidMcpLeases = await ensureHttpMcpLeases(managed);
+      // KNOWN GAP — orchestrator leads are NOT isolated from the user's MCP
+      // servers on Droid. `mcpServers` here only *adds* ADE's lease; Droid's
+      // SDK has no session-scoped way to withhold the servers it loads from the
+      // user's Factory config. `disabledToolIds` covers the exec tool catalog
+      // only, and toggleMcpServer/toggleMcpTool persist to the user's global
+      // settings (settingsLevel is pinned to `User`), which would disable a
+      // server for every other droid session on the machine. ADE will not
+      // mutate user config to fake a session gate — see
+      // ORCHESTRATION_LEAD_MCP_ISOLATION.droid.
       const droidOrchestrationMcpServers = droidMcpLeases.length
         ? droidMcpLeases.map((lease) => lease.config)
         : undefined;
@@ -35102,7 +35186,7 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
+              ...(await codexThreadConfigArgsFor(managed, resumeReasoningEffort)),
               developerInstructions: buildCodexDeveloperInstructions({
                 laneWorktreePath: managed.laneWorktreePath,
                 session: managed.session,
@@ -36853,7 +36937,7 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            ...(await codexThreadConfigArgsFor(managed, managed.session.reasoningEffort)),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
             excludeTurns: true,
@@ -37166,7 +37250,7 @@ export function createAgentChatService(args: {
             threadId: originalThreadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            ...(await codexThreadConfigArgsFor(managed, managed.session.reasoningEffort)),
             developerInstructions: buildCodexDeveloperInstructions({
               laneWorktreePath: managed.laneWorktreePath,
               session: managed.session,
@@ -42874,7 +42958,7 @@ export function createAgentChatService(args: {
           threadId,
           model: managed.session.model,
           cwd: managed.laneWorktreePath,
-          ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
+          ...(await codexThreadConfigArgsFor(managed, resumeReasoningEffort)),
           developerInstructions: buildCodexDeveloperInstructions({
             laneWorktreePath: managed.laneWorktreePath,
             session: managed.session,

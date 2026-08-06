@@ -33,6 +33,7 @@ import {
 } from "./cursorSdkErrors";
 import {
   allowCursorHook,
+  cursorSdkSettingSources,
   denyCursorHook,
   evaluateCursorSdkHook,
   summarizeCursorHook,
@@ -218,6 +219,7 @@ function shouldUseHttp1ForAgent(env: NodeJS.ProcessEnv = process.env): boolean {
 function cursorSdkAgentMode(policy: CursorSdkPermissionPolicy): CursorSdkAgentMode {
   return policy.chatMode === "agent" ? "agent" : "plan";
 }
+
 
 function cursorRunRequestId(run: unknown): string | undefined {
   const value = run && typeof run === "object" ? (run as { requestId?: unknown }).requestId : undefined;
@@ -428,7 +430,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
     name: init.agentName ?? undefined,
     local: {
       cwd: init.laneRoot,
-      settingSources: ["all"],
+      settingSources: cursorSdkSettingSources(init.policy),
       sandboxOptions: { enabled: false },
       enableAgentRetries: true,
     },

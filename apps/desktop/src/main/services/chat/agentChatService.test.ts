@@ -12,6 +12,7 @@ import {
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
+import { cursorSdkSettingSources, evaluateCursorSdkHook, summarizeCursorHook } from "./cursorSdkPolicy";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -289,12 +290,22 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
 }));
 
-vi.mock("../opencode/openCodeRuntime", () => ({
+vi.mock("../opencode/openCodeRuntime", async () => {
+  const { orchestrationLeadOpenCodeToolSelection } = await vi.importActual<
+    typeof import("../../../shared/orchestrationRuntimePolicy")
+  >("../../../shared/orchestrationRuntimePolicy");
+  return {
   buildOpenCodePromptParts: vi.fn(({ prompt, files = [] }: { prompt: string; files?: Array<Record<string, unknown>> }) => [
     { type: "text", text: prompt },
     ...files,
   ]),
-  refreshOpenCodeSessionToolSelection: vi.fn(async () => null),
+  // Faithful stand-in for the real resolver: the E2E assertions below check the
+  // `tools` map that actually reaches OpenCode's prompt body, and
+  // openCodeRuntime.test.ts covers the real implementation.
+  refreshOpenCodeSessionToolSelection: vi.fn(async (
+    _handle: unknown,
+    options?: { orchestrationLead?: boolean },
+  ) => (options?.orchestrationLead ? orchestrationLeadOpenCodeToolSelection() : null)),
   mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
     if (mode === "plan") return "ade-plan";
     if (mode === "full-auto") return "ade-full-auto";
@@ -537,7 +548,8 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       }
     })();
   }),
-}));
+  };
+});
 
 vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: vi.fn(),
@@ -7157,9 +7169,11 @@ describe("createAgentChatService", () => {
         expect(toolNames).not.toContain("writeFile");
         expect(toolNames).not.toContain("bash");
         expect(dynamicTools.every((entry: { namespace?: string }) => entry.namespace === "ade_orchestration")).toBe(true);
+        // Codex exposes no tool allow/deny list, so the lead's "no edits, no
+        // shell" invariant is carried by the thread sandbox instead.
         expect(startPayload?.params).toMatchObject({
           approvalPolicy: "never",
-          sandbox: "danger-full-access",
+          sandbox: "read-only",
         });
         const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
           call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
@@ -38562,5 +38576,424 @@ describe("explicit provider-thread continuity recovery", () => {
     expect(readPersistedChatState(resume.id).threadId).toBe("thread-resume");
     expect(readPersistedChatState(transcript.id).threadId).toBe("thread-transcript");
     expect(readPersistedChatState(none.id).continuityRecovery).toMatchObject({ state: "required", reason: "unknown" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator-lead provider-native tool denial
+//
+// The lead plans and delegates; it never edits code or runs shell. ADE's own
+// orchestration toolset already withholds editFile/writeFile/bash from leads,
+// but that toolset is additive — it rides alongside each provider's built-in
+// tools. Asserting only that ADE's tools are absent proves nothing, so each
+// test below pins the provider-native denial ADE actually sends, and checks a
+// worker on the SAME provider and the SAME permissive profile still has it.
+// ---------------------------------------------------------------------------
+
+describe("orchestrator-lead provider-native tool denial", () => {
+  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
+    interactionMode: "orchestrator-lead" as const,
+    orchestrationRunId: created.runId,
+    orchestrationRole: "lead" as const,
+    orchestrationBundlePath: created.manifest.bundlePath,
+  });
+  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
+    interactionMode: "orchestrator-worker" as const,
+    orchestrationRunId: created.runId,
+    orchestrationRole: "worker" as const,
+    orchestrationBundlePath: created.manifest.bundlePath,
+  });
+
+  it("Claude: denies the SDK's own Edit/Write/Bash/Task tools for a lead only", async () => {
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-5",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
+        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
+      expect(leadOptions?.disallowedTools).toEqual(
+        expect.arrayContaining(["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent"]),
+      );
+      // Belt-and-braces: the runtime gate denies the same tools mid-turn.
+      await expect(leadOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
+        .resolves.toMatchObject({ behavior: "deny" });
+      await expect(leadOptions?.canUseTool?.("Bash", { command: "echo hi > README.md" }, {}))
+        .resolves.toMatchObject({ behavior: "deny" });
+
+      vi.mocked(query).mockClear();
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-5",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+
+      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
+        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
+      expect(workerOptions?.disallowedTools ?? []).not.toContain("Write");
+      expect(workerOptions?.disallowedTools ?? []).not.toContain("Bash");
+      await expect(workerOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
+        .resolves.not.toMatchObject({ behavior: "deny" });
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("Codex: starts a lead thread read-only with approvals off, workers full-access", async () => {
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+      });
+
+      // Codex's app-server exposes no tool allow/deny list, so `apply_patch`
+      // and `shell` cannot be removed from the model's toolset. The sandbox is
+      // the enforcement point: read-only blocks every write those tools make,
+      // and `approvalPolicy: never` stops the lead escalating past it.
+      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+      expect(leadStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "read-only" });
+
+      // The per-turn policy resolves through the same path, so a turn cannot
+      // re-grant write access after the thread starts.
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true);
+      });
+      const leadTurn = mockState.codexRequestPayloads.find((p) => p.method === "turn/start") as any;
+      expect(leadTurn?.params?.approvalPolicy).toBe("never");
+      expect(leadTurn?.params?.sandboxPolicy?.type).toBe("readOnly");
+
+      mockState.codexRequestPayloads.length = 0;
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+      });
+      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+      expect(workerStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("Droid: withholds Droid's own edit/execute tool categories from a lead only", async () => {
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      // `disabledToolCategories` is resolved to concrete `disabledToolIds`
+      // against Droid's live tool list in the worker (see
+      // droidSdkProtocol.test.ts) — ids are build-specific, categories are not.
+      expect(mockState.droidAcquireCalls.at(-1)?.settings).toMatchObject({
+        disabledToolCategories: ["edit", "execute"],
+      });
+      expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
+        disabledToolCategories: ["edit", "execute"],
+      });
+
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+      expect(mockState.droidPromptCalls.at(-1)?.settings)
+        .not.toHaveProperty("disabledToolCategories");
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("OpenCode: switches off OpenCode's own bash/edit/write/patch tools for a lead only", async () => {
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        yield { type: "finish", usage: {} };
+      })(),
+    } as any));
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      const leadState = [...mockState.openCodeSessions.values()].at(-1)!;
+      await vi.waitFor(() => {
+        expect(leadState.promptBodies.length).toBeGreaterThan(0);
+      });
+      expect(leadState.promptBodies.at(-1)?.tools).toMatchObject({
+        bash: false,
+        edit: false,
+        write: false,
+        patch: false,
+        task: false,
+      });
+
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+
+      const workerState = [...mockState.openCodeSessions.values()].at(-1)!;
+      await vi.waitFor(() => {
+        expect(workerState.promptBodies.length).toBeGreaterThan(0);
+      });
+      // No `tools` field at all: the worker keeps OpenCode's full default set.
+      expect(workerState.promptBodies.at(-1)).not.toHaveProperty("tools");
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator-lead MCP isolation
+//
+// Provider-native tool denials only cover each provider's built-in tools. A
+// user-configured MCP server (filesystem, shell, git, …) hands the same
+// capability back through another door, so a lead must see ADE-managed servers
+// only. Each test pins the MCP configuration ADE actually sends for a lead and
+// checks a worker on the SAME provider still receives the user's servers.
+// Droid is deliberately absent: it has no session-scoped MCP restriction (see
+// ORCHESTRATION_LEAD_MCP_ISOLATION.droid).
+// ---------------------------------------------------------------------------
+
+describe("orchestrator-lead MCP isolation", () => {
+  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
+    interactionMode: "orchestrator-lead" as const,
+    orchestrationRunId: created.runId,
+    orchestrationRole: "lead" as const,
+    orchestrationBundlePath: created.manifest.bundlePath,
+  });
+  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
+    interactionMode: "orchestrator-worker" as const,
+    orchestrationRunId: created.runId,
+    orchestrationRole: "worker" as const,
+    orchestrationBundlePath: created.manifest.bundlePath,
+  });
+
+  it("Claude: ignores ~/.claude.json and project .mcp.json for a lead only", async () => {
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-5",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
+        strictMcpConfig?: boolean;
+        mcpServers?: Record<string, unknown>;
+        managedSettings?: { allowManagedMcpServersOnly?: boolean; allowedMcpServers?: Array<{ serverName: string }> };
+      } | undefined;
+      // strictMcpConfig drops every on-disk MCP source; the managed allow-list
+      // keeps ADE's own programmatic server reachable.
+      expect(leadOptions?.strictMcpConfig).toBe(true);
+      expect(leadOptions?.managedSettings?.allowManagedMcpServersOnly).toBe(true);
+      expect(leadOptions?.managedSettings?.allowedMcpServers?.map((entry) => entry.serverName))
+        .toContain("ade-orchestration");
+      expect(Object.keys(leadOptions?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
+
+      vi.mocked(query).mockClear();
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-5",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+
+      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
+        strictMcpConfig?: boolean;
+        settingSources?: string[];
+      } | undefined;
+      // The worker keeps the user's MCP servers: no strict flag, and the
+      // setting sources that load them are still on.
+      expect(workerOptions?.strictMcpConfig).toBeUndefined();
+      expect(workerOptions?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("Codex: switches off every configured MCP server for a lead only", async () => {
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
+      const { service } = createService({
+        getOrchestrationService: () => orchestrationService,
+        resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
+        resolveCodexConfiguredMcpServerNames: () => ["filesystem", "computer_use"],
+      });
+
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+      });
+
+      // Codex merges this overlay into config.toml rather than replacing it, so
+      // the isolation has to name each server. Computer Use is an MCP server
+      // too, so the lead does not get it either.
+      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+      expect(leadStart?.params?.config?.mcp_servers).toEqual({
+        filesystem: { enabled: false },
+        computer_use: { enabled: false },
+      });
+
+      mockState.codexRequestPayloads.length = 0;
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+      });
+      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+      // Nothing disabled: the worker keeps the user's Codex MCP config intact
+      // (only ADE's own Computer Use merge is present).
+      expect(workerStart?.params?.config?.mcp_servers).toEqual({
+        computer_use: { command: signedClient, args: ["mcp"], enabled: true },
+      });
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("Cursor: runs a lead without the MCP-carrying setting layers, and denies MCP calls", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      // The worker turns `policy.orchestrationLead` into the trimmed
+      // `local.settingSources` (cursorSdkSettingSources); the pool call is the
+      // last thing ADE controls in this process.
+      const leadAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
+      expect(leadAcquire?.policy?.orchestrationLead).toBe(true);
+      expect(cursorSdkSettingSources(leadAcquire?.policy)).toEqual(["user", "team", "mdm"]);
+      // MCP servers ADE hands Cursor are its own lease only.
+      expect(Object.keys(leadAcquire?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
+
+      // Cursor routes MCP tool calls through the same preToolUse gate as any
+      // other tool, named `MCP:<tool>` — an unknown risk class, denied.
+      const mcpCall = summarizeCursorHook(
+        { toolName: "MCP:write_file", toolInput: { path: "README.md" } },
+        "/tmp/lane",
+      );
+      expect(mcpCall.risk).toBe("unknown");
+      expect(evaluateCursorSdkHook({
+        request: mcpCall,
+        policy: { ...(leadAcquire?.policy as any) },
+        laneRoot: "/tmp/lane",
+        userHomeDir: tmpHomeRoot,
+      })).toBe("deny");
+
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+      const workerAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
+      expect(workerAcquire?.policy?.orchestrationLead).toBe(false);
+      expect(cursorSdkSettingSources(workerAcquire?.policy)).toEqual(["all"]);
+    } finally {
+      await orchestrationService.dispose();
+    }
+  });
+
+  it("OpenCode: hands every session an ADE-authored config with ADE's servers only", async () => {
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        yield { type: "finish", usage: {} };
+      })(),
+    } as any));
+    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+    try {
+      const { service } = createService({ getOrchestrationService: () => orchestrationService });
+      const lead = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        ...leadArgs(created),
+      });
+      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
+
+      const leadStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
+      // The MCP map ADE hands OpenCode for a lead carries ADE's lease only.
+      // `buildOpenCodeConfig`'s own behavior (that this map becomes the whole
+      // config the server sees) is covered directly in openCodeRuntime.test.ts
+      // — it cannot be asserted here because this suite mocks that module.
+      expect(Object.keys(leadStart?.mcp ?? {})).toEqual(["ade-orchestration"]);
+    } finally {
+      await orchestrationService.dispose();
+    }
   });
 });

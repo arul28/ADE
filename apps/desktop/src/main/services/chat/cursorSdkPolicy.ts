@@ -2,6 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatSession } from "../../../shared/types";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+import {
+  isOrchestrationLeadSession,
+  ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS,
+  ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES,
+} from "../../../shared/orchestrationRuntimePolicy";
 import type {
   CursorSdkApprovalPolicy,
   CursorSdkChatMode,
@@ -10,7 +15,11 @@ import type {
   CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
 
-type CursorSessionModeInput = Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">;
+type CursorSessionModeInput = Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">
+  & Partial<Pick<AgentChatSession, "interactionMode" | "orchestrationRole">>;
+
+/** Mirrors `SettingSource` from `@cursor/sdk` (`local.settingSources`). */
+export type CursorSdkSettingSource = "project" | "user" | "team" | "mdm" | "plugins" | "all";
 
 const READ_TOOL_NAMES = new Set([
   "read",
@@ -56,6 +65,10 @@ export function resolveCursorSdkChatMode(session: CursorSessionModeInput): Curso
 }
 
 export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorSdkPermissionPolicy {
+  // Leads run under the same permissive `full-auto` profile as workers by
+  // design; their protection is the risk gate in `evaluateCursorSdkHook`, which
+  // this flag switches on.
+  const orchestrationLead = isOrchestrationLeadSession(session);
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   const legacyFullAuto =
     !explicit.length
@@ -67,6 +80,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       sandbox: "off",
       force: true,
       hardGuards: true,
+      orchestrationLead,
     };
   }
 
@@ -78,6 +92,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       sandbox: "ade",
       force: false,
       hardGuards: true,
+      orchestrationLead,
     };
   }
 
@@ -87,7 +102,26 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     sandbox: "ade",
     force: false,
     hardGuards: true,
+    orchestrationLead,
   };
+}
+
+/**
+ * Ambient Cursor setting layers an agent may load (`local.settingSources`).
+ *
+ * The Cursor SDK derives `includeProjectMcp` / `includePluginMcp` from these
+ * sources, so an orchestrator lead — which must see ADE-managed MCP servers
+ * only — drops the `project` and `plugins` layers. `user` has to stay: ADE's
+ * own preToolUse tool-gate hook is installed under the user's `~/.cursor` and
+ * is the enforcement point for every Cursor lead denial (an MCP call arrives at
+ * the gate as `MCP:<tool>`, classifies as risk `unknown`, and fails closed).
+ * See ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
+ */
+export function cursorSdkSettingSources(
+  policy: Pick<CursorSdkPermissionPolicy, "orchestrationLead">,
+): CursorSdkSettingSource[] {
+  if (!policy.orchestrationLead) return ["all"];
+  return [...ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -492,6 +526,17 @@ export function evaluateCursorSdkHook(args: {
   }
 
   const normalized = normalizeToolName(args.request.toolName);
+  // An orchestrator lead never edits code or runs shell, whatever its approval
+  // policy says. Allow-list by risk so an unrecognised tool name (risk
+  // "unknown") is denied rather than waved through by `approvalPolicy: never`.
+  if (args.policy.orchestrationLead) {
+    if ((ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS as readonly string[]).includes(args.request.risk)) {
+      return "allow";
+    }
+    args.request.reason =
+      "Orchestrator lead sessions cannot use Cursor's edit, shell, or subagent tools. Delegate the work to a worker instead.";
+    return "deny";
+  }
   if (args.policy.approvalPolicy === "never") return "allow";
   if (args.policy.approvalPolicy === "read-only") {
     return args.request.risk === "read" ? "allow" : "deny";

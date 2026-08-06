@@ -10,6 +10,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
+import { droidDisabledToolIdsForCategories } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -246,14 +247,33 @@ function buildReady(): DroidSdkReady {
   };
 }
 
+/**
+ * Resolves the concrete `disabledToolIds` for a settings bag, if it asks for
+ * any category to be withheld. Droid reports tool ids and their categories at
+ * runtime, so the lookup happens here rather than against a pinned id list.
+ * Applied on every settings push so a resumed session cannot drift back to the
+ * full toolset.
+ */
+async function resolveDisabledToolIds(
+  settings: DroidSdkSessionSettings,
+): Promise<string[] | null> {
+  const categories = settings.disabledToolCategories ?? null;
+  if (!session || !categories?.length) return null;
+  const listed = await session.listTools();
+  const tools = Array.isArray(listed?.tools) ? listed.tools : [];
+  return droidDisabledToolIdsForCategories(tools, categories);
+}
+
 async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const sdk = await getSdk();
+  const disabledToolIds = await resolveDisabledToolIds(settings);
   if (settings.interactionMode === "spec") {
     await session.enterSpecMode({
       specModeModelId: settings.specModeModelId?.trim() || settings.modelId,
       specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort ?? settings.reasoningEffort),
     });
+    if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
     return;
   }
   await session.updateSettings({
@@ -261,6 +281,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
     autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
     interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
+    ...(disabledToolIds ? { disabledToolIds } : {}),
   });
 }
 
@@ -289,6 +310,13 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
     }
   } else {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+  }
+  // `createSession`/`resumeSession` take `disabledToolIds`, but the ids are
+  // only discoverable from the live session, so the lead's denial is pushed
+  // immediately after the session exists and before any prompt can run.
+  if (init.settings.disabledToolCategories?.length) {
+    const disabledToolIds = await resolveDisabledToolIds(init.settings);
+    if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
   }
   const ready = buildReady();
   post({ type: "ready", ready });

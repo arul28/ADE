@@ -1,3 +1,7 @@
+import type { DroidToolCategory } from "../../../shared/orchestrationRuntimePolicy";
+
+export type { DroidToolCategory };
+
 export type DroidSdkAutonomyLevel = "off" | "low" | "medium" | "high";
 // `agi` puts Droid in orchestrator mode: it decomposes a mission into features
 // and spawns worker sub-sessions (surfaced to ADE as subagents) while keeping
@@ -21,7 +25,36 @@ export type DroidSdkSessionSettings = {
   reasoningEffort?: DroidSdkReasoningEffort | null;
   specModeModelId?: string | null;
   specModeReasoningEffort?: DroidSdkReasoningEffort | null;
+  /**
+   * Droid tool categories to withhold from the model, resolved to concrete
+   * `disabledToolIds` in the worker (tool ids are build-specific, categories
+   * are not). Set for orchestrator-lead sessions so Droid's own editor and
+   * terminal tools are dropped alongside ADE's.
+   */
+  disabledToolCategories?: readonly DroidToolCategory[] | null;
 };
+
+/**
+ * Reduces a `session.listTools()` result to the ids ADE must disable.
+ *
+ * Droid's built-in tool ids vary by build and model (`edit_file`,
+ * `apply-patch-cli`, `create-cli`, …), so ADE selects by the category Droid
+ * itself reports rather than pinning a brittle id list.
+ */
+export function droidDisabledToolIdsForCategories(
+  tools: ReadonlyArray<{ id?: unknown; category?: unknown }>,
+  categories: readonly DroidToolCategory[],
+): string[] {
+  const denied = new Set<string>(categories);
+  const ids: string[] = [];
+  for (const tool of tools) {
+    const id = typeof tool?.id === "string" ? tool.id.trim() : "";
+    const category = typeof tool?.category === "string" ? tool.category : "";
+    if (!id || !denied.has(category as DroidToolCategory)) continue;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
 
 export type DroidSdkWorkerInit = {
   sessionId: string;
