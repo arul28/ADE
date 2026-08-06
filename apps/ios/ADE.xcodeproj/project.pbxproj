@@ -45,6 +45,8 @@
 		K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* DeepLinkURLParsing.swift */; };
 		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
 		AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000004 /* ADELockScreenWidget.swift */; };
+		AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEActivityHomeWidget.swift */; };
+		AA5200000000000000000016 /* LockScreenPriorityStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* LockScreenPriorityStatus.swift */; };
 		AE00000000000000000000B1 /* ADEAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A1 /* ADEAppDelegate.swift */; };
 		AE00000000000000000000B2 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A2 /* PushNotificationService.swift */; };
 		AE00000000000000000000B3 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A3 /* LiveActivityService.swift */; };
@@ -348,6 +350,8 @@
 		K20000000000000000000002 /* DeepLinkURLParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkURLParsing.swift; path = ADE/App/DeepLinkURLParsing.swift; sourceTree = "<group>"; };
 		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
 		AA5200000000000000000004 /* ADELockScreenWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELockScreenWidget.swift; path = ADEWidgets/ADELockScreenWidget.swift; sourceTree = "<group>"; };
+		AA5200000000000000000005 /* ADEActivityHomeWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEActivityHomeWidget.swift; path = ADEWidgets/ADEActivityHomeWidget.swift; sourceTree = "<group>"; };
+		AA5200000000000000000006 /* LockScreenPriorityStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LockScreenPriorityStatus.swift; path = ADEWidgets/LockScreenPriorityStatus.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A1 /* ADEAppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAppDelegate.swift; path = ADE/App/ADEAppDelegate.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A2 /* PushNotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PushNotificationService.swift; path = ADE/Services/PushNotificationService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
@@ -1002,6 +1006,8 @@
 				AA5000000000000000000002 /* ADEWidgets.entitlements */,
 				AA5200000000000000000001 /* ADEWidgetBundle.swift */,
 				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
+				AA5200000000000000000005 /* ADEActivityHomeWidget.swift */,
+				AA5200000000000000000006 /* LockScreenPriorityStatus.swift */,
 				AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */,
 			);
 			name = ADEWidgets;
@@ -1630,6 +1636,8 @@
 				AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
+				AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */,
+				AA5200000000000000000016 /* LockScreenPriorityStatus.swift in Sources */,
 				AA5100000000000000000024 /* AttentionActionIntents.swift in Sources */,
 				AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */,
 				AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */,

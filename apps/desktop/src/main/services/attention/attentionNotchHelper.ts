@@ -9,6 +9,7 @@ import type {
   AttentionNotchToast,
   AttentionSnapshot,
 } from "../../../shared/types/attention";
+import { isAttentionNotchRevealMode } from "../../../shared/types/attention";
 import type { Logger } from "../logging/logger";
 
 // Must stay above the router's snapshot write cap so a snapshot the router
@@ -519,21 +520,14 @@ function isAttentionNotchOutput(value: unknown): value is AttentionNotchOutput {
     const settings = value.settings;
     return (
       typeof settings.enabled === "boolean"
-      && (
-        settings.revealMode === "minimal"
-        || settings.revealMode === "hover"
-        || settings.revealMode === "click"
-      )
+      // Read the vocabulary from the shared contract rather than restating it:
+      // a hardcoded list silently REJECTS the whole settings message when the
+      // helper gains a mode, so the user's mode change never reaches ADE.
+      && isAttentionNotchRevealMode(settings.revealMode)
       && typeof settings.expandedPanelEnabled === "boolean"
-      // Optional: a helper built before these existed must still be accepted.
-      && (
-        settings.automaticRevealEnabled === undefined
-        || typeof settings.automaticRevealEnabled === "boolean"
-      )
-      && (
-        settings.tickerEnabled === undefined
-        || typeof settings.tickerEnabled === "boolean"
-      )
+      // `automaticRevealEnabled` / `tickerEnabled` are retired: the helper no
+      // longer emits them (`AttentionModels.swift`), so there is nothing left
+      // to validate. Unknown keys are ignored rather than rejected.
       && (
         settings.preferredDisplayId == null
         || typeof settings.preferredDisplayId === "number"

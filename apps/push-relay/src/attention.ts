@@ -1,7 +1,6 @@
 import {
   sendApnsPush,
   type ApnsEnvironment,
-  type ApnsKeyConfig,
   type ApnsSendResult,
 } from "./apns";
 import {
@@ -9,24 +8,30 @@ import {
   inspectAttentionAuthConfiguration,
   verifyAttentionBearerToken,
 } from "./attentionAuth";
+import {
+  apnsConfig,
+  boundedText,
+  isRecord,
+  json,
+  logAttentionDeliveryError,
+  optionalIsoDate,
+  preferenceBoolean,
+  preferenceNumber,
+  readPreferences,
+  requiredString,
+  MAX_DETAIL_LENGTH,
+  MAX_PREVIEW_LENGTH,
+  MAX_TITLE_LENGTH,
+  type AttentionDeviceRow,
+  type AttentionRelayEnv,
+  type ParsedAttentionItem,
+} from "./attentionShared";
+import { deliverAccountLiveActivity } from "./liveActivity";
 export {
   inspectAttentionAuthConfiguration,
   type AttentionAuthConfigurationStatus,
 } from "./attentionAuth";
-
-export type AttentionRelayEnv = {
-  DB: D1Database;
-  CLERK_JWKS_URL?: string;
-  CLERK_ISSUER?: string;
-  CLERK_OAUTH_CLIENT_ID?: string;
-  CLERK_SECONDARY_JWKS_URL?: string;
-  CLERK_SECONDARY_ISSUER?: string;
-  CLERK_SECONDARY_OAUTH_CLIENT_ID?: string;
-  APNS_KEY?: string;
-  APNS_KEY_ID?: string;
-  APNS_TEAM_ID?: string;
-  APNS_DEFAULT_TOPIC?: string;
-};
+export type { AttentionRelayEnv } from "./attentionShared";
 
 type AttentionItemRow = {
   payload_json: string;
@@ -48,51 +53,11 @@ type IncomingAttentionTombstone = {
   revivable: boolean;
 };
 
-type AttentionDeviceRow = {
-  device_id: string;
-  apns_token: string | null;
-  push_to_start_token: string | null;
-  bundle_id: string;
-  aps_environment: string;
-  preferences_json: string;
-  generation: string;
-};
-
-type OwnedAttentionDeviceRow = AttentionDeviceRow & {
-  ownership_epoch: number;
-};
-
 type AttentionDeviceOwnershipRow = {
   device_id: string;
   user_id: string;
   ownership_epoch: number;
   apns_token: string | null;
-};
-
-type ParsedAttentionItem = Record<string, unknown> & {
-  contractVersion: 1;
-  id: string;
-  revision: number;
-  fingerprint: string;
-  contentFingerprint: string;
-  alertFingerprint: string;
-  activityTier?: "signal" | "ambient" | "idle";
-  kind: "agent" | "pull_request";
-  eventKind: string;
-  phase: string;
-  title: string;
-  preview: string;
-  privacyPreview: string;
-  updatedAt: string;
-  expiresAt: string | null;
-  machine: Record<string, unknown> & { machineKey: string; name: string };
-  project: {
-    projectId: string;
-    name: string;
-    rootPath: string | null;
-  };
-  destination: Record<string, unknown>;
-  actions: Array<Record<string, unknown>>;
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -103,21 +68,26 @@ const MAX_ATTENTION_MACHINE_PREFERENCES = 64;
 const MAX_ACCOUNT_ATTENTION_ITEMS = 2_000;
 const ATTENTION_DEVICE_LEASE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH = 64;
-const MAX_ID_LENGTH = 256;
-const MAX_TITLE_LENGTH = 180;
-const MAX_PREVIEW_LENGTH = 320;
-const MAX_DETAIL_LENGTH = 1_000;
 const APNS_TOKEN_PATTERN = /^[a-f0-9]{32,512}$/i;
 const ACCOUNT_MACHINE_ONLINE_WINDOW_MS = 90_000;
 const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
-const LIVE_ACTIVITY_START_CLAIM_TTL_MS = 30_000;
 const NOTIFICATION_DELIVERY_CLAIM_TTL_MS = 60_000;
 const MAX_ALERT_AGE_MS = 15 * 60_000;
 const ATTENTION_DELIVERY_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const ATTENTION_ALERT_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+// A machine that has not published for this long is treated as gone: its rows
+// can no longer be swept by the epoch reconcile (that only runs when the owning
+// machine publishes), so the account-level sweep retires them instead. This is
+// the only relief for a rotated machine key, whose old identity never returns.
+const ORPHANED_MACHINE_ACTIVITY_MS = 14 * 24 * 60 * 60 * 1_000;
+// Each swept account costs a revision commit (and an aggregate Live Activity
+// refresh, i.e. an outbound APNs fetch per device), so a pass stays small and
+// the backlog drains over later passes. The sweeps run from the hourly cron
+// only — see `sweepAttentionState` — so 25 accounts an hour is the drain rate.
+const MAX_SWEPT_ACCOUNTS_PER_PRUNE = 25;
 
 const EVENT_KINDS = new Set([
   "agent_running",
@@ -132,26 +102,6 @@ const EVENT_KINDS = new Set([
   "pr_opened",
   "pr_closed",
 ]);
-
-function logAttentionDeliveryError(
-  surface: "notification" | "live_activity",
-  deviceId: string,
-  error: unknown,
-): void {
-  const reason = error instanceof Error ? error.message : String(error);
-  try {
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      svc: "ade-push-relay",
-      kind: "attention_delivery_error",
-      surface,
-      device: deviceId.slice(-6),
-      reason: reason.slice(0, 500),
-    }));
-  } catch {
-    console.error("ade-push-relay attention_delivery_error");
-  }
-}
 
 const PHASES = new Set([
   "starting",
@@ -191,53 +141,6 @@ const DEFAULT_NOTIFY_EVENTS = new Set([
   "pr_changes_requested",
   "pr_merge_ready",
 ]);
-
-function json(value: unknown, init: ResponseInit = {}): Response {
-  return new Response(JSON.stringify(value), {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-      ...(init.headers ?? {}),
-    },
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function requiredString(value: unknown, maxLength = MAX_ID_LENGTH): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  if (!normalized || normalized.length > maxLength) return null;
-  return normalized;
-}
-
-function optionalIsoDate(value: unknown): string | null | undefined {
-  if (value === null || value === undefined) return null;
-  const normalized = requiredString(value, 64);
-  if (!normalized || Number.isNaN(Date.parse(normalized))) return undefined;
-  return new Date(normalized).toISOString();
-}
-
-function boundedText(value: unknown, maxLength: number): string | null {
-  const text = requiredString(value, maxLength * 4);
-  if (!text) return null;
-  const sanitized = text
-    .replace(/\b(?:sk|pk|ghp|github_pat|xox[baprs])_[A-Za-z0-9_-]{12,}\b/gi, "[redacted]")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer [redacted]")
-    .replace(/\s+/g, " ")
-    .trim();
-  return sanitized.slice(0, maxLength);
-}
-
-function apnsConfig(env: AttentionRelayEnv): ApnsKeyConfig | null {
-  const keyPem = env.APNS_KEY?.trim() ?? "";
-  const keyId = env.APNS_KEY_ID?.trim() ?? "";
-  const teamId = env.APNS_TEAM_ID?.trim() ?? "";
-  return keyPem && keyId && teamId ? { keyPem, keyId, teamId } : null;
-}
 
 function deepLinkForItem(item: ParsedAttentionItem): string | null {
   const destination = item.destination;
@@ -288,38 +191,6 @@ function attentionAlertRoutingPayload(
       ? { itemId: item.destination.itemId }
       : {}),
   };
-}
-
-function readPreferences(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function preferenceBoolean(
-  device: Record<string, unknown>,
-  account: Record<string, unknown>,
-  key: string,
-  fallback: boolean,
-): boolean {
-  if (typeof device[key] === "boolean") return device[key];
-  if (typeof account[key] === "boolean") return account[key];
-  return fallback;
-}
-
-function preferenceNumber(
-  device: Record<string, unknown>,
-  account: Record<string, unknown>,
-  key: string,
-  fallback: number,
-): number {
-  if (typeof device[key] === "number" && Number.isFinite(device[key])) return device[key];
-  if (typeof account[key] === "number" && Number.isFinite(account[key])) return account[key];
-  return fallback;
 }
 
 function desktopEscalationDelayMs(accountPreferences: Record<string, unknown>): number {
@@ -703,6 +574,218 @@ async function commitActivityReconcileFinal(
   ], args.now);
 }
 
+function accountMachineActivityTombstoneStatement(
+  env: AttentionRelayEnv,
+  args: { userId: string; machineKey: string; now: string },
+): D1PreparedStatement {
+  // Same statement `commitActivityReconcileFinal` uses to seal a roster sweep,
+  // minus the epoch predicate: an account-level removal retires every row the
+  // machine owns, not just the ones a newer roster left behind.
+  return env.DB.prepare(`
+    insert into attention_tombstones(
+      user_id, item_id, source_revision, account_revision, revivable, deleted_at
+    )
+    select user_id, item_id, source_revision,
+      (select revision from attention_revisions where user_id = ?), 0, ?
+    from attention_items
+    where user_id = ? and machine_key = ?
+    on conflict(user_id, item_id) do update set
+      source_revision = excluded.source_revision,
+      account_revision = excluded.account_revision,
+      revivable = 0,
+      deleted_at = excluded.deleted_at
+    where excluded.source_revision >= attention_tombstones.source_revision
+  `).bind(args.userId, args.now, args.userId, args.machineKey);
+}
+
+type AccountMachinePurgeResult = {
+  revision: number;
+  removedItems: number;
+};
+
+/**
+ * DELIVERY TARGETS LEAVE WITH THE OWNERSHIP.
+ *
+ * The legacy machine-signed routes (`/machines/<key>/publish`,
+ * `/machines/<key>/live-activity-tokens`) deliver out of one table set keyed by
+ * MACHINE KEY ALONE — `device_registrations` and `live_activity_tokens` carry no
+ * account id, so they keep pointing at whichever phones last registered through
+ * that machine no matter who owns it now. `machineKeyRevokedAt` is the only
+ * server-side gate on those routes, which makes every path that legitimately
+ * clears a revocation (an ownership transfer in `linkMachineToAccount`, the
+ * directory's deliberate re-pair) a path that would otherwise hand a machine its
+ * PREVIOUS owner's phones back: arbitrary alert text and Live Activity frames,
+ * plus the ability to re-arm Live Activity tokens against them.
+ *
+ * So the rows are dropped at both ends of a change of ownership — when the
+ * machine is removed from an account (below) and again when the key links to a
+ * different account — leaving no window in which a cleared revocation exposes
+ * targets the machine no longer has any claim to. Devices only ever enter these
+ * tables by registering through the machine, so the new owner's phones come back
+ * on their next launch and nothing legitimate is lost.
+ *
+ * `publish_suppression` goes with them: it is per-machine dedupe state keyed by
+ * the device ids that just left, and keeping it would let a stale content hash
+ * silently swallow the first publish to a re-registered device.
+ */
+function legacyMachineDeliveryPurgeStatements(
+  env: AttentionRelayEnv,
+  machineKey: string,
+): D1PreparedStatement[] {
+  return [
+    env.DB
+      .prepare("delete from device_registrations where machine_key = ?")
+      .bind(machineKey),
+    env.DB
+      .prepare("delete from live_activity_tokens where machine_key = ?")
+      .bind(machineKey),
+    env.DB
+      .prepare("delete from publish_suppression where machine_key = ?")
+      .bind(machineKey),
+  ];
+}
+
+/**
+ * Retire everything one machine owns on an account in a single revision:
+ * tombstone + delete its items, drop its presence link, and release the
+ * installs it seeded. Removing a machine from the account directory is the
+ * caller; the epoch reconcile cannot do this job because it only runs while the
+ * machine is still publishing, and a removed machine never publishes again.
+ *
+ * `revoke` records the removal so the still-signed-in machine cannot publish
+ * itself back in — a purge without it (the staleness sweep) leaves the machine
+ * free to return on its own. It also drops the machine's legacy delivery rows
+ * (see `legacyMachineDeliveryPurgeStatements`): a removal ends this account's
+ * relationship with the machine, so the account's phones must stop being
+ * reachable through it immediately, not only once something clears the
+ * revocation. The staleness sweep passes `revoke: false` precisely because the
+ * machine was never removed — it just went quiet — so its own devices stay.
+ */
+async function purgeAccountMachineActivity(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    now: string;
+    revoke: boolean;
+  },
+): Promise<AccountMachinePurgeResult> {
+  const removedItemsRow = await env.DB.prepare(`
+    select count(*) as count
+    from attention_items
+    where user_id = ? and machine_key = ?
+  `).bind(args.userId, args.machineKey).first<{ count: number }>();
+  const statements: D1PreparedStatement[] = [
+    accountMachineActivityTombstoneStatement(env, args),
+    env.DB
+      .prepare("delete from attention_items where user_id = ? and machine_key = ?")
+      .bind(args.userId, args.machineKey),
+    env.DB
+      .prepare("delete from attention_machine_links where user_id = ? and machine_key = ?")
+      .bind(args.userId, args.machineKey),
+  ];
+  if (args.revoke) {
+    statements.push(env.DB.prepare(`
+      insert into attention_revoked_machines(user_id, machine_key, revoked_at)
+      values (?, ?, ?)
+      on conflict(user_id, machine_key) do update set
+        revoked_at = excluded.revoked_at
+    `).bind(args.userId, args.machineKey, args.now));
+    statements.push(...legacyMachineDeliveryPurgeStatements(env, args.machineKey));
+  }
+  const revision = await commitAttentionRevision(
+    env,
+    args.userId,
+    statements,
+    args.now,
+  );
+
+  // Installs this machine seeded are its property: they were imported from the
+  // machine's own legacy registrations, so they leave with it. Ownership rows
+  // are deactivated rather than dropped so a delayed request from the removed
+  // machine cannot reclaim the installation.
+  const ownedDevices = await env.DB
+    .prepare("select device_id from attention_devices where user_id = ? and source_machine_key = ?")
+    .bind(args.userId, args.machineKey)
+    .all<{ device_id: string }>();
+  for (const device of ownedDevices.results) {
+    await deleteAttentionDeviceOwnership(env, args.userId, device.device_id);
+  }
+  // Devices that stay on the account still show an aggregate that just lost
+  // this machine's rows; refresh it in the same request.
+  await deliverAccountLiveActivity(env, args.userId);
+  return {
+    revision,
+    removedItems: Number(removedItemsRow?.count ?? 0),
+  };
+}
+
+async function accountMachineRevokedAt(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<string | null> {
+  const row = await env.DB
+    .prepare(`
+      select revoked_at
+      from attention_revoked_machines
+      where user_id = ? and machine_key = ?
+      limit 1
+    `)
+    .bind(userId, machineKey)
+    .first<{ revoked_at: string }>();
+  return row?.revoked_at ?? null;
+}
+
+/**
+ * Revocation lookup for the LEGACY machine-signed routes (`/machines/<key>/…`),
+ * which authenticate a machine signature and carry no account id at all.
+ *
+ * `attention_revoked_machines` is keyed `(user_id, machine_key)`, so this asks a
+ * deliberately different question than `accountMachineRevokedAt`: REVOKED ON ANY
+ * ACCOUNT BLOCKS THE MACHINE KEY. Two reasons that is the right default here:
+ *
+ * 1. A machine key is machine identity, not account identity — it is minted per
+ *    install and signs with a per-machine secret. "Some account de-authorized
+ *    this physical machine" is therefore a statement about the machine.
+ * 2. This is a de-authorization path. Over-blocking costs a re-pair (which the
+ *    directory performs, clearing the row); under-blocking means a removed,
+ *    stolen, or sold machine running an older or modified binary keeps pushing
+ *    alerts and Live Activity frames to the owner's phone.
+ *
+ * Two paths clear a row so this never becomes a permanent brick:
+ * `handleAccountMachinePairingRestore` (the directory's deliberate re-pair, for
+ * the same account) and `linkMachineToAccount` (a completed ownership transfer,
+ * which clears every account other than the one now publishing).
+ *
+ * Neither clear can reopen a channel to an account that lost the machine:
+ * `legacyMachineDeliveryPurgeStatements` drops this machine key's
+ * `device_registrations` / `live_activity_tokens` when it is removed from an
+ * account and again, atomically with the clear, when it links to a different
+ * one. This gate therefore blocks a de-authorized machine, and the purge makes
+ * sure that even after the gate legitimately opens there is nothing of the
+ * previous owner's left to deliver to.
+ *
+ * Cost is one indexed point lookup against a table that only ever holds removed
+ * machines (see migration 0007 for the machine_key index).
+ */
+export async function machineKeyRevokedAt(
+  env: AttentionRelayEnv,
+  machineKey: string,
+): Promise<string | null> {
+  const row = await env.DB
+    .prepare(`
+      select revoked_at
+      from attention_revoked_machines
+      where machine_key = ?
+      order by revoked_at desc
+      limit 1
+    `)
+    .bind(machineKey)
+    .first<{ revoked_at: string }>();
+  return row?.revoked_at ?? null;
+}
+
 async function enforceActivityAccountItemCap(
   env: AttentionRelayEnv,
   userId: string,
@@ -765,24 +848,6 @@ async function enforceActivityAccountItemCap(
     `).bind(userId, userId, rowsToRemove),
   ], now);
   return { itemsTruncated: true, revision };
-}
-
-function resolveActivityDevicePreferences(
-  device: AttentionDeviceRow,
-  preferences: Record<string, unknown>,
-): Record<string, unknown> {
-  const registered = readPreferences(device.preferences_json);
-  const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
-  const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
-  const accountOverride = isRecord(devicePreferences[device.device_id])
-    ? devicePreferences[device.device_id] as Record<string, unknown>
-    : {};
-  // Registration preferences are a compatibility fallback. iOS includes its
-  // ordinary defaults on every device registration, so treating them as
-  // overrides would make account-wide delivery/privacy settings ineffective.
-  // Only the explicit account `devices[deviceId]` scope may override account
-  // settings for one device.
-  return { ...registered, ...accountPreferences, ...accountOverride };
 }
 
 function resolveActivityDeliveryPreferences(
@@ -1229,577 +1294,70 @@ async function deliverAttentionNotifications(
   }
 }
 
-function activityPriority(item: ParsedAttentionItem): number {
-  switch (item.phase) {
-    case "needs_you": return 0;
-    case "failed":
-    case "checks_failing":
-    case "changes_requested": return 1;
-    case "review_requested":
-    case "merge_ready":
-    case "blocked": return 2;
-    case "starting":
-    case "running": return 3;
-    case "stale":
-    case "open": return 4;
-    case "completed":
-    case "merged": return 5;
-    default: return 6;
-  }
-}
-
-function activityRun(item: ParsedAttentionItem): Record<string, unknown> | null {
-  if (item.kind !== "agent" || !isRecord(item.destination)) return null;
-  const sessionId = requiredString(item.destination.sessionId);
-  if (!sessionId) return null;
-  const actions = Array.isArray(item.actions) ? item.actions.filter(isRecord) : [];
-  const approval = actions.some((action) => action.kind === "approve");
-  const phase = item.phase === "needs_you" || item.phase === "blocked"
-    ? approval ? "waiting_for_approval" : "waiting_for_input"
-    : item.phase;
-  return {
-    id: sessionId,
-    accountMachineKey: requiredString(item.machine.accountMachineKey, 128),
-    title: boundedText(item.title, MAX_TITLE_LENGTH) ?? "Agent run",
-    phase,
-    model: boundedText(item.model, 120),
-    lane: boundedText(item.laneName, 160),
-    detail: boundedText(item.preview, MAX_PREVIEW_LENGTH),
-  };
-}
-
-function activityPullRequest(item: ParsedAttentionItem): Record<string, unknown> | null {
-  if (item.kind !== "pull_request" || !isRecord(item.destination)) return null;
-  const number = Number(item.destination.number);
-  if (!Number.isSafeInteger(number) || number <= 0) return null;
-  const phase = item.phase === "open" ? "opened" : item.phase;
-  return {
-    id: item.id,
-    accountMachineKey: requiredString(item.machine.accountMachineKey, 128),
-    prNumber: number,
-    title: boundedText(item.title, MAX_TITLE_LENGTH) ?? `Pull request #${number}`,
-    phase,
-    lane: boundedText(item.laneName, 160),
-    repoOwner: requiredString(item.destination.repoOwner),
-    repoName: requiredString(item.destination.repoName),
-    updatedAt: Date.parse(item.updatedAt) / 1_000,
-  };
-}
-
-async function accountActivityContentState(
-  env: AttentionRelayEnv,
-  userId: string,
-): Promise<{
-  contentState: Record<string, unknown>;
-  fingerprint: string;
-  count: number;
-  focusTitle: string | null;
-}> {
-  const rows = await env.DB.prepare(`
-    select payload_json, seen_at, dismissed_at
-    from attention_items
-    where user_id = ?
-      and dismissed_at is null
-      and (expires_at is null or expires_at > ?)
-    limit 512
-  `).bind(userId, new Date().toISOString()).all<{
-    payload_json: string;
-    seen_at: string | null;
-    dismissed_at: string | null;
-  }>();
-  const items = rows.results.flatMap((row) => {
-    try {
-      const item = JSON.parse(row.payload_json) as ParsedAttentionItem;
-      if (item.phase === "closed" || item.phase === "open") return [];
-      if ((item.phase === "completed" || item.phase === "merged") && row.seen_at) return [];
-      return [item];
-    } catch {
-      return [];
-    }
-  }).sort((left, right) => {
-    const priority = activityPriority(left) - activityPriority(right);
-    if (priority !== 0) return priority;
-    return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-  });
-  const runs = items.flatMap((item) => {
-    const run = activityRun(item);
-    return run ? [run] : [];
-  }).slice(0, 3);
-  const prs = items.flatMap((item) => {
-    const pr = activityPullRequest(item);
-    return pr ? [pr] : [];
-  }).slice(0, 2);
-  const newestUpdate = items.reduce(
-    (latest, item) => Math.max(latest, Date.parse(item.updatedAt)),
-    0,
-  );
-  const activeCount = items.filter((item) =>
-    item.kind === "agent"
-    && (
-      item.phase === "starting"
-      || item.phase === "running"
-      || item.phase === "needs_you"
-      || item.phase === "blocked"
-    )).length;
-  const contentState = {
-    updatedAt: Math.floor((newestUpdate || Date.now()) / 1_000),
-    activeCount,
-    runs,
-    prs,
-  };
-  const fingerprintBuffer = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(JSON.stringify(contentState)),
-  );
-  const fingerprint = Array.from(new Uint8Array(fingerprintBuffer), (byte) =>
-    byte.toString(16).padStart(2, "0")).join("");
-  return {
-    contentState,
-    fingerprint,
-    count: runs.length + prs.length,
-    focusTitle: boundedText(items[0]?.title, MAX_TITLE_LENGTH),
-  };
-}
-
-function privacyPreservingActivityContentState(
-  contentState: Record<string, unknown>,
-): Record<string, unknown> {
-  const runs = Array.isArray(contentState.runs)
-    ? contentState.runs.filter(isRecord).map((run) => ({
-        ...run,
-        title: "Agent activity",
-        model: null,
-        lane: null,
-        detail: null,
-      }))
-    : [];
-  const prs = Array.isArray(contentState.prs)
-    ? contentState.prs.filter(isRecord).map((pr) => ({
-        ...pr,
-        title: Number.isSafeInteger(pr.prNumber)
-          ? `Pull request #${String(pr.prNumber)}`
-          : "Pull request",
-        lane: null,
-      }))
-    : [];
-  return {
-    ...contentState,
-    runs,
-    prs,
-  };
-}
-
 function notificationTitle(item: ParsedAttentionItem, hideDetails: boolean): string {
   if (!hideDetails) return boundedText(item.title, MAX_TITLE_LENGTH) ?? "ADE needs you";
   return item.kind === "pull_request" ? "ADE pull request update" : "ADE agent update";
 }
 
-async function claimAccountLiveActivityStart(
-  env: AttentionRelayEnv,
-  userId: string,
-  deviceId: string,
-  activityId: string,
-  generation: string,
-): Promise<string | null> {
-  // `started = 0` is a short-lived lease: one heartbeat owns the remote start
-  // while other concurrent heartbeats skip it. The unique fingerprint makes
-  // release/commit conditional so a stale claimant cannot clobber its successor.
-  const claim = `pending:${crypto.randomUUID()}`;
-  const now = new Date().toISOString();
-  const staleBefore = new Date(
-    Date.now() - LIVE_ACTIVITY_START_CLAIM_TTL_MS,
-  ).toISOString();
-  const row = await env.DB.prepare(`
-    insert into attention_activity_state(
-      user_id, device_id, activity_id, started, fingerprint, updated_at
-    )
-    select ?, ?, ?, 0, ?, ?
-    where exists (
-      select 1
-      from attention_devices
-      where user_id = ? and device_id = ? and generation = ?
-    )
-    on conflict(user_id, device_id, activity_id) do update set
-      started = 0,
-      fingerprint = excluded.fingerprint,
-      updated_at = excluded.updated_at
-    where attention_activity_state.started = 0
-      and attention_activity_state.updated_at <= ?
-    returning fingerprint
-  `).bind(
-    userId,
-    deviceId,
-    activityId,
-    claim,
-    now,
-    userId,
-    deviceId,
-    generation,
-    staleBefore,
-  ).first<{ fingerprint: string }>();
-  return row?.fingerprint === claim ? claim : null;
-}
-
-async function releaseAccountLiveActivityStart(
-  env: AttentionRelayEnv,
-  userId: string,
-  deviceId: string,
-  activityId: string,
-  claim: string,
-  generation: string,
-): Promise<void> {
-  await env.DB
-    .prepare(`
-      delete from attention_activity_state
-      where user_id = ? and device_id = ? and activity_id = ?
-        and started = 0 and fingerprint = ?
-        and exists (
-          select 1
-          from attention_devices
-          where user_id = ? and device_id = ? and generation = ?
-        )
-    `)
-    .bind(
-      userId,
-      deviceId,
-      activityId,
-      claim,
-      userId,
-      deviceId,
-      generation,
-    )
-    .run();
-}
-
-async function deliverAccountLiveActivity(
-  env: AttentionRelayEnv,
-  userId: string,
-): Promise<void> {
-  const config = apnsConfig(env);
-  if (!config) return;
-  const activityId = "agent-runs";
-  const [{ contentState, fingerprint, count, focusTitle }, devicesResult, preferencesRow] =
-    await Promise.all([
-      accountActivityContentState(env, userId),
-      env.DB.prepare(`
-        select device.device_id, device.apns_token, device.push_to_start_token,
-          device.bundle_id, device.aps_environment, device.preferences_json,
-          device.generation, ownership.ownership_epoch
-        from attention_devices as device
-        join attention_device_ownership as ownership
-          on ownership.device_id = device.device_id
-          and ownership.user_id = device.user_id
-          and ownership.active = 1
-        where device.user_id = ? and device.lease_expires_at > ?
-      `).bind(userId, new Date().toISOString()).all<OwnedAttentionDeviceRow>(),
-      env.DB
-        .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
-        .bind(userId)
-        .first<{ payload_json: string }>(),
-    ]);
-  const preferences = readPreferences(preferencesRow?.payload_json);
-  const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
-  const nowSeconds = Math.floor(Date.now() / 1_000);
-
-  for (const device of devicesResult.results) {
-    const ownershipEpoch = Number(device.ownership_epoch);
-    // Account-wide ActivityKit delivery fails closed unless the current
-    // registered device row is still owned by this exact account epoch.
-    if (!Number.isSafeInteger(ownershipEpoch) || ownershipEpoch <= 0) continue;
-    const override = resolveActivityDevicePreferences(device, preferences);
-    const state = await env.DB.prepare(`
-      select started, fingerprint
-      from attention_activity_state
-      where user_id = ? and device_id = ? and activity_id = ?
-      limit 1
-    `).bind(userId, device.device_id, activityId).first<{
-      started: number;
-      fingerprint: string | null;
-    }>();
-    const started = state?.started === 1;
-    const liveActivitiesEnabled = preferenceBoolean(
-      override,
-      accountPreferences,
-      "liveActivitiesEnabled",
-      true,
-    );
-    const hideDetails = preferenceBoolean(
-      override,
-      accountPreferences,
-      "hideDetails",
-      false,
-    );
-    const deviceCount = liveActivitiesEnabled ? count : 0;
-    const visibleContentState = liveActivitiesEnabled
-      ? hideDetails
-        ? privacyPreservingActivityContentState(contentState)
-        : contentState
-      : {
-          updatedAt: nowSeconds,
-          activeCount: 0,
-          runs: [],
-          prs: [],
-        };
-    const deviceContentState = {
-      ...visibleContentState,
-      ownershipEpoch,
-    };
-    const deviceFingerprint =
-      `${fingerprint}:${hideDetails ? "private" : "public"}:owner:${ownershipEpoch}`;
-    if (deviceCount === 0 && !started) continue;
-    if (deviceCount > 0 && started && state?.fingerprint === deviceFingerprint) continue;
-
-    let event: "start" | "update" | "end";
-    let deviceToken: string | null;
-    if (deviceCount === 0) {
-      event = "end";
-      const token = await env.DB
-        .prepare("select token from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ? limit 1")
-        .bind(userId, device.device_id, activityId)
-        .first<{ token: string }>();
-      deviceToken = token?.token ?? null;
-    } else if (!started) {
-      event = "start";
-      deviceToken = device.push_to_start_token;
-    } else {
-      event = "update";
-      const token = await env.DB
-        .prepare("select token from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ? limit 1")
-        .bind(userId, device.device_id, activityId)
-        .first<{ token: string }>();
-      deviceToken = token?.token ?? null;
-    }
-    if (!deviceToken) {
-      if (event === "end") {
-        await env.DB
-          .prepare(`
-            delete from attention_activity_state
-            where user_id = ? and device_id = ? and activity_id = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `)
-          .bind(
-            userId,
-            device.device_id,
-            activityId,
-            userId,
-            device.device_id,
-            device.generation,
-          )
-          .run();
-      }
-      continue;
-    }
-    const startClaim = event === "start"
-      ? await claimAccountLiveActivityStart(
-          env,
-          userId,
-          device.device_id,
-          activityId,
-          device.generation,
-        )
-      : null;
-    if (event === "start" && !startClaim) continue;
-
-    const aps: Record<string, unknown> = {
-      timestamp: nowSeconds,
-      event,
-      "content-state": deviceContentState,
-      "relevance-score": deviceCount > 0 ? 0.9 : 0,
-    };
-    if (event !== "end") aps["stale-date"] = nowSeconds + 10 * 60;
-    if (event === "start") {
-      aps["input-push-token"] = 1;
-      aps["attributes-type"] = "ADEAgentRunsAttributes";
-      aps.attributes = {
-        machineName: "All machines",
-        accountWide: true,
-        ownershipEpoch,
-      };
-      aps.alert = {
-        title: hideDetails
-          ? "ADE activity started"
-          : deviceCount === 1
-          ? focusTitle ?? "ADE activity started"
-          : `${deviceCount} ADE items active`,
-        body: "Across your signed-in machines",
-      };
-    }
-    if (event === "end") aps["dismissal-date"] = nowSeconds + 60;
-    let result: ApnsSendResult;
-    try {
-      result = await sendApnsPush(config, {
-        environment: device.aps_environment as ApnsEnvironment,
-        deviceToken,
-        topic: `${device.bundle_id}.push-type.liveactivity`,
-        pushType: "liveactivity",
-        priority: 10,
-        expiration: nowSeconds + 24 * 60 * 60,
-        collapseId: `attention:${activityId}`,
-        payload: { aps },
-      });
-    } catch (error) {
-      if (startClaim) {
-        await releaseAccountLiveActivityStart(
-          env,
-          userId,
-          device.device_id,
-          activityId,
-          startClaim,
-          device.generation,
-        );
-      }
-      logAttentionDeliveryError("live_activity", device.device_id, error);
-      continue;
-    }
-    if (result.ok) {
-      if (event === "end") {
-        await env.DB.batch([
-          env.DB.prepare(`
-            delete from attention_activity_state
-            where user_id = ? and device_id = ? and activity_id = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `).bind(
-            userId,
-            device.device_id,
-            activityId,
-            userId,
-            device.device_id,
-            device.generation,
-          ),
-          env.DB.prepare(`
-            delete from attention_activity_tokens
-            where user_id = ? and device_id = ? and activity_id = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `).bind(
-            userId,
-            device.device_id,
-            activityId,
-            userId,
-            device.device_id,
-            device.generation,
-          ),
-        ]);
-      } else if (event === "start" && startClaim) {
-        await env.DB
-          .prepare(`
-            update attention_activity_state
-            set started = 1, fingerprint = ?, updated_at = ?
-            where user_id = ? and device_id = ? and activity_id = ?
-              and started = 0 and fingerprint = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `)
-          .bind(
-            deviceFingerprint,
-            new Date().toISOString(),
-            userId,
-            device.device_id,
-            activityId,
-            startClaim,
-            userId,
-            device.device_id,
-            device.generation,
-          )
-          .run();
-      } else {
-        await env.DB.prepare(`
-          insert into attention_activity_state(
-            user_id, device_id, activity_id, started, fingerprint, updated_at
-          )
-          select ?, ?, ?, 1, ?, ?
-          where exists (
-            select 1
-            from attention_devices
-            where user_id = ? and device_id = ? and generation = ?
-          )
-          on conflict(user_id, device_id, activity_id) do update set
-            started = 1,
-            fingerprint = excluded.fingerprint,
-            updated_at = excluded.updated_at
-        `).bind(
-          userId,
-          device.device_id,
-          activityId,
-          deviceFingerprint,
-          new Date().toISOString(),
-          userId,
-          device.device_id,
-          device.generation,
-        ).run();
-      }
-    } else {
-      if (startClaim) {
-        await releaseAccountLiveActivityStart(
-          env,
-          userId,
-          device.device_id,
-          activityId,
-          startClaim,
-          device.generation,
-        );
-      }
-      if (result.tokenInvalid && event === "start") {
-        await env.DB
-          .prepare(`
-            update attention_devices
-            set push_to_start_token = null
-            where user_id = ? and device_id = ? and generation = ?
-          `)
-          .bind(userId, device.device_id, device.generation)
-          .run();
-      } else if (result.tokenInvalid) {
-        await env.DB.batch([
-          env.DB.prepare(`
-            delete from attention_activity_tokens
-            where user_id = ? and device_id = ? and activity_id = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `).bind(
-            userId,
-            device.device_id,
-            activityId,
-            userId,
-            device.device_id,
-            device.generation,
-          ),
-          env.DB.prepare(`
-            delete from attention_activity_state
-            where user_id = ? and device_id = ? and activity_id = ?
-              and exists (
-                select 1
-                from attention_devices
-                where user_id = ? and device_id = ? and generation = ?
-              )
-          `).bind(
-            userId,
-            device.device_id,
-            activityId,
-            userId,
-            device.device_id,
-            device.generation,
-          ),
-        ]);
-      }
-    }
+/** Length-independent comparison so a wrong secret leaks no timing signal. */
+function secretsMatch(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
   }
+  return difference === 0;
+}
+
+/**
+ * Prove a request came from the account-directory worker, not merely from
+ * something holding a valid account token.
+ *
+ * The revocation design (migrations 0004/0006) rests on one fact: A REMOVED
+ * MACHINE KEEPS A VALID ACCOUNT TOKEN until the user signs it out. Every other
+ * account route is safe under that assumption because a user token can only
+ * ever act on the user's own data. The re-pair route is not: it CLEARS a
+ * revocation, so a bearer token is exactly the credential the attacker already
+ * has. Without this gate a removed, stolen, or sold machine POSTs its own
+ * `/pairing`, un-revokes itself, and resumes publishing agent titles and
+ * previews into the account feed — while the directory roster row stays deleted
+ * so the user never sees it listed.
+ *
+ * A shared secret header is the only provenance the relay can actually verify.
+ * A Cloudflare service binding leaves no attestable marker on the inbound
+ * request (nothing distinguishes it from a public-edge call), so the binding is
+ * a transport choice on the directory side; the directory sends this header
+ * over either transport. Unset secret fails closed with 503, never open.
+ */
+function assertDirectoryProvenance(
+  request: Request,
+  env: AttentionRelayEnv,
+): { ok: true } | { response: Response } {
+  const expected = env.DIRECTORY_AUTH_SECRET?.trim();
+  if (!expected) {
+    return {
+      response: json({
+        ok: false,
+        error: "directory authentication unavailable",
+        code: "directory_auth_unavailable",
+        recovery: "DIRECTORY_AUTH_SECRET must be configured on the relay by the ADE service owner.",
+      }, { status: 503 }),
+    };
+  }
+  const presented = request.headers.get("x-ade-directory-auth")?.trim();
+  if (!presented || !secretsMatch(presented, expected)) {
+    return {
+      response: json({
+        ok: false,
+        error: "directory provenance required",
+        code: "directory_auth_required",
+        recovery: "Pair this machine from ADE's account settings; a machine cannot restore its own pairing.",
+      }, { status: 403 }),
+    };
+  }
+  return { ok: true };
 }
 
 async function authorizedUser(
@@ -1866,6 +1424,11 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     ? fingerprint
     : requiredString(value.alertFingerprint);
   const activityTier = value.activityTier == null ? undefined : value.activityTier;
+  // Deliberately lenient rather than rejecting: this is an additive field a
+  // newer publisher may widen. Anything that is not the single known literal is
+  // treated as absent, which degrades to the phase-derived group instead of
+  // dropping the whole item.
+  const chatActivityMode = value.chatActivityMode === "planning" ? "planning" : undefined;
   const kind = value.kind;
   const eventKind = requiredString(value.eventKind, 64);
   const phase = requiredString(value.phase, 64);
@@ -1932,6 +1495,11 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   const rootPath = value.project.rootPath == null
     ? null
     : boundedText(value.project.rootPath, 1_000);
+  // Absent is normal (older publisher); present-but-unusable is dropped rather
+  // than rejecting the item, because the reader already falls back to rootPath.
+  const canonicalId = value.project.canonicalId == null
+    ? null
+    : requiredString(value.project.canonicalId);
   if (!projectId || !projectName || (value.project.rootPath != null && !rootPath)) return null;
 
   let destination: Record<string, unknown>;
@@ -2090,6 +1658,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     contentFingerprint,
     alertFingerprint,
     ...(activityTier ? { activityTier } : {}),
+    ...(chatActivityMode ? { chatActivityMode } : {}),
     kind,
     eventKind,
     phase,
@@ -2108,7 +1677,11 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     updatedAt,
     occurredAt,
     statusSince,
-    expiresAt: activityTier === "idle" ? null : expiresAt,
+    // Idle roster rows used to have their expiry stripped here, which is how a
+    // machine's ambient rows outlived the machine: nothing but that machine's
+    // own reconcile could ever remove them. Honor whatever lifetime the
+    // publisher stamps — `null` still means "until reconciled".
+    expiresAt,
     seenAt: null,
     dismissedAt: null,
     machine: {
@@ -2121,6 +1694,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     },
     project: {
       projectId,
+      canonicalId,
       name: projectName,
       rootPath,
     },
@@ -2354,6 +1928,64 @@ async function linkMachineToAccount(
     .bind(machineKey)
     .first<{ user_id: string; legacy_devices_imported_at: string | null }>();
   const freshOwnership = !previous || previous.user_id !== userId;
+
+  // WHO OWNED THIS KEY BEFORE THIS PUBLISH?
+  //
+  // The link row answers it while the machine is still on an account, but the
+  // case that matters here is the one where the link is already gone:
+  // `purgeAccountMachineActivity` deletes it as part of an account removal. It
+  // leaves `machines.account_user_id` — the legacy claim `linkMachineToAccount`
+  // maintains — untouched, so that is the surviving record of the prior owner.
+  const priorClaim = previous
+    ? null
+    : await env.DB
+      .prepare("select account_user_id from machines where machine_key = ? limit 1")
+      .bind(machineKey)
+      .first<{ account_user_id: string | null }>();
+  const previousOwnerUserId = previous?.user_id ?? priorClaim?.account_user_id ?? null;
+  // A COMPLETED OWNERSHIP TRANSFER IS THE DELIBERATE RE-PAIR.
+  //
+  // `machineKeyRevokedAt` blocks a machine key revoked on ANY account (see its
+  // note: that is what keeps a sold machine from pushing to the previous
+  // owner's phone), but `handleAccountMachinePairingRestore` only ever clears
+  // the CURRENT account's row. Machine keys are per-install and never rotate,
+  // so without a clear here a machine removed from account A and then signed
+  // into account B registers fine, takes ownership, and is still terminal-403'd
+  // on publish/token-upsert by A's leftover row — forever, and only for alerts
+  // and Live Activities, while protocol-2 Activity (which uses the
+  // account-scoped check) keeps working. The directory cannot repair it either:
+  // it looks for a `(B, machine)` revocation and finds none.
+  //
+  // EVERY prior owner's row goes, not just the most recent. `machines.account_
+  // user_id` records only the LAST linker, so scoping the clear to it survives
+  // exactly one hop: a key that goes A → C → B leaves A's row behind and the
+  // brick is back. And a revocation written by an account that is NOT the one
+  // this key is currently publishing under is stale by construction — it says
+  // "that account de-authorized this machine", which is already true and is
+  // enforced by the fact that the machine cannot publish to that account.
+  //
+  // Clearing them is only safe because the legacy delivery rows go in the SAME
+  // atomic batch: the machine loses every phone the previous owners reached
+  // through it at the exact moment it stops being blocked, so there is no
+  // window in which a cleared revocation resurrects a channel to an account
+  // that no longer owns the machine.
+  const staleRevocations = await env.DB
+    .prepare(`
+      select user_id
+      from attention_revoked_machines
+      where machine_key = ? and user_id <> ?
+    `)
+    .bind(machineKey, userId)
+    .all<{ user_id: string }>();
+  const ownershipChanged = previousOwnerUserId != null && previousOwnerUserId !== userId;
+  if (ownershipChanged || staleRevocations.results.length > 0) {
+    await env.DB.batch([
+      ...legacyMachineDeliveryPurgeStatements(env, machineKey),
+      env.DB
+        .prepare("delete from attention_revoked_machines where machine_key = ? and user_id <> ?")
+        .bind(machineKey, userId),
+    ]);
+  }
   if (previous?.user_id && previous.user_id !== userId) {
     const previousItems = await env.DB
       .prepare(`
@@ -2633,14 +2265,60 @@ async function activityPublishAcknowledgments(
   return acknowledgments;
 }
 
+/**
+ * A machine key the caller PROVED it holds, by signing the request with that
+ * machine's relay secret (`assertMachineAuthorized`). Deliberately not just a
+ * `string`: the point is that the value cannot be read off the request path.
+ */
+export type VerifiedMachineIdentity = {
+  machineKey: string;
+};
+
 export async function handleAttentionMachinePublish(
   request: Request,
   env: AttentionRelayEnv,
   machineKey: string,
   body: ArrayBuffer,
+  verifiedMachine: VerifiedMachineIdentity,
 ): Promise<Response> {
+  // THE PATH `machineKey` IS AN ASSERTION; THIS IS THE PROOF.
+  //
+  // The account bearer token says who the caller is, never which machine they
+  // are speaking for, and machine keys are not secret — they ride published
+  // items as `accountMachineKey` and appear in deeplink query strings. A publish
+  // that reached `linkMachineToAccount` for an arbitrary key would let any
+  // signed-in account write itself a `(caller, victimKey)` link row, which is
+  // the first piece of evidence `accountKnowsMachine` accepts on the removal
+  // route — a self-minted licence to terminal-403 a stranger's machine.
+  //
+  // `assertMachineAuthorized` (the HMAC signature the legacy machine routes
+  // already require) is what actually binds the key, and the machine route
+  // hands its result in here. Re-asserting it locally keeps the invariant a
+  // property of this handler instead of a property of one caller: any future
+  // route reaching this function has to produce the same proof.
+  if (verifiedMachine.machineKey !== machineKey) {
+    return json({
+      ok: false,
+      error: "machine key does not match the signed machine",
+      code: "machine_key_unbound",
+    }, { status: 403 });
+  }
   const account = await authorizedUser(request, env);
   if ("response" in account) return account.response;
+  // The machine key is taken from the request path and a removed machine keeps
+  // a valid account token until it signs out, so membership has to be checked
+  // here: without it a de-authorized install republishes itself (and relinks
+  // through `linkMachineToAccount`) on its next 30 s heartbeat.
+  const revokedAt = await accountMachineRevokedAt(env, account.userId, machineKey);
+  if (revokedAt) {
+    return json({
+      ok: false,
+      error: "machine removed from account",
+      code: "machine_revoked",
+      revokedAt,
+      recovery: "This machine was removed from the ADE account. Pair it again to publish activity.",
+    }, { status: 403 });
+  }
   if (body.byteLength > MAX_BODY_BYTES) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
@@ -3017,31 +2695,58 @@ async function handleAcknowledgment(
   if (!seenAt || dismissedAt === undefined) {
     return json({ ok: false, error: "invalid timestamp" }, { status: 400 });
   }
-  const hasSourceRevisions = Object.prototype.hasOwnProperty.call(
-    payload,
-    "sourceRevisions",
-  );
-  if (hasSourceRevisions && !isRecord(payload.sourceRevisions)) {
-    return json({ ok: false, error: "invalid source revisions" }, { status: 400 });
+  // `sourceRevisions` is accepted and ignored. Clients still send it, and the
+  // revision fence it fed was deliberately removed (see the comment on the
+  // update statement below), so validating it could only ever produce a 400 for
+  // a field with no effect — a client one revision behind on a running agent is
+  // the NORMAL case, not an error. No shape check either: there is nothing
+  // downstream to protect.
+  //
+  // `alertFingerprints` is the fence that replaced it, and it IS validated,
+  // because unlike a revision it changes what the statement does. It answers
+  // "acknowledge this item only if it is still the alert I rendered", which is
+  // the one lost update that can actually happen: a needs-you row that flipped
+  // to a NEW question between the client's render and its tap must not arrive
+  // pre-dismissed. Deliberately sparse — see `fencedAlertFingerprint` below.
+  const rawAlertFingerprints = payload.alertFingerprints;
+  const hasAlertFingerprints = rawAlertFingerprints !== undefined
+    && rawAlertFingerprints !== null;
+  if (hasAlertFingerprints && !isRecord(rawAlertFingerprints)) {
+    return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
   }
-  const sourceRevisions = hasSourceRevisions
-    ? payload.sourceRevisions as Record<string, unknown>
-    : {};
-  if (
-    hasSourceRevisions
-    && (
-      Object.keys(sourceRevisions).length > 64
-      || Object.keys(sourceRevisions).some((itemId) => !(itemIds as string[]).includes(itemId))
-      || (itemIds as string[]).some((itemId) => {
-        const revision = sourceRevisions[itemId];
-        return typeof revision !== "number"
-          || !Number.isSafeInteger(revision)
-          || revision < 0;
-      })
-    )
-  ) {
-    return json({ ok: false, error: "invalid source revisions" }, { status: 400 });
+  const alertFingerprints = new Map<string, string>();
+  if (hasAlertFingerprints) {
+    const quoted = rawAlertFingerprints as Record<string, unknown>;
+    const batch = new Set(itemIds as string[]);
+    for (const [itemId, value] of Object.entries(quoted)) {
+      // Out-of-batch keys are a caller bug, not a fence: the client drops them
+      // before sending, so their presence means the two sides disagree about
+      // what is being acknowledged. Say so rather than silently ignoring them.
+      if (!batch.has(itemId)) {
+        return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
+      }
+      if (typeof value !== "string") {
+        return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
+      }
+      const normalized = value.trim();
+      // 1024 matches the notch snapshot parser's bound on the same field.
+      if (!normalized || normalized.length > 1024) {
+        return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
+      }
+      alertFingerprints.set(itemId, normalized);
+    }
   }
+  /**
+   * The fence for one item, or null for "apply unfenced".
+   *
+   * ABSENCE IS NOT A MISMATCH. The map is optional and sparse: a legacy
+   * desktop, mobile, or TUI caller sends nothing, and even a current caller
+   * omits items it never rendered a fingerprint for. Treating an absent entry
+   * as a failed fence would break "Clear all" for every one of them, which is
+   * the exact regression the removed revision fence caused.
+   */
+  const fencedAlertFingerprint = (itemId: string): string | null =>
+    alertFingerprints.get(itemId) ?? null;
   if (itemIds.length === 0) {
     const current = await env.DB
       .prepare("select revision from attention_revisions where user_id = ? limit 1")
@@ -3055,8 +2760,23 @@ async function handleAcknowledgment(
       stale: [],
     });
   }
-  const statements = (itemIds as string[]).map((itemId) =>
-    env.DB.prepare(`
+  // Acknowledgments are keyed by item id alone. An item's `revision` is the raw
+  // epoch-ms of its last source activity, so a running agent outruns any client
+  // that read it a poll ago — fencing on `source_revision <= ?` rejected the
+  // normal case and broke every dismiss (including "Clear all"). seen/dismissed
+  // are monotonic and idempotent (the timestamp guards below never move a mark
+  // backwards), so there is no lost update to protect. The only thing revision
+  // still guards is revival: an acknowledgment must never bring back a row a
+  // sealed tombstone already removed, which the tombstone predicate enforces.
+  // If the item's alert identity changes after an ack, the next publish resets
+  // seen/dismissed through the alert-fingerprint branch of the item upsert, so
+  // a racing acknowledgment cannot swallow a genuinely new alert.
+  const statements = (itemIds as string[]).map((itemId) => {
+    const fence = fencedAlertFingerprint(itemId);
+    // A fenced item whose stored identity moved on simply matches no row, so it
+    // falls out of `applied` and into `stale` through the existing per-item
+    // outcome check. No new response field, no new status code.
+    return env.DB.prepare(`
       update attention_items
       set seen_at = case
           when seen_at is null or seen_at > ? then ?
@@ -3073,7 +2793,15 @@ async function handleAcknowledgment(
           where user_id = ?
         )
       where user_id = ? and item_id = ?
-        ${hasSourceRevisions ? "and source_revision <= ?" : ""}
+        ${fence === null ? "" : "and alert_fingerprint = ?"}
+        and not exists (
+          select 1
+          from attention_tombstones
+          where user_id = attention_items.user_id
+            and item_id = attention_items.item_id
+            and revivable != 1
+            and source_revision >= attention_items.source_revision
+        )
       returning item_id
     `).bind(
       seenAt,
@@ -3084,9 +2812,9 @@ async function handleAcknowledgment(
       userId,
       userId,
       itemId,
-      ...(hasSourceRevisions ? [Number(sourceRevisions[itemId])] : []),
-    ),
-  );
+      ...(fence === null ? [] : [fence]),
+    );
+  });
   const [revisionResult, ...mutationResults] = await env.DB.batch<{
     revision?: number;
     item_id?: string;
@@ -3101,6 +2829,11 @@ async function handleAcknowledgment(
   if (!Number.isSafeInteger(revision) || revision < 1) {
     throw new Error("attention acknowledgment transaction did not return a revision");
   }
+  // One batch, one revision: a bulk acknowledgment either commits for the whole
+  // set or throws above, and the per-item outcome is reported back so a caller
+  // clearing an inbox can tell which rows are simply gone. `stale` now means
+  // only that: an id this account has no live row for (never published, already
+  // swept, or sealed by a tombstone).
   const applied = (itemIds as string[]).filter(
     (_itemId, index) => mutationResults[index]?.results.length === 1,
   );
@@ -3361,6 +3094,142 @@ async function handleActivityMachinePreferences(
     preferences: result.preferences,
     updatedAt: result.updatedAt,
   });
+}
+
+/**
+ * Did this account hold this machine? Any surface the machine touched counts:
+ * its roster link, an item it published, an install it seeded, or the legacy
+ * claim row `linkMachineToAccount` maintains. A legitimate removal — of a
+ * machine the account could see well enough to click "remove" on — always
+ * satisfies at least one of them.
+ *
+ * None of that evidence is writable by the account asking: every row is created
+ * by a publish, and `handleAttentionMachinePublish` will only accept a machine
+ * key the caller proved with that machine's relay secret
+ * (`VerifiedMachineIdentity`). Without that binding this guard would read as
+ * enforcement while being self-minted — name a stranger's key, publish an empty
+ * delta to seed a link row, then "remove" it and terminal-403 their machine
+ * through `machineKeyRevokedAt`'s any-account block.
+ *
+ * The `not exists` clause is the other half: evidence is HISTORICAL, and a key
+ * that has since moved to another account must not still be revocable by the
+ * account it left. Otherwise the previous owner can brick the new owner's
+ * machine on the legacy routes at any time.
+ */
+async function accountKnowsMachine(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<boolean> {
+  const row = await env.DB.prepare(`
+    select 1 as known
+    where not exists (
+        select 1 from attention_machine_links
+         where machine_key = ? and user_id <> ?
+      )
+      and (
+        exists (
+          select 1 from attention_machine_links
+           where user_id = ? and machine_key = ?
+        )
+        or exists (
+          select 1 from attention_items
+           where user_id = ? and machine_key = ?
+        )
+        or exists (
+          select 1 from attention_devices
+           where user_id = ? and source_machine_key = ?
+        )
+        or exists (
+          select 1 from machines
+           where machine_key = ? and account_user_id = ?
+        )
+      )
+  `).bind(
+    machineKey,
+    userId,
+    userId,
+    machineKey,
+    userId,
+    machineKey,
+    userId,
+    machineKey,
+    machineKey,
+    userId,
+  ).first<{ known: number }>();
+  return row != null;
+}
+
+/**
+ * Account-directory hook for "remove this machine from my account". The
+ * directory owns the roster; the relay owns the feed, and the two live in
+ * different workers over different databases, so removal has to be forwarded
+ * here explicitly or the removed machine's rows stay in the account forever
+ * (idle rows carry no expiry) and it keeps publishing new ones.
+ */
+async function handleAccountMachineRemoval(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<Response> {
+  if (!requiredString(machineKey, 128)) {
+    return json({ ok: false, error: "invalid machine key" }, { status: 400 });
+  }
+  const now = new Date().toISOString();
+  // Revoke only a machine this account currently holds. `machineKey` is a path
+  // parameter with no ownership check of its own, and machine keys are not
+  // secret — they ride published items as `accountMachineKey` and appear in
+  // deeplink query strings. Combined with `machineKeyRevokedAt`'s deliberate
+  // any-account block, an unchecked insert would let any signed-in account
+  // terminal-403 a stranger's machine by naming its key. `accountKnowsMachine`
+  // answers it from rows only a signature-bound publish can create, so a
+  // fabricated removal degrades to a no-op instead of a weapon; the purge itself
+  // is already account-scoped and harmlessly empty for a key this account never
+  // had.
+  const knownMachine = await accountKnowsMachine(env, userId, machineKey);
+  const purge = await purgeAccountMachineActivity(env, {
+    userId,
+    machineKey,
+    now,
+    revoke: knownMachine,
+  });
+  return json({
+    ok: true,
+    machineKey,
+    revision: purge.revision,
+    removedItems: purge.removedItems,
+    revokedAt: knownMachine ? now : null,
+  });
+}
+
+/**
+ * Deliberate re-pair of a previously removed machine. The directory calls this
+ * before it lets the machine register again, so the two revocation records
+ * clear in the same user action instead of leaving a machine that is on the
+ * roster but silently unable to publish.
+ *
+ * Directory provenance is mandatory here and checked BEFORE anything else: this
+ * is the one account route whose effect is to un-revoke, so the account bearer
+ * token a removed machine still holds must not be sufficient on its own. See
+ * `assertDirectoryProvenance`.
+ */
+async function handleAccountMachinePairingRestore(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<Response> {
+  const provenance = assertDirectoryProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  if (!requiredString(machineKey, 128)) {
+    return json({ ok: false, error: "invalid machine key" }, { status: 400 });
+  }
+  const revokedAt = await accountMachineRevokedAt(env, userId, machineKey);
+  await env.DB
+    .prepare("delete from attention_revoked_machines where user_id = ? and machine_key = ?")
+    .bind(userId, machineKey)
+    .run();
+  return json({ ok: true, machineKey, restored: revokedAt !== null });
 }
 
 async function deleteAttentionDeviceOwnership(
@@ -3843,6 +3712,30 @@ async function handleAuthorizedAttentionAccountRequest(
   }
   if (
     route.length === 2
+    && route[0] === "machines"
+    && request.method === "DELETE"
+  ) {
+    return await handleAccountMachineRemoval(
+      env,
+      userId,
+      decodeURIComponent(route[1] ?? ""),
+    );
+  }
+  if (
+    route.length === 3
+    && route[0] === "machines"
+    && route[2] === "pairing"
+    && request.method === "POST"
+  ) {
+    return await handleAccountMachinePairingRestore(
+      request,
+      env,
+      userId,
+      decodeURIComponent(route[1] ?? ""),
+    );
+  }
+  if (
+    route.length === 2
     && route[0] === "devices"
     && (request.method === "PUT" || request.method === "DELETE")
   ) {
@@ -3887,6 +3780,114 @@ export async function handleAttentionAccountRequest(
   );
 }
 
+/**
+ * Retire items whose publisher gave them a finite lifetime. Dropping the rows
+ * alone is not enough: protocol 2 deltas never imply deletion, so a client that
+ * already holds an expired row would keep it forever once the row stops
+ * appearing in snapshot pages. Each account's expired rows leave as tombstones
+ * inside one revision so every surface converges on the removal.
+ */
+async function sweepExpiredAttentionItems(
+  env: AttentionRelayEnv,
+  now: string,
+): Promise<void> {
+  const accounts = await env.DB.prepare(`
+    select distinct user_id
+    from attention_items
+    where expires_at is not null and expires_at <= ?
+    limit ?
+  `).bind(now, MAX_SWEPT_ACCOUNTS_PER_PRUNE).all<{ user_id: string }>();
+  for (const account of accounts.results) {
+    await commitAttentionRevision(env, account.user_id, [
+      env.DB.prepare(`
+        insert into attention_tombstones(
+          user_id, item_id, source_revision, account_revision, revivable, deleted_at
+        )
+        select user_id, item_id, source_revision,
+          (select revision from attention_revisions where user_id = ?), 0, ?
+        from attention_items
+        where user_id = ? and expires_at is not null and expires_at <= ?
+        on conflict(user_id, item_id) do update set
+          source_revision = excluded.source_revision,
+          account_revision = excluded.account_revision,
+          revivable = 0,
+          deleted_at = excluded.deleted_at
+        where excluded.source_revision >= attention_tombstones.source_revision
+      `).bind(account.user_id, now, account.user_id, now),
+      env.DB.prepare(`
+        delete from attention_items
+        where user_id = ? and expires_at is not null and expires_at <= ?
+      `).bind(account.user_id, now),
+    ], now);
+  }
+}
+
+/**
+ * Retire rows whose owning machine is gone. The roster-epoch sweep is scoped to
+ * one machine and only runs while that machine publishes, so rows survive both
+ * a machine-key rotation (the old key never publishes again) and a link deleted
+ * out from under them. This is the account-level counterpart: it needs no
+ * cooperation from the source machine. Staleness is read from the machine's
+ * presence when it still has a link, and from its newest item otherwise, so a
+ * machine that is merely quiet between publishes is never swept.
+ */
+async function sweepOrphanedMachineActivity(
+  env: AttentionRelayEnv,
+  now: string,
+): Promise<void> {
+  const staleCutoff = new Date(
+    Date.parse(now) - ORPHANED_MACHINE_ACTIVITY_MS,
+  ).toISOString();
+  const orphans = await env.DB.prepare(`
+    select item.user_id as user_id, item.machine_key as machine_key
+    from attention_items as item
+    left join attention_machine_links as link
+      on link.user_id = item.user_id
+      and link.machine_key = item.machine_key
+    group by item.user_id, item.machine_key
+    having coalesce(max(link.last_seen_at), max(item.updated_at)) <= ?
+    limit ?
+  `).bind(staleCutoff, MAX_SWEPT_ACCOUNTS_PER_PRUNE).all<{
+    user_id: string;
+    machine_key: string;
+  }>();
+  for (const orphan of orphans.results) {
+    // Not a revocation: the machine was never removed from the account, it just
+    // stopped reporting. If it comes back, its next publish relinks and
+    // republishes normally.
+    await purgeAccountMachineActivity(env, {
+      userId: orphan.user_id,
+      machineKey: orphan.machine_key,
+      now,
+      revoke: false,
+    });
+  }
+}
+
+/**
+ * The expensive half of Attention maintenance: CRON ONLY, never a request.
+ *
+ * Both sweeps are unbounded scans that fan out into per-account work —
+ * `sweepExpiredAttentionItems` runs up to `MAX_SWEPT_ACCOUNTS_PER_PRUNE` SERIAL
+ * `commitAttentionRevision` batches, and `sweepOrphanedMachineActivity` runs an
+ * unindexed full aggregate over `attention_items` and then calls
+ * `purgeAccountMachineActivity` → `deliverAccountLiveActivity` → an outbound
+ * APNs fetch per device for each orphan it finds. Hung off device registration
+ * and publish (as they were) a routine re-registration paid dozens of
+ * subrequests and could hit the Worker CPU/subrequest ceiling on someone else's
+ * backlog. Neither sweep is latency-sensitive: retention is measured in days.
+ */
+export async function sweepAttentionState(env: AttentionRelayEnv): Promise<void> {
+  const now = new Date().toISOString();
+  await sweepExpiredAttentionItems(env, now);
+  await sweepOrphanedMachineActivity(env, now);
+}
+
+/**
+ * The cheap half: bounded retention deletes, safe to run opportunistically from
+ * a request. Anything added here must stay a pure DELETE over an indexed
+ * predicate — per-account or per-device fan-out belongs in `sweepAttentionState`.
+ */
 export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void> {
   const now = new Date();
   const tombstoneCutoff = new Date(now.getTime() - TOMBSTONE_RETENTION_MS).toISOString();
@@ -3915,8 +3916,6 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
         delete from attention_alert_log
         where delivered_at <= ?
       `).bind(alertLogCutoff),
-      env.DB.prepare("delete from attention_items where expires_at is not null and expires_at <= ?")
-        .bind(now.toISOString()),
     ]),
     env.DB.prepare("delete from attention_tombstones where deleted_at <= ?")
       .bind(tombstoneCutoff)
@@ -3929,9 +3928,8 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
 
 /** Pure contract helpers exposed only so relay tests can cover trust boundaries. */
 export const attentionTestInternals = Object.freeze({
-  activityPullRequest,
+  accountMachineRevokedAt,
   activityPublishAcknowledgments,
-  activityRun,
   attentionAlertRoutingPayload,
   attentionFullSnapshotUnchanged,
   attentionTombstoneBlocksItem,
@@ -3948,7 +3946,7 @@ export const attentionTestInternals = Object.freeze({
   notificationTitle,
   normalizedSnapshotCursor,
   parseAttentionItem,
-  privacyPreservingActivityContentState,
+  purgeAccountMachineActivity,
   refreshActivityMachinePresence,
   resolveActivityDeliveryPreferences,
   sealCapacityTombstones,

@@ -187,6 +187,81 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("accepts the connections machine_reconnect fact with only the coarse enums", () => {
+    const harness = makeHarness();
+    // A "Reconnect this computer" click that worked. The extra keys are exactly
+    // what the repair result carries locally and must never cross the boundary.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_reconnect",
+        outcome: "completed",
+        // Deliberately low-entropy placeholders. The assertion below is that
+        // the policy strips these keys entirely, so the values carry no
+        // meaning — and a realistic-looking one only trips the secret scanner
+        // on a test that exists to prove nothing leaks.
+        machine_key: "not-a-real-machine-key",
+        machine_name: "Example MacBook",
+        account_id: "not-a-real-account-id",
+        reason: "sign in again on this computer",
+        error_text: "http 403 pairing_authentication_required",
+      },
+      projectId: null,
+      dedupeKey: "machine_reconnect:completed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "machine_reconnect",
+      outcome: "completed",
+    });
+    for (const forbidden of ["machine_key", "machine_name", "account_id", "reason", "error_text"]) {
+      expect(harness.messages[0]?.properties).not.toHaveProperty(forbidden);
+    }
+    expect(JSON.stringify(harness.messages[0])).not.toContain("MacBook");
+
+    // Second click inside the hour on the same outcome: dropped, so a
+    // click-loop cannot spend the daily budget.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "machine_reconnect", outcome: "completed" },
+      projectId: null,
+      dedupeKey: "machine_reconnect:completed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+
+    // The other coarse outcome is an allowlisted value on its own key, so a
+    // refusal is still reportable inside the same hour.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "machine_reconnect", outcome: "failed" },
+      projectId: null,
+      dedupeKey: "machine_reconnect:failed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[1]?.properties).toMatchObject({
+      feature: "connections",
+      action: "machine_reconnect",
+      outcome: "failed",
+    });
+
+    // An outcome outside the closed set is dropped rather than widening it.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "machine_reconnect", outcome: "reauth_required" },
+      projectId: null,
+      dedupeKey: "machine_reconnect:reauth_required",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[2]?.properties).not.toHaveProperty("outcome");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("accepts the chat mention_expanded fact and bounds a mention-heavy day by dedupe", () => {
     const harness = makeHarness();
     expect(harness.service.captureInternal({

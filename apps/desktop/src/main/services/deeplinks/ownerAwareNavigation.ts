@@ -6,15 +6,17 @@ import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 
 export type OwnerAwareNavigationDependencies = {
   getLocalMachineKey(): string;
-  resolveLocalProjectRoot(projectId: string): string | null;
+  resolveLocalProjectRoot(projectId: string, projectRoot: string | null): string | null;
   deliverLocal(projectRoot: string, request: AppNavigationRequest): Promise<void>;
   findRemote(
     accountMachineKey: string,
     projectId: string,
+    projectRoot: string | null,
   ): unknown | null;
   openRemote(
     accountMachineKey: string,
     projectId: string,
+    projectRoot: string | null,
   ): Promise<unknown>;
   deliverRemote(handle: unknown, request: AppNavigationRequest): Promise<void>;
 };
@@ -33,8 +35,14 @@ export function appNavigationOwnership(
     typeof target.ownership?.projectId === "string"
       ? target.ownership.projectId.trim()
       : "";
+  // Legacy links only: `projectRoot` is parsed but never minted, and it is what
+  // rescues a link whose `projectId` is the publishing machine's private uuid.
+  // Typed as unknown because ownership also arrives over IPC, where the field
+  // is whatever the sender put there.
+  const rawProjectRoot: unknown = target.ownership?.projectRoot;
+  const projectRoot = typeof rawProjectRoot === "string" ? rawProjectRoot.trim() : "";
   return accountMachineKey && projectId
-    ? { accountMachineKey, projectId }
+    ? { accountMachineKey, projectId, ...(projectRoot ? { projectRoot } : {}) }
     : null;
 }
 
@@ -49,8 +57,13 @@ export async function dispatchOwnerAwareNavigation(
   const ownership = appNavigationOwnership(request.target);
   if (!ownership) return false;
 
+  const ownedProjectRoot = ownership.projectRoot?.trim() || null;
+
   if (ownership.accountMachineKey === deps.getLocalMachineKey().trim()) {
-    const projectRoot = deps.resolveLocalProjectRoot(ownership.projectId);
+    const projectRoot = deps.resolveLocalProjectRoot(
+      ownership.projectId,
+      ownedProjectRoot,
+    );
     if (!projectRoot) {
       throw new Error(
         `Project ${ownership.projectId} is no longer available on this ADE machine.`,
@@ -60,13 +73,18 @@ export async function dispatchOwnerAwareNavigation(
     return true;
   }
 
+  // Reuse before open: a window already showing this project is the answer, and
+  // opening would otherwise take a second window (or, historically, rebind the
+  // one the user was working in).
   const existing = deps.findRemote(
     ownership.accountMachineKey,
     ownership.projectId,
+    ownedProjectRoot,
   );
   const handle = existing ?? await deps.openRemote(
     ownership.accountMachineKey,
     ownership.projectId,
+    ownedProjectRoot,
   );
   await deps.deliverRemote(handle, request);
   return true;

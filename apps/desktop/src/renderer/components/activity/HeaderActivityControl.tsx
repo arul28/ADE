@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BellRinging,
   BellSimpleSlash,
+  CaretDown,
   WarningCircle,
   WifiHigh,
   WifiSlash,
@@ -31,14 +32,21 @@ import {
 } from "../../state/activityStore";
 import { useDialogFocusTrap } from "../app/HeaderSheet";
 import { cn } from "../ui/cn";
+import { ActivityAllClear } from "./ActivityAllClear";
 import { ActivityCard } from "./ActivityCard";
+import { ActivitySectionHeader } from "./ActivitySectionHeader";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import {
+  ACTIVITY_POPOVER_SECTION_IDS,
   ACTIVITY_SECTION_TONE,
+  activityFooterLine,
   activityTriggerLabel,
   summarizeActivity,
+  type ActivityOfflineMachine,
   type ActivitySection,
 } from "./activityPriority";
+import { useActivitySectionCollapse } from "./activitySectionCollapse";
+import { useAllClearBeat } from "./useAllClearBeat";
 import { refreshActivitySnapshot } from "./useActivitySync";
 import "./HeaderActivityControl.css";
 
@@ -56,48 +64,119 @@ function navigationErrorMessage(error: unknown): string {
   return "ADE couldn’t open the exact machine and project for this item.";
 }
 
-function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
 function ActivityHeaderSection({
   section,
   hideDetails,
+  collapsed,
+  onToggleCollapsed,
   onOpenItem,
+  onDismissItem,
   onOpenPane,
 }: {
   section: ActivitySection;
   hideDetails: boolean;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onOpenItem: (item: AttentionItem) => void;
+  onDismissItem: (item: AttentionItem) => void;
   onOpenPane: () => void;
 }) {
   const shown = section.items.slice(0, MAX_ROWS_PER_SECTION);
   const overflow = section.items.length - shown.length;
+  const regionId = `activity-hdr-section-${section.id}`;
   return (
     <section
-      data-activity-section={section.id}
       className={cn("activity-hdr-section", `activity-tone-${ACTIVITY_SECTION_TONE[section.id]}`)}
     >
-      <h3 className="activity-hdr-section-heading">
-        <span className="activity-hdr-section-dot" aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{section.label}</span>
-        <span className="activity-hdr-section-count">{section.items.length}</span>
-      </h3>
-      {shown.map((item) => (
-        <ActivityCard
-          key={item.id}
-          item={item}
-          hideDetails={hideDetails}
-          onOpen={onOpenItem}
-        />
-      ))}
-      {overflow > 0 ? (
-        <button type="button" className="activity-hdr-overflow" onClick={onOpenPane}>
-          {overflow} more
-          <ArrowRight size={11} weight="bold" />
-        </button>
-      ) : null}
+      <ActivitySectionHeader
+        variant="popover"
+        sectionId={section.id}
+        regionId={regionId}
+        label={section.label}
+        count={section.items.length}
+        group={section.id}
+        collapsed={collapsed}
+        onToggle={onToggleCollapsed}
+      />
+      <div id={regionId} className="activity-section-rows" hidden={collapsed}>
+        {collapsed ? null : (
+          <>
+            {shown.map((item) => (
+              <ActivityCard
+                key={item.id}
+                item={item}
+                hideDetails={hideDetails}
+                onOpen={onOpenItem}
+                onDismiss={onDismissItem}
+              />
+            ))}
+            {overflow > 0 ? (
+              <button type="button" className="activity-hdr-overflow" onClick={onOpenPane}>
+                {overflow} more
+                <ArrowRight size={11} weight="bold" />
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
     </section>
+  );
+}
+
+/**
+ * Which machines the last-known-state note is about, on demand. The note itself
+ * is the honest headline — some of what you are reading is remembered, not
+ * observed — but "which machines, and how long ago" is a follow-up question,
+ * and answering it unprompted would spend four lines of a dropdown on a state
+ * that is usually momentary.
+ */
+function ActivityOfflineDisclosure({
+  machines,
+  itemCount,
+}: {
+  machines: readonly ActivityOfflineMachine[];
+  itemCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="activity-hdr-note activity-hdr-offline">
+      <WifiSlash size={12} />
+      <div className="activity-hdr-offline-body">
+        <div className="activity-hdr-offline-head">
+          <span>
+            {itemCount} item{itemCount === 1 ? " is" : "s are"} last-known state
+            from an offline machine.
+          </span>
+          <button
+            type="button"
+            className="activity-hdr-offline-toggle"
+            aria-expanded={open}
+            aria-controls="activity-hdr-offline-list"
+            onClick={() => setOpen((value) => !value)}
+          >
+            {machines.length === 1 ? "1 machine" : `${machines.length} machines`}
+            <CaretDown
+              size={9}
+              weight="bold"
+              aria-hidden
+              className={cn("activity-hdr-offline-caret", open && "is-open")}
+            />
+          </button>
+        </div>
+        <ul id="activity-hdr-offline-list" className="activity-hdr-offline-list" hidden={!open}>
+          {machines.map((machine) => (
+            <li key={machine.machineKey}>
+              <span className="truncate">{machine.name}</span>
+              <span>
+                {machine.lastSeenAt
+                  ? `last seen ${relativeWhen(machine.lastSeenAt)}`
+                  : "never seen"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
 
@@ -130,6 +209,10 @@ export function HeaderActivityControl({
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   const summary = useMemo(() => summarizeActivity(itemsById, now), [itemsById, now]);
+  const collapse = useActivitySectionCollapse("popover");
+  // The beat only plays while the popover is up: a celebration nobody is
+  // looking at is a wasted one, and firing it on open would make it a greeting.
+  const allClear = useAllClearBeat(summary.needsYouCount, open);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -220,6 +303,17 @@ export function HeaderActivityControl({
     setOpen(false);
   }, []);
 
+  const dismissItem = useCallback((item: AttentionItem) => {
+    setNavigationError(null);
+    void acknowledgeActivityItem(item.id, "dismiss").catch((error: unknown) => {
+      setNavigationError(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "ADE couldn’t dismiss that item.",
+      );
+    });
+  }, []);
+
   const openPane = useCallback(() => {
     setOpen(false);
     onOpenPane();
@@ -303,12 +397,12 @@ export function HeaderActivityControl({
     && notchHealth.state !== "running"
     && notchHealth.state !== "unsupported";
 
-  const populatedSections = summary.sections.filter((section) => section.items.length > 0);
-  const machineLine = summary.machinesTotal === 0
-    ? null
-    : summary.machinesOnline === summary.machinesTotal
-      ? pluralize(summary.machinesTotal, "machine")
-      : `${summary.machinesOnline} of ${pluralize(summary.machinesTotal, "machine")} online`;
+  // The dropdown is live work only. Done is the most final and the most common
+  // state there is, and letting it in turns a glance into a scroll past
+  // yesterday's finished runs. The count below still tells the truth about it.
+  const populatedSections = summary.sections.filter((section) =>
+    section.items.length > 0 && ACTIVITY_POPOVER_SECTION_IDS.includes(section.id));
+  const footerLine = activityFooterLine(summary);
 
   return (
     <>
@@ -449,18 +543,15 @@ export function HeaderActivityControl({
                   </div>
                 ) : null}
 
-                {summary.staleMachineCount > 0 ? (
-                  <div className="activity-hdr-note">
-                    <WifiSlash size={12} />
-                    <span>
-                      {summary.staleMachineCount} item
-                      {summary.staleMachineCount === 1 ? " is" : "s are"} last-known state
-                      from an offline machine.
-                    </span>
-                  </div>
+                {summary.staleMachineCount > 0 && summary.offlineMachines.length > 0 ? (
+                  <ActivityOfflineDisclosure
+                    machines={summary.offlineMachines}
+                    itemCount={summary.staleMachineCount}
+                  />
                 ) : null}
 
                 <div className="activity-hdr-body">
+                  {allClear ? <ActivityAllClear compact /> : null}
                   {signedOutEmpty ? (
                     <div className="activity-hdr-empty">
                       <BellSimpleSlash size={22} weight="duotone" />
@@ -477,7 +568,9 @@ export function HeaderActivityControl({
                       <p>
                         {syncStatus === "error"
                           ? syncError ?? "Activity couldn’t sync, so this may be stale."
-                          : "Nothing needs you."}
+                          : summary.doneCount > 0
+                            ? "Nothing needs you. Finished work is in the full list."
+                            : "Nothing needs you."}
                       </p>
                     </div>
                   ) : (
@@ -486,18 +579,30 @@ export function HeaderActivityControl({
                         key={section.id}
                         section={section}
                         hideDetails={hideDetails}
+                        collapsed={collapse.isCollapsed(section.id)}
+                        onToggleCollapsed={() => collapse.toggle(section.id)}
                         onOpenItem={(item) => void openItem(item)}
+                        onDismissItem={dismissItem}
                         onOpenPane={openPane}
                       />
                     ))
                   )}
+                  {/* Done is hidden here, so the handoff has to be explicit:
+                      the count is the promise that nothing was thrown away. */}
+                  {populatedSections.length > 0 && summary.doneCount > 0 ? (
+                    <button
+                      type="button"
+                      className="activity-hdr-done-handoff"
+                      onClick={openPane}
+                    >
+                      {summary.doneCount} done in the full list
+                      <ArrowRight size={11} weight="bold" />
+                    </button>
+                  ) : null}
                 </div>
 
                 <footer className="activity-hdr-panel-foot">
-                  <span>
-                    {pluralize(summary.trackedCount, "session")}
-                    {machineLine ? ` · ${machineLine}` : ""}
-                  </span>
+                  <span>{footerLine}</span>
                   <button type="button" className="activity-hdr-open-all" onClick={openPane}>
                     Open all
                     <ArrowRight size={12} weight="bold" />

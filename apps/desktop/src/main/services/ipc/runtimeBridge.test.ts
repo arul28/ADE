@@ -125,6 +125,7 @@ vi.mock("../cto/linearOAuthService", () => ({
 }));
 
 import {
+  RemoteProjectNotFoundError,
   getOrCreateLocalAccountMachineIdentity,
   registerRuntimeBridge,
 } from "./runtimeBridge";
@@ -1057,6 +1058,78 @@ describe("registerRuntimeBridge", () => {
         }
       }
     });
+  });
+
+  it("opens a cross-machine Activity project whose id the runtime has never seen", async () => {
+    // The publisher stamps the owning machine's local `ade.db` uuid; the same
+    // machine's registry answers `project_<hash(rootPath)>`. Only rootPath is
+    // common to both, and without the fallback every cross-machine open threw
+    // "Remote project was not found on this runtime."
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteConnectMock.mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    remoteProjectsForTargetMock.mockResolvedValue([
+      {
+        projectId: "project_9f2c1b7a4e",
+        rootPath: "/Users/arul/Projects/ADE/",
+        displayName: "ADE",
+        gitOriginUrl: null,
+      },
+    ]);
+    const bindRemoteProject = vi.fn();
+    const bridge = registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      bindRemoteProject,
+    });
+
+    await expect(bridge.openRemoteProjectForWindow({
+      targetId: "target-1",
+      projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+      rootPath: "/Users/arul/Projects/ADE",
+      windowId: 7,
+    })).resolves.toMatchObject({
+      kind: "remote",
+      projectId: "project_9f2c1b7a4e",
+      rootPath: "/Users/arul/Projects/ADE/",
+      displayName: "ADE",
+    });
+    expect(bindRemoteProject).toHaveBeenCalledWith(7, expect.objectContaining({
+      projectId: "project_9f2c1b7a4e",
+    }));
+  });
+
+  it("still refuses a remote project that matches neither id nor root path", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteConnectMock.mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    remoteProjectsForTargetMock.mockResolvedValue([
+      {
+        projectId: "project_other",
+        rootPath: "/Users/arul/Projects/Other",
+        displayName: "Other",
+        gitOriginUrl: null,
+      },
+    ]);
+    const bridge = registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(bridge.openRemoteProjectForWindow({
+      targetId: "target-1",
+      projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+      rootPath: "/Users/arul/Projects/ADE",
+      windowId: 7,
+    })).rejects.toThrow(RemoteProjectNotFoundError);
   });
 
   it("forwards remote project runtime actions through the selected target and project", async () => {
@@ -3720,5 +3793,63 @@ describe("registerIpc sync bridge", () => {
     await ipcHandlers.get(IPC.prsAiResolutionStop)?.(eventForSender(), { sessionId });
     expect(interrupt).toHaveBeenCalledWith({ sessionId });
     expect(finalizeResolverSession).toHaveBeenCalled();
+  });
+});
+
+describe("registerIpc Activity click-through failure stage", () => {
+  const pairedTarget: RemoteRuntimeTarget = {
+    ...target,
+    pairedMachine: { hostIdentity: "host-1", machineKey: "machine-key-1" },
+  };
+
+  function openAttentionProject() {
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    return registerIpc({
+      getCtx: () => ({ adeDir: "/repo/.ade", logger }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    }).openAttentionProject({
+      machineKey: "machine-key-1",
+      projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+      rootPath: "/Users/arul/Projects/ADE",
+      machineName: "Studio Mac",
+      windowId: 7,
+    });
+  }
+
+  beforeEach(() => {
+    ipcHandlers.clear();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7 });
+    remoteRegistryListMock.mockReset().mockReturnValue([pairedTarget]);
+    remoteRegistryGetMock.mockReset().mockReturnValue(pairedTarget);
+    remoteConnectMock.mockReset();
+    remoteProjectsForTargetMock.mockReset();
+  });
+
+  it("reports the open stage when the runtime has no such project", async () => {
+    remoteConnectMock.mockResolvedValue({
+      target: pairedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    remoteProjectsForTargetMock.mockResolvedValue([]);
+
+    await expect(openAttentionProject()).rejects.toThrow(
+      "ADE connected to Studio Mac but could not open this project.",
+    );
+  });
+
+  it("reports the connect stage for a connect failure that merely mentions a remote project", async () => {
+    // The stage is chosen by error TYPE, not by grepping the sentence. This
+    // failure names "remote project" and is still a connect failure: when the
+    // regex picked the stage, wording alone handed the user the wrong recovery.
+    remoteConnectMock.mockRejectedValue(new Error("remote project catalog RPC failed"));
+
+    await expect(openAttentionProject()).rejects.toThrow(
+      "ADE could not connect to Studio Mac. Make sure ADE is running there, then try again.",
+    );
   });
 });

@@ -45,6 +45,9 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/stop", description: "Stop the active turn and clear or preserve its queue", placement: "inline", argumentHint: "[keep-queue|clear-queue]", category: "Chats" },
   { name: "/restore-queue", description: "Undo a recent Stop & clear queue", placement: "inline", argumentHint: "<recovery-id>", category: "Chats" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline", category: "Nav" },
+  // The way back from an account-side machine removal — the same repair
+  // `ade machines reconnect` and the desktop Account page run.
+  { name: "/reconnect", description: "Re-pair this computer with your ADE account and restore Activity", placement: "inline", category: "Nav" },
   { name: "/open", description: "Open this ADE context in desktop", placement: "inline", category: "Nav" },
   { name: "/quit", description: "Exit ade code", placement: "inline", category: "System" },
   { name: "/steer cancel", description: "Remove the latest staged steer message", placement: "inline", category: "Steer" },

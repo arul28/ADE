@@ -67,7 +67,12 @@ struct ActivityRow: View {
 
     private var regularContent: some View {
         HStack(alignment: .top, spacing: 11) {
-            ActivityProviderMark(slug: row.providerSlug, size: 26, pulse: row.isActive)
+            ActivityStateMark(
+                glyph: row.glyph,
+                tone: row.tone,
+                size: 26,
+                pulse: row.isActive
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -109,13 +114,7 @@ struct ActivityRow: View {
                 online: row.machineOnline,
                 lastSeenLabel: row.lastSeenLabel()
             )
-            if let model = row.modelLabel {
-                Text(model)
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(ADEColor.textMuted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            ActivityModelChip(slug: row.providerSlug, model: row.modelLabel)
             Spacer(minLength: 0)
         }
     }
@@ -125,7 +124,12 @@ struct ActivityRow: View {
     private var compactContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                ActivityProviderMark(slug: row.providerSlug, size: 18, pulse: row.isActive)
+                ActivityStateMark(
+                    glyph: row.glyph,
+                    tone: row.tone,
+                    size: 18,
+                    pulse: row.isActive
+                )
                 ActivityStatusLabel(row: row)
                 Spacer(minLength: 0)
             }
@@ -158,29 +162,30 @@ struct ActivityRow: View {
     }
 }
 
-/// Status dot + phase label + the elapsed ticker, in the tone the phase owns.
+/// Phase label + the elapsed ticker, in the tone the phase owns.
+///
+/// There is no status dot any more: the row's leading `ActivityStateMark`
+/// already carries the state in that tone, and a coloured dot next to a
+/// coloured state glyph said the same thing twice — less clearly the second
+/// time.
 struct ActivityStatusLabel: View {
     let row: ActivityRowPresentation
     /// Re-renders once a second only while a row is actually ticking.
     @State private var now = Date()
 
     var body: some View {
-        let tint = activityToneColor(row.tone)
-        HStack(spacing: 5) {
-            ActivityStatusDot(tone: row.tone, active: row.isActive)
-            Text(label)
-                .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .fixedSize()
-        }
-        .task(id: row.showsElapsed) {
-            guard row.showsElapsed else { return }
-            while !Task.isCancelled {
-                now = Date()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+        Text(label)
+            .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
+            .foregroundStyle(activityToneColor(row.tone))
+            .lineLimit(1)
+            .fixedSize()
+            .task(id: row.showsElapsed) {
+                guard row.showsElapsed else { return }
+                while !Task.isCancelled {
+                    now = Date()
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
-        }
     }
 
     private var label: String {
@@ -189,62 +194,87 @@ struct ActivityStatusLabel: View {
     }
 }
 
-struct ActivityStatusDot: View {
+/// The row's leading mark: the *state* glyph on a tone-tinted disc, pulsing
+/// while the work is live on a reachable machine.
+///
+/// This was the provider logo. A drawer of Claude sessions rendered a column of
+/// identical marks that told the reader nothing, while the fact that actually
+/// differed between the rows — which of five states each was in — was left to a
+/// small word at the far right. Provider is metadata now, and lives in the meta
+/// row beside the lane and the machine.
+struct ActivityStateMark: View {
+    let glyph: ActivityGlyph?
     let tone: ActivityTone
-    var active: Bool = false
+    let size: CGFloat
+    var pulse: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let tint = activityToneColor(tone)
+        let color = activityToneColor(tone)
         ZStack {
-            if active && !reduceMotion {
+            if pulse && !reduceMotion {
                 Circle()
-                    .fill(tint)
-                    .frame(width: 7, height: 7)
-                    .phaseAnimator([false, true]) { circle, expanded in
-                        circle
-                            .scaleEffect(expanded ? 2.1 : 1)
-                            .opacity(expanded ? 0 : 0.4)
+                    .stroke(color.opacity(0.55), lineWidth: 1)
+                    .frame(width: size, height: size)
+                    .phaseAnimator([false, true]) { ring, expanded in
+                        ring
+                            .scaleEffect(expanded ? 1.35 : 1)
+                            .opacity(expanded ? 0 : 0.7)
                     } animation: { _ in
-                        .easeOut(duration: 1.5)
+                        .easeOut(duration: 1.6)
                     }
             }
             Circle()
-                .fill(tint)
-                .frame(width: 7, height: 7)
+                .fill(color.opacity(0.16))
+                .frame(width: size, height: size)
+                .overlay {
+                    Image(systemName: glyph?.systemImage ?? "circle.fill")
+                        .font(.system(size: size * 0.46, weight: .semibold))
+                        .foregroundStyle(color)
+                }
+                .overlay(Circle().strokeBorder(color.opacity(0.32), lineWidth: 0.7))
         }
-        .frame(width: 7, height: 7)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
 }
 
-/// Provider logo on its brand-tinted disc. Falls back to the ADE mark's neutral
-/// disc when the item carries no provider.
-struct ActivityProviderMark: View {
+/// Who ran it, at meta-row scale: the provider's brand mark beside the model
+/// id. One chip rather than two, because "Claude" and "claude-opus-5" side by
+/// side spend two chips saying one thing.
+///
+/// Never the primary identity of a row — that is the state, and it lives in the
+/// `ActivityStateMark` at the leading edge.
+struct ActivityModelChip: View {
     let slug: String?
-    let size: CGFloat
-    var pulse: Bool = false
+    let model: String?
 
     var body: some View {
-        let resolved = slug ?? "ade"
-        let color = ADESharedTheme.brandColor(for: resolved)
-        Circle()
-            .fill(color.opacity(0.16))
-            .frame(width: size, height: size)
-            .overlay {
-                if let assetName = ADESharedTheme.providerAssetName(for: resolved) {
+        if let label = model ?? slug.flatMap({ ADESharedTheme.providerDisplayName(for: $0) }) {
+            let color = ADESharedTheme.brandColor(for: slug ?? "ade")
+            HStack(spacing: 4) {
+                if let slug, let assetName = ADESharedTheme.providerAssetName(for: slug) {
                     Image(assetName)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: size * 0.66, height: size * 0.66)
+                        .frame(width: 10, height: 10)
                 } else {
-                    Image(systemName: "terminal.fill")
-                        .font(.system(size: size * 0.46, weight: .semibold))
-                        .foregroundStyle(color)
+                    Circle()
+                        .fill(color)
+                        .frame(width: 5, height: 5)
                 }
+                Text(label)
+                    .font(.system(.caption2, design: .rounded).weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .overlay(Circle().strokeBorder(color.opacity(0.3), lineWidth: 0.7))
-            .accessibilityHidden(true)
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.1), in: Capsule())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+        }
     }
 }
 

@@ -13,6 +13,7 @@ import {
 } from "../../../../desktop/src/shared/accountDirectory";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { createSyncCloudRelayStore } from "../sync/syncCloudRelayStore";
 import {
   createAccountAuthService,
   type AccountAuthService,
@@ -240,6 +241,24 @@ export function getSharedAccountDirectoryBaseUrl(args: {
   });
 }
 
+/**
+ * This machine's directory identity, read from the same file the brain's
+ * account publisher reads. The machine key IS the directory's primary key for
+ * this machine, so a pairing grant bound to anything else would be spendable on
+ * the wrong row — or on nothing at all.
+ *
+ * Never throws: an unreadable identity costs the grant path, never the sign-in.
+ */
+function readMachineKey(secretsDir: string): string | null {
+  try {
+    return createSyncCloudRelayStore({
+      filePath: path.join(secretsDir, "sync-cloud-relay.json"),
+    }).getMachineIdentity().machineKey.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export function getSharedAccountAuthService(args: {
   secretsDir?: string;
   projectRoots?: () => Iterable<string>;
@@ -266,6 +285,7 @@ export function getSharedAccountAuthService(args: {
       secretsDir,
       env: args.env,
     }),
+    getMachineKey: () => readMachineKey(secretsDir),
     env: args.env ?? process.env,
     logger: args.logger,
   });

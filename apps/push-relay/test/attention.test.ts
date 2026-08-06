@@ -11,10 +11,19 @@ import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
   inspectAttentionAuthConfiguration,
+  machineKeyRevokedAt,
   pruneAttentionState,
+  sweepAttentionState,
   type AttentionRelayEnv,
 } from "../src/attention";
 import { verifyAttentionBearerToken } from "../src/attentionAuth";
+import {
+  handleRequest,
+  resetSpendGuardsForTests,
+  signPushRelayRequest,
+  type PushRelayEnv,
+} from "../src/relay";
+import { liveActivityTestInternals } from "../src/liveActivity";
 
 type NativeStatement = {
   all: (...values: unknown[]) => Array<Record<string, unknown>>;
@@ -209,6 +218,7 @@ class SqliteD1Database {
         "../migrations/0003_account_attention.sql",
         "../migrations/0004_device_registration_generation.sql",
         "../migrations/0005_activity_feed.sql",
+        "../migrations/0006_machine_revocation.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -353,26 +363,58 @@ function rows<T extends Record<string, unknown>>(
   return database.native.prepare(sql).all(...values) as T[];
 }
 
+/** The value both workers hold; the directory presents it on relay hand-offs. */
+const DIRECTORY_AUTH_SECRET = "directory-shared-secret";
+
+/**
+ * Everything the hourly cron does, in the order `index.ts` does it. Retention
+ * assertions go through this rather than `pruneAttentionState` alone: the
+ * sweeps are cron-only by design (they fan out per account into APNs pushes)
+ * and must never be reachable from a user-facing request.
+ */
+async function runAttentionMaintenance(env: AttentionRelayEnv): Promise<void> {
+  await sweepAttentionState(env);
+  await pruneAttentionState(env);
+}
+
 async function accountRoute(
   database: SqliteD1Database,
   userId: string,
   method: string,
   path: string,
   body?: unknown,
+  options: {
+    headers?: Record<string, string>;
+    env?: Omit<Partial<AttentionRelayEnv>, "DB">;
+  } = {},
 ): Promise<Response> {
+  const headers: Record<string, string> = { ...options.headers };
+  if (body !== undefined) headers["content-type"] = "application/json";
   const request = new Request(`https://push.example${path}`, {
     method,
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const response = await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
     request,
-    makeAttentionEnv(database),
+    makeAttentionEnv(database, { DIRECTORY_AUTH_SECRET, ...options.env }),
     new URL(request.url),
     userId,
   );
   if (!response) throw new Error(`Attention route did not handle ${method} ${path}`);
   return response;
+}
+
+/** An account route called the way the account-directory worker calls it. */
+async function directoryRoute(
+  database: SqliteD1Database,
+  userId: string,
+  method: string,
+  path: string,
+): Promise<Response> {
+  return accountRoute(database, userId, method, path, undefined, {
+    headers: { "x-ade-directory-auth": DIRECTORY_AUTH_SECRET },
+  });
 }
 
 function insertAttentionDevice(
@@ -423,6 +465,91 @@ function insertAttentionDevice(
 }
 
 const MACHINE_KEY = "a".repeat(32);
+
+/**
+ * The `/claim` row every machine that can use the SIGNED push routes holds —
+ * `assertMachineAuthorized` verifies against its secret. Those are exactly the
+ * machines `machineKeyRevokedAt` can block, and `linkMachineToAccount` stamps
+ * `account_user_id` on this row on every publish, so it is the record of prior
+ * ownership that survives an account removal (which deletes the link row).
+ */
+function claimMachineForAccount(
+  database: SqliteD1Database,
+  accountUserId: string | null,
+  machineKey = MACHINE_KEY,
+): void {
+  database.native.prepare(`
+    insert into machines(machine_key, secret, created_at, last_seen_at, account_user_id)
+    values (?, 'relay-secret', '2026-07-01T08:00:00.000Z', '2026-07-01T08:00:00.000Z', ?)
+    on conflict(machine_key) do update set account_user_id = excluded.account_user_id
+  `).run(machineKey, accountUserId);
+}
+
+/**
+ * A phone reachable through the LEGACY machine-signed routes. These two tables
+ * are keyed by machine key alone — no account id — which is exactly why they
+ * have to leave when the machine changes hands.
+ */
+function seedLegacyMachineDelivery(
+  database: SqliteD1Database,
+  args: { deviceId: string; machineKey?: string },
+): void {
+  const machineKey = args.machineKey ?? MACHINE_KEY;
+  const now = "2026-07-28T08:00:00.000Z";
+  database.native.prepare(`
+    insert into device_registrations(
+      machine_key, device_id, apns_token, push_to_start_token, bundle_id,
+      aps_environment, platform, device_name, registered_at, updated_at
+    ) values (?, ?, ?, ?, 'com.ade.ios', 'sandbox', 'iOS', 'Phone', ?, ?)
+  `).run(machineKey, args.deviceId, "ab".repeat(32), "ef".repeat(32), now, now);
+  database.native.prepare(`
+    insert into live_activity_tokens(
+      machine_key, device_id, activity_id, token, updated_at
+    ) values (?, ?, 'account-attention', ?, ?)
+  `).run(machineKey, args.deviceId, "cd".repeat(32), now);
+}
+
+function makeLegacyRelayEnv(
+  database: SqliteD1Database,
+  overrides: Omit<Partial<PushRelayEnv>, "DB"> = {},
+): PushRelayEnv {
+  return {
+    DB: database as unknown as D1Database,
+    APNS_KEY_ID: "LEGACYKEY1",
+    APNS_TEAM_ID: "LEGACYTEAM",
+    APNS_DEFAULT_TOPIC: "com.ade.ios",
+    ...overrides,
+  };
+}
+
+/** A legacy machine-signed call, signed with the secret `claimMachineForAccount` stores. */
+async function legacyRelayRequest(
+  env: PushRelayEnv,
+  method: string,
+  pathname: string,
+  body?: unknown,
+): Promise<Response> {
+  const payload = body === undefined ? "" : JSON.stringify(body);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = await signPushRelayRequest("relay-secret", {
+    timestamp,
+    method,
+    pathname,
+    body: payload,
+  });
+  return await handleRequest(
+    new Request(`https://push.example${pathname}`, {
+      method,
+      headers: {
+        "x-ade-push-timestamp": timestamp,
+        "x-ade-push-signature": signature,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : payload,
+    }),
+    env,
+  );
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -494,16 +621,21 @@ async function publishActivityForTest(
   env: AttentionRelayEnv,
   authorization: Awaited<ReturnType<typeof machinePublishAuthorization>>,
   payload: Record<string, unknown>,
+  options: { machineKey?: string; verifiedMachineKey?: string } = {},
 ): Promise<Response> {
   const body = new TextEncoder().encode(JSON.stringify(payload)).buffer as ArrayBuffer;
+  const machineKey = options.machineKey ?? MACHINE_KEY;
   return await handleAttentionMachinePublish(
     new Request("https://push.example/machines/activity/attention", {
       method: "POST",
       headers: { authorization: `Bearer ${authorization.token}` },
     }),
     env,
-    MACHINE_KEY,
+    machineKey,
     body,
+    // What the relay router proves with the machine's HMAC signature before it
+    // ever reaches this handler; tests default to the honest case.
+    { machineKey: options.verifiedMachineKey ?? machineKey },
   );
 }
 
@@ -1510,7 +1642,7 @@ describe("account Attention contract", () => {
         where user_id = ? and device_id = 'phone-durable-alert'
       `).run(authorization.userId);
 
-      await pruneAttentionState(env);
+      await runAttentionMaintenance(env);
       expect(rows(database, `
         select item_id from attention_items where user_id = ?
       `, authorization.userId)).toEqual([]);
@@ -1555,7 +1687,168 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("fences stale acknowledgments and rejects account-owner mismatch", async () => {
+  it("fences an acknowledgment on the alert the caller actually rendered", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    const seed = async (sessionId: string, alertFingerprint: string) => {
+      const parsed = attentionTestInternals.parseAttentionItem(activityAgentItem({
+        sessionId,
+        itemId: sessionId,
+        revision: 7,
+        contentFingerprint: `${sessionId}-content`,
+        alertFingerprint,
+        activityTier: "signal",
+      }), MACHINE_KEY);
+      if (!parsed) throw new Error(`${sessionId} did not parse`);
+      await attentionTestInternals.commitAttentionMachineChanges(env, {
+        userId: "account-a",
+        machineKey: MACHINE_KEY,
+        items: [parsed],
+        tombstones: [],
+        sealCapacityTombstones: false,
+        rosterEpoch: 1,
+        now: "2026-07-28T08:00:00.000Z",
+      });
+      return parsed.id;
+    };
+    try {
+      const moved = await seed("moved-on", "alert-v2");
+      const steady = await seed("steady", "alert-steady");
+      const unquoted = await seed("unquoted", "alert-unquoted");
+
+      const acknowledged = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: [moved, steady, unquoted],
+          alertFingerprints: {
+            // The row flipped to a NEW question between render and tap. This is
+            // the one lost update that can really happen, and the whole reason
+            // the fence exists: the new question must not arrive pre-dismissed.
+            [moved]: "alert-v1",
+            [steady]: "alert-steady",
+            // `unquoted` is deliberately absent — a sparse map, not a mismatch.
+          },
+          seenAt: "2026-07-28T08:01:00.000Z",
+          dismissedAt: "2026-07-28T08:01:00.000Z",
+        },
+      );
+      expect(acknowledged.status).toBe(200);
+      expect(await acknowledged.json()).toMatchObject({
+        applied: [steady, unquoted],
+        stale: [moved],
+      });
+      expect(row(database, `
+        select dismissed_at from attention_items where user_id = 'account-a' and item_id = ?
+      `, moved)?.dismissed_at).toBeNull();
+      expect(row(database, `
+        select dismissed_at from attention_items where user_id = 'account-a' and item_id = ?
+      `, steady)?.dismissed_at).toBe("2026-07-28T08:01:00.000Z");
+      // Absent entry ⇒ unfenced. This is what keeps "Clear all" working for
+      // legacy desktop, mobile, and TUI callers that quote nothing at all.
+      expect(row(database, `
+        select dismissed_at from attention_items where user_id = 'account-a' and item_id = ?
+      `, unquoted)?.dismissed_at).toBe("2026-07-28T08:01:00.000Z");
+
+      // Omitting the key entirely is the legacy shape and stays unfenced.
+      const legacy = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: [moved],
+          sourceRevisions: { [moved]: 7 },
+          seenAt: "2026-07-28T08:02:00.000Z",
+          dismissedAt: "2026-07-28T08:02:00.000Z",
+        },
+      );
+      expect(await legacy.json()).toMatchObject({ applied: [moved], stale: [] });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects an alert fingerprint map that does not describe this batch", async () => {
+    const database = new SqliteD1Database();
+    try {
+      const bad = async (alertFingerprints: unknown) => (await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: ["agent:machine:one"],
+          alertFingerprints,
+          seenAt: "2026-07-28T08:01:00.000Z",
+          dismissedAt: null,
+        },
+      )).status;
+      expect(await bad("not-an-object")).toBe(400);
+      expect(await bad({ "agent:machine:one": 7 })).toBe(400);
+      expect(await bad({ "agent:machine:one": "  " })).toBe(400);
+      expect(await bad({ "agent:machine:one": "x".repeat(1025) })).toBe(400);
+      // Out of batch: the two sides disagree about what is being acknowledged.
+      expect(await bad({ "agent:machine:other": "alert" })).toBe(400);
+      // The boundary value is accepted, and so is an empty map.
+      expect(await bad({ "agent:machine:one": "x".repeat(1024) })).toBe(200);
+      expect(await bad({})).toBe(200);
+      expect(await bad(null)).toBe(200);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("bounds the fingerprint map by the batch rather than by its own cap", async () => {
+    const database = new SqliteD1Database();
+    try {
+      // The map is capped ONLY by "keys must be a subset of itemIds". A second,
+      // independent ceiling would 400 a legitimate full-size "Clear all" that
+      // quotes a fingerprint for every id it sends.
+      const full = Array.from({ length: 64 }, (_value, index) => `agent:machine:item-${index}`);
+      const acknowledged = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: full,
+          alertFingerprints: Object.fromEntries(
+            full.map((itemId, index) => [itemId, `alert-${index}`]),
+          ),
+          seenAt: "2026-07-28T08:01:00.000Z",
+          dismissedAt: null,
+        },
+      );
+      expect(acknowledged.status).toBe(200);
+
+      // 64 is the batch ceiling, and it has always been enforced on `itemIds`
+      // itself — a caller that does not cap its own batch is rejected here
+      // whether or not it quotes any fingerprints at all.
+      for (const alertFingerprints of [undefined, {}]) {
+        const oversized = await accountRoute(
+          database,
+          "account-a",
+          "POST",
+          "/attention/account/ack",
+          {
+            itemIds: [...full, "agent:machine:item-64"],
+            ...(alertFingerprints === undefined ? {} : { alertFingerprints }),
+            seenAt: "2026-07-28T08:01:00.000Z",
+            dismissedAt: null,
+          },
+        );
+        expect(oversized.status).toBe(400);
+        expect(await oversized.json()).toMatchObject({ error: "invalid acknowledgment" });
+      }
+    } finally {
+      database.close();
+    }
+  });
+
+  it("acknowledges a live item whose stored revision already moved on", async () => {
     const database = new SqliteD1Database();
     const parsed = attentionTestInternals.parseAttentionItem(activityAgentItem({
       sessionId: "ack-fence",
@@ -1598,28 +1891,37 @@ describe("account Attention contract", () => {
         select seen_at from attention_items where user_id = 'account-a' and item_id = ?
       `, parsed.id)?.seen_at).toBeNull();
 
-      const stale = await accountRoute(
+      // A running agent's revision is its last-active epoch, so the client's
+      // copy is always behind by the time it acks. That must still apply; only
+      // an item this account has no live row for comes back stale.
+      const behind = await accountRoute(
         database,
         "account-a",
         "POST",
         "/attention/account/ack",
         {
-          itemIds: [parsed.id],
-          sourceRevisions: { [parsed.id]: 6 },
+          itemIds: [parsed.id, `agent:${MACHINE_KEY}:never-published`],
+          sourceRevisions: {
+            [parsed.id]: 6,
+            [`agent:${MACHINE_KEY}:never-published`]: 6,
+          },
           expectedAccountOwnerId: "account-a",
           seenAt: "2026-07-28T08:01:00.000Z",
           dismissedAt: null,
         },
       );
-      expect(await stale.json()).toMatchObject({
-        applied: [],
-        stale: [parsed.id],
+      expect(await behind.json()).toMatchObject({
+        applied: [parsed.id],
+        stale: [`agent:${MACHINE_KEY}:never-published`],
       });
       expect(row(database, `
         select seen_at from attention_items where user_id = 'account-a' and item_id = ?
-      `, parsed.id)?.seen_at).toBeNull();
+      `, parsed.id)?.seen_at).toBe("2026-07-28T08:01:00.000Z");
 
-      const matching = await accountRoute(
+      // Repeat acknowledgments are idempotent and never move a mark forward,
+      // which is why the revision fence guarded a lost update that cannot
+      // happen.
+      const repeated = await accountRoute(
         database,
         "account-a",
         "POST",
@@ -1632,13 +1934,13 @@ describe("account Attention contract", () => {
           dismissedAt: null,
         },
       );
-      expect(await matching.json()).toMatchObject({
+      expect(await repeated.json()).toMatchObject({
         applied: [parsed.id],
         stale: [],
       });
       expect(row(database, `
         select seen_at from attention_items where user_id = 'account-a' and item_id = ?
-      `, parsed.id)?.seen_at).toBe("2026-07-28T08:02:00.000Z");
+      `, parsed.id)?.seen_at).toBe("2026-07-28T08:01:00.000Z");
     } finally {
       database.close();
     }
@@ -2009,6 +2311,7 @@ describe("account Attention contract", () => {
         env,
         MACHINE_KEY,
         body,
+        { machineKey: MACHINE_KEY },
       );
 
       const initial = await publish();
@@ -3600,6 +3903,10 @@ describe("account Attention contract", () => {
       const updated = {
         ...parsed,
         fingerprint: "ownership-update",
+        // The refresh gate is the alert fingerprint, not the content one: a
+        // content-only churn deliberately does not earn an APNs push, so this
+        // ownership-fencing case has to stage a real phase entry.
+        alertFingerprint: "ownership-update-alert",
         revision: parsed.revision + 1,
         updatedAt: "2026-07-28T08:01:02.000Z",
       };
@@ -3946,7 +4253,7 @@ describe("account Attention contract", () => {
   });
 
   it("redacts lock-screen content without breaking exact PR routing metadata", () => {
-    const privateState = attentionTestInternals.privacyPreservingActivityContentState({
+    const privateState = liveActivityTestInternals.privacyPreservingActivityContentState({
       updatedAt: 1_752_000_000,
       activeCount: 2,
       runs: [{
@@ -4056,7 +4363,7 @@ describe("account Attention contract", () => {
       sessionId: "session-2",
       deepLink: secondDeepLink,
     });
-    expect(attentionTestInternals.activityRun(first)).toMatchObject({
+    expect(liveActivityTestInternals.activityRun(first)).toMatchObject({
       id: "session-1",
       accountMachineKey: "c".repeat(32),
     });
@@ -4083,7 +4390,7 @@ describe("account Attention contract", () => {
     if (!pullRequest) {
       throw new Error("setup precondition: pull request Attention item must parse");
     }
-    expect(attentionTestInternals.activityPullRequest(pullRequest)).toMatchObject({
+    expect(liveActivityTestInternals.activityPullRequest(pullRequest)).toMatchObject({
       prNumber: 42,
       accountMachineKey: otherAccountMachineKey,
     });
@@ -5128,7 +5435,7 @@ describe("account Attention contract", () => {
         )
       `).run();
 
-      await pruneAttentionState(makeAttentionEnv(database));
+      await runAttentionMaintenance(makeAttentionEnv(database));
 
       expect(rows(database, `
         select device_id
@@ -5195,7 +5502,7 @@ describe("account Attention contract", () => {
           ('account-a', 'old-removed-item', 'active-phone', 'alert:old', '2026-07-20T11:00:00.000Z')
       `).run();
 
-      await pruneAttentionState(makeAttentionEnv(database));
+      await runAttentionMaintenance(makeAttentionEnv(database));
 
       expect(rows(database, `
         select item_id
@@ -5220,6 +5527,1313 @@ describe("account Attention contract", () => {
       `)?.lease_expires_at).toBe("2099-09-01T00:00:00.000Z");
     } finally {
       database.close();
+    }
+  });
+});
+
+describe("account machine lifecycle", () => {
+  function seedMachineActivity(
+    database: SqliteD1Database,
+    args: {
+      userId: string;
+      sessionId: string;
+      revision?: number;
+      lastSeenAt?: string;
+      expiresAt?: string | null;
+      activityTier?: "signal" | "ambient" | "idle";
+    },
+  ): Promise<number> {
+    database.native.prepare(`
+      insert into attention_machine_links(
+        machine_key, user_id, machine_name, last_seen_at, linked_at,
+        legacy_devices_imported_at
+      ) values (?, ?, 'Studio', ?, ?, null)
+      on conflict(machine_key) do update set
+        user_id = excluded.user_id,
+        last_seen_at = excluded.last_seen_at
+    `).run(
+      MACHINE_KEY,
+      args.userId,
+      args.lastSeenAt ?? "2026-07-28T08:00:00.000Z",
+      args.lastSeenAt ?? "2026-07-28T08:00:00.000Z",
+    );
+    const parsed = attentionTestInternals.parseAttentionItem(activityAgentItem({
+      sessionId: args.sessionId,
+      itemId: null,
+      revision: args.revision ?? 7,
+      contentFingerprint: `${args.sessionId}-content`,
+      alertFingerprint: `${args.sessionId}-alert`,
+      activityTier: args.activityTier ?? "signal",
+      ...(args.expiresAt === undefined ? {} : { expiresAt: args.expiresAt }),
+    }), MACHINE_KEY);
+    if (!parsed) throw new Error(`${args.sessionId} item did not parse`);
+    return attentionTestInternals.commitAttentionMachineChanges(
+      makeAttentionEnv(database),
+      {
+        userId: args.userId,
+        machineKey: MACHINE_KEY,
+        items: [parsed],
+        tombstones: [],
+        sealCapacityTombstones: false,
+        rosterEpoch: 1,
+        now: args.lastSeenAt ?? "2026-07-28T08:00:00.000Z",
+      },
+    );
+  }
+
+  it("purges a removed machine's activity, seals tombstones, and releases its installs", async () => {
+    const database = new SqliteD1Database();
+    try {
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "removed-machine",
+      });
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-of-removed-machine",
+        sourceMachineKey: MACHINE_KEY,
+      });
+
+      const response = await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        machineKey: MACHINE_KEY,
+        removedItems: 1,
+      });
+
+      expect(rows(database, `
+        select item_id from attention_items where user_id = 'account-a'
+      `)).toEqual([]);
+      expect(row(database, `
+        select revivable from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, `agent:${MACHINE_KEY}:removed-machine`)).toMatchObject({ revivable: 0 });
+      expect(rows(database, `
+        select machine_key from attention_machine_links where user_id = 'account-a'
+      `)).toEqual([]);
+      expect(rows(database, `
+        select device_id from attention_devices where user_id = 'account-a'
+      `)).toEqual([]);
+      expect(row(database, `
+        select active from attention_device_ownership where device_id = 'phone-of-removed-machine'
+      `)).toMatchObject({ active: 0 });
+      expect(row(database, `
+        select machine_key from attention_revoked_machines
+        where user_id = 'account-a' and machine_key = ?
+      `, MACHINE_KEY)).toMatchObject({ machine_key: MACHINE_KEY });
+
+      // Deltas never imply deletion, so the removal has to reach clients as a
+      // tombstone or every surface keeps rendering the removed machine's rows.
+      const snapshot = await accountRoute(
+        database,
+        "account-a",
+        "GET",
+        "/attention/account/snapshot?since=0",
+      );
+      expect(await snapshot.json()).toMatchObject({
+        items: [],
+        tombstones: [{ id: `agent:${MACHINE_KEY}:removed-machine` }],
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects publishes from a revoked machine until it is paired again", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    const publish = (sessionId: string) =>
+      publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "delta",
+        rosterEpoch: 1,
+        items: [activityAgentItem({
+          sessionId,
+          itemId: null,
+          revision: 7,
+          contentFingerprint: `${sessionId}-content`,
+          alertFingerprint: `${sessionId}-alert`,
+          activityTier: "signal",
+        })],
+        tombstones: [],
+      });
+    try {
+      expect((await publish("before-removal")).status).toBe(200);
+      expect((await accountRoute(
+        database,
+        authorization.userId,
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+
+      // A removed machine keeps a valid account token and heartbeats every 30 s;
+      // without this gate it relinks and republishes itself immediately.
+      const revoked = await publish("after-removal");
+      expect(revoked.status).toBe(403);
+      expect(await revoked.json()).toMatchObject({ code: "machine_revoked" });
+      expect(rows(database, `
+        select item_id from attention_items where user_id = ?
+      `, authorization.userId)).toEqual([]);
+      expect(rows(database, `
+        select machine_key from attention_machine_links where user_id = ?
+      `, authorization.userId)).toEqual([]);
+
+      const restored = await directoryRoute(
+        database,
+        authorization.userId,
+        "POST",
+        `/attention/account/machines/${MACHINE_KEY}/pairing`,
+      );
+      expect(await restored.json()).toMatchObject({ ok: true, restored: true });
+      expect((await publish("after-repair")).status).toBe(200);
+      expect(rows(database, `
+        select item_id from attention_items where user_id = ?
+      `, authorization.userId)).toEqual([
+        { item_id: `agent:${MACHINE_KEY}:after-repair` },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("never revives a sealed tombstone through an acknowledgment", async () => {
+    const database = new SqliteD1Database();
+    try {
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "sealed",
+      });
+      const itemId = `agent:${MACHINE_KEY}:sealed`;
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+
+      const acknowledged = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        { itemIds: [itemId], seenAt: "2026-07-28T09:00:00.000Z", dismissedAt: null },
+      );
+      expect(await acknowledged.json()).toMatchObject({
+        applied: [],
+        stale: [itemId],
+      });
+      expect(rows(database, `
+        select item_id from attention_items where user_id = 'account-a'
+      `)).toEqual([]);
+
+      // A row that races back in under a sealed tombstone is still deleted
+      // state; acknowledging it must not turn it into a live, seen row.
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, 7, 1, 'sealed-content', 'agent_needs_you',
+          'needs_you', '{}', null, null, null, '2026-07-28T08:00:00.000Z'
+        )
+      `).run(itemId, MACHINE_KEY);
+      const raced = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        { itemIds: [itemId], seenAt: "2026-07-28T09:01:00.000Z", dismissedAt: null },
+      );
+      expect(await raced.json()).toMatchObject({ applied: [], stale: [itemId] });
+      expect(row(database, `
+        select seen_at from attention_items where user_id = 'account-a' and item_id = ?
+      `, itemId)?.seen_at).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retires expired idle rows from snapshots as tombstones", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T08:00:00.000Z"));
+    const database = new SqliteD1Database();
+    try {
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "aged-idle",
+        activityTier: "idle",
+        expiresAt: "2026-08-04T08:00:00.000Z",
+        lastSeenAt: "2026-08-05T07:59:00.000Z",
+      });
+
+      // Filtering the row out of reads is not enough on its own: a client that
+      // already holds it needs the tombstone to drop it.
+      const beforePrune = await accountRoute(
+        database,
+        "account-a",
+        "GET",
+        "/attention/account/snapshot?since=0",
+      );
+      expect(await beforePrune.json()).toMatchObject({ items: [] });
+
+      await runAttentionMaintenance(makeAttentionEnv(database));
+      expect(rows(database, `
+        select item_id from attention_items where user_id = 'account-a'
+      `)).toEqual([]);
+      const afterPrune = await accountRoute(
+        database,
+        "account-a",
+        "GET",
+        "/attention/account/snapshot?since=0",
+      );
+      expect(await afterPrune.json()).toMatchObject({
+        tombstones: [{ id: `agent:${MACHINE_KEY}:aged-idle` }],
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("sweeps activity left behind by a machine that stopped reporting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T08:00:00.000Z"));
+    const database = new SqliteD1Database();
+    try {
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "rotated-key",
+        lastSeenAt: "2026-07-01T08:00:00.000Z",
+      });
+
+      await runAttentionMaintenance(makeAttentionEnv(database));
+
+      // The epoch reconcile is machine-scoped and only runs while that machine
+      // publishes, so a rotated or retired key can only be cleared account-side.
+      expect(rows(database, `
+        select item_id from attention_items where user_id = 'account-a'
+      `)).toEqual([]);
+      expect(row(database, `
+        select revivable from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, `agent:${MACHINE_KEY}:rotated-key`)).toMatchObject({ revivable: 0 });
+      // Retiring the rows is not a removal from the account: the machine may
+      // come back and relink on its next publish.
+      expect(rows(database, `
+        select machine_key from attention_revoked_machines where user_id = 'account-a'
+      `)).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("clears the previous owner's revocation when a machine key moves to another account", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      claimMachineForAccount(database, "account-a");
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "before-the-move",
+      });
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+      // The any-account gate is what makes this durable — and what would brick
+      // the key forever, since the directory only ever restores `(owner, key)`.
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).not.toBeNull();
+
+      // The same install is signed into a different account and publishes
+      // there. Removal already deleted the link row, so the prior owner is
+      // recovered from the legacy `machines` claim.
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      );
+
+      // Without the clear, `handlePublish`/`handleActivityTokenUpsert` keep
+      // finding `(account-a, key)` and 403 forever: alerts and Live Activities
+      // dead on account B while protocol-2 Activity keeps working.
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+      expect(rows(database, "select user_id from attention_revoked_machines")).toEqual([]);
+      expect(row(database, `
+        select user_id from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toMatchObject({ user_id: "account-b" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("clears every prior owner's revocation, not just the most recent hop", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      claimMachineForAccount(database, "account-a");
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "shared-key",
+      });
+      // A → C → B. `machines.account_user_id` records only the LAST linker, so
+      // a clear scoped to it survives exactly one hop: account A's row would
+      // outlive the move to C and terminal-403 the key on the legacy routes
+      // under B forever, with no path that can reach it (the directory only
+      // ever restores `(current owner, key)`).
+      database.native.prepare(`
+        insert into attention_revoked_machines(user_id, machine_key, revoked_at)
+        values ('account-c', ?, '2026-07-01T08:00:00.000Z')
+      `).run(MACHINE_KEY);
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      );
+
+      expect(rows(database, `
+        select user_id from attention_revoked_machines order by user_id
+      `)).toEqual([]);
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+      expect(row(database, `
+        select user_id from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toMatchObject({ user_id: "account-b" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("takes the previous owner's delivery targets away with the ownership", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    const apnsSends: string[] = [];
+    resetSpendGuardsForTests();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.startsWith("https://api.sandbox.push.apple.com/")) {
+        apnsSends.push(url);
+        return new Response(null, { status: 200, headers: { "apns-id": "sent" } });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    try {
+      claimMachineForAccount(database, "account-a");
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "before-the-sale",
+      });
+      seedLegacyMachineDelivery(database, { deviceId: "phone-of-account-a" });
+      const relayEnv = makeLegacyRelayEnv(database, { APNS_KEY: await generateTestP8() });
+
+      // Baseline: while account A owns the machine, the legacy route reaches
+      // A's phone. This is the channel the rest of the test must close.
+      expect((await legacyRelayRequest(relayEnv, "POST", `/machines/${MACHINE_KEY}/publish`, {
+        notifications: [{ title: "Agent needs you", body: "Review the migration" }],
+      })).status).toBe(200);
+      expect(apnsSends).toHaveLength(1);
+
+      // 1. Account A removes the machine. The revocation blocks the legacy
+      //    route AND the delivery targets go with the removal, so a later
+      //    cleared revocation has nothing left to expose.
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+      expect(rows(database, "select device_id from device_registrations")).toEqual([]);
+      expect(rows(database, "select device_id from live_activity_tokens")).toEqual([]);
+
+      // 2. A revoked machine cannot stage a registration to be redeemed the
+      //    moment the revocation lifts.
+      const stagedRegistration = await legacyRelayRequest(
+        relayEnv,
+        "PUT",
+        `/machines/${MACHINE_KEY}/devices/phone-of-account-a`,
+        { bundleId: "com.ade.ios", apsEnvironment: "sandbox", apnsToken: "ab".repeat(32) },
+      );
+      expect(stagedRegistration.status).toBe(403);
+      expect(await stagedRegistration.json()).toMatchObject({ code: "machine_revoked" });
+      const stagedToken = await legacyRelayRequest(
+        relayEnv,
+        "POST",
+        `/machines/${MACHINE_KEY}/live-activity-tokens`,
+        {
+          deviceId: "phone-of-account-a",
+          activityId: "account-attention",
+          token: "cd".repeat(32),
+        },
+      );
+      expect(stagedToken.status).toBe(403);
+
+      // 3. Whoever holds the machine signs into their own account and the brain
+      //    publishes once. Account B has no revocation, so this succeeds and
+      //    clears A's — the ownership transfer this design intends.
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      );
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+
+      // 4. THE ATTACK. The legacy route is un-gated again, but it now has no
+      //    targets: account A's phone is unreachable through this machine, and
+      //    no Live Activity token can be re-armed against it.
+      apnsSends.length = 0;
+      const afterTransfer = await legacyRelayRequest(
+        relayEnv,
+        "POST",
+        `/machines/${MACHINE_KEY}/publish`,
+        { notifications: [{ title: "Anything at all", body: "attacker-controlled" }] },
+      );
+      expect(afterTransfer.status).toBe(200);
+      expect(await afterTransfer.json()).toMatchObject({ delivered: 0 });
+      expect(apnsSends).toEqual([]);
+      expect(rows(database, "select device_id from device_registrations")).toEqual([]);
+      expect(rows(database, "select device_id from live_activity_tokens")).toEqual([]);
+
+      const listed = await legacyRelayRequest(
+        relayEnv,
+        "GET",
+        `/machines/${MACHINE_KEY}/devices`,
+      );
+      expect(await listed.json()).toMatchObject({ devices: [] });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("refuses a publish for a machine key the caller never proved it holds", async () => {
+    const database = new SqliteD1Database();
+    const attacker = await machinePublishAuthorization();
+    const attackerKey = "9".repeat(32);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === attacker.jwksUrl) return Response.json(attacker.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    try {
+      // The victim's machine, publishing normally to its own account. Machine
+      // keys are not secret: they ride published items as `accountMachineKey`
+      // and appear in deeplink query strings.
+      claimMachineForAccount(database, "account-victim");
+      await seedMachineActivity(database, {
+        userId: "account-victim",
+        sessionId: "victim-session",
+      });
+      const env = makeAttentionEnv(database, {
+        CLERK_JWKS_URL: attacker.jwksUrl,
+        CLERK_ISSUER: attacker.issuer,
+        CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+      });
+
+      // THE ATTACK. A signed-in stranger names the victim's key on the publish
+      // route. The smallest request that still reaches `linkMachineToAccount` —
+      // a zero-item delta — is enough to write `(attacker, victimKey)` into
+      // `attention_machine_links`, which is the first evidence the removal
+      // route's guard accepts. Only the machine signature can say otherwise,
+      // and the attacker can only produce one for its OWN key.
+      const forged = await publishActivityForTest(
+        env,
+        attacker,
+        { machineName: "Not mine", mode: "delta", rosterEpoch: 1, items: [], tombstones: [] },
+        { machineKey: MACHINE_KEY, verifiedMachineKey: attackerKey },
+      );
+      expect(forged.status).toBe(403);
+      expect(await forged.json()).toMatchObject({ code: "machine_key_unbound" });
+      expect(rows(database, `
+        select user_id from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toEqual([{ user_id: "account-victim" }]);
+
+      // Without that seeded evidence the removal route degrades to a no-op, so
+      // the victim's machine is never terminal-403'd on the legacy routes.
+      const removal = await accountRoute(
+        database,
+        attacker.userId,
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      );
+      expect(removal.status).toBe(200);
+      expect(await removal.json()).toMatchObject({ revokedAt: null });
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("stops an account that lost a machine from revoking it out from under the new owner", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      // Account A held this key and still has historical rows for it — an
+      // install it seeded, and the legacy claim. Evidence is HISTORICAL, so
+      // without a current-ownership check A could keep "removing" a machine
+      // that now belongs to B and terminal-403 it on the legacy routes.
+      claimMachineForAccount(database, "account-a");
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-seeded-by-machine",
+        sourceMachineKey: MACHINE_KEY,
+      });
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      );
+
+      const removal = await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      );
+      expect(removal.status).toBe(200);
+      expect(await removal.json()).toMatchObject({ revokedAt: null });
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+      expect(row(database, `
+        select user_id from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toMatchObject({ user_id: "account-b" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps a machine blocked on the account that is removing it right now", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      claimMachineForAccount(database, "account-a");
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "still-mine",
+      });
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+
+      // Re-linking to the SAME account is not a transfer; it is exactly the
+      // removed machine relinking itself, which the revocation exists to stop.
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-a",
+        MACHINE_KEY,
+        "Studio",
+      );
+
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).not.toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("writes no revocation when an account removes a machine key it never held", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      // account-a owns the machine; machine keys are not secret — they ride
+      // published items as `accountMachineKey` and appear in deeplinks.
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "victim",
+      });
+
+      // A stranger names it on their own removal route. Combined with the
+      // any-account block, an unchecked insert would terminal-403 someone
+      // else's machine: alerts and Live Activities dead, permanently.
+      const response = await accountRoute(
+        database,
+        "account-b",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        removedItems: 0,
+        revokedAt: null,
+      });
+
+      expect(rows(database, "select user_id from attention_revoked_machines")).toEqual([]);
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).toBeNull();
+      // The real owner is untouched.
+      expect(rows(database, `
+        select item_id from attention_items where user_id = 'account-a'
+      `)).toEqual([{ item_id: `agent:${MACHINE_KEY}:victim` }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    ["only an install it seeded", "devices"],
+    ["only items it published", "items"],
+  ] as const)("still revokes a machine the account knew through %s", async (_label, evidence) => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    try {
+      if (evidence === "items") {
+        await seedMachineActivity(database, {
+          userId: "account-a",
+          sessionId: "known",
+        });
+        database.native
+          .prepare("delete from attention_machine_links where user_id = 'account-a'")
+          .run();
+      } else {
+        insertAttentionDevice(database, {
+          userId: "account-a",
+          deviceId: "phone-seeded-by-machine",
+          sourceMachineKey: MACHINE_KEY,
+        });
+      }
+
+      const response = await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ revokedAt: expect.any(String) });
+      expect(await machineKeyRevokedAt(env, MACHINE_KEY)).not.toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("refuses to clear a revocation for anything but the account directory", async () => {
+    const database = new SqliteD1Database();
+    try {
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "sold-machine",
+      });
+      expect((await accountRoute(
+        database,
+        "account-a",
+        "DELETE",
+        `/attention/account/machines/${MACHINE_KEY}`,
+      )).status).toBe(200);
+
+      const revoked = () => rows(database, `
+        select machine_key from attention_revoked_machines
+        where user_id = 'account-a' and machine_key = ?
+      `, MACHINE_KEY);
+      expect(revoked()).toHaveLength(1);
+
+      // THE ATTACK. A removed machine keeps a valid account token by design, so
+      // it can reach this route with exactly the credential the design assumes
+      // it still holds. Un-revoking itself would put its agent titles and
+      // previews back into the account feed while the directory roster row
+      // stays deleted — invisible to the user who removed it.
+      const bareToken = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        `/attention/account/machines/${MACHINE_KEY}/pairing`,
+      );
+      expect(bareToken.status).toBe(403);
+      expect(await bareToken.json()).toMatchObject({ code: "directory_auth_required" });
+      expect(revoked()).toHaveLength(1);
+
+      const wrongSecret = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        `/attention/account/machines/${MACHINE_KEY}/pairing`,
+        undefined,
+        { headers: { "x-ade-directory-auth": "not-the-secret" } },
+      );
+      expect(wrongSecret.status).toBe(403);
+      expect(revoked()).toHaveLength(1);
+
+      // Unset on the relay fails CLOSED, never open: an unconfigured deployment
+      // must not be a deployment where anyone can un-revoke a machine.
+      const unconfigured = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        `/attention/account/machines/${MACHINE_KEY}/pairing`,
+        undefined,
+        {
+          headers: { "x-ade-directory-auth": DIRECTORY_AUTH_SECRET },
+          env: { DIRECTORY_AUTH_SECRET: undefined },
+        },
+      );
+      expect(unconfigured.status).toBe(503);
+      expect(await unconfigured.json()).toMatchObject({ code: "directory_auth_unavailable" });
+      expect(revoked()).toHaveLength(1);
+
+      // The directory's own hand-off still works.
+      const fromDirectory = await directoryRoute(
+        database,
+        "account-a",
+        "POST",
+        `/attention/account/machines/${MACHINE_KEY}/pairing`,
+      );
+      expect(fromDirectory.status).toBe(200);
+      expect(await fromDirectory.json()).toMatchObject({ ok: true, restored: true });
+      expect(revoked()).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps the fan-out sweeps out of the request-path prune", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T08:00:00.000Z"));
+    const database = new SqliteD1Database();
+    try {
+      // One row that only `sweepOrphanedMachineActivity` can retire, one that
+      // only `sweepExpiredAttentionItems` can.
+      await seedMachineActivity(database, {
+        userId: "account-a",
+        sessionId: "orphaned",
+        lastSeenAt: "2026-07-01T08:00:00.000Z",
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-b', 'expired-item', ?, 1, 1, 'expired-fingerprint',
+          'agent_needs_you', 'needs_you', '{}', null, null,
+          '2026-08-05T07:00:00.000Z', '2026-08-05T07:59:00.000Z'
+        )
+      `).run(MACHINE_KEY);
+
+      // The opportunistic prune that device registration and publish still run
+      // inline. It must stay pure retention deletes: the sweeps commit a
+      // revision per account and push an APNs frame per device, which is not
+      // work a routine re-registration should be made to pay for.
+      await pruneAttentionState(makeAttentionEnv(database));
+      expect(rows(database, `
+        select item_id from attention_items order by item_id
+      `)).toEqual([
+        { item_id: `agent:${MACHINE_KEY}:orphaned` },
+        { item_id: "expired-item" },
+      ]);
+
+      // The cron does the expensive half.
+      await sweepAttentionState(makeAttentionEnv(database));
+      expect(rows(database, "select item_id from attention_items")).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("Live Activity island tallies", () => {
+  function islandItem(args: {
+    sessionId: string;
+    phase: string;
+    eventKind?: string;
+    activityTier?: "signal" | "ambient" | "idle";
+    chatActivityMode?: unknown;
+    alertFingerprint?: string;
+    contentFingerprint?: string;
+  }): Record<string, unknown> {
+    return {
+      ...validAgentItem(),
+      id: `agent:${MACHINE_KEY}:${args.sessionId}`,
+      fingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
+      contentFingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
+      alertFingerprint:
+        args.alertFingerprint ?? `alert-${args.sessionId}-${args.phase}`,
+      eventKind: args.eventKind ?? "agent_running",
+      phase: args.phase,
+      ...(args.activityTier ? { activityTier: args.activityTier } : {}),
+      ...(args.chatActivityMode !== undefined
+        ? { chatActivityMode: args.chatActivityMode }
+        : {}),
+      destination: {
+        kind: "session",
+        sessionId: args.sessionId,
+        itemId: null,
+        eventId: null,
+      },
+    };
+  }
+
+  function islandPullRequestItem(number: number, phase: string): Record<string, unknown> {
+    return {
+      ...validAgentItem(),
+      id: `pull-request:${MACHINE_KEY}:owner:repo:${number}`,
+      fingerprint: `pr-content-${number}`,
+      contentFingerprint: `pr-content-${number}`,
+      alertFingerprint: `pr-alert-${number}-${phase}`,
+      kind: "pull_request",
+      eventKind: "pr_checks_failing",
+      phase,
+      destination: {
+        kind: "pull_request",
+        repoOwner: "owner",
+        repoName: "repo",
+        number,
+        tab: "checks",
+      },
+    };
+  }
+
+  function seedActivityItem(
+    database: SqliteD1Database,
+    userId: string,
+    raw: Record<string, unknown>,
+  ): void {
+    const machineKey = String(
+      (raw.machine as Record<string, unknown>).machineKey ?? MACHINE_KEY,
+    );
+    const parsed = attentionTestInternals.parseAttentionItem(raw, machineKey);
+    expect(parsed, `island fixture ${String(raw.id)} must parse`).not.toBeNull();
+    if (!parsed) throw new Error("island fixture did not parse");
+    database.native.prepare(`
+      insert into attention_items(
+        user_id, item_id, machine_key, source_revision, account_revision,
+        fingerprint, content_fingerprint, alert_fingerprint, activity_tier,
+        roster_epoch, event_kind, phase, payload_json, seen_at, dismissed_at,
+        expires_at, updated_at
+      ) values (?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?, null, null, ?, ?)
+      on conflict(user_id, item_id) do update set
+        fingerprint = excluded.fingerprint,
+        content_fingerprint = excluded.content_fingerprint,
+        alert_fingerprint = excluded.alert_fingerprint,
+        phase = excluded.phase,
+        event_kind = excluded.event_kind,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `).run(
+      userId,
+      parsed.id,
+      machineKey,
+      parsed.revision,
+      parsed.contentFingerprint,
+      parsed.contentFingerprint,
+      parsed.alertFingerprint,
+      parsed.activityTier ?? null,
+      parsed.eventKind,
+      parsed.phase,
+      JSON.stringify(parsed),
+      parsed.expiresAt,
+      parsed.updatedAt,
+    );
+  }
+
+  async function contentStateFor(
+    database: SqliteD1Database,
+    userId: string,
+  ): Promise<Record<string, unknown>> {
+    const { contentState } = await liveActivityTestInternals.accountActivityContentState(
+      makeAttentionEnv(database),
+      userId,
+    );
+    return contentState;
+  }
+
+  it("tallies the whole account, not the three-row roster the island can see", async () => {
+    const database = new SqliteD1Database();
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        seedActivityItem(database, "account-a", islandItem({
+          sessionId: `run-${index}`,
+          phase: "running",
+          activityTier: "signal",
+        }));
+      }
+      // The raised hand sits behind the three-row cap. Deriving from `runs`
+      // would report zero of them and leave the island blue.
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "hidden-hand",
+        phase: "needs_you",
+        eventKind: "agent_needs_you",
+        activityTier: "signal",
+      }));
+      const contentState = await contentStateFor(database, "account-a");
+      expect(contentState.runs).toHaveLength(3);
+      expect(contentState.groups).toEqual([
+        { group: "needs_you", count: 1 },
+        { group: "working", count: 5 },
+      ]);
+      expect(contentState.moreCount).toBe(3);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("counts agent rows only and files idle-tier rows as the ambient tail", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "live",
+        phase: "running",
+        activityTier: "signal",
+      }));
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "resting",
+        phase: "running",
+        activityTier: "idle",
+      }));
+      // Pull requests are tallied separately by the clients; a PR in a failing
+      // state must not inflate the agent `failed` group.
+      seedActivityItem(
+        database,
+        "account-a",
+        islandPullRequestItem(42, "checks_failing"),
+      );
+      const contentState = await contentStateFor(database, "account-a");
+      expect(contentState.prs).toHaveLength(1);
+      expect(contentState.groups).toEqual([
+        { group: "working", count: 1 },
+        { group: "done", count: 1 },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("derives planning from chatActivityMode and never from a phase", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "planner",
+        phase: "running",
+        chatActivityMode: "planning",
+      }));
+      // No phase says "planning", and an unrecognised mode value is treated as
+      // absent rather than as a new group.
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "future-mode",
+        phase: "running",
+        chatActivityMode: "daydreaming",
+      }));
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "plain",
+        phase: "running",
+      }));
+      expect((await contentStateFor(database, "account-a")).groups).toEqual([
+        { group: "planning", count: 1 },
+        { group: "working", count: 2 },
+      ]);
+
+      expect(liveActivityTestInternals.activityStateGroup({
+        phase: "starting",
+        kind: "agent",
+        chatActivityMode: "planning",
+      } as never)).toBe("planning");
+      expect(liveActivityTestInternals.activityStateGroup({
+        phase: "needs_you",
+        kind: "agent",
+        chatActivityMode: "planning",
+      } as never)).toBe("needs_you");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("omits the additive fields entirely rather than sending a confident zero", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "only-one",
+        phase: "running",
+      }));
+      const contentState = await contentStateFor(database, "account-a");
+      // The roster fits, so there is nothing left off: the key is absent, not 0.
+      expect("moreCount" in contentState).toBe(false);
+      expect(contentState.groups).toEqual([{ group: "working", count: 1 }]);
+
+      const empty = await contentStateFor(database, "account-with-nothing");
+      expect("groups" in empty).toBe(false);
+      expect("moreCount" in empty).toBe(false);
+      expect(empty).toMatchObject({ activeCount: 0, runs: [], prs: [] });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("spends an APNs push on a needs-you transition but not on per-turn churn", async () => {
+    const database = new SqliteD1Database();
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": `island-${apnsBodies.length}` },
+      });
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+        ownershipEpoch: 3,
+      });
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "ISLANDKEY1",
+        APNS_TEAM_ID: "ISLANDTEAM",
+      });
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "turn",
+        phase: "running",
+        activityTier: "signal",
+      }));
+
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(1);
+      expect(apnsBodies[0]).toMatchObject({ aps: { event: "start" } });
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values ('account-a', 'phone-1', 'agent-runs', ?, '2026-07-28T08:01:00.000Z')
+      `).run("cd".repeat(32));
+
+      // Same phase entry, new preview copy and a fresher timestamp: this is what
+      // every agent turn (and every 30s heartbeat) looks like on the wire.
+      seedActivityItem(database, "account-a", {
+        ...islandItem({
+          sessionId: "turn",
+          phase: "running",
+          activityTier: "signal",
+          contentFingerprint: "content-turn-churned",
+        }),
+        preview: "Read 41,207 tokens across 12 files (18.4s elapsed).",
+        updatedAt: "2026-07-28T08:02:00.000Z",
+      });
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(1);
+
+      // A second working run moves the tally but not the band it belongs to,
+      // so it rides along on the next real transition rather than pushing.
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "turn-2",
+        phase: "running",
+        activityTier: "signal",
+      }));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(1);
+
+      // Raising a hand is the transition the island exists for.
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "turn",
+        phase: "needs_you",
+        eventKind: "agent_needs_you",
+        activityTier: "signal",
+      }));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(2);
+      expect(apnsBodies[1]).toMatchObject({
+        aps: {
+          event: "update",
+          "content-state": {
+            groups: [
+              { group: "needs_you", count: 1 },
+              { group: "working", count: 1 },
+            ],
+          },
+        },
+      });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+/**
+ * The relay owns a fourth copy of the Activity state-group rule, because it is
+ * a hermetic Worker that imports nothing from the repo it ships beside. Copies
+ * drift: the iOS one drifted three ways (`merge_ready`, idle-tier demotion, and
+ * how `planning` is derived) in the very commit that created it. The fixture is
+ * the pin — every implementation runs the same rows through its own mapper.
+ *
+ * Canonical source: `activityStateGroup` in
+ * apps/desktop/src/renderer/components/activity/activityPresentation.ts.
+ * If a case here fails, the RULE did not change — this copy did. Change the
+ * renderer, regenerate the fixture, then follow with all four mappers.
+ */
+describe("Activity state-group conformance", () => {
+  type StateGroupCase = {
+    name: string;
+    phase: string;
+    tier: "signal" | "ambient" | "idle";
+    chatActivityMode: string | null;
+    expected: string;
+  };
+
+  const fixture = JSON.parse(readFileSync(
+    new URL(
+      "../../desktop/src/shared/attention/activityStateGroup.cases.json",
+      import.meta.url,
+    ),
+    "utf8",
+  )) as { cases: StateGroupCase[] };
+
+  // The renderer spells the amber band `needs-you` (a CSS-friendly id) and the
+  // relay spells it `needs_you` (the push wire's phase vocabulary). Same group,
+  // and the ONLY spelling difference between the two — anything else must fail.
+  const relayGroup = (expected: string): string =>
+    expected === "needs-you" ? "needs_you" : expected;
+
+  it("has cases to check", () => {
+    expect(fixture.cases.length).toBeGreaterThan(0);
+  });
+
+  for (const testCase of fixture.cases) {
+    it(`matches the canonical table: ${testCase.name}`, () => {
+      expect(liveActivityTestInternals.activityStateGroup({
+        kind: "agent",
+        phase: testCase.phase,
+        activityTier: testCase.tier,
+        ...(testCase.chatActivityMode === null
+          ? {}
+          : { chatActivityMode: testCase.chatActivityMode }),
+      } as never)).toBe(relayGroup(testCase.expected));
+    });
+  }
+});
+
+describe("cross-machine project identity", () => {
+  // `projectId` is a per-machine `randomUUID()`. It resolves nowhere but the
+  // machine that minted it, so an account-scope reader opening an item from
+  // another machine — and every deep link built from one — depends on
+  // `canonicalId` surviving the relay. It did not: the parser dropped it, and
+  // the fix was silently leaning on the `rootPath` fallback instead.
+  it("round-trips the machine-independent project id to account readers", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    try {
+      const item = activityAgentItem({
+        sessionId: "canonical-id",
+        itemId: null,
+        revision: 1,
+        contentFingerprint: "canonical-content-1",
+        alertFingerprint: "canonical-alert-1",
+        activityTier: "ambient",
+        eventKind: "agent_running",
+        phase: "running",
+      });
+      const published = await publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "delta",
+        rosterEpoch: 1,
+        items: [{
+          ...item,
+          project: {
+            projectId: "db-uuid-only-meaningful-here",
+            canonicalId: "project_abc123",
+            name: "ADE",
+            rootPath: "/projects/ade",
+          },
+        }],
+        tombstones: [],
+      });
+      expect(published.status).toBe(200);
+
+      const snapshot = await (await accountRoute(
+        database,
+        authorization.userId,
+        "GET",
+        "/attention/account/snapshot?since=0",
+      )).json() as {
+        items: Array<{ project: { projectId: string; canonicalId: string | null } }>;
+      };
+      expect(snapshot.items).toHaveLength(1);
+      expect(snapshot.items[0]?.project.canonicalId).toBe("project_abc123");
+      expect(snapshot.items[0]?.project.projectId).toBe("db-uuid-only-meaningful-here");
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an item whose publisher is too old to send a canonical id", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    try {
+      const published = await publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "delta",
+        rosterEpoch: 1,
+        items: [activityAgentItem({
+          sessionId: "legacy-publisher",
+          itemId: null,
+          revision: 1,
+          contentFingerprint: "legacy-content-1",
+          alertFingerprint: "legacy-alert-1",
+          activityTier: "ambient",
+          eventKind: "agent_running",
+          phase: "running",
+        })],
+        tombstones: [],
+      });
+      expect(published.status).toBe(200);
+
+      const snapshot = await (await accountRoute(
+        database,
+        authorization.userId,
+        "GET",
+        "/attention/account/snapshot?since=0",
+      )).json() as {
+        items: Array<{ project: { canonicalId: string | null; rootPath: string | null } }>;
+      };
+      expect(snapshot.items).toHaveLength(1);
+      expect(snapshot.items[0]?.project.canonicalId ?? null).toBeNull();
+      // The reader's remaining cross-machine identity must still be there.
+      expect(snapshot.items[0]?.project.rootPath).toBe("/projects/ade");
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
     }
   });
 });

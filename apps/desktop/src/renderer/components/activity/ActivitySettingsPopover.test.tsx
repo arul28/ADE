@@ -113,6 +113,41 @@ describe("ActivitySettingsPopover", () => {
     expect(savedPreferences.account).not.toHaveProperty("notchEnabled");
   });
 
+  /**
+   * Two modes, both showing the identical compact strip, both opening the full
+   * panel on click. The third was "Compact + peek", whose peek layout no longer
+   * exists, and the reveal toggle beside them was a switch whose only outcome
+   * was a notch that never spoke.
+   */
+  it("offers exactly two notch modes and no automatic-reveal switch", async () => {
+    installAde();
+    render(<ActivitySettingsPopover />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
+    await screen.findByRole("dialog", { name: "Activity settings" });
+    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
+
+    expect(Array.from((behavior as HTMLSelectElement).options).map((option) => [
+      option.value,
+      option.textContent,
+    ])).toEqual([
+      ["always", "Always show"],
+      ["hover", "Show on hover"],
+    ]);
+    expect(screen.queryByRole("switch", { name: "Automatic reveal" })).toBeNull();
+  });
+
+  it("maps a retired mode forward instead of hiding the notch", async () => {
+    window.localStorage.setItem("ade:attention:notch-reveal-mode", "click");
+    installAde();
+    render(<ActivitySettingsPopover />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
+    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
+
+    expect((behavior as HTMLSelectElement).value).toBe("always");
+  });
+
   it("returns focus to the trigger when Escape dismisses it", async () => {
     installAde();
     render(<ActivitySettingsPopover />);

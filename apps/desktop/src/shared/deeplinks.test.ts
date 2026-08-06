@@ -47,6 +47,43 @@ describe("parseDeeplink — ade:// scheme", () => {
     });
   });
 
+  it("parses the legacy projectRoot param without ever re-emitting it", () => {
+    // ADE stopped minting `projectRoot` (it leaked the publisher's home
+    // directory into every pasted link), but links already in PRs and Linear
+    // issues still carry it, and it is the only thing that resolves a link
+    // whose projectId is the publishing machine's private uuid.
+    const target = expectOk(parseDeeplink(
+      "ade://session/session-123?accountMachineKey=machine-b&projectId=project-b"
+      + "&projectRoot=%2FUsers%2Farul%2FProjects%2FADE",
+    ));
+    expect(target).toEqual({
+      kind: "session",
+      sessionId: "session-123",
+      ownership: {
+        accountMachineKey: "machine-b",
+        projectId: "project-b",
+        projectRoot: "/Users/arul/Projects/ADE",
+      },
+    });
+    // Re-minting the parsed target must not put the path back on the wire.
+    const rebuilt = buildDeeplink(target);
+    expect(rebuilt).not.toContain("projectRoot");
+    expect(rebuilt).not.toContain("arul");
+    expect(rebuilt).toContain("projectId=project-b");
+  });
+
+  it("drops an over-long projectRoot rather than failing the whole link", () => {
+    const target = expectOk(parseDeeplink(
+      "ade://session/session-123?accountMachineKey=machine-b&projectId=project-b"
+      + `&projectRoot=${"a".repeat(5_000)}`,
+    ));
+    expect(target).toEqual({
+      kind: "session",
+      sessionId: "session-123",
+      ownership: { accountMachineKey: "machine-b", projectId: "project-b" },
+    });
+  });
+
   it("rejects partial destination ownership instead of routing ambiguously", () => {
     const result = parseDeeplink(
       "ade://session/session-123?accountMachineKey=machine-b",

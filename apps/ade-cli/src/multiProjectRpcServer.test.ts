@@ -117,6 +117,7 @@ function makeAccountAuthServiceMock() {
       expiresAt: null,
     })),
     onSignedIn: vi.fn(() => () => {}),
+    consumePairingGrant: vi.fn(() => null),
     dispose: vi.fn(),
   };
 }
@@ -569,6 +570,85 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  it("re-pairs a removed machine on request and automatically after an interactive sign-in", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const repairMachinePairing = vi.fn(async () => ({
+      repaired: true,
+      wasRevoked: true,
+      published: true,
+      pushRestored: true,
+      state: "published" as const,
+      reason: null,
+    }));
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+        repairMachinePairing,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+
+      // The explicit affordance the desktop's "reconnect this machine" button
+      // and `ade machines reconnect` both call.
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: { action: "repairMachinePairing", args: {} },
+      });
+      expect(result).toMatchObject({
+        domain: "account",
+        action: "repairMachinePairing",
+        result: { repaired: true, pushRestored: true },
+      });
+      expect(repairMachinePairing).toHaveBeenLastCalledWith();
+
+      // Completing an interactive sign-in is a deliberate, user-initiated link,
+      // so it repairs a gated machine without the user knowing the command —
+      // but only when something is actually gated.
+      (accountAuthService.pollLogin as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        status: "signed_in",
+        message: null,
+        authStatus: {
+          signedIn: true,
+          userId: "account-b",
+          email: null,
+          name: null,
+          expiresAt: "2026-07-15T22:00:00.000Z",
+        },
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "account.call",
+        params: { action: "pollLogin", args: { sessionId: "test-session" } },
+      });
+      expect(repairMachinePairing).toHaveBeenLastCalledWith({ onlyIfRevoked: true });
+      expect(repairMachinePairing).toHaveBeenCalledTimes(2);
+
+      // A login that has not completed is not a pairing signal.
+      await handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "account.call",
+        params: { action: "pollLogin", args: { sessionId: "test-session" } },
+      });
+      expect(repairMachinePairing).toHaveBeenCalledTimes(2);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("exposes the machine account action domain without a project id", async () => {
     const { registry } = createRegistry();
     const accountAuthService = {
@@ -590,6 +670,7 @@ describe("multi-project RPC server", () => {
       cancelLogin: vi.fn(),
       signOut: vi.fn(),
       onSignedIn: vi.fn(() => () => {}),
+      consumePairingGrant: vi.fn(() => null),
       dispose: vi.fn(),
     };
     const handler = createMultiProjectRpcRequestHandler({
@@ -707,6 +788,8 @@ describe("multi-project RPC server", () => {
         "listMachines",
         "pairMachine",
         "renameMachine",
+        "deleteMachine",
+        "repairMachinePairing",
       ]) {
         await expect(
           handler({
@@ -860,6 +943,43 @@ describe("multi-project RPC server", () => {
           params: { action: "renameMachine", args: { machine: "mk_studio" } },
         }),
       ).rejects.toThrow(/customName to be a string or null/);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  // Removal is the destructive half of the machine lifecycle the desktop
+  // Account page owns, and it reaches the brain through this action. Routed to
+  // the machine directory rather than to the account auth service, which would
+  // answer "account.deleteMachine is not callable" and leave `ade machines
+  // remove` with nothing behind it.
+  it("routes machine removal to the account machine directory", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      // The directory service's own guard, reached before any network call.
+      await expect(
+        handler({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "account.call",
+          params: { action: "deleteMachine", args: { machine: "  " } },
+        }),
+      ).rejects.toThrow(/Machine key is required/);
       handler.dispose();
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);

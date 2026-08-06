@@ -137,6 +137,11 @@ import type { AdeRuntime } from "./bootstrap";
 import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
+import {
+  ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
+  PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+} from "./services/account/accountMachinePublisherService";
+import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
@@ -231,6 +236,7 @@ type FormatterId =
   | "account-token"
   | "account-machines"
   | "account-machine-rename"
+  | "account-machine-remove"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -330,6 +336,21 @@ type CliPlan =
        * exits 1 when a query returns no results, so scripts can branch on it).
        */
       exitCodeFromResult?: (result: unknown) => number;
+      /**
+       * Run a recovery step and re-execute the plan once, when the first result
+       * says the command cannot succeed without it. Returning false leaves the
+       * first result exactly as it was, so the plan's normal formatting, output
+       * suffixes, and exit code still apply.
+       *
+       * Used by `ade machines reconnect`: the directory refuses a re-pair
+       * without proof of a freshly completed interactive sign-in, and the
+       * refusal's own advice ("sign in again on this computer") is the thing the
+       * user just tried to act on by running the command.
+       */
+      retryAfterRecovery?: (
+        result: unknown,
+        options: GlobalOptions,
+      ) => Promise<boolean>;
     }
   | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
@@ -1186,6 +1207,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines list --text
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
+    $ ade machines remove <machine-key> --confirm REMOVE
+    $ ade machines reconnect
     $ ade machines connect <machine-key>
     $ ade machines connect <device-id> --project <project-id|name|path>
     $ ade machines hop <unambiguous-name> --session <session-id|title>
@@ -1200,6 +1223,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
   selected machine for that account, then launch ADE Code. Signing out removes
   machines added through the account from this ADE install. Machines you pair
   directly with a PIN, SSH, or an address stay saved after sign-out.
+
+  \`remove\` takes a machine off the account, revokes it, and clears the Activity
+  it published — one request, so a failure to clear Activity is reported as a
+  failed removal you can retry rather than as a clean one. It is destructive and
+  requires \`--confirm REMOVE\`. The removed machine can only rejoin by signing in
+  again on it (see \`reconnect\`); nothing this machine runs can bring it back.
+
+  \`reconnect\` re-pairs THIS machine after it was removed from the account
+  (takes no selector). Removal is terminal by design — heartbeats never
+  re-register a removed machine — so this is the way back: it re-registers as a
+  deliberate pairing and, only once the directory accepts, lifts the push gate
+  so Activity, alerts, and badges resume without a restart. An interactive
+  \`ade login\` runs the same repair automatically.
+
+  The directory only accepts a re-pair with proof of a freshly completed
+  interactive sign-in, so \`reconnect\` prompts for one when it is needed and
+  re-pairs as soon as it lands — no second command.
 `,
   search: `${ADE_BANNER}
   ADE Search
@@ -14241,6 +14281,59 @@ function buildMachinesPlan(args: string[]): CliPlan {
       })],
     };
   }
+  if (sub === "remove" || sub === "rm") {
+    // Same shape as `lanes archive-and-reclaim`: the only destructive account
+    // command, and the only one whose damage a re-run cannot undo. Removal
+    // revokes the machine and purges its Activity, and the machine can only
+    // come back through a fresh interactive sign-in on it.
+    //
+    // Read before the positional: the readers consume as they go, so a bare
+    // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
+    // machine key and complain that --confirm has no value.
+    const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    const machine = readValue(args, ["--machine", "--target"])
+      ?? firstStandalonePositional(args);
+    if (!machine?.trim()) {
+      throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
+    }
+    if (confirmation !== "REMOVE") {
+      throw new CliUsageError(
+        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin by signing in again on it.`,
+      );
+    }
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError(`machines ${sub} accepts one machine key.`);
+    }
+    return {
+      kind: "execute",
+      label: "account machine remove",
+      formatter: "account-machine-remove",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [accountActionStep("result", "deleteMachine", {
+        machine: machine.trim(),
+      })],
+    };
+  }
+  if (sub === "reconnect" || sub === "repair") {
+    // Deliberately takes no machine selector: this re-pairs THIS machine, the
+    // only one whose local revocation this brain can lift.
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError(
+        `machines ${sub} re-pairs this machine and does not accept a machine selector.`,
+      );
+    }
+    return {
+      kind: "execute",
+      label: "account machine reconnect",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [accountActionStep("result", "repairMachinePairing")],
+      retryAfterRecovery: recoverAccountMachineReconnect,
+    };
+  }
   if (sub === "connect" || sub === "hop" || sub === "code") {
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
@@ -14255,7 +14348,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       remoteArgs: args,
     };
   }
-  throw new CliUsageError("machines supports list, rename, connect, or hop.");
+  throw new CliUsageError("machines supports list, rename, remove, reconnect, connect, or hop.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -16746,6 +16839,42 @@ async function runServe(
       accountDirectory: getAccountDirectoryHealth(),
     });
   };
+
+  /**
+   * The one product path back from an account-side machine removal: re-pair
+   * this machine into the account AND lift the push gate in the same call.
+   * Reachable as `account.repairMachinePairing` over RPC (so the desktop can
+   * offer a "reconnect this machine" button) and as `ade machines reconnect`,
+   * and run automatically after an interactive sign-in.
+   */
+  const repairMachinePairing = async (
+    input?: { onlyIfRevoked?: boolean },
+  ): Promise<MachinePairingRepairResult> => {
+    const [
+      { repairMachinePairing: runMachinePairingRepair },
+      { peekSharedPushPublisherService, resolvePushRelayStateFile },
+    ] = await Promise.all([
+      import("./services/account/machinePairingRepair"),
+      import("./services/push/pushPublisherService"),
+    ]);
+    const pushRelayFilePath = resolvePushRelayStateFile(layout.secretsDir);
+    // Peek, never create: minting a publisher here would attach no sources and
+    // would not be the instance the project scopes publish through.
+    const push = peekSharedPushPublisherService(pushRelayFilePath) ?? null;
+    const pushStore = push
+      ? null
+      : (await import("./services/push/pushRegistrationStore")).createPushRegistrationStore({
+        filePath: pushRelayFilePath,
+        logger: headlessProjectLogger,
+      });
+    return await runMachinePairingRepair({
+      directory: accountMachinePublisher,
+      push,
+      pushStore,
+      onlyIfRevoked: input?.onlyIfRevoked === true,
+      logger: headlessProjectLogger,
+    });
+  };
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -16825,6 +16954,7 @@ async function runServe(
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
+      repairMachinePairing,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -19910,6 +20040,14 @@ function formatTextOutput(
         ? `Renamed ${machine.machineKey} to ${displayName}.`
         : `Cleared the custom name for ${machine.machineKey}; using ${displayName}.`;
     }
+    case "account-machine-remove": {
+      const removed = isRecord(value) ? asString(value.machineKey) : null;
+      // The directory purges the removed machine's Activity as part of the same
+      // request, so a plain success here means both landed; a partial removal
+      // arrives as an error, not as this line.
+      return `Removed ${removed ?? "the machine"} from your ADE account and cleared its Activity. ` +
+        "It can only rejoin by signing in again on that computer (`ade machines reconnect`).";
+    }
     case "projects-list":
       return formatProjectsList(value);
     case "linear-quick-view":
@@ -20399,6 +20537,65 @@ export function detectAccountLoginMode(args: {
     return "device";
   }
   return "loopback";
+}
+
+/**
+ * Did the directory refuse this re-pair for want of a freshly completed
+ * interactive sign-in, rather than for a transport or configuration fault?
+ *
+ * Both refusals reach the brain's publisher as `state: "http_error"`, so the
+ * status cannot separate them. `reasonCode` carries the directory's own code
+ * and is authoritative in both directions: reworded copy cannot switch the
+ * recovery off, and a re-auth-shaped sentence cannot switch it on when the
+ * code says the machine is simply revoked.
+ */
+export function accountReconnectNeedsFreshSignIn(result: unknown): boolean {
+  if (!isRecord(result) || result.repaired === true) return false;
+  const reasonCode = asString(result.reasonCode)?.trim();
+  if (reasonCode) return reasonCode === ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE;
+  // COMPATIBILITY SHIM — older brain only. A brain built before `reasonCode`
+  // existed says nothing but the sentence. Delete this branch, and the test
+  // pinning the sentence, once the supported brain floor carries the code.
+  return asString(result.reason)?.trim() === PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE;
+}
+
+/**
+ * Recovery for `ade machines reconnect`: sign in again, then let the plan run
+ * once more.
+ *
+ * The sign-in MUST be the device flow. Only ADE's account directory can mint
+ * the single-use pairing grant a removed machine needs, and it can only mint
+ * one for a sign-in it observes — its own `/device/*` flow. The loopback PKCE
+ * flow `ade login` would otherwise pick on a desktop goes straight to the
+ * issuer, so it would hand back the same refusal the user just tried to act on.
+ * `explicitHeadless` is how `ade login` is told to take that path, and
+ * delegating keeps every OAuth detail in exactly one implementation.
+ *
+ * Nothing re-pairs here: the brain already re-pairs on its own when an
+ * interactive sign-in completes while this machine is revoked. The plan's
+ * second run reports what actually happened, and reports honestly if the
+ * brain's own attempt did not land.
+ */
+async function recoverAccountMachineReconnect(
+  result: unknown,
+  options: GlobalOptions,
+): Promise<boolean> {
+  if (!accountReconnectNeedsFreshSignIn(result)) return false;
+  process.stderr.write(
+    `\n${PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE}\n`,
+  );
+  const login = await runAccountLogin(
+    { kind: "account-login", maxWaitSec: null, explicitHeadless: true },
+    options,
+  );
+  if (login.exitCode !== 0) {
+    process.stderr.write(
+      "Sign-in did not complete, so this computer is still disconnected from your account.\n",
+    );
+    return false;
+  }
+  process.stderr.write("Reconnecting this computer…\n");
+  return true;
 }
 
 /**
@@ -21404,7 +21601,10 @@ async function runCli(
     if (plan.kind === "github-app-login") {
       return await runGithubAppLogin(plan, parsed.options);
     }
-    const result = await executePlan(plan, parsed.options);
+    let result = await executePlan(plan, parsed.options);
+    if (plan.retryAfterRecovery && await plan.retryAfterRecovery(result, parsed.options)) {
+      result = await executePlan(plan, parsed.options);
+    }
     if (plan.writeResultPath) {
       const payload = JSON.stringify(
         result,

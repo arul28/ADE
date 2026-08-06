@@ -2,7 +2,13 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { handleRequest, verifyCallerToken, type Env } from "../src/directory";
+import {
+  cleanupExpiredPairingGrants,
+  handleRequest,
+  PAIRING_GRANT_TTL_MS,
+  verifyCallerToken,
+  type Env,
+} from "../src/directory";
 import worker from "../src/index";
 
 type StoredMachine = {
@@ -23,6 +29,7 @@ type StoredDeviceAuthorization = {
   device_code: string;
   user_code: string;
   device_secret_hash: string;
+  machine_key: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -68,9 +75,26 @@ class FakeD1Statement {
   }
 }
 
+type StoredRevocation = {
+  user_id: string;
+  machine_key: string;
+  device_id: string | null;
+  revoked_at: number;
+};
+
+type StoredPairingGrant = {
+  grant_hash: string;
+  user_id: string;
+  machine_key: string;
+  created_at: number;
+  expires_at: number;
+};
+
 class FakeD1Database {
   rows: StoredMachine[] = [];
+  revocations: StoredRevocation[] = [];
   deviceRows: StoredDeviceAuthorization[] = [];
+  pairingGrants: StoredPairingGrant[] = [];
   approvalRateLimits = new Map<string, { window_started_at: number; attempts: number }>();
   private rateLimitReadBarrier: {
     remaining: number;
@@ -118,6 +142,12 @@ class FakeD1Database {
 
   first<T>(sql: string, values: unknown[]): T | null {
     const normalized = sql.toLowerCase();
+    if (normalized.includes("from revoked_machines")) {
+      const [userId, machineKey] = values;
+      return (this.revocations.find((row) =>
+        row.user_id === userId && row.machine_key === machineKey
+      ) ?? null) as T | null;
+    }
     if (normalized.includes("from machines")) {
       const [userId, machineKey] = values;
       return (this.rows.find((row) => row.user_id === userId && row.machine_key === machineKey) ?? null) as T | null;
@@ -153,6 +183,69 @@ class FakeD1Database {
 
   run(sql: string, values: unknown[]): number {
     const normalized = sql.toLowerCase();
+    if (normalized.includes("insert into machine_pairing_grants")) {
+      const [grantHash, userId, machineKey, createdAt, expiresAt] = values;
+      if (this.pairingGrants.some((row) => row.grant_hash === grantHash)) return 0;
+      this.pairingGrants.push({
+        grant_hash: String(grantHash),
+        user_id: String(userId),
+        machine_key: String(machineKey),
+        created_at: Number(createdAt),
+        expires_at: Number(expiresAt),
+      });
+      return 1;
+    }
+    if (normalized.includes("delete from machine_pairing_grants")) {
+      // Mirror the source's single-statement redemption exactly: user, machine,
+      // and expiry are all part of the WHERE clause, so a test that loosens any
+      // of them in the worker fails here instead of being absorbed.
+      if (normalized.includes("grant_hash = ?")) {
+        const [grantHash, userId, machineKey, nowMs] = values;
+        const before = this.pairingGrants.length;
+        this.pairingGrants = this.pairingGrants.filter((row) =>
+          !(row.grant_hash === grantHash
+            && row.user_id === userId
+            && row.machine_key === machineKey
+            && row.expires_at > Number(nowMs))
+        );
+        return before - this.pairingGrants.length;
+      }
+      const cutoff = Number(values[0]);
+      const before = this.pairingGrants.length;
+      this.pairingGrants = this.pairingGrants.filter((row) => row.expires_at > cutoff);
+      return before - this.pairingGrants.length;
+    }
+    if (normalized.includes("insert into revoked_machines")) {
+      const [userId, machineKey, deviceId, revokedAt] = values;
+      // Mirror whichever conflict clause the source actually uses, so a revert
+      // to a bare `device_id = excluded.device_id` fails the retry test rather
+      // than being papered over here.
+      const preservesDeviceId = normalized.includes("coalesce(excluded.device_id");
+      const row = this.revocations.find((entry) =>
+        entry.user_id === userId && entry.machine_key === machineKey
+      );
+      if (row) {
+        const next = deviceId == null ? null : String(deviceId);
+        row.device_id = preservesDeviceId ? next ?? row.device_id : next;
+        row.revoked_at = Number(revokedAt);
+        return 1;
+      }
+      this.revocations.push({
+        user_id: String(userId),
+        machine_key: String(machineKey),
+        device_id: deviceId == null ? null : String(deviceId),
+        revoked_at: Number(revokedAt),
+      });
+      return 1;
+    }
+    if (normalized.includes("delete from revoked_machines")) {
+      const [userId, machineKey] = values;
+      const before = this.revocations.length;
+      this.revocations = this.revocations.filter((row) =>
+        row.user_id !== userId || row.machine_key !== machineKey
+      );
+      return before - this.revocations.length;
+    }
     if (normalized.includes("insert into machines")) {
       const retainRelayEndpoints = values[10] === 1;
       const row: StoredMachine = {
@@ -238,6 +331,7 @@ class FakeD1Database {
         device_code: String(values[0]),
         user_code: userCode,
         device_secret_hash: String(values[2]),
+        machine_key: values[6] == null ? null : String(values[6]),
         status: "pending",
         code_verifier: null,
         oauth_state_hash: null,
@@ -426,8 +520,49 @@ function makeEnv(overrides: Partial<Env> = {}): Env & { DB: FakeD1Database } {
     CLERK_JWKS_URL: jwksUrl,
     CLERK_ISSUER: ISSUER,
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
+    PUSH_RELAY_URL: RELAY_URL,
+    DIRECTORY_AUTH_SECRET,
     ...overrides,
   } as unknown as Env & { DB: FakeD1Database };
+}
+
+const RELAY_URL = "https://relay.test";
+/** Shared with the push relay; proves a membership change came from here. */
+const DIRECTORY_AUTH_SECRET = "directory-shared-secret";
+
+/**
+ * Stands in for the push relay so machine membership changes can be asserted
+ * without a network. Machine removal and re-pairing are the only routes that
+ * reach it, and both must report a relay failure rather than absorb it.
+ */
+function activityRelayStub(
+  respond: (url: string, init?: RequestInit) => Response = () =>
+    new Response(JSON.stringify({ ok: true }), { status: 200 }),
+): {
+  options: { activityRelay: { fetchImpl: typeof fetch; retryDelayMs: number } };
+  calls: Array<{
+    url: string;
+    method: string;
+    authorization: string | null;
+    directoryAuth: string | null;
+  }>;
+} {
+  const calls: Array<{
+    url: string;
+    method: string;
+    authorization: string | null;
+    directoryAuth: string | null;
+  }> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? "GET",
+      authorization: new Headers(init?.headers).get("authorization"),
+      directoryAuth: new Headers(init?.headers).get("x-ade-directory-auth"),
+    });
+    return respond(String(input), init);
+  }) as typeof fetch;
+  return { options: { activityRelay: { fetchImpl, retryDelayMs: 0 } }, calls };
 }
 
 async function mintToken(args: {
@@ -437,9 +572,17 @@ async function mintToken(args: {
   azp?: string;
   expired?: boolean;
   useBadKey?: boolean;
+  /** Standard OIDC authentication time, in seconds since the epoch. */
+  authTime?: number;
+  /** Clerk's factor-verification-age claim: [firstFactorMinutes, secondFactorMinutes]. */
+  fva?: unknown;
 } = {}): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  let token = new SignJWT(args.azp === undefined ? {} : { azp: args.azp })
+  let token = new SignJWT({
+    ...(args.azp === undefined ? {} : { azp: args.azp }),
+    ...(args.authTime === undefined ? {} : { auth_time: args.authTime }),
+    ...(args.fva === undefined ? {} : { fva: args.fva }),
+  })
     .setProtectedHeader({ alg: "RS256", kid: "test-key" })
     .setIssuer(args.issuer ?? ISSUER)
     .setIssuedAt(now)
@@ -447,6 +590,15 @@ async function mintToken(args: {
   if (args.sub !== null) token = token.setSubject(args.sub ?? "user_1");
   if (args.audience !== undefined) token = token.setAudience(args.audience);
   return token.sign(args.useBadKey ? badSigningKey : signingKey);
+}
+
+/**
+ * A token that proves the user just signed in interactively — the only kind the
+ * directory accepts `pairing: true` on. `fva[0] = 0` is Clerk's "first factor
+ * verified within the last minute"; `-1` is "no second factor registered".
+ */
+async function mintFreshAuthToken(sub = "user_1"): Promise<string> {
+  return mintToken({ sub, fva: [0, -1] });
 }
 
 function registerBody(machineKey: string, endpoints: unknown = [{ kind: "lan", host: "mac.local", port: 8787 }]) {
@@ -1297,19 +1449,25 @@ describe("machine directory", () => {
       reachableEndpoints: [{ kind: "lan", host: "first.local", port: 8787 }],
     }));
 
+    const relay = activityRelayStub();
     await handleRequest(request(
       "DELETE",
       "/account/machines/shared-machine",
       firstToken,
-    ), env);
+    ), env, relay.options);
+    // Re-adding a removed machine is a deliberate pairing, not a heartbeat, and
+    // it needs a freshly proven sign-in on top of the `pairing` flag.
     const afterDelete = await handleRequest(request(
       "POST",
       "/account/machines/register",
-      firstToken,
-      registrationWithRelayRetention("shared-machine", [
-        { kind: "lan", host: "after-delete.local", port: 8787 },
-      ]),
-    ), env);
+      await mintFreshAuthToken("user_1"),
+      {
+        ...registrationWithRelayRetention("shared-machine", [
+          { kind: "lan", host: "after-delete.local", port: 8787 },
+        ]),
+        pairing: true,
+      },
+    ), env, relay.options);
     expect(await afterDelete.json()).toEqual(expect.objectContaining({
       reachableEndpoints: [{ kind: "lan", host: "after-delete.local", port: 8787 }],
     }));
@@ -1431,6 +1589,292 @@ describe("machine directory", () => {
     expect(body.machines[0]?.online).toBe(false);
   });
 
+  it("purges the removed machine's Activity through the relay with the caller's token", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+
+    const deleted = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+
+    expect(deleted.status).toBe(200);
+    expect(relay.calls).toEqual([{
+      url: `${RELAY_URL}/attention/account/machines/machine-a`,
+      method: "DELETE",
+      authorization: `Bearer ${token}`,
+      directoryAuth: DIRECTORY_AUTH_SECRET,
+    }]);
+    expect(env.DB.revocations).toEqual([expect.objectContaining({
+      user_id: "user_1",
+      machine_key: "machine-a",
+      device_id: "device-machine-a",
+    })]);
+  });
+
+  it("reports a failed Activity purge instead of a clean removal", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub(() => new Response("boom", { status: 500 }));
+
+    const deleted = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+
+    expect(deleted.status).toBe(502);
+    expect(await deleted.json()).toMatchObject({
+      ok: false,
+      code: "activity_purge_failed",
+      machineRemoved: true,
+      activityPurged: false,
+    });
+    // Retried once before giving up, and the removal itself still stuck.
+    expect(relay.calls).toHaveLength(2);
+    expect(env.DB.rows).toHaveLength(0);
+    expect(env.DB.revocations).toHaveLength(1);
+  });
+
+  it("refuses a removed machine's heartbeat registration until it pairs again", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+
+    // The removed machine keeps a valid token and re-registers every 30 s.
+    const heartbeat = await register(env, token, "machine-a");
+    expect(heartbeat.status).toBe(403);
+    expect(await heartbeat.json()).toMatchObject({ code: "machine_revoked" });
+    expect(env.DB.rows).toHaveLength(0);
+
+    // A `pairing: true` heartbeat from the same stale token is still refused:
+    // the flag is caller-supplied, so it proves nothing on its own.
+    const staleAuthPairing = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, relay.options);
+    expect(staleAuthPairing.status).toBe(403);
+    expect(await staleAuthPairing.json()).toMatchObject({
+      code: "pairing_authentication_required",
+    });
+    expect(env.DB.revocations).toHaveLength(1);
+    expect(env.DB.rows).toHaveLength(0);
+
+    const repaired = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintFreshAuthToken("user_1"),
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, relay.options);
+    expect(repaired.status).toBe(200);
+    expect(env.DB.revocations).toHaveLength(0);
+    expect(relay.calls.at(-1)).toMatchObject({
+      url: `${RELAY_URL}/attention/account/machines/machine-a/pairing`,
+      method: "POST",
+    });
+  });
+
+  it.each([
+    ["an auth_time older than the freshness bound", { authTime: Math.floor(Date.now() / 1000) - 11 * 60 }],
+    ["a Clerk fva first factor older than the freshness bound", { fva: [11, -1] }],
+    ["no authentication-time claim at all", {}],
+    ["an fva whose first factor was never verified", { fva: [-1, -1] }],
+    ["a non-numeric fva", { fva: ["fresh", -1] }],
+  ] as const)("refuses a pairing registration carrying %s", async (_label, claims) => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+    relay.calls.length = 0;
+
+    const attempt = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintToken({ sub: "user_1", ...claims }),
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, relay.options);
+
+    expect(attempt.status).toBe(403);
+    expect(await attempt.json()).toMatchObject({ code: "pairing_authentication_required" });
+    // Never reached the relay: the directory must not spend its shared secret
+    // on a re-pair it has no proof of.
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.revocations).toHaveLength(1);
+  });
+
+  it.each([
+    ["a fresh OIDC auth_time", { authTime: Math.floor(Date.now() / 1000) - 60 }],
+    ["a fresh Clerk fva", { fva: [0, -1] }],
+    ["a Clerk fva just inside the bound", { fva: [9, -1] }],
+  ] as const)("accepts a pairing registration carrying %s", async (_label, claims) => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+
+    const repaired = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintToken({ sub: "user_1", ...claims }),
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, relay.options);
+
+    expect(repaired.status).toBe(200);
+    expect(env.DB.revocations).toHaveLength(0);
+  });
+
+  it("no longer lets a changed deviceId clear a revocation on its own", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+    relay.calls.length = 0;
+
+    // `deviceId` is attacker-supplied: a removed machine can mint a new one on
+    // every heartbeat, so it can never be the thing that un-revokes.
+    const forged = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-a"), deviceId: "device-i-just-made-up" },
+    ), env, relay.options);
+
+    expect(forged.status).toBe(403);
+    expect(await forged.json()).toMatchObject({ code: "machine_revoked" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.revocations).toHaveLength(1);
+    expect(env.DB.rows).toHaveLength(0);
+  });
+
+  it("preserves the recorded device id across a retried removal", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+
+    // First pass: the relay purge fails, so the desktop tells the user to try
+    // removing it again — but the `machines` row is already gone.
+    const firstAttempt = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      activityRelayStub(() => new Response("boom", { status: 500 })).options,
+    );
+    expect(firstAttempt.status).toBe(502);
+    expect(env.DB.revocations[0]?.device_id).toBe("device-machine-a");
+
+    // Second pass finds `existing === null`. Overwriting the stored device id
+    // with NULL here would erase which install the owner actually removed.
+    const retry = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      activityRelayStub().options,
+    );
+    expect(retry.status).toBe(200);
+    expect(env.DB.revocations[0]?.device_id).toBe("device-machine-a");
+
+    // The same machine still cannot heartbeat its way back in...
+    const heartbeat = await register(env, token, "machine-a");
+    expect(heartbeat.status).toBe(403);
+
+    // ...nor can a "reinstall" it declares by inventing a new device id.
+    const reinstalled = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-a"), deviceId: "device-after-reinstall" },
+    ), env, activityRelayStub().options);
+    expect(reinstalled.status).toBe(403);
+    expect(env.DB.revocations).toHaveLength(1);
+
+    // A genuine reinstall recovers the same way every re-pair does: the user
+    // signs in again, and ADE re-pairs on that fresh authentication.
+    const repaired = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintFreshAuthToken("user_1"),
+      {
+        ...registerBody("machine-a"),
+        deviceId: "device-after-reinstall",
+        pairing: true,
+      },
+    ), env, activityRelayStub().options);
+    expect(repaired.status).toBe(200);
+    expect(env.DB.revocations).toHaveLength(0);
+  });
+
+  it("refuses to hand a membership change to the relay without directory provenance", async () => {
+    const env = makeEnv({ DIRECTORY_AUTH_SECRET: undefined });
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+
+    // Fails closed rather than calling the relay with only the caller's bearer
+    // token — the exact credential a removed machine still holds.
+    const deleted = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+    expect(deleted.status).toBe(502);
+    expect(await deleted.json()).toMatchObject({
+      code: "activity_purge_failed",
+      detail: expect.stringContaining("directory relay authentication"),
+    });
+    expect(relay.calls).toEqual([]);
+  });
+
+  it("keeps a machine revoked when the relay cannot clear the pairing block", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      activityRelayStub().options,
+    );
+
+    const failing = activityRelayStub(() => new Response("down", { status: 503 }));
+    const repaired = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintFreshAuthToken("user_1"),
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, failing.options);
+
+    // A machine back on the roster but unable to publish is worse than one
+    // that retries the re-pair, so the block stays until the relay agrees.
+    expect(repaired.status).toBe(503);
+    expect(await repaired.json()).toMatchObject({ code: "activity_relay_unavailable" });
+    expect(env.DB.revocations).toHaveLength(1);
+    expect(env.DB.rows).toHaveLength(0);
+  });
+
   it("deletes only the caller's row for a shared machine key", async () => {
     const env = makeEnv();
     const firstToken = await mintToken({ sub: "user_1" });
@@ -1441,6 +1885,7 @@ describe("machine directory", () => {
     const deleted = await handleRequest(
       request("DELETE", "/account/machines/shared-machine", firstToken),
       env,
+      activityRelayStub().options,
     );
     expect(deleted.status).toBe(200);
     expect(await deleted.json()).toEqual({ ok: true, machineKey: "shared-machine" });
@@ -1461,5 +1906,312 @@ describe("machine directory", () => {
     expect(removed.meta.changes).toBe(1);
     expect(missing.meta.changes).toBe(0);
     expect(env.DB.rows).toHaveLength(0);
+  });
+});
+
+/**
+ * The second, independent proof that a `pairing: true` registration is backed
+ * by a human who just signed in.
+ *
+ * It exists because the first proof — an `auth_time`/`fva` claim on the
+ * caller's own token — fails CLOSED, and the ADE brain authenticates with a
+ * Clerk OAuth access token whose documented claim set contains neither. A
+ * claim-only gate would therefore risk making every account removal permanent.
+ * Every test here mints its tokens WITHOUT a freshness claim, so the grant is
+ * the only thing that can be doing the work.
+ */
+describe("device-login pairing grants", () => {
+  const DEVICE_SECRET = "daemon-device-secret-with-at-least-32-bytes";
+
+  /**
+   * Drive a real `/device/*` sign-in end to end and return the grant it hands
+   * back. Nothing here is faked past the Clerk token endpoint: the browser
+   * confirmation, the OAuth state round-trip, and the one-time redemption all
+   * run, because those steps are exactly what a removed machine cannot perform.
+   */
+  async function completeDeviceLogin(
+    env: Env & { DB: FakeD1Database },
+    args: { machineKey?: string; sub?: string; now?: number } = {},
+  ): Promise<{ grant: string | null; accessToken: string }> {
+    const now = args.now ?? Date.now();
+    const accessToken = await mintToken({ sub: args.sub ?? "user_1" });
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: DEVICE_SECRET,
+        ...(args.machineKey ? { machine_key: args.machineKey } : {}),
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    const approval = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code)),
+      env,
+      { now: () => now },
+    );
+    const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+    const tokenExchange = (async () => new Response(JSON.stringify({
+      access_token: accessToken,
+      refresh_token: "approved-refresh-token",
+      token_type: "Bearer",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    await handleRequest(
+      new Request(`https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`),
+      env,
+      { now: () => now, fetchImpl: tokenExchange },
+    );
+    const redeemed = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: DEVICE_SECRET,
+      }),
+      env,
+      { now: () => now + 6_000 },
+    );
+    const payload = await redeemed.json() as Record<string, unknown>;
+    return {
+      grant: typeof payload.pairing_grant === "string" ? payload.pairing_grant : null,
+      accessToken,
+    };
+  }
+
+  /** Register `machine-a`, then remove it, leaving a live revocation. */
+  async function removedMachine(
+    env: Env & { DB: FakeD1Database },
+    token: string,
+  ): Promise<ReturnType<typeof activityRelayStub>> {
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+    relay.calls.length = 0;
+    return relay;
+  }
+
+  function pairingRequest(token: string, body: Record<string, unknown>): Request {
+    return request("POST", "/account/machines/register", token, {
+      ...registerBody("machine-a"),
+      pairing: true,
+      ...body,
+    });
+  }
+
+  it("mints a grant only for a device login that declared a machine key", async () => {
+    const withMachine = makeEnv();
+    const withMachineResult = await completeDeviceLogin(withMachine, { machineKey: "machine-a" });
+    expect(withMachineResult.grant).toEqual(expect.any(String));
+    expect(withMachine.DB.pairingGrants).toHaveLength(1);
+    expect(withMachine.DB.pairingGrants[0]).toMatchObject({
+      user_id: "user_1",
+      machine_key: "machine-a",
+    });
+    // Only the hash is stored: a dump of this table must yield nothing spendable.
+    expect(withMachine.DB.pairingGrants[0]?.grant_hash).not.toBe(withMachineResult.grant);
+
+    const withoutMachine = makeEnv();
+    const withoutMachineResult = await completeDeviceLogin(withoutMachine);
+    expect(withoutMachineResult.grant).toBeNull();
+    expect(withoutMachine.DB.pairingGrants).toEqual([]);
+  });
+
+  it("accepts a grant as proof for a machine whose token carries no freshness claim", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+
+    // Same stale token that was just refused a moment ago — only the grant is new.
+    const staleWithoutGrant = await handleRequest(pairingRequest(token, {}), env, relay.options);
+    expect(staleWithoutGrant.status).toBe(403);
+    expect(await staleWithoutGrant.json()).toMatchObject({
+      code: "pairing_authentication_required",
+    });
+    expect(relay.calls).toEqual([]);
+
+    const repaired = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(repaired.status).toBe(200);
+    expect(env.DB.revocations).toEqual([]);
+    expect(relay.calls.at(-1)).toMatchObject({
+      url: `${RELAY_URL}/attention/account/machines/machine-a/pairing`,
+      method: "POST",
+    });
+  });
+
+  it("refuses a replayed grant", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+
+    const first = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(first.status).toBe(200);
+    expect(env.DB.pairingGrants).toEqual([]);
+
+    // Remove it again, then try to re-pair with the grant that was already spent.
+    await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+    relay.calls.length = 0;
+    const replay = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(replay.status).toBe(403);
+    expect(await replay.json()).toMatchObject({ code: "pairing_authentication_required" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.revocations).toHaveLength(1);
+  });
+
+  it("refuses an expired grant", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, {
+      machineKey: "machine-a",
+      now: Date.now() - (PAIRING_GRANT_TTL_MS + 60_000),
+    });
+    expect(grant).toEqual(expect.any(String));
+
+    const attempt = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(attempt.status).toBe(403);
+    expect(await attempt.json()).toMatchObject({ code: "pairing_authentication_required" });
+    expect(relay.calls).toEqual([]);
+    // Refused, not silently spent: an expired grant is not a usable credential
+    // for anyone, so leaving it for the cron sweep changes nothing.
+    expect(env.DB.revocations).toHaveLength(1);
+  });
+
+  it("refuses a grant minted for a different machine key", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-b" });
+
+    const attempt = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(attempt.status).toBe(403);
+    expect(await attempt.json()).toMatchObject({ code: "pairing_authentication_required" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.revocations).toHaveLength(1);
+    // Untouched: another machine's re-pair must still be able to spend it.
+    expect(env.DB.pairingGrants).toHaveLength(1);
+  });
+
+  it("refuses a grant minted for a different user", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    // A second account signs in on a machine that happens to share the key.
+    const { grant } = await completeDeviceLogin(env, {
+      machineKey: "machine-a",
+      sub: "user_2",
+    });
+
+    const attempt = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(attempt.status).toBe(403);
+    expect(await attempt.json()).toMatchObject({ code: "pairing_authentication_required" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.revocations).toHaveLength(1);
+    expect(env.DB.pairingGrants).toHaveLength(1);
+  });
+
+  it("refuses a forged grant and never lets one substitute for the pairing flag", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+
+    const forged = await handleRequest(
+      pairingRequest(token, { pairingGrant: "not-a-real-grant" }),
+      env,
+      relay.options,
+    );
+    expect(forged.status).toBe(403);
+    expect(await forged.json()).toMatchObject({ code: "pairing_authentication_required" });
+
+    // A valid grant on a plain heartbeat is still just a heartbeat: `pairing`
+    // is what declares intent, and its absence means the machine stays removed.
+    const heartbeat = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-a"), pairingGrant: grant },
+    ), env, relay.options);
+    expect(heartbeat.status).toBe(403);
+    expect(await heartbeat.json()).toMatchObject({ code: "machine_revoked" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.pairingGrants).toHaveLength(1);
+  });
+
+  it("does not spend a grant when the token already proves a fresh sign-in", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+
+    const repaired = await handleRequest(
+      pairingRequest(await mintFreshAuthToken("user_1"), { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(repaired.status).toBe(200);
+    // The claim is the fast path; the fallback must stay unspent behind it.
+    expect(env.DB.pairingGrants).toHaveLength(1);
+  });
+
+  it("tells the user what to do instead of only refusing", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+
+    const refusal = await handleRequest(pairingRequest(token, {}), env, relay.options);
+    expect(refusal.status).toBe(403);
+    // This string is what the desktop's reconnect banner and `ade` both surface,
+    // so it has to name the action rather than describe the failure.
+    expect(await refusal.json()).toEqual({
+      error: "Sign in again on this computer to reconnect it to your ADE account",
+      code: "pairing_authentication_required",
+      revokedAt: expect.any(Number),
+    });
+  });
+
+  it("sweeps expired grants and keeps live ones", async () => {
+    const env = makeEnv();
+    const now = Date.now();
+    await completeDeviceLogin(env, { machineKey: "machine-live", now });
+    await completeDeviceLogin(env, {
+      machineKey: "machine-dead",
+      now: now - (PAIRING_GRANT_TTL_MS + 60_000),
+    });
+    expect(env.DB.pairingGrants).toHaveLength(2);
+
+    await expect(cleanupExpiredPairingGrants(env, now)).resolves.toBe(1);
+    expect(env.DB.pairingGrants.map((row) => row.machine_key)).toEqual(["machine-live"]);
   });
 });

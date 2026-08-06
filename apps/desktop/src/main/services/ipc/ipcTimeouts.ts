@@ -64,6 +64,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
   if (channel === IPC.localRuntimeCallSync) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
+  // Reconnecting forwards to the brain on the same 30s sync budget. On the 30s
+  // IPC default the two would expire together and the renderer would render an
+  // opaque IPC timeout instead of the brain's legible reason — so this channel
+  // gets the same headroom every other brain-forwarding channel has.
+  if (channel === IPC.accountRepairMachinePairing) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
   if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
   if (channel === IPC.remoteRuntimeCallAction) {

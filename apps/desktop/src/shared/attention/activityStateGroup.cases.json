@@ -1,0 +1,171 @@
+{
+  "$comment": [
+    "Cross-language conformance fixture for the Activity state-group table.",
+    "",
+    "The same phase -> state-group mapping is implemented four times, because the",
+    "surfaces cannot share code: the renderer (TypeScript), the native notch",
+    "(Swift), the iOS app (Swift), and the push-relay (a hermetic Cloudflare",
+    "Worker that imports nothing from this repo). Documentation alone did not",
+    "keep them in step -- the iOS copy drifted on `merge_ready`, on idle-tier",
+    "demotion, and on how `planning` is derived, in the very commit that created",
+    "it. This file is the pin that turns a documented mirror into an enforced",
+    "one: every implementation runs these cases through its own mapper.",
+    "",
+    "Canonical source of truth: `activityStateGroup` in",
+    "apps/desktop/src/renderer/components/activity/activityPresentation.ts.",
+    "When the rule changes, change it there, update these cases, and let the",
+    "other three suites fail until they follow.",
+    "",
+    "`tier` is the item's activityTier ('signal' | 'ambient' | 'idle').",
+    "`chatActivityMode` is the optional additive field; null means absent."
+  ],
+  "cases": [
+    {
+      "name": "idle tier outranks every phase, including a raised hand",
+      "phase": "needs_you",
+      "tier": "idle",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "idle tier demotes a failure too, not only needs-you",
+      "phase": "failed",
+      "tier": "idle",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "idle tier demotes a running turn",
+      "phase": "running",
+      "tier": "idle",
+      "chatActivityMode": "planning",
+      "expected": "done"
+    },
+    {
+      "name": "needs_you is the amber band",
+      "phase": "needs_you",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "needs-you"
+    },
+    {
+      "name": "failed is its own band, never amber",
+      "phase": "failed",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "failed"
+    },
+    {
+      "name": "checks_failing files with failed",
+      "phase": "checks_failing",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "failed"
+    },
+    {
+      "name": "changes_requested files with failed",
+      "phase": "changes_requested",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "failed"
+    },
+    {
+      "name": "a running turn is working when no chat activity mode is carried",
+      "phase": "running",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "planning comes from chatActivityMode, never from a phase",
+      "phase": "running",
+      "tier": "ambient",
+      "chatActivityMode": "planning",
+      "expected": "planning"
+    },
+    {
+      "name": "a starting turn can be planning too",
+      "phase": "starting",
+      "tier": "ambient",
+      "chatActivityMode": "planning",
+      "expected": "planning"
+    },
+    {
+      "name": "starting without a mode is working",
+      "phase": "starting",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "planning only applies to a live turn, not to a raised hand",
+      "phase": "needs_you",
+      "tier": "signal",
+      "chatActivityMode": "planning",
+      "expected": "needs-you"
+    },
+    {
+      "name": "stale is live-band, not done",
+      "phase": "stale",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "an open pull request is live-band",
+      "phase": "open",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "review_requested is someone else's move, so live-band not amber",
+      "phase": "review_requested",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "merge_ready is live-band -- NOT done (the iOS copy drifted here)",
+      "phase": "merge_ready",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "blocked is live-band",
+      "phase": "blocked",
+      "tier": "signal",
+      "chatActivityMode": null,
+      "expected": "working"
+    },
+    {
+      "name": "completed is the ambient tail",
+      "phase": "completed",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "merged is the ambient tail",
+      "phase": "merged",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "closed is the ambient tail",
+      "phase": "closed",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "an unrecognized mode value is not planning",
+      "phase": "running",
+      "tier": "ambient",
+      "chatActivityMode": "telepathy",
+      "expected": "working"
+    }
+  ]
+}

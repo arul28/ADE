@@ -28,6 +28,11 @@ export function activityContentFingerprint(item: AttentionItem): string {
     kind: item.kind,
     eventKind: item.eventKind,
     phase: item.phase,
+    // Planning is a visible distinction (violet notepad vs blue circle), so it
+    // belongs to the row's look. Deliberately NOT in the alert fingerprint
+    // below: planning↔working flips several times a turn and must never read as
+    // a new phase entry worth notifying about.
+    chatActivityMode: item.chatActivityMode ?? null,
     activityTier: item.activityTier ?? null,
     laneId: item.laneId ?? null,
     laneName: item.laneName ?? null,

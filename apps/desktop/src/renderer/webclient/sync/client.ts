@@ -881,7 +881,15 @@ export class AdeSyncClient {
     return await promise;
   }
 
-  async switchProject(projectId: string): Promise<SyncProjectSwitchResultPayload> {
+  /**
+   * `rootPath` is optional and additive: the host resolver already accepts
+   * either identity, and an Activity item carries the owning machine's local
+   * project uuid, which the host's registry cannot match by id alone.
+   */
+  async switchProject(
+    projectId: string,
+    rootPath: string | null = null,
+  ): Promise<SyncProjectSwitchResultPayload> {
     const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<SyncProjectSwitchResultPayload>((resolve, reject) => {
@@ -897,7 +905,7 @@ export class AdeSyncClient {
       this.connection.send({
         type: "project_switch_request",
         requestId,
-        payload: { projectId },
+        payload: { projectId, ...(rootPath ? { rootPath } : {}) },
       });
     } catch (error) {
       this.rejectPending(this.pendingProjectSwitches, requestId, this.connectionError(error));

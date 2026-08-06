@@ -215,6 +215,15 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(315_000);
   });
 
+  it("outlives the brain call it forwards when reconnecting this machine", () => {
+    // On the 30s default the IPC layer and the brain's own 30s sync budget
+    // expire together, and the renderer renders an opaque IPC timeout instead
+    // of the brain's legible reason for a failed re-pair.
+    const timeoutMs = ipcInvokeTimeoutMs(IPC.accountRepairMachinePairing);
+    expect(timeoutMs).toBeGreaterThan(LOCAL_RUNTIME_SYNC_TIMEOUT_MS);
+    expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
+  });
+
   it("composes an unmapped named daemon override for local runtime actions", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },

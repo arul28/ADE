@@ -132,16 +132,16 @@ describe("ActivitySection", () => {
     await screen.findByText("Notch behavior");
 
     const behavior = screen.getByRole("combobox", { name: "Notch behavior" });
-    fireEvent.change(behavior, { target: { value: "click" } });
+    fireEvent.change(behavior, { target: { value: "always" } });
 
     await waitFor(() => expect(updateSettings).toHaveBeenCalled());
-    expect(updateSettings.mock.calls.at(-1)![0]).toMatchObject({ revealMode: "click" });
+    expect(updateSettings.mock.calls.at(-1)![0]).toMatchObject({ revealMode: "always" });
     // Synced so a second Mac inherits it…
     expect(putPreferences.mock.calls.at(-1)![1]).toMatchObject({
-      account: { notchRevealMode: "click" },
+      account: { notchRevealMode: "always" },
     });
     // …and cached locally so an offline launch still opens it the same way.
-    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
+    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("always");
   });
 
   it("keeps notch presentation reachable but inert while the notch is off", async () => {

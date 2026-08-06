@@ -5,7 +5,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "./services/account/accountMachinePublisherService";
 import {
+  accountReconnectNeedsFreshSignIn,
   applySyncWebPairingFlags,
   automaticProjectRegistrationParams,
   buildAdeCodeArgs,
@@ -274,6 +276,56 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["machines", "rename", "mk_studio"])).toThrow(
       /requires a non-empty name or --clear/,
     );
+    // Removal is the destructive half of the machine lifecycle: it revokes the
+    // machine and purges its Activity, and only a fresh interactive sign-in on
+    // that machine undoes it. Confirmation is required, like reclaim.
+    const remove = expectExecutePlan(buildCliPlan([
+      "machines",
+      "remove",
+      "mk_studio",
+      "--confirm",
+      "REMOVE",
+    ]));
+    expect(remove).toMatchObject({
+      label: "account machine remove",
+      formatter: "account-machine-remove",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [{
+        method: "account.call",
+        params: { action: "deleteMachine", args: { machine: "mk_studio" } },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(remove)).toBe(false);
+    expect(() => buildCliPlan(["machines", "remove", "mk_studio"])).toThrow(
+      /requires --confirm REMOVE/,
+    );
+    expect(() => buildCliPlan(["machines", "rm", "--confirm", "REMOVE"])).toThrow(
+      /requires a stable machine key/,
+    );
+    // The way back from an account-side removal. It re-pairs THIS machine, so a
+    // machine selector would be a lie — reject it rather than silently ignore.
+    const reconnect = expectExecutePlan(buildCliPlan(["machines", "reconnect"]));
+    expect(reconnect).toMatchObject({
+      label: "account machine reconnect",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [{
+        method: "account.call",
+        params: { action: "repairMachinePairing", args: {} },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(reconnect)).toBe(false);
+    // The directory refuses a re-pair without proof of a fresh interactive
+    // sign-in, and only its own device flow can produce that proof — so the
+    // command carries the recovery rather than dead-ending on advice the user
+    // just tried to follow by running it.
+    expect(typeof reconnect.retryAfterRecovery).toBe("function");
+    expect(() => buildCliPlan(["machines", "reconnect", "mk_studio"])).toThrow(
+      /does not accept a machine selector/,
+    );
     expect(() => buildCliPlan([
       "machines",
       "rename",
@@ -404,6 +456,44 @@ describe("ADE CLI", () => {
     })).toBe("loopback");
     expect(detectAccountLoginMode({ env: {} as NodeJS.ProcessEnv, platform: "darwin" }))
       .toBe("loopback");
+  });
+
+  it("routes a reconnect refusal to a sign-in, and leaves every other failure alone", () => {
+    // Both refusals reach the CLI as `state: "http_error"`; only the sentence
+    // separates "prove a fresh sign-in" from "the directory said no".
+    expect(accountReconnectNeedsFreshSignIn({
+      repaired: false,
+      wasRevoked: true,
+      state: "http_error",
+      reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+    })).toBe(true);
+    // Fails closed: no browser sign-in for a failure a sign-in would not fix.
+    expect(accountReconnectNeedsFreshSignIn({
+      repaired: false,
+      state: "http_error",
+      reason: "The account directory did not accept this machine.",
+    })).toBe(false);
+    expect(accountReconnectNeedsFreshSignIn({
+      repaired: true,
+      reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+    })).toBe(false);
+    expect(accountReconnectNeedsFreshSignIn(null)).toBe(false);
+  });
+
+  // On a Mac with a browser, `detectAccountLoginMode` picks the loopback PKCE
+  // flow — which goes straight to the issuer, so the account directory never
+  // sees it and can never mint a pairing grant. Forcing `explicitHeadless` is
+  // how the reconnect recovery asks `ade login` for the device flow instead.
+  it("reaches the directory-observed device flow even where a browser is available", () => {
+    expect(detectAccountLoginMode({
+      explicitHeadless: true,
+      env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "darwin",
+    })).toBe("device");
+    expect(detectAccountLoginMode({
+      env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "darwin",
+    })).toBe("loopback");
   });
 
   it("treats rejected packaged development env credentials as absent when selecting login mode", () => {

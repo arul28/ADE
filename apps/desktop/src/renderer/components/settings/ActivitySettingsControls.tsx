@@ -8,8 +8,6 @@ import {
   SpeakerHigh,
   ArrowsOutSimple,
   CursorClick,
-  Eye,
-  Waveform,
 } from "@phosphor-icons/react";
 
 import {
@@ -52,10 +50,17 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
  * the anchors the settings manifest promises.
  */
 
+/**
+ * Two modes, and only two. There were three, and the difference between them
+ * was never the one the names promised: "Compact + peek" and "Click only"
+ * rendered the same flush strip while "Reveal on hover" revealed into the
+ * bigger expanded rect, so choosing a REVEAL mode silently chose a LAYOUT too.
+ * Both modes now show the identical compact strip and both open the full panel
+ * on click; the only question left is whether the strip is always there.
+ */
 const REVEAL_OPTIONS: { value: AttentionNotchRevealMode; label: string }[] = [
-  { value: "minimal", label: "Compact + peek" },
-  { value: "hover", label: "Reveal on hover" },
-  { value: "click", label: "Click only" },
+  { value: "always", label: "Always show" },
+  { value: "hover", label: "Show on hover" },
 ];
 
 const ESCALATION_OPTIONS = [
@@ -74,9 +79,8 @@ const DOCK_BADGE_SCOPE_OPTIONS: {
 ];
 
 const NOTCH_REVEAL_HELP: Record<AttentionNotchRevealMode, string> = {
-  minimal: "Keep a tiny status visible; hover or click for a short peek.",
-  hover: "Stay hidden until the pointer reaches the top-edge hot zone.",
-  click: "Keep the compact status visible and expand only when clicked.",
+  always: "Keep the compact strip on the menu bar. Click it for the full list.",
+  hover: "Show the same strip when the pointer reaches the top edge.",
 };
 
 export type ActivityMachineOption = {
@@ -121,8 +125,6 @@ export function useActivitySettings() {
     setPreferences((current) => activityPreferencesWithNotchPresentation(current, {
       revealMode: settings.revealMode,
       expandedPanelEnabled: settings.expandedPanelEnabled,
-      automaticRevealEnabled: settings.automaticRevealEnabled,
-      tickerEnabled: settings.tickerEnabled,
     }));
   }), []);
 
@@ -446,35 +448,12 @@ export function ActivitySettingsControls({
                 />
               }
             />
-            <PopoverRow
-              icon={Eye}
-              label="Automatic reveal"
-              description="Let the notch pop out briefly when something needs you."
-              disabled={!notchEnabled}
-              control={
-                <PopoverSwitch
-                  label="Automatic reveal"
-                  checked={notchPresentation.automaticRevealEnabled}
-                  disabled={!notchEnabled}
-                  onChange={(automaticRevealEnabled) =>
-                    setNotchPresentation({ automaticRevealEnabled })}
-                />
-              }
-            />
-            <PopoverRow
-              icon={Waveform}
-              label="Live ticker"
-              description="Cycle what each agent is doing in the pinned strip."
-              disabled={!notchEnabled}
-              control={
-                <PopoverSwitch
-                  label="Live ticker"
-                  checked={notchPresentation.tickerEnabled}
-                  disabled={!notchEnabled}
-                  onChange={(tickerEnabled) => setNotchPresentation({ tickerEnabled })}
-                />
-              }
-            />
+            {/* No "Automatic reveal" row, and no "Live ticker" row. Flashing
+                the strip when something needs you is what the notch IS, and the
+                strip has no ticker to cycle: it is two wings of state-group
+                counts plus a top signal. Both switches survived the surfaces
+                they described, which made them settings that promised
+                something and did nothing. */}
           </section>
         ) : null}
 
@@ -665,37 +644,8 @@ export function ActivitySettingsControls({
             />
           }
         />
-        <SettingsCard
-          anchor="activity-auto-reveal"
-          title="Automatic reveal"
-          description="Let the notch pop out briefly when something needs you."
-          scope="machine"
-          disabled={!notchSupported || !notchEnabled}
-          control={
-            <SettingsToggle
-              label="Automatic reveal"
-              checked={notchPresentation.automaticRevealEnabled}
-              disabled={!notchSupported || !notchEnabled}
-              onChange={(automaticRevealEnabled) =>
-                setNotchPresentation({ automaticRevealEnabled })}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="activity-ticker"
-          title="Live ticker"
-          description="Cycle what each agent is doing in the pinned strip."
-          scope="machine"
-          disabled={!notchSupported || !notchEnabled}
-          control={
-            <SettingsToggle
-              label="Live ticker"
-              checked={notchPresentation.tickerEnabled}
-              disabled={!notchSupported || !notchEnabled}
-              onChange={(tickerEnabled) => setNotchPresentation({ tickerEnabled })}
-            />
-          }
-        />
+        {/* The `activity-auto-reveal` and `activity-ticker` cards are gone with
+            their settings — see the note in the popover variant above. */}
         <SettingsCard
           anchor="activity-celebrations"
           title="Celebrations"

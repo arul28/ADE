@@ -54,7 +54,22 @@ export type AttentionMachineRef = {
 };
 
 export type AttentionProjectRef = {
+  /**
+   * The publishing machine's own database id for the project. It is a
+   * `randomUUID()` minted per machine, so it is meaningful only on the machine
+   * that produced the item — never use it to look a project up on a different
+   * runtime.
+   */
   projectId: string;
+  /**
+   * Machine-independent project identity, `deriveProjectId(rootPath)` — the same
+   * `project_<hash>` form a runtime's own project registry uses. This is the id
+   * that actually resolves across machines, and the one deep links carry.
+   *
+   * Optional because an older publisher omits it; readers fall back to matching
+   * on `rootPath`, and only then on `projectId`.
+   */
+  canonicalId?: string | null;
   name: string;
   rootPath?: string | null;
 };
@@ -118,6 +133,19 @@ export type AttentionItem = {
   laneName?: string | null;
   provider?: string | null;
   model?: string | null;
+  /**
+   * The chat-activity flavour of a running turn, mirroring
+   * `SessionStatusActivityContext.chatActivityMode` in
+   * `shared/sessionStatusPresentation.ts`. Optional and additive: a publisher
+   * that never sets it leaves the item reading exactly as it does today, and a
+   * reader that does not understand a future value must fall back to the phase.
+   *
+   * It exists because "planning" is a state the Activity glyph language names
+   * (violet notepad) but `AttentionPhase` cannot carry — the phase vocabulary is
+   * frozen push wire, and widening it would break every older client. Readers
+   * validate it at the boundary (`activityStateGroup`) rather than trusting it.
+   */
+  chatActivityMode?: "planning" | null;
   title: string;
   preview: string;
   privacyPreview: string;
@@ -196,6 +224,15 @@ export type AttentionTombstone = {
  */
 export type AttentionCounts = {
   needsYou: number;
+  /**
+   * The five state groups of `ACTIVITY_STATE_GROUPS`, of which three were here
+   * from the start. `failed` and `planning` are optional only because an older
+   * publisher cannot send them — a reader that has them must floor its own
+   * groups from them rather than inventing a residual, which is what the
+   * deleted `notchStripUnattributedCount` was doing to paper over the gap.
+   */
+  failed?: number;
+  planning?: number;
   working: number;
   done: number;
   total: number;
@@ -271,11 +308,14 @@ export type AttentionPreferenceScope = {
    * remains the offline cache of record — readers take the synced value when
    * it is present and the local one otherwise. The localStorage key strings
    * are unchanged; only the source of truth moved.
+   *
+   * `notchAutomaticReveal` and `notchTicker` used to sit here too. They are
+   * gone rather than deprecated: the native helper reads neither, so a synced
+   * value for either was a preference that travelled between Macs and then
+   * changed nothing. An older peer may still send them; they are ignored.
    */
   notchRevealMode?: AttentionNotchRevealMode;
   notchExpandedPanel?: boolean;
-  notchAutomaticReveal?: boolean;
-  notchTicker?: boolean;
   quietHours: {
     enabled: boolean;
     startMinute: number;
@@ -295,19 +335,21 @@ export type AttentionPreferences = {
 /**
  * How this computer exposes its notch surface. Events never override the selected
  * interaction mode.
- * - `minimal`: keep a tiny status visible; hover or click opens a short peek.
- * - `hover`: stay visually dormant until the pointer enters the top-edge hot
- *   zone; hover opens a peek and click may open more.
- * - `click`: keep the compact status visible; only an explicit click opens more.
+ * - `always`: the compact strip stays visible on the menu bar.
+ * - `hover`: the same compact strip appears when the pointer enters the top-edge
+ *   hot zone, and retreats when it leaves.
  *
- * A click always still works, in every mode, so no surface is ever inert.
+ * The two modes are deliberately indistinguishable once the strip is on screen:
+ * both render the identical compact chrome, and in both a click — and only a
+ * click — opens the full panel. The retired `minimal`/`click` values described a
+ * third "peek" layout that no longer exists; they normalize to `always` so an
+ * upgrade keeps a visible strip rather than silently hiding it.
  */
-export type AttentionNotchRevealMode = "minimal" | "hover" | "click";
+export type AttentionNotchRevealMode = "always" | "hover";
 
 export const ATTENTION_NOTCH_REVEAL_MODES: readonly AttentionNotchRevealMode[] = [
-  "minimal",
+  "always",
   "hover",
-  "click",
 ];
 
 /** Matches the shipped surface, so an upgrade changes nothing on its own. */
@@ -320,6 +362,19 @@ export function isAttentionNotchRevealMode(
     typeof value === "string"
     && ATTENTION_NOTCH_REVEAL_MODES.includes(value as AttentionNotchRevealMode)
   );
+}
+
+/**
+ * Accepts anything a persisted setting, an older host, or an older helper can
+ * carry and lands on a live mode. `minimal` and `click` both kept the strip on
+ * screen, so both become `always`; anything unrecognized takes the default.
+ */
+export function normalizeAttentionNotchRevealMode(
+  value: unknown,
+): AttentionNotchRevealMode {
+  if (isAttentionNotchRevealMode(value)) return value;
+  if (value === "minimal" || value === "click") return "always";
+  return DEFAULT_ATTENTION_NOTCH_REVEAL_MODE;
 }
 
 /**
@@ -369,10 +424,9 @@ export type AttentionNotchSettings = {
    * never grow far enough to sit over menu-bar content.
    */
   expandedPanelEnabled: boolean;
-  /** Whether an event may pop the surface out on its own. Defaults true. */
-  automaticRevealEnabled: boolean;
-  /** Whether the pinned strip cycles what each agent is doing. Defaults true. */
-  tickerEnabled: boolean;
+  // `automaticRevealEnabled` and `tickerEnabled` were retired: the native
+  // helper stopped reading them (`AttentionModels.swift`), so carrying them
+  // through the wire, the validators and the settings UI moved no pixel.
   preferredDisplayId?: number | null;
   hideDetails: boolean;
   celebrationsEnabled: boolean;
@@ -398,6 +452,173 @@ export type AttentionNotchAcknowledgeRequest = {
   itemId: string;
   mode: "seen" | "dismiss";
 };
+
+/**
+ * The most item ids ONE acknowledgment request may carry.
+ *
+ * DERIVED, not chosen here. It mirrors the push relay's hard bound —
+ * `handleAcknowledgment` in `apps/push-relay/src/attention.ts` (the
+ * `payload.itemIds.length > 64` guard, ~line 2532) rejects the WHOLE request
+ * with 400, because every id becomes one statement in a single D1 batch. Raising
+ * that bound is not the fix; keep this in step with it instead. The
+ * machine-scoped hosts (`attention.acknowledge` in
+ * `apps/ade-cli/src/multiProjectRpcServer.ts`, `attention.acknowledgeMachine` in
+ * `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`) apply the same
+ * 64 cap by truncating, which is worse: the ids past the cap are neither applied
+ * nor reported.
+ *
+ * So a caller with a bigger batch — "Clear all" on an inbox over 64 rows —
+ * SPLITS it into sequential requests of at most this many ids. It must never
+ * truncate: a dropped id is never sent, so it is neither confirmed nor reported
+ * stale, and the optimistic dismiss for it silently un-clears on the next poll.
+ * That is exactly the "Clear all does not clear all" symptom.
+ *
+ * Raising this is not the fix, and raising it ALONE is a regression. The value
+ * derives from the relay's own bound — `handleAcknowledgment` in
+ * `apps/push-relay/src/attention.ts` answers 400 for `itemIds.length > 64`
+ * before it parses anything else, and a relay test pins both sides of that
+ * boundary. Three hosts truncate at the same 64 internally
+ * (`apps/ade-cli/src/multiProjectRpcServer.ts`,
+ * `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`,
+ * `apps/desktop/src/main/services/adeActions/registry.ts`); client-side
+ * chunking is the only reason those truncations are now unreachable. Nobody may
+ * raise this number without first raising the relay's bound and replacing all
+ * three truncations with chunking. The bound keeps one relay-side D1 batch
+ * sane; chunking belongs on the client.
+ */
+export const ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT = 64;
+
+/**
+ * Per-item verdict for one bulk acknowledgment.
+ *
+ * Acks are monotonic and idempotent, so a partially applied batch is a normal
+ * outcome rather than a failure: reporting it per item lets the caller roll back
+ * only what did not land.
+ *
+ * The three lists are disjoint and, together, cover every id the caller sent.
+ * `stale` and `unreached` both mean "roll this row back" — they differ only in
+ * WHY, and that difference is the whole reason the second list exists. A row the
+ * host refused really did change underneath the user, and "refresh Activity" is
+ * the right instruction. A row in a chunk that threw was never answered for at
+ * all: expired auth, a 5xx, a rejected CORS preflight, an owner-fence 409. Filing
+ * those under `stale` told the user something changed when nothing had, and sent
+ * them to refresh a list that was already correct.
+ *
+ * Both new fields are optional and are omitted entirely when no chunk failed, so
+ * a batch that succeeds is byte-identical to what this contract carried before
+ * they existed, and a producer that never populates them still reads correctly.
+ */
+export type AttentionAcknowledgmentOutcome = {
+  /** Ids the host applied. Their optimistic state stands. */
+  acknowledged: string[];
+  /** Ids the host answered for and REFUSED, because they changed underneath. */
+  stale: string[];
+  /**
+   * Ids no answer ever came back for: the chunk carrying them failed in
+   * transport, or an earlier chunk aborted the loop before theirs was sent.
+   */
+  unreached?: string[];
+  /** The transport failure that stopped the batch, for the caller's copy. */
+  unreachedReason?: string;
+};
+
+/**
+ * Split item ids into relay-sized acknowledgment batches, order preserved.
+ *
+ * Shared by the Electron main coordinator and the browser adapter so both sides
+ * chunk identically. An empty input yields no batches (the callers reject that
+ * earlier, with their own message).
+ */
+export function chunkAttentionAcknowledgmentItemIds(
+  itemIds: readonly string[],
+  limit: number = ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT,
+): string[][] {
+  const size = Math.max(1, Math.trunc(limit));
+  const batches: string[][] = [];
+  for (let index = 0; index < itemIds.length; index += size) {
+    batches.push(itemIds.slice(index, index + size));
+  }
+  return batches;
+}
+
+/**
+ * The optional half of an acknowledgment outcome, present only when a chunk
+ * actually failed.
+ *
+ * Shared by the Electron main coordinator and the browser adapter so both
+ * shells report a transport abort identically: omitted entirely when everything
+ * was answered for — so a batch that succeeds serializes exactly as it did
+ * before these fields existed — and otherwise carrying the raw failure text,
+ * which the caller renders as the detail beside its own copy.
+ */
+export function unreachedOutcomeFields(
+  unreached: string[],
+  failure: unknown,
+): Pick<AttentionAcknowledgmentOutcome, "unreached" | "unreachedReason"> {
+  if (unreached.length === 0) return {};
+  const message = failure instanceof Error ? failure.message : String(failure ?? "");
+  const reason = message.trim();
+  return { unreached, ...(reason ? { unreachedReason: reason } : {}) };
+}
+
+/**
+ * Drive one bulk acknowledgment over relay-sized chunks and aggregate the
+ * per-item verdict, so the `AttentionAcknowledgmentOutcome` invariant — the
+ * three lists are disjoint and together cover every id the caller sent — is
+ * enforced in ONE place instead of restated as prose in each of the four
+ * chunk loops that used to compute it.
+ *
+ * `send` issues one chunk and returns the ids the host ANSWERED FOR and
+ * refused; a scope whose host answers per chunk rather than per item (the
+ * machine RPC applies the whole payload or throws) returns nothing. It must
+ * rebuild every per-item map for its own chunk rather than slicing a whole
+ * -batch map alongside: the machine RPC throws on a missing revision and the
+ * relay 400s on a fence naming an id outside the batch.
+ *
+ * Failure policy: ABORT on the first throwing chunk. A chunk that throws is
+ * systemic (expired auth, network down, relay 5xx) — item-specific refusals
+ * come back in the returned stale ids without throwing — so pushing the rest at
+ * a host that just failed only multiplies the damage. The remainder is reported
+ * as `unreached` rather than rethrown, because letting the error propagate
+ * would roll back the chunks that DID land and the user would watch rows they
+ * cleared come back. Whether an all-failed batch rethrows stays with the
+ * caller, whose scopes differ on it.
+ */
+export async function runAcknowledgmentChunks(
+  itemIds: readonly string[],
+  send: (chunk: string[]) => Promise<readonly string[]>,
+): Promise<{
+  acknowledged: string[];
+  stale: string[];
+  unreached: string[];
+  failure: unknown;
+}> {
+  const staleIds = new Set<string>();
+  const confirmed = new Set<string>();
+  let failure: unknown = null;
+  for (const chunk of chunkAttentionAcknowledgmentItemIds(itemIds)) {
+    try {
+      for (const itemId of await send(chunk)) {
+        if (chunk.includes(itemId)) staleIds.add(itemId);
+      }
+      for (const itemId of chunk) confirmed.add(itemId);
+    } catch (error) {
+      failure = error;
+      break;
+    }
+  }
+  // `stale` is what the host ANSWERED and refused — those rows really did
+  // change underneath the user. `unreached` is what no answer ever came for:
+  // the chunk that threw plus every chunk after it. Both roll back; filing the
+  // second under the first told the user their work had changed when the
+  // request simply never completed.
+  return {
+    acknowledged: itemIds.filter((itemId) => confirmed.has(itemId) && !staleIds.has(itemId)),
+    stale: itemIds.filter((itemId) => staleIds.has(itemId)),
+    unreached: itemIds.filter((itemId) => !staleIds.has(itemId) && !confirmed.has(itemId)),
+    failure,
+  };
+}
 
 export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
   AttentionEventKind,
@@ -524,7 +745,20 @@ export function attentionDestinationDeepLink(
   const appendOwnership = (query: URLSearchParams): void => {
     const accountMachineKey = ownership?.machine.accountMachineKey?.trim();
     if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
-    const projectId = ownership?.project.projectId?.trim();
+    // Prefer the machine-independent id: a deep link is opened by whichever
+    // machine the user happens to be on, and the publisher's own database uuid
+    // resolves nowhere but the publisher.
+    //
+    // The project's absolute `rootPath` is deliberately NOT stamped. ADE links
+    // are meant to be pasted into PR descriptions, Linear issues and Slack, and
+    // a `projectRoot=/Users/<name>/Projects/<client>` parameter leaks the local
+    // username and directory layout to every reader. Nothing is lost: the
+    // canonical id above IS `deriveProjectId(rootPath)`, and the receiver's
+    // `resolveLocalProjectRoot` recomputes that hash from each root it knows
+    // (step 3), which matches exactly when a path comparison would have.
+    // Older links still carry the parameter, and the parser still reads it.
+    const project = ownership?.project;
+    const projectId = project?.canonicalId?.trim() || project?.projectId?.trim();
     if (projectId) query.set("projectId", projectId);
   };
   if (destination.kind === "session") {

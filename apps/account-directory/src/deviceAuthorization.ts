@@ -6,6 +6,7 @@ const DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const MAX_MACHINE_KEY_CHARS = 128;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
@@ -17,12 +18,29 @@ export type DeviceAuthorizationRequestOptions = {
   fetchImpl?: typeof fetch;
   now?: () => number;
   randomBytes?: (size: number) => Uint8Array;
+  /**
+   * Called exactly once per device authorization, at the moment the signing-in
+   * machine redeems its approved code — the one interactive sign-in completion
+   * this worker observes end to end.
+   *
+   * Returns the plaintext pairing grant to hand back with the token, or `null`
+   * when none could be minted (no machine key was bound, or the access token
+   * could not be verified). Injected rather than implemented here so all Clerk
+   * token verification stays in `directory.ts` and this module keeps no JWKS
+   * dependency of its own.
+   */
+  mintPairingGrant?: (args: {
+    accessToken: string;
+    machineKey: string;
+  }) => Promise<string | null>;
 };
 
 type DeviceAuthorizationRow = {
   device_code: string;
   user_code: string;
   device_secret_hash: string;
+  /** Machine this login was started from, or null for a non-machine login. */
+  machine_key: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -271,6 +289,15 @@ async function handleDeviceCode(
     return json({ error: "invalid_request", error_description: "device_secret is required" }, { status: 400 });
   }
 
+  // Optional, and never trusted on its own: it only says which machine key a
+  // grant minted at the END of this sign-in may be spent on. Binding it here —
+  // before the human authenticates — is what stops a removed machine from
+  // obtaining a grant for itself out of a sign-in it did not participate in.
+  const machineKey = nonEmptyString(body?.machine_key);
+  if (machineKey && machineKey.length > MAX_MACHINE_KEY_CHARS) {
+    return json({ error: "invalid_request", error_description: "machine_key is too long" }, { status: 400 });
+  }
+
   const now = options.now();
   if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
     return json(
@@ -288,8 +315,8 @@ async function handleDeviceCode(
       await env.DB.prepare(`
         insert into device_authorizations (
           device_code, user_code, device_secret_hash, status, poll_interval_seconds,
-          created_at, expires_at
-        ) values (?, ?, ?, 'pending', ?, ?, ?)
+          created_at, expires_at, machine_key
+        ) values (?, ?, ?, 'pending', ?, ?, ?, ?)
       `).bind(
         deviceCode,
         userCode,
@@ -297,6 +324,7 @@ async function handleDeviceCode(
         DEVICE_POLL_INTERVAL_SECONDS,
         now,
         expiresAt,
+        machineKey,
       ).run();
       break;
     } catch (error) {
@@ -519,7 +547,8 @@ async function handleDeviceCallback(
 async function handleDeviceToken(
   request: Request,
   env: DeviceAuthorizationEnv,
-  options: Required<Pick<DeviceAuthorizationRequestOptions, "now">>,
+  options: Required<Pick<DeviceAuthorizationRequestOptions, "now">>
+    & Pick<DeviceAuthorizationRequestOptions, "mintPairingGrant">,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   const body = await parseJsonBody(request);
@@ -595,7 +624,19 @@ async function handleDeviceToken(
      where device_code = ? and device_secret_hash = ? and status = 'approved'
   `).bind(now, deviceCode, suppliedSecretHash).run();
   if (changes(consumed) < 1) return json({ error: "invalid_grant" }, { status: 401 });
-  return json(approvedToken);
+
+  // Mint the pairing grant only after the one-time consume has been won, so a
+  // racing second redemption of the same device code cannot mint a second
+  // grant. A machine that never declared a machine key gets none, and a mint
+  // failure degrades to a normal sign-in rather than failing it: the grant is
+  // the SECOND proof path for re-pairing, never a precondition for logging in.
+  const pairingGrant = row.machine_key && options.mintPairingGrant
+    ? await options.mintPairingGrant({
+      accessToken: approvedToken.access_token,
+      machineKey: row.machine_key,
+    }).catch(() => null)
+    : null;
+  return json(pairingGrant ? { ...approvedToken, pairing_grant: pairingGrant } : approvedToken);
 }
 
 export async function handleDeviceAuthorizationRequest(
@@ -608,6 +649,7 @@ export async function handleDeviceAuthorizationRequest(
     fetchImpl: options.fetchImpl ?? fetch,
     now: options.now ?? Date.now,
     randomBytes: options.randomBytes ?? defaultRandomBytes,
+    mintPairingGrant: options.mintPairingGrant,
   };
   if (pathname === "/device/code") return handleDeviceCode(request, env, resolved);
   if (pathname === "/device") return handleDeviceApproval(request, env, resolved);

@@ -4,6 +4,7 @@ import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import {
+  type AttentionAcknowledgmentOutcome,
   type AttentionItem,
   type AttentionNotchAcknowledgeRequest,
   type AttentionNotchSettings,
@@ -263,9 +264,12 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountDeviceLoginStart,
+  AdeAccountDeviceLoginPoll,
   AdeAccountLocalMachineIdentity,
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
+  AdeAccountMachinePairingRepairResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -4806,10 +4810,12 @@ contextBridge.exposeInMainWorld("ade", {
     acknowledge: async (args: {
       itemIds: string[];
       sourceRevisions?: Record<string, number>;
+      /** Per-item alert identity as rendered — see `acknowledgeActivityItems`. */
+      alertFingerprints?: Record<string, string>;
       expectedAccountOwnerId?: string | null;
       seenAt?: string;
       dismissedAt?: string | null;
-    }): Promise<void> =>
+    }): Promise<AttentionAcknowledgmentOutcome> =>
       ipcRenderer.invoke(IPC.attentionAcknowledge, args),
     reportPresence: async (presence: AttentionPresence): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionReportPresence, presence),
@@ -8683,6 +8689,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountPollLogin, args),
     cancelLogin: (args: { sessionId: string }): Promise<AdeAccountStatus> =>
       ipcRenderer.invoke(IPC.accountCancelLogin, args),
+    startDeviceLogin: (): Promise<AdeAccountDeviceLoginStart> =>
+      ipcRenderer.invoke(IPC.accountStartDeviceLogin),
+    pollDeviceLogin: (args: { sessionId: string }): Promise<AdeAccountDeviceLoginPoll> =>
+      ipcRenderer.invoke(IPC.accountPollDeviceLogin, args),
+    cancelDeviceLogin: (args: { sessionId: string }): Promise<AdeAccountStatus> =>
+      ipcRenderer.invoke(IPC.accountCancelDeviceLogin, args),
     signOut: (): Promise<AdeAccountStatus> =>
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
@@ -8706,6 +8718,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
     removeMachine: (machineKey: string): Promise<AdeAccountMachineRemovalResult> =>
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
+    repairMachinePairing: (): Promise<AdeAccountMachinePairingRepairResult> =>
+      ipcRenderer.invoke(IPC.accountRepairMachinePairing),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

@@ -214,7 +214,15 @@ Renderer — onboarding:
   machine or clear its custom name. The custom name is account-wide and wins
   for display without replacing the hostname that the machine continues to
   report; list refreshes propagate the new display name through Connections,
-  desktop pairing, ADE Code, hosted web, and iOS.
+  desktop pairing, ADE Code, hosted web, and iOS. When this computer is missing
+  from the signed-in machine list, the page offers **Reconnect this computer**.
+  Removing a machine is terminal — heartbeats never re-register it — so the
+  affordance calls `repairMachinePairing` on the brain, and when the account
+  directory demands proof of a fresh interactive sign-in it runs the *device*
+  login flow (the only one the directory observes, and therefore the only one
+  that can end with the single-use pairing grant a re-pair needs) before trying
+  again. The copy stays honest about the in-between outcome where the machine
+  rejoined the roster but push delivery has not resumed.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -936,7 +944,7 @@ changing rather than which service backs it:
 | Lanes & Git | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications & Sound | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the agent completion sound, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |
-| Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode, expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
+| Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Storage & Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard. Legacy `?tab=usage` and `?tab=ade-usage` land here. |

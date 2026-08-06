@@ -66,6 +66,20 @@ export function createAccountNamespace(
       };
     },
     cancelLogin: async () => browserAccountStatus(accountClient.getSnapshot()),
+    // The device flow exists so a machine's own brain can earn a pairing grant
+    // and spend it locally. A hosted browser has no brain, so it has nothing to
+    // re-pair; the affordance that uses this is hidden in web mode, and this
+    // says why rather than starting a sign-in that could never help.
+    startDeviceLogin: async () => {
+      throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+    },
+    pollDeviceLogin: async () => ({
+      status: "error" as const,
+      message: "Open ADE on the computer you want to reconnect, then try again there.",
+      intervalSec: null,
+      authStatus: browserAccountStatus(accountClient.getSnapshot()),
+    }),
+    cancelDeviceLogin: async () => browserAccountStatus(accountClient.getSnapshot()),
     signOut: async () => browserAccountStatus(await accountClient.signOut()),
     listMachines: async () => machinesResult(await accountClient.loadMachines()),
     renameMachine: async (machineKey: string, customName: string | null) =>
@@ -77,5 +91,11 @@ export function createAccountNamespace(
     },
     onPairMachineProgress: () => () => {},
     removeMachine: async (machineKey: string) => await accountClient.removeMachine(machineKey),
+    // Reconnecting re-registers the machine the ADE brain runs on. A hosted
+    // browser has no brain of its own, so it cannot repair anything; the action
+    // is hidden in web mode rather than left to fail here.
+    repairMachinePairing: async () => {
+      throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+    },
   };
 }

@@ -16,7 +16,15 @@ import {
   type StoredAttentionAcknowledgment,
   type StoredRemoteAttentionAcknowledgment,
 } from "./pushRegistrationStore";
-import { createPushRelayClient } from "./pushRelayClient";
+import {
+  createPushRelayClient,
+  PushRelayMachineRevokedError,
+} from "./pushRelayClient";
+import {
+  activityAlertFingerprint,
+  activityContentFingerprint,
+} from "./activityFingerprint";
+import { deriveProjectId } from "../projects/projectRegistry";
 import {
   buildAgentRunsContentState,
   countAwaitingAttentionRuns,
@@ -24,9 +32,8 @@ import {
   isWithinQuietHours,
   parseHhMm,
   shouldDeliverAlertForPrefs,
-  type AgentRunState,
-  type PushPrNotification,
 } from "./pushPublisherService";
+import type { AgentRunState, PushPrNotification } from "./attentionItemBuilder";
 
 function alertDedupeKey(dedupeKey: string, deviceId = "dev-1"): string {
   return `alert-device:${deviceId.length}:${deviceId}:${dedupeKey}`;
@@ -48,6 +55,10 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
     lastActiveAt: 0,
     statusSinceAt: 0,
     metaResolved: true,
+    backgroundTaskIds: new Set<string>(),
+    deferredTerminalPhase: null,
+    chatActivityMode: null,
+    chatActivityModeCheckedAt: 0,
     ...overrides,
   };
 }
@@ -184,6 +195,7 @@ describe("createPushPublisherService flush", () => {
       activityRosterProvider?: { buildSnapshot(): Promise<SyncRosterProject[]> } | null;
       lastPublishedRevisionById?: Record<string, number>;
       remoteAttentionAcknowledgments?: StoredRemoteAttentionAcknowledgment[];
+      machineRevokedAt?: string | null;
     } = {},
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
@@ -209,10 +221,29 @@ describe("createPushPublisherService flush", () => {
       accountOwnerId: string | null,
       itemId: string,
     ) => `${accountOwnerId ?? ""}\u0000${itemId}`;
+    let machineRevokedAt: string | null = options.machineRevokedAt ?? null;
     const store = {
       hasRegisteredDevices: () => true,
       getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
-      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: devices.length, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
+      getStatusSnapshot: () => ({
+        enabled: true,
+        claimed: true,
+        registeredDeviceCount: devices.length,
+        lastPublishAt: null,
+        lastPublishError: null,
+        lastRelayContactAt: null,
+        identityRecoveryError: null,
+        previousMachineKeys: [] as string[],
+        machineRevokedAt,
+      }),
+      isMachineRevoked: () => machineRevokedAt != null,
+      recordMachineRevoked: (revokedAt?: string | null) => {
+        if (machineRevokedAt) return;
+        machineRevokedAt = revokedAt ?? new Date().toISOString();
+      },
+      clearMachineRevoked: () => {
+        machineRevokedAt = null;
+      },
       listDevices: () => devices,
       getDevice: (deviceId: string) => devices.find((entry) => entry.deviceId === deviceId) ?? null,
       upsertDevice: (registration: PushDeviceRegistration) => {
@@ -410,6 +441,7 @@ describe("createPushPublisherService flush", () => {
       relayClient,
       cliSessions,
       detach,
+      agentChatService,
       attentionAcknowledgments,
       remoteAttentionAcknowledgments,
       publisherLogger,
@@ -1077,7 +1109,7 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("keeps machine Attention acknowledgments durable and revision-fenced", async () => {
+  it("keeps machine Attention acknowledgments durable and owner-fenced", async () => {
     const {
       publisher,
       emit,
@@ -1124,17 +1156,25 @@ describe("createPushPublisherService flush", () => {
       seenAt: null,
     });
     expect(updated.revision).toBeGreaterThan(item.revision);
+    // A stale source revision no longer rejects: seen/dismissed are monotonic
+    // and idempotent, so the fence only ever manufactured failures on live
+    // items (the row a running agent republishes every couple of seconds).
     await expect(publisher.acknowledgeMachineAttention({
       itemIds: [item.id],
       sourceRevisions: { [item.id]: item.revision },
       expectedAccountOwnerId: "owner-a",
-    })).rejects.toThrow(/changed after it loaded/i);
+    })).resolves.toEqual({ acknowledged: [item.id], skipped: [] });
+    // The durable record still moves forward to the newest revision seen.
+    expect(getAttentionAcknowledgment(item.id, "owner-a")?.sourceRevision)
+      .toBe(updated.revision);
 
+    // An id outside this machine's snapshot is skipped, not fatal — one unknown
+    // id in a bulk "Clear all" must not reject the whole batch.
     await expect(publisher.acknowledgeMachineAttention({
       itemIds: ["agent:other-machine:unknown"],
       sourceRevisions: { "agent:other-machine:unknown": 1 },
       expectedAccountOwnerId: "owner-a",
-    })).rejects.toThrow(/latest Activity snapshot/i);
+    })).resolves.toEqual({ acknowledged: [], skipped: ["agent:other-machine:unknown"] });
 
     const current = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     setAccountOwnerId("owner-b");
@@ -1725,7 +1765,9 @@ describe("createPushPublisherService flush", () => {
     expect(first).toMatchObject({
       activityTier: "idle",
       phase: "stale",
-      expiresAt: null,
+      // Long but finite: an idle row whose machine never comes back must still
+      // age out of the account feed on its own.
+      expiresAt: "2026-07-08T09:30:00.000Z",
       statusSince: "2026-07-01T09:30:00.000Z",
     });
     expect(second.revision).toBe(first.revision);
@@ -2892,6 +2934,671 @@ describe("createPushPublisherService flush", () => {
 
     publisher.dispose();
   });
+
+  function backgroundTask(
+    sessionId: string,
+    taskId: string,
+    status: "running" | "completed",
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId,
+      timestamp: "",
+      event: {
+        type: "scheduled_work_update",
+        id: `background:${taskId}`,
+        kind: "background_task",
+        status,
+        origin: "background_task",
+        sourceTaskId: taskId,
+        title: "Background work",
+      },
+    };
+  }
+
+  const turnCompleted: AgentChatEventEnvelope = {
+    sessionId: "s-bg",
+    timestamp: "",
+    event: { type: "status", turnStatus: "completed" },
+  };
+
+  it("publishes a completed turn with live background tasks as working", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit({ sessionId: "s-bg", timestamp: "", event: { type: "text", text: "working" } });
+    emit(backgroundTask("s-bg", "task-1", "running"));
+    emit(turnCompleted);
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const working = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(working).toMatchObject({
+      phase: "running",
+      eventKind: "agent_running",
+      activityTier: "ambient",
+    });
+    expect(working.title).toContain("is working");
+
+    // Draining the last background task is what finally settles the run.
+    emit(backgroundTask("s-bg", "task-1", "completed"));
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const done = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(done).toMatchObject({ phase: "completed", eventKind: "agent_completed" });
+    expect(done.title).toContain("is done");
+    publisher.dispose();
+  });
+
+  it("returns an already-completed run to working when a background task starts", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit({ sessionId: "s-bg", timestamp: "", event: { type: "text", text: "working" } });
+    emit(turnCompleted);
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("completed");
+
+    emit(backgroundTask("s-bg", "task-late", "running"));
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("running");
+
+    emit(backgroundTask("s-bg", "task-late", "completed"));
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("completed");
+    publisher.dispose();
+  });
+
+  it("does not settle a needs-you run when its background task drains", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit(backgroundTask("s-bg", "task-1", "running"));
+    emit(turnCompleted);
+    emit({
+      sessionId: "s-bg",
+      timestamp: "",
+      event: { type: "approval_request", itemId: "i-9", kind: "command", description: "Deploy" },
+    });
+    emit(backgroundTask("s-bg", "task-1", "completed"));
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("needs_you");
+    publisher.dispose();
+  });
+
+  it("does not let a scheduled wakeup hold a finished run open", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit({ sessionId: "s-bg", timestamp: "", event: { type: "text", text: "working" } });
+    emit(turnCompleted);
+    emit({
+      sessionId: "s-bg",
+      timestamp: "",
+      event: {
+        type: "scheduled_work_update",
+        id: "wake-1",
+        kind: "wakeup",
+        status: "scheduled",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("completed");
+    publisher.dispose();
+  });
+
+  it("resumes a completed run that keeps emitting past the grace window", async () => {
+    let clock = Date.parse("2026-07-05T12:00:00.000Z");
+    const { publisher, emit } = makeHarness(device, () => clock, { activityProtocol: 2 });
+
+    emit({ sessionId: "s-tail", timestamp: "", event: { type: "text", text: "working" } });
+    emit({ sessionId: "s-tail", timestamp: "", event: { type: "status", turnStatus: "completed" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("completed");
+
+    // Trailing output inside the grace window must not flap the row.
+    clock += 1_000;
+    emit({ sessionId: "s-tail", timestamp: "", event: { type: "text", text: "tail" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("completed");
+
+    clock += 30_000;
+    emit({ sessionId: "s-tail", timestamp: "", event: { type: "text", text: "still going" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("running");
+    publisher.dispose();
+  });
+
+  it("keeps a failed run failed when late output arrives", async () => {
+    let clock = Date.parse("2026-07-05T12:00:00.000Z");
+    const { publisher, emit } = makeHarness(device, () => clock, { activityProtocol: 2 });
+
+    emit({ sessionId: "s-fail", timestamp: "", event: { type: "status", turnStatus: "failed" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    clock += 60_000;
+    emit({ sessionId: "s-fail", timestamp: "", event: { type: "text", text: "stack trace" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.phase).toBe("failed");
+    publisher.dispose();
+  });
+
+  it("folds chat-owned shell rows into their parent chat item", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([{
+      ...rosterProject(0),
+      chats: [
+        {
+          id: "chat-parent",
+          laneId: "lane-roster",
+          title: "Parent chat",
+          toolType: "claude-chat",
+          status: "idle" as const,
+          lastActivityAt: "2026-08-01T11:00:00.000Z",
+        },
+        {
+          id: "shell-child",
+          laneId: "lane-roster",
+          chatSessionId: "chat-parent",
+          title: "Attached shell",
+          toolType: "shell",
+          status: "idle" as const,
+          lastActivityAt: "2026-08-01T11:00:00.000Z",
+        },
+        {
+          id: "cli-standalone",
+          laneId: "lane-roster",
+          chatSessionId: null,
+          title: "Standalone CLI",
+          toolType: "shell",
+          status: "idle" as const,
+          lastActivityAt: "2026-08-01T11:00:00.000Z",
+        },
+      ],
+    }]);
+    const { publisher } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    expect(items.map((item) => item.destination.kind === "session" && item.destination.sessionId))
+      .toEqual(["chat-parent", "cli-standalone"]);
+    publisher.dispose();
+  });
+
+  it("excludes CTO/identity chats from the feed while the roster still carries them", async () => {
+    const roster = {
+      ...rosterProject(0),
+      chats: [
+        {
+          id: "chat-work",
+          laneId: "lane-roster",
+          title: "Work chat",
+          toolType: "claude-chat",
+          status: "idle" as const,
+          lastActivityAt: "2026-08-01T11:00:00.000Z",
+        },
+        {
+          id: "chat-cto",
+          laneId: "lane-roster",
+          title: "CTO",
+          toolType: "claude-chat",
+          status: "idle" as const,
+          identityKey: "cto",
+          lastActivityAt: "2026-08-01T11:00:00.000Z",
+        },
+      ],
+    };
+    const buildSnapshot = vi.fn().mockResolvedValue([roster]);
+    const { publisher } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    expect(items.map((item) => item.destination.kind === "session" && item.destination.sessionId))
+      .toEqual(["chat-work"]);
+    // The roster the mobile hub reads is untouched — only the feed filters.
+    expect(roster.chats.map((chat) => chat.id)).toEqual(["chat-work", "chat-cto"]);
+    publisher.dispose();
+  });
+
+  it("keeps a roster row that reports running over a stale terminal live run", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([{
+      ...rosterProject(0),
+      chats: [{
+        id: "s-live",
+        laneId: "lane-roster",
+        title: "Live chat",
+        toolType: "claude-chat",
+        status: "running" as const,
+        lastActivityAt: "2026-08-01T11:59:00.000Z",
+      }],
+    }]);
+    const { publisher, emit } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    emit({ sessionId: "s-live", timestamp: "", event: { type: "status", turnStatus: "completed" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]!.phase).toBe("running");
+    publisher.dispose();
+  });
+
+  it("tombstones a deleted session immediately instead of waiting for a reconcile", async () => {
+    const { publisher, publishAttention, emit } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    emit({ sessionId: "s-doomed", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    publishAttention.mockClear();
+
+    publisher._debug.onSessionRemoved("scope-1", "s-doomed");
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention.mock.calls[0][0]).toMatchObject({
+      mode: "delta",
+      items: [],
+      tombstones: [expect.objectContaining({ id: `agent:${"a".repeat(40)}:s-doomed` })],
+    });
+    publisher.dispose();
+  });
+
+  it("stamps the canonical cross-machine project id on agent and PR items", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+    // The harness attaches scope-1 at projectRoot "/projects/ADE".
+    const expected = deriveProjectId("/projects/ADE");
+    expect(expected).toMatch(/^project_[0-9a-f]{24}$/);
+
+    emit(approval);
+    publisher._debug.onPrNotification("scope-1", {
+      kind: "opened",
+      prId: "pr-node-1",
+      prNumber: 11,
+      prTitle: "Add widget",
+      laneId: null,
+      repoOwner: "acme",
+      repoName: "app",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    const agentItem = items.find((item) => item.kind === "agent")!;
+    const prItem = items.find((item) => item.kind === "pull_request")!;
+    for (const item of [agentItem, prItem]) {
+      // projectId stays the machine-local uuid; canonicalId is additive.
+      expect(item.project.projectId).toBe("scope-1");
+      expect(item.project.canonicalId).toBe(expected);
+      expect(item.project.rootPath).toBe("/projects/ADE");
+    }
+    publisher.dispose();
+  });
+
+  it("omits canonicalId rather than inventing one when no root path is known", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([{
+      ...rosterProject(1),
+      rootPath: null,
+    }]);
+    const { publisher } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.project.rootPath).toBeNull();
+    expect(item.project.canonicalId).toBeUndefined();
+    publisher.dispose();
+  });
+
+  it("keeps the alert fingerprint unchanged when canonicalId is added", () => {
+    // canonicalId is identity metadata, not phase state. If it entered the
+    // alert fingerprint, the first publish after upgrade would re-alert every
+    // item in the account — the #1001 notification-spam bug, restaged.
+    const base = {
+      contractVersion: 1 as const,
+      id: "agent:m:s-1",
+      revision: 1,
+      fingerprint: "",
+      kind: "agent" as const,
+      eventKind: "agent_running" as const,
+      phase: "running" as const,
+      machine: {
+        machineKey: "m",
+        accountMachineKey: null,
+        deviceId: null,
+        name: "MacBook",
+        online: true,
+        lastSeenAt: "2026-07-05T12:00:00.000Z",
+      },
+      project: { projectId: "scope-1", name: "ADE", rootPath: "/projects/ADE" },
+      title: "Claude is working",
+      preview: "working",
+      privacyPreview: "An ADE agent is working.",
+      detail: null,
+      recentActivity: [],
+      planProgress: null,
+      destination: { kind: "session" as const, sessionId: "s-1", itemId: null },
+      actions: [{ id: "open", kind: "open" as const, label: "Open" }],
+      occurredAt: "2026-07-05T12:00:00.000Z",
+      updatedAt: "2026-07-05T12:00:00.000Z",
+      statusSince: "2026-07-05T12:00:00.000Z",
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: null,
+    };
+    const withCanonical = {
+      ...base,
+      project: { ...base.project, canonicalId: deriveProjectId("/projects/ADE") },
+    };
+    expect(activityAlertFingerprint(withCanonical)).toBe(activityAlertFingerprint(base));
+    // It is not part of the row's look either, so no delta wave on upgrade —
+    // the reconcile that runs at publisher start propagates it instead.
+    expect(activityContentFingerprint(withCanonical)).toBe(activityContentFingerprint(base));
+  });
+
+  it("publishes chatActivityMode planning for a chat in plan mode", async () => {
+    const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+    agentChatService.getSessionSummary.mockResolvedValue({
+      sessionId: "s-1",
+      laneId: "auth-lane",
+      title: "Fix login",
+      model: "gpt-5",
+      provider: "codex",
+      status: "active",
+      interactionMode: "plan",
+      startedAt: "",
+      endedAt: null,
+      lastActivityAt: "",
+      lastOutputPreview: null,
+      summary: null,
+    });
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "planning" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.phase).toBe("running");
+    expect(item.chatActivityMode).toBe("planning");
+    publisher.dispose();
+  });
+
+  it("omits chatActivityMode entirely for a chat that is not planning", async () => {
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+    // The harness summary has no interactionMode at all.
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.phase).toBe("running");
+    expect(item.chatActivityMode).toBeUndefined();
+    publisher.dispose();
+  });
+
+  it("keeps planning out of the alert fingerprint but inside the row's look", async () => {
+    // planning↔working flips several times a turn. It must change the row (so a
+    // delta republishes the new glyph) without ever reading as a new phase
+    // entry, which is what would notify.
+    const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const before = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    agentChatService.getSessionSummary.mockResolvedValue({
+      sessionId: "s-1",
+      laneId: "auth-lane",
+      title: "Fix login",
+      model: "gpt-5",
+      provider: "codex",
+      status: "active",
+      interactionMode: "plan",
+      startedAt: "",
+      endedAt: null,
+      lastActivityAt: "",
+      lastOutputPreview: null,
+      summary: null,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const after = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(after.chatActivityMode).toBe("planning");
+    expect(after.alertFingerprint).toBe(before.alertFingerprint);
+    expect(after.contentFingerprint).not.toBe(before.contentFingerprint);
+    publisher.dispose();
+  });
+
+  it("stops publishing for good once the relay reports the machine was revoked", async () => {
+    const { publisher, publishAttention, emit, store, publisherLogger } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    publishAttention.mockRejectedValue(
+      new PushRelayMachineRevokedError("publishAttention", "2026-07-05T11:00:00.000Z"),
+    );
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publisherLogger.error).toHaveBeenCalledWith(
+      "attention.machine_revoked",
+      { revokedAt: "2026-07-05T11:00:00.000Z" },
+    );
+    expect(publisher.getMachineRevocation()).toEqual({
+      revoked: true,
+      revokedAt: "2026-07-05T11:00:00.000Z",
+    });
+    expect(store.getStatusSnapshot().machineRevokedAt).toBe("2026-07-05T11:00:00.000Z");
+
+    // Terminal: no retry timer, and later events never resume the loop.
+    publishAttention.mockClear();
+    emit({ sessionId: "s-2", timestamp: "", event: { type: "text", text: "more" } });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(publishAttention).not.toHaveBeenCalled();
+    publisher.dispose();
+  });
+
+  it("does not publish at all when the store already knows the machine is revoked", async () => {
+    const { publisher, publishAttention, publish, emit } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      machineRevokedAt: "2026-07-01T00:00:00.000Z",
+    });
+
+    await publisher.start();
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(publishAttention).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    publisher.dispose();
+  });
+
+  it("stops the legacy publish loop when the relay revokes the machine there", async () => {
+    const { publisher, publish, store, publisherLogger, emit } = makeHarness(device, undefined, {
+      // No protocol-2 Activity: alerts and Live Activities go out on the legacy
+      // machine-signed publish route, which the relay now gates server-side too.
+      activityProtocol: null,
+    });
+    publish.mockRejectedValue(
+      new PushRelayMachineRevokedError("publish", "2026-07-05T11:00:00.000Z"),
+    );
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    expect(publisher.getMachineRevocation()).toEqual({
+      revoked: true,
+      revokedAt: "2026-07-05T11:00:00.000Z",
+    });
+    expect(store.getStatusSnapshot().machineRevokedAt).toBe("2026-07-05T11:00:00.000Z");
+    expect(publisherLogger.error).toHaveBeenCalledWith(
+      "attention.machine_revoked",
+      { revokedAt: "2026-07-05T11:00:00.000Z" },
+    );
+
+    // Terminal, not transient: no retry timer, and later events never resume it.
+    publish.mockClear();
+    emit({ sessionId: "s-2", timestamp: "", event: { type: "text", text: "more" } });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(publish).not.toHaveBeenCalled();
+
+    // And a re-pair un-gates the legacy route too, without a restart.
+    publish.mockResolvedValue({ ok: true });
+    publisher.clearMachineRevocation();
+    emit({ sessionId: "s-3", timestamp: "", event: { type: "text", text: "back" } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publish).toHaveBeenCalled();
+    publisher.dispose();
+  });
+
+  it("resumes publishing without a restart once a re-pair clears the revocation", async () => {
+    const { publisher, publishAttention, store, emit } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      machineRevokedAt: "2026-07-01T00:00:00.000Z",
+    });
+
+    await publisher.start();
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(publishAttention).not.toHaveBeenCalled();
+
+    // Both halves lift together: the durable flag a restart would re-read AND
+    // the live gate this process holds. Clearing only the durable one would
+    // leave the machine on the account roster but mute until a restart.
+    publisher.clearMachineRevocation();
+    expect(publisher.getMachineRevocation()).toEqual({ revoked: false, revokedAt: null });
+    expect(store.isMachineRevoked()).toBe(false);
+    expect(store.getStatusSnapshot().machineRevokedAt).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publishAttention).toHaveBeenCalled();
+    // The run that happened while the machine was gated is published, not lost.
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    expect(items.map((item) => item.destination)).toContainEqual(
+      expect.objectContaining({ sessionId: "s-1" }),
+    );
+    publisher.dispose();
+  });
+
+  it("restarts the attention heartbeat after a re-pair, not just one flush", async () => {
+    const { publisher, publishAttention, emit } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+
+    await publisher.start();
+    // Latch through the relay so the revocation tears down all three timers —
+    // the flush timer, the PR-expiry timer AND the heartbeat interval. A store
+    // that merely starts revoked never runs that teardown.
+    publishAttention.mockRejectedValue(
+      new PushRelayMachineRevokedError("publishAttention", "2026-07-05T11:00:00.000Z"),
+    );
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publisher.getMachineRevocation().revoked).toBe(true);
+
+    publishAttention.mockReset();
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+    publisher.clearMachineRevocation();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publishAttention).toHaveBeenCalled();
+
+    // The one immediate flush is not the contract. The periodic liveness
+    // republish keeps staleness fresh, and it is only ever created inside
+    // `attachSources` — so if the re-pair does not restart it, this machine
+    // goes quiet again until a new scope attaches or the brain restarts.
+    publishAttention.mockClear();
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(publishAttention).toHaveBeenCalled();
+    expect(publishAttention.mock.calls.some(
+      ([payload]) => (payload as { mode?: string } | undefined)?.mode === "presence",
+    )).toBe(true);
+    publisher.dispose();
+  });
+
+  it("commits a bulk clear as one batch instead of N revision-fenced races", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(3)]);
+    const { publisher, store } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    expect(items).toHaveLength(3);
+    const result = await publisher.acknowledgeMachineAttention({
+      itemIds: [...items.map((item) => item.id), "agent:elsewhere:gone"],
+      // Deliberately stale everywhere — a live feed always is.
+      sourceRevisions: Object.fromEntries(items.map((item) => [item.id, 1])),
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:01.000Z",
+      dismissedAt: "2026-07-05T12:00:01.000Z",
+    });
+
+    expect(result.acknowledged).toEqual(items.map((item) => item.id));
+    expect(result.skipped).toEqual(["agent:elsewhere:gone"]);
+    for (const item of items) {
+      expect(store.getAttentionAcknowledgment(item.id, "owner-a")).toMatchObject({
+        dismissedAt: "2026-07-05T12:00:01.000Z",
+        sourceRevision: item.revision,
+      });
+    }
+    publisher.dispose();
+  });
+
+  it("does not mint a second PR item when repo metadata is missing", async () => {
+    const { publisher } = makeHarness(device, undefined, { activityProtocol: 2 });
+    const base: PushPrNotification = {
+      kind: "opened",
+      prId: "pr-node-1",
+      prNumber: 42,
+      prTitle: "Add widget",
+      laneId: null,
+      repoOwner: "acme",
+      repoName: "app",
+    };
+    publisher._debug.onPrNotification("scope-1", base);
+    publisher._debug.onPrNotification("scope-1", {
+      ...base,
+      kind: "merge_ready",
+      repoOwner: null,
+      repoName: null,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const prItems = (await publisher.getMachineAttentionSnapshot()).items
+      .filter((item) => item.kind === "pull_request");
+    expect(prItems).toHaveLength(1);
+    expect(prItems[0]!.phase).toBe("merge_ready");
+    // The repo coordinates the first event resolved must survive the update.
+    expect(prItems[0]!.destination).toMatchObject({ repoOwner: "acme", repoName: "app" });
+    publisher.dispose();
+  });
+
+  it("drops a metadata-less PR notification that matches no existing item", async () => {
+    const { publisher, publisherLogger } = makeHarness(device, undefined, { activityProtocol: 2 });
+    publisher._debug.onPrNotification("scope-1", {
+      kind: "opened",
+      prNumber: 7,
+      prTitle: "Orphan",
+      laneId: null,
+      repoOwner: null,
+      repoName: null,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items).toHaveLength(0);
+    expect(publisherLogger.warn).toHaveBeenCalledWith(
+      "attention.pr_activity_id_unresolved",
+      expect.anything(),
+    );
+    publisher.dispose();
+  });
 });
 
 describe("createPushRegistrationStore", () => {
@@ -2916,6 +3623,70 @@ describe("createPushRegistrationStore", () => {
     expect(store.getOrCreateIdentity()).toEqual(identity);
     const reopened = createPushRegistrationStore({ filePath });
     expect(reopened.getOrCreateIdentity()).toEqual(identity);
+  });
+
+  it("repairs a schema-invalid file without rotating the machine key", () => {
+    const original = createPushRegistrationStore({ filePath }).getOrCreateIdentity();
+    // Same identity, wrecked body — the historical behaviour here was to mint a
+    // brand-new machineKey, which permanently duplicates the account feed.
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        machineKey: original.machineKey,
+        machineSecret: original.machineSecret,
+        devices: "not-an-object",
+      }),
+    );
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const store = createPushRegistrationStore({ filePath, logger });
+
+    expect(store.getOrCreateIdentity()).toEqual(original);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "push.registration_file_repaired",
+      expect.objectContaining({ filePath }),
+    );
+    expect(store.getStatusSnapshot().identityRecoveryError).toContain("repaired");
+    expect(store.listPreviousMachineKeys()).toEqual([]);
+  });
+
+  it("quarantines an unsalvageable file and keeps the old key for a relay sweep", () => {
+    const original = createPushRegistrationStore({ filePath }).getOrCreateIdentity();
+    // The key survives but the signing secret does not: the identity cannot be
+    // used, yet its relay rows still exist under the old key.
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ machineKey: original.machineKey, machineSecret: "too-short" }),
+    );
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const store = createPushRegistrationStore({ filePath, logger });
+
+    const replacement = store.getOrCreateIdentity();
+    expect(replacement.machineKey).not.toBe(original.machineKey);
+    expect(store.listPreviousMachineKeys()).toEqual([original.machineKey]);
+    expect(logger.error).toHaveBeenCalledWith(
+      "push.registration_identity_lost",
+      expect.objectContaining({ salvagedMachineKeyCount: 1 }),
+    );
+    expect(store.getStatusSnapshot().identityRecoveryError).toContain("re-minted");
+    // The damaged bytes are preserved, never silently clobbered.
+    expect(fs.readdirSync(path.dirname(filePath)).some((name) => name.includes(".corrupt-")))
+      .toBe(true);
+
+    // Superseded keys are durable across reloads until the sweep clears them.
+    const reopened = createPushRegistrationStore({ filePath });
+    expect(reopened.listPreviousMachineKeys()).toEqual([original.machineKey]);
+    reopened.clearPreviousMachineKeys([original.machineKey]);
+    expect(reopened.listPreviousMachineKeys()).toEqual([]);
+    expect(reopened.getStatusSnapshot().identityRecoveryError).toBeNull();
+  });
+
+  it("mints cleanly when no registration file exists at all", () => {
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const store = createPushRegistrationStore({ filePath, logger });
+    expect(store.getOrCreateIdentity().machineKey).toMatch(/^[0-9a-f]{32}$/);
+    expect(store.getStatusSnapshot().identityRecoveryError).toBeNull();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it("does not count a device as registered until it has a deliverable token", () => {
@@ -3128,6 +3899,24 @@ describe("createPushRegistrationStore", () => {
       accountOwnerId: "owner-a",
       revisions: { "agent:machine:session-1": 11 },
     });
+  });
+
+  it("records machine revocation durably and only a re-pair clears it", () => {
+    const store = createPushRegistrationStore({ filePath });
+    expect(store.isMachineRevoked()).toBe(false);
+    expect(store.getStatusSnapshot().machineRevokedAt).toBeNull();
+
+    store.recordMachineRevoked("2026-07-05T11:00:00.000Z");
+    // First writer wins: a retry storm must not keep moving the instant.
+    store.recordMachineRevoked("2026-07-05T12:00:00.000Z");
+    expect(store.getStatusSnapshot().machineRevokedAt).toBe("2026-07-05T11:00:00.000Z");
+
+    // Durable — a brain restart must not resume publishing at a removed machine.
+    const reopened = createPushRegistrationStore({ filePath });
+    expect(reopened.isMachineRevoked()).toBe(true);
+    reopened.clearMachineRevoked();
+    expect(reopened.isMachineRevoked()).toBe(false);
+    expect(createPushRegistrationStore({ filePath }).isMachineRevoked()).toBe(false);
   });
 });
 
@@ -3533,6 +4322,124 @@ describe("createPushRelayClient", () => {
     );
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body)).toEqual({ notificationsEnabled: false });
+  });
+
+  it("purges one account machine's Activity through the encoded delete route", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await client.purgeAccountMachineActivity("account-a", "machine/a");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://relay.test/attention/account/machines/machine%2Fa");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers.authorization).toBe("Bearer account-access-token");
+    // Account-scoped route: never machine-signed.
+    expect(init.headers["x-ade-push-signature"]).toBeUndefined();
+  });
+
+  it("treats an already-purged machine as done but propagates real purge failures", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) });
+    await expect(client.purgeAccountMachineActivity("account-a", "gone")).resolves.toBeUndefined();
+
+    // A failed purge must reach the user: the roster row is gone but the feed
+    // still lists that machine's agents.
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "purge failed" }),
+    });
+    await expect(client.purgeAccountMachineActivity("account-a", "machine-a"))
+      .rejects.toThrow(/purge failed/);
+
+    await expect(client.purgeAccountMachineActivity("account-a", "  "))
+      .rejects.toThrow(/machine key is required/);
+  });
+
+  it("raises a revoked machine as a terminal error, not a publish failure", async () => {
+    const client = createPushRelayClient({
+      // Already claimed: the claim call would otherwise consume the mock.
+      store: makeStore({ isClaimed: () => true }),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ code: "machine_revoked", revokedAt: "2026-07-05T11:00:00.000Z" }),
+    });
+    await expect(client.publishAttention({
+      machineName: "MacBook",
+      mode: "presence",
+      rosterEpoch: 1,
+      items: [],
+      tombstones: [],
+    })).rejects.toBeInstanceOf(PushRelayMachineRevokedError);
+
+    // A bare 403 (proxy, WAF) is NOT a revocation — it stays a normal failure.
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: "forbidden" }),
+    });
+    await expect(client.publishAttention({
+      machineName: "MacBook",
+      mode: "presence",
+      rosterEpoch: 1,
+      items: [],
+      tombstones: [],
+    })).rejects.not.toBeInstanceOf(PushRelayMachineRevokedError);
+  });
+
+  it("raises a revoked machine on the legacy machine-signed routes too", async () => {
+    const client = createPushRelayClient({
+      store: makeStore({ isClaimed: () => true }),
+      logger,
+      baseUrl: "https://relay.test",
+    });
+
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ code: "machine_revoked", revokedAt: "2026-07-05T11:00:00.000Z" }),
+    });
+    // The legacy publish and live-activity-token routes are machine-signed, so
+    // a removed machine still authenticates and the relay gates them by roster.
+    // A generic request error here would be retried on every flush, forever.
+    await expect(client.publish({ notifications: [] }))
+      .rejects.toBeInstanceOf(PushRelayMachineRevokedError);
+    await expect(client.reportLiveActivityToken({
+      deviceId: "dev-1",
+      activityId: "agent-runs",
+      token: "t".repeat(64),
+    })).rejects.toBeInstanceOf(PushRelayMachineRevokedError);
+    await expect(client.publish({ notifications: [] }))
+      .rejects.toMatchObject({ revokedAt: "2026-07-05T11:00:00.000Z" });
+
+    // A bare 403 stays an ordinary, retryable failure on these routes as well.
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: "forbidden" }),
+    });
+    await expect(client.publish({ notifications: [] }))
+      .rejects.not.toBeInstanceOf(PushRelayMachineRevokedError);
   });
 
   it("retries one unauthorized account read with a forced fresh token", async () => {

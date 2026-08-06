@@ -265,10 +265,14 @@ sync.authorizeSshPairing
 ```
 
 `account.call` owns machine-scoped account status, login, token, and machine
-directory operations. Prefer the typed `ade login`, `ade auth status`,
-`ade account token create`, `ade machines list`, and `ade machines connect`
+directory operations (`listMachines`, `pairMachine`, `renameMachine`,
+`deleteMachine`, `repairMachinePairing`). Prefer the typed `ade login`,
+`ade auth status`, `ade account token create`, `ade machines list`,
+`ade machines remove`, `ade machines reconnect`, and `ade machines connect`
 commands; they select the CTO role where credential-bearing operations require
-it and keep account-machine pairing on the DPoP-bound runtime path.
+it and keep account-machine pairing on the DPoP-bound runtime path. Every
+machine-directory action is CTO-only, including `renameMachine` and
+`repairMachinePairing`, which the shared ADE action registry does not list.
 
 `attention.call` is the CTO-gated account-wide Activity surface backing `ade
 code`'s `/activity` pane (`getSnapshot`, `getMachineSnapshot`, `acknowledge`,
@@ -346,6 +350,11 @@ ade machines rename <machine-key> "Build Mac"
                                    # set the account-wide display name
 ade machines rename <machine-key> --clear
                                    # clear it and use the reported hostname
+ade machines remove <machine-key> --confirm REMOVE
+                                   # take a machine off the account: revokes it and
+                                   # clears the Activity it published
+ade machines reconnect             # re-pair THIS machine after it was removed
+                                   # from the account, and lift the push gate
 ade machines connect <machine-key> --project ADE
                                    # pair if needed, then open ADE Code on that machine
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
@@ -416,6 +425,9 @@ ade auth status --text                    # account identity + loopback/device/e
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
 ade machines list --text
+ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
+ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
+ade machines reconnect                             # re-pair THIS machine after it was removed
 ade machines connect <machine-key> --project ADE
 ade machines hop <device-id> --session chat-1
 ade doctor --json

@@ -64,27 +64,67 @@ confirmed full-hide action.
 
 ## Presentation modes
 
-`NotchSettings.revealMode` and `NotchSettings.expandedPanelEnabled` decide how
-far the surface may grow. `NotchPresentationPolicy` derives from them and is the
-only thing `NotchInteractionState` consults, so the rules live in one place and
-apply identically to the physical notch and the menu-bar fallback.
+Two, and they are deliberately indistinguishable once the strip is on screen.
 
-| mode | pointer | alerts and celebrations | click |
+| mode | at rest | pointer | click |
 | --- | --- | --- | --- |
-| `minimal` | nothing | recolour the compact bar | opens a short peek |
-| `hover` | surface is hidden at rest; hot zone opens the peek | stays hidden until hover | opens |
-| `click` | nothing | recolour the compact bar | opens |
+| `always` | the strip is pinned to the menu bar | bulge | opens the panel |
+| `hover` | dormant; a bounded top-edge hot zone reveals it | reveals **the identical strip**, then bulges | opens the panel |
 
-A click opens in **every** mode, so neither the surface nor the menu-bar status
-item that stands in for it is ever an inert control. With
-`expandedPanelEnabled == false` that click opens the short peek instead of the
-tall panel, which is what keeps the surface clear of menu-bar content.
+Takeovers (`flash`, `celebration`) interrupt in both modes: a mode says where
+the strip *rests*, and an event that needs you is not a resting state.
 
-Both keys default to today's behaviour (`hover`, panel enabled) and decode
-totally: a host that predates them, or names a mode this build has never heard
-of, keeps the shipped surface rather than losing the settings frame.
-`NotchInteractionState.applyPolicy(_:)` reconciles whatever is already on screen
-when the user changes a mode, so the change is visible immediately.
+This replaced three modes that all looked different. `hover` used to reveal into
+the *expanded* rect while `minimal`/`click` drew the flush compact chrome, so the
+same feature read as two products; `minimal` and `click` opened a one-item
+"peek" card that was a menu with a single entry. `minimal` and `click` now
+normalize to `always` on the wire — both kept a strip on screen, and an upgrade
+may not silently hide a surface the user had pinned. Reveal is keyed on the
+*pointer* rather than on a second presentation state (`notchSurfaceIsDormant`),
+which is what guarantees the two modes cannot drift apart again.
+
+`expandedPanelEnabled` still applies: with the tall panel off, a click opens
+Activity in ADE (`open_center`) rather than growing the surface, because a
+surface that eats clicks and does nothing is the one outcome no mode may
+produce. The retired `automaticRevealEnabled` and `tickerEnabled` keys are
+ignored if a host still sends them, and are not emitted back.
+
+## Compact strip
+
+Two wings around the cutout, both present in both modes:
+
+- **left** — every nonzero state group as glyph + count, urgency-ordered:
+  needs-you (amber filled dot), failed (red triangle), planning (violet
+  notepad), working (blue open circle), done (emerald check). One hue is one
+  meaning; amber is "your move" and nothing else.
+- **right** — one signal with real content ("Checks failing #466", "Merged
+  #1030", "Claude is asking"), falling back to a quiet machine summary.
+
+Width is derived from what the wings carry (`notchStripMetrics` →
+`notchCompactEarWidth`) and capped, so the strip hugs the hardware notch instead
+of padding out to the widest label it could ever hold. The ears are symmetric by
+construction: the cutout is centered on the display and so is the panel.
+
+The needs-you card is a **timed takeover** (~10s), not a state: it auto-dismisses
+by morphing back into its amber glyph, and also ends on click, on explicit
+close, and when the row is acknowledged from another device. When the last
+needs-you row clears, the strip plays a brief "all clear" beat.
+
+## Expanded panel
+
+`Agents` and `Events` tabs over the same section language as the desktop
+Activity dropdown: Needs you / Failed / Planning / Working / Done, from the one
+five-way table (`notchStripGroupKind`) the compact strip counts with, so a row
+the strip counts as red is a row the panel files under Failed. The table is
+pinned to the renderer's canonical `activityStateGroup` by
+`ActivityStateGroupConformanceTests`, which runs the shared
+`src/shared/attention/activityStateGroup.cases.json` fixture through it.
+Events are clustered by repository and pull-request number —
+three failing checks on one PR are one story — and a takeover clicked through
+opens the panel already on the Events tab with that cluster expanded and
+focused. Sections and clusters collapse (Done starts collapsed), and the panel
+is keyboard navigable: arrows move through exactly the rows on screen,
+left/right work the disclosure, Tab swaps tabs, Return acts, Escape closes.
 
 ## Local validation
 
@@ -106,5 +146,7 @@ The helper reads one JSON object per line from standard input. It accepts raw
 {"type":"quit"}
 ```
 
-It emits `open`, `action`, `surface`, and `protocol_error` JSON lines on standard
-output. Diagnostic text is written only to standard error.
+It emits `open`, `action`, `dismiss_item`, `open_center`, `open_settings`,
+`refresh`, `settings`, `surface`, and `protocol_error` JSON lines on standard
+output. Diagnostic text is written only to standard error. The output set is
+additive by contract: a host that does not recognise a type must ignore it.

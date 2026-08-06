@@ -139,6 +139,22 @@ the renderer. A per-outcome one-hour deduplication key bounds a click-loop to at
 most 24 accepted events per installation per UTC day, inside the existing
 `ade_feature_used` and shared ceilings.
 
+Clicking "Reconnect this computer" on the Account pane's removed-machine banner
+records the existing `ade_feature_used` event at the IPC owner boundary (the
+`accountRepairMachinePairing` handler, where the repair outcome is known) with
+`feature: "connections"`, `action: "machine_reconnect"`, and a coarse `outcome` —
+`completed` when the brain re-paired the machine or nothing was gated, `failed`
+otherwise, including a thrown repair. It carries no machine key or name, account
+identifier, refusal reason code, or error text; those stay in the renderer's
+banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
+click-loop to at most 24 accepted events per outcome — 48 across both — per
+installation per UTC day, inside the existing `ade_feature_used` and shared
+ceilings. The Activity feed's polling, rendering, section collapse, filters, and
+acknowledgements, notch and iOS widget updates, machine removal, pairing-grant
+mint and redeem, and relay control sweeps remain untracked: they are
+high-frequency reads and UI mechanics, or they run on the relay and
+account-directory surfaces that have no analytics path.
+
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.

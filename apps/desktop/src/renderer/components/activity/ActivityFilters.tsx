@@ -15,20 +15,36 @@ import { cn } from "../ui/cn";
  */
 export type ActivityFilterState = {
   machineKeys: string[];
+  projects: string[];
   kinds: AttentionItem["kind"][];
   models: string[];
 };
 
 export const EMPTY_ACTIVITY_FILTERS: ActivityFilterState = {
   machineKeys: [],
+  projects: [],
   kinds: [],
   models: [],
 };
 
 export function activityFiltersAreEmpty(filters: ActivityFilterState): boolean {
   return filters.machineKeys.length === 0
+    && filters.projects.length === 0
     && filters.kinds.length === 0
     && filters.models.length === 0;
+}
+
+/**
+ * How a project is identified for filtering, in the order that survives a trip
+ * across machines: the canonical `project_<hash>` first, then the root path,
+ * then the per-machine uuid as a last resort. Two machines working the same
+ * repo must land on ONE option — filtering by "ADE" and getting only half of
+ * ADE would be worse than not filtering at all.
+ */
+export function activityProjectFilterValue(item: AttentionItem): string {
+  return item.project.canonicalId?.trim()
+    || item.project.rootPath?.trim()
+    || item.project.projectId;
 }
 
 export function applyActivityFilters(
@@ -37,10 +53,12 @@ export function applyActivityFilters(
 ): AttentionItem[] {
   if (activityFiltersAreEmpty(filters)) return [...items];
   const machines = new Set(filters.machineKeys);
+  const projects = new Set(filters.projects);
   const kinds = new Set<AttentionItem["kind"]>(filters.kinds);
   const models = new Set(filters.models);
   return items.filter((item) => {
     if (machines.size > 0 && !machines.has(item.machine.machineKey)) return false;
+    if (projects.size > 0 && !projects.has(activityProjectFilterValue(item))) return false;
     if (kinds.size > 0 && !kinds.has(item.kind)) return false;
     // An item with no model can only ever match "everything": a model filter is
     // a claim about which model is running, and "unknown" is not one.
@@ -171,6 +189,21 @@ export function ActivityFilters({
     })),
     [items],
   );
+  /**
+   * The facet that closes the "why are there more rows here than chats?" gap.
+   * Activity is account-wide across every recently-opened project — that is the
+   * feature, and narrowing what the publisher sends would throw away the other
+   * machines' work — so the answer is a filter, not a smaller feed. It defaults
+   * to everything, deliberately: silently scoping to the open project would
+   * hide exactly what the user opened Activity to see.
+   */
+  const projectOptions = useMemo(
+    () => optionsFrom(items, (item) => ({
+      value: activityProjectFilterValue(item),
+      label: item.project.name,
+    })),
+    [items],
+  );
   const kindOptions = useMemo(
     () => optionsFrom(items, (item) => ({
       value: item.kind,
@@ -194,6 +227,12 @@ export function ActivityFilters({
         options={machineOptions}
         selected={filters.machineKeys}
         onChange={(machineKeys) => onChange({ ...filters, machineKeys })}
+      />
+      <FilterChip
+        label="Project"
+        options={projectOptions}
+        selected={filters.projects}
+        onChange={(projects) => onChange({ ...filters, projects })}
       />
       <FilterChip
         label="Type"

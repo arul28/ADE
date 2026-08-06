@@ -1508,7 +1508,7 @@ export async function createAdeRuntime(args: {
   );
   const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
   const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
-    const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
+    const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
     return {
       logger,
       store,
@@ -1557,6 +1557,13 @@ export async function createAdeRuntime(args: {
           pushPrNotificationSubscribers.add(cb);
           return () => pushPrNotificationSubscribers.delete(cb);
         },
+        // Deletion is the only path that removes a chat from the sidebar, so it
+        // is also the moment Activity has to drop the row. Without this the
+        // deleted chat lingers in the account feed until an unrelated flush.
+        subscribeSessionRemovals: (cb) =>
+          sessionService.onChanged((event) => {
+            if (event.reason === "deleted") cb(event.sessionId);
+          }),
         resolveLaneName: (laneId) => {
           try {
             const row = db.get<{ name: string }>(

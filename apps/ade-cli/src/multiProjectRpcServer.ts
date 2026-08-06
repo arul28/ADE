@@ -81,6 +81,8 @@ import {
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
+import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
+import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 type HandlerEntry = {
@@ -142,6 +144,15 @@ export type MultiProjectRpcHandlerOptions = {
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   /** Truthful sync status for a brain hosting (or not hosting) sync with no project scope. */
   getProjectlessSyncSnapshot?: () => SyncRoleSnapshot;
+  /**
+   * Re-pair this machine into the account after an owner-side removal. Owned by
+   * the brain (it holds the account machine publisher), injected here because
+   * `account.repairMachinePairing` and interactive sign-in are the two places a
+   * deliberate re-pair can originate.
+   */
+  repairMachinePairing?: (
+    input?: { onlyIfRevoked?: boolean },
+  ) => Promise<MachinePairingRepairResult>;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -1260,7 +1271,10 @@ export function createMultiProjectRpcRequestHandler(
       // callers.
       const role = callerRole();
       const ctoOnlyAccountAction = isCtoOnlyAdeAction("account", action)
-        || action === "renameMachine";
+        || action === "renameMachine"
+        // Re-pairing this machine into the account is a machine-operator act,
+        // not something a subagent may perform on the owner's behalf.
+        || action === "repairMachinePairing";
       if (ctoOnlyAccountAction && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -1284,10 +1298,21 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
+      if (action === "repairMachinePairing") {
+        if (!options.repairMachinePairing) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            "This ADE brain is not publishing this machine to your account yet.",
+          );
+        }
+        const result = await options.repairMachinePairing();
+        return { domain: "account", action, result, statusHints: {} };
+      }
       if (
         action === "listMachines"
         || action === "pairMachine"
         || action === "renameMachine"
+        || action === "deleteMachine"
       ) {
         reconcileAccountOwnership(currentAccountOwnerUserId());
         const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
@@ -1318,6 +1343,18 @@ export function createMultiProjectRpcRequestHandler(
           );
           return { domain: "account", action, result, statusHints: {} };
         }
+        if (action === "deleteMachine") {
+          // Removal is terminal: the directory revokes the machine and purges
+          // the Activity it published, and only a fresh interactive sign-in on
+          // that machine (`ade machines reconnect`) can undo it. The service
+          // throws rather than reporting a clean removal when the roster row
+          // went but its Activity did not, and that error is the user-facing
+          // sentence — let it propagate unwrapped.
+          const result = await machineDirectory.deleteMachine(
+            typeof actionArgs.machine === "string" ? actionArgs.machine : "",
+          );
+          return { domain: "account", action, result, statusHints: {} };
+        }
         const result = await machineDirectory.pairMachine(
           typeof actionArgs.machine === "string" ? actionArgs.machine : "",
         );
@@ -1337,6 +1374,16 @@ export function createMultiProjectRpcRequestHandler(
           ? response.result.authStatus
           : response.result;
         reconcileAccountOwnership(accountOwnerUserIdFromStatus(status));
+      }
+      if (completedLogin && options.repairMachinePairing) {
+        // Signing in interactively is the deliberate, user-initiated link the
+        // directory's `pairing` flag exists for — and it is the recovery a user
+        // whose machine was removed will actually try. Heartbeats still never
+        // carry `pairing: true`, so removal stays durable against everything
+        // that is not this. Best-effort: a failed re-pair must not fail a
+        // successful login, and the repair is a no-op when nothing is gated.
+        await options.repairMachinePairing({ onlyIfRevoked: true })
+          .catch(() => undefined);
       }
       return action === "status"
         ? { ...response, result: scopeAccountStatusForRole(response.result, role) }
@@ -1387,6 +1434,18 @@ export function createMultiProjectRpcRequestHandler(
             "attention.acknowledge requires at least one item id.",
           );
         }
+        // Machine-scope callers (the desktop main coordinator and the web
+        // adapter) also send `alertFingerprints`, and it is deliberately NOT
+        // read here — same as the sibling `attention.acknowledgeMachine`
+        // handler in syncRemoteCommandService. That fence exists to stop a
+        // RELAY-side ack from clearing an alert whose identity changed between
+        // the client's read and its ack; the relay is what validates it, and
+        // its contract reads an absent map as "unfenced". Machine-scope items
+        // never take that trip — they are produced and acknowledged inside this
+        // brain, where `sourceRevisions` plus `expectedAccountOwnerId` are the
+        // fences that apply. So this is an expectation gap, not a bug: do not
+        // read the fingerprint fence as five-surface coverage, and do not wire
+        // it up here without a case the local fences do not already cover.
         const acknowledgment = {
           itemIds,
           ...(typeof args.seenAt === "string" ? { seenAt: args.seenAt } : {}),

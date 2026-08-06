@@ -52,6 +52,33 @@ export type AdeAccountLoginPoll = {
   authStatus: AdeAccountStatus;
 };
 
+/**
+ * Start of the OAuth 2.0 device-authorization sign-in, as the renderer sees it.
+ *
+ * Unlike `startLogin`'s loopback PKCE flow — which goes straight to the issuer
+ * and is invisible to ADE's account directory — this flow runs through the
+ * directory's `/device/*` endpoints, so the directory can observe that a human
+ * completed an interactive sign-in on this machine and mint the single-use
+ * pairing grant a removed machine needs to re-join. `verificationUriComplete`
+ * pre-fills the code, so the user only has to press Continue.
+ */
+export type AdeAccountDeviceLoginStart = {
+  sessionId: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  expiresAt: string;
+  intervalSec: number;
+};
+
+export type AdeAccountDeviceLoginPoll = {
+  status: "pending" | "slow_down" | "signed_in" | "expired" | "error";
+  message: string | null;
+  /** Directory-requested backoff, when it asked for one. */
+  intervalSec: number | null;
+  authStatus: AdeAccountStatus;
+};
+
 /** A reachable route advertised by an account machine in the directory Worker. */
 export type AdeAccountMachineEndpoint = {
   kind: "lan" | "tailnet" | "relay";
@@ -98,6 +125,62 @@ export type AdeAccountLocalMachineIdentity = {
 export type AdeAccountMachineRemovalResult = {
   ok: true;
   machineKey: string;
+};
+
+/**
+ * Outcome of re-pairing THIS machine into the signed-in account after it was
+ * removed from the account directory.
+ *
+ * Mirrors `MachinePairingRepairResult` in
+ * `apps/ade-cli/src/services/account/machinePairingRepair.ts`. Removal latches
+ * two independent halves — the directory publisher (heartbeats stop) and the
+ * push publisher plus its durable `machineRevokedAt` (delivery stops, across
+ * restarts) — and only the brain owns them, so the desktop can only report what
+ * the brain did. `published && !pushRestored` is a REAL outcome, not a rounding
+ * error: the push half is cleared only after the directory confirms the pairing
+ * register, because a machine back on the roster but silently undelivering is
+ * worse than one that is plainly gone.
+ */
+/**
+ * Machine-readable refusal codes the desktop knows how to act on.
+ *
+ * Mirrors `AccountMachinePairingRefusalCode` in
+ * `apps/ade-cli/src/services/account/accountMachinePublisherService.ts`. Both
+ * refusals reach the desktop as `state: "http_error"`; only
+ * `pairing_authentication_required` is recoverable in the app, by signing in
+ * again so the directory mints a pairing grant.
+ */
+type AdeAccountMachinePairingRefusalCode =
+  | "machine_revoked"
+  | "pairing_authentication_required";
+
+export const ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE:
+  AdeAccountMachinePairingRefusalCode = "pairing_authentication_required";
+
+export type AdeAccountMachinePairingRepairResult = {
+  /** The directory accepted the re-pair and both halves were lifted. */
+  repaired: boolean;
+  /** Was anything actually gated before this call? */
+  wasRevoked: boolean;
+  /** Did the pairing publish reach the directory and get a 2xx? */
+  published: boolean;
+  /** Did the push half lift, so delivery resumes without a restart? */
+  pushRestored: boolean;
+  /** Brain-side state token; `reason` carries the explanation for the user. */
+  state: string;
+  reason: string | null;
+  /**
+   * Why the brain's directory publish was refused, machine-readable.
+   *
+   * Typed as a plain string rather than the known-code union because it crosses
+   * a version boundary: a newer brain may name a refusal this desktop build has
+   * never heard of, and the honest thing is to carry it through rather than
+   * discard it. Compare against
+   * `ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE` (or the union above) and
+   * treat anything unrecognised — including absence, which is what a brain
+   * older than this field sends — as "unknown", never as "not that code".
+   */
+  reasonCode?: string | null;
 };
 
 /** Token-free result of adopting an account-directory machine for paired use. */

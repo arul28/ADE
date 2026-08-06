@@ -334,9 +334,12 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountDeviceLoginStart,
+  AdeAccountDeviceLoginPoll,
   AdeAccountLocalMachineIdentity,
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
+  AdeAccountMachinePairingRepairResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -1211,13 +1214,28 @@ declare global {
           since?: number,
           streamId?: string | null,
         ) => Promise<import("../shared/types").AttentionSnapshot>;
+        /**
+         * Resolves with the per-item outcome so a bulk acknowledgment can roll
+         * back only the rows the host could not apply. A batch that applies
+         * nothing rejects instead, so an empty `acknowledged` never reads as
+         * success. `stale` and `unreached` both roll back; they differ in why,
+         * and the caller's copy has to differ with them.
+         */
         acknowledge: (args: {
           itemIds: string[];
           sourceRevisions?: Record<string, number>;
+          /**
+           * The `alertFingerprint` each item carried when the user acted on it.
+           * The host refuses an item only when its stored fingerprint differs,
+           * so a row whose alert identity changed between the poll and the
+           * click cannot be silently marked seen. Absent for items published
+           * without one.
+           */
+          alertFingerprints?: Record<string, string>;
           expectedAccountOwnerId?: string | null;
           seenAt?: string;
           dismissedAt?: string | null;
-        }) => Promise<void>;
+        }) => Promise<import("../shared/types").AttentionAcknowledgmentOutcome>;
         reportPresence: (
           presence: import("../shared/types").AttentionPresence,
         ) => Promise<void>;
@@ -2367,6 +2385,15 @@ declare global {
         startLogin: () => Promise<AdeAccountLoginStart>;
         pollLogin: (args: { sessionId: string }) => Promise<AdeAccountLoginPoll>;
         cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
+        /**
+         * Device-authorization sign-in, run inside the brain so the account
+         * directory observes it and can mint the pairing grant a removed
+         * machine needs. The loopback `startLogin` above stays the normal
+         * sign-in path.
+         */
+        startDeviceLogin: () => Promise<AdeAccountDeviceLoginStart>;
+        pollDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountDeviceLoginPoll>;
+        cancelDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
         renameMachine: (
@@ -2379,6 +2406,8 @@ declare global {
           cb: (progress: AdeAccountPairMachineProgress) => void,
         ) => () => void;
         removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
+        /** Re-pairs THIS machine after an account-side removal. */
+        repairMachinePairing: () => Promise<AdeAccountMachinePairingRepairResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

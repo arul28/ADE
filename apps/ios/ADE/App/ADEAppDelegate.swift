@@ -1,5 +1,7 @@
+import BackgroundTasks
 import UIKit
 import UserNotifications
+import WidgetKit
 
 /// Minimal `UIApplicationDelegate` bridged into the SwiftUI lifecycle via
 /// `@UIApplicationDelegateAdaptor`. It exists only to receive the APNs token
@@ -13,6 +15,7 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         ProductAnalytics.shared.configure()
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
+        registerBackgroundRefreshTask()
         // A push-to-start notification wakes the process before SwiftUI scene
         // tasks are guaranteed to run. Install ActivityKit observers at launch
         // so the newly-created activity and its update token cannot be missed.
@@ -51,6 +54,85 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
     static let approveActionIdentifier = "ADE_APPROVE"
     static let denyActionIdentifier = "ADE_DENY"
 
+    // MARK: - Background refresh
+
+    /// Must match `BGTaskSchedulerPermittedIdentifiers` in `ADE/Info.plist`.
+    static let activityRefreshTaskIdentifier = "com.ade.ios.activity.refresh"
+
+    /// The widget renders a cached App-Group snapshot, and that cache was only
+    /// ever written while the app was in the foreground — so a backgrounded or
+    /// killed app left the widget re-rendering hours-old numbers no matter how
+    /// often its timeline fired. Pushes now refresh the snapshot before the
+    /// reload (`didReceiveRemoteNotification` below), and this is the path for
+    /// the quiet stretches where no push arrives at all.
+    ///
+    /// The system decides if and when this runs. It is a way for the widget to
+    /// *age gracefully*, not a guarantee of freshness — which is exactly why
+    /// the widget also renders the snapshot's age rather than trusting it.
+    private func registerBackgroundRefreshTask() {
+        // Returns false when the identifier is missing from
+        // `BGTaskSchedulerPermittedIdentifiers`. Nothing to recover from at
+        // runtime — the widget falls back to reporting its own staleness — but
+        // the result must not be silently dropped, because a typo in either
+        // half of the pair disables background refresh with no other symptom.
+        let registered = BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.activityRefreshTaskIdentifier,
+            using: nil
+        ) { task in
+            // `using: nil` runs this on a system-chosen *background* queue, so
+            // hop to the main actor before touching `BGTask` or any service —
+            // and keep every touch of the task on that one actor.
+            Task { @MainActor in
+                await ADEAppDelegate.runActivityRefresh(task: task)
+            }
+        }
+        assert(registered, "BGTaskSchedulerPermittedIdentifiers is missing \(Self.activityRefreshTaskIdentifier)")
+    }
+
+    @MainActor
+    private static func runActivityRefresh(task: BGTask) async {
+        // Re-arm first: a handler that returns without scheduling the next one
+        // silently ends background refresh for the life of the install.
+        scheduleActivityRefresh()
+
+        let work = Task { @MainActor in
+            // A background launch has no active scene, so the root view's
+            // bootstrap task is not guaranteed to have run — and an
+            // unbootstrapped `AccountService` has no session, so the refresh
+            // would return without fetching anything. `bootstrap()` guards on
+            // its own `didConfigure` flag, so this is a no-op in the warm case.
+            await AccountService.shared.bootstrap()
+            await AccountService.shared.refreshAttentionSnapshot()
+        }
+        task.expirationHandler = { work.cancel() }
+        await work.value
+        // `refreshAttentionSnapshot` reloads timelines itself on a successful
+        // write. Reload again regardless so a *failed* refresh still re-renders
+        // the widget, which is how the staleness copy appears without waiting
+        // for a timeline entry the system may never grant.
+        WidgetCenter.shared.reloadAllTimelines()
+        task.setTaskCompleted(success: !work.isCancelled)
+    }
+
+    /// Ask for a wake in roughly fifteen minutes. iOS treats this as a floor
+    /// and a hint, never a promise.
+    @MainActor
+    static func scheduleActivityRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: activityRefreshTaskIdentifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        // Throws when the identifier is not permitted (missing Info.plist
+        // entry) or the app is over its pending-request budget. Neither is
+        // worth failing a launch over — the widget degrades to saying it is
+        // stale, which is the honest outcome anyway.
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        MainActor.assumeIsolated {
+            ADEAppDelegate.scheduleActivityRefresh()
+        }
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -72,6 +154,10 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    /// Silent-push wake. The snapshot is refreshed *before* anything reloads:
+    /// a `reloadAllTimelines` on its own only re-reads the same cached
+    /// App-Group snapshot, which is why a push used to leave the widget exactly
+    /// as wrong as it was.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
@@ -83,6 +169,11 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         await AccountService.shared.refreshAttentionSnapshot()
         let refreshedRevision = await MainActor.run {
             AccountService.shared.attentionSnapshotRevision
+        }
+        // A successful refresh already reloaded. Reload on the failure path too
+        // so the widget re-renders and can say how far behind it now is.
+        if refreshedRevision == previousRevision {
+            WidgetCenter.shared.reloadAllTimelines()
         }
         return refreshedRevision != previousRevision ? .newData : .noData
     }

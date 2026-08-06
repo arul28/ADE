@@ -253,12 +253,14 @@ button.activity-hdr-freshness {
   gap: 1px;
 }
 
+/* The heading is a wrapper for the toggle button, which carries the padding:
+   see `.activity-section-toggle` in Activity.css — one collapse control, both
+   surfaces, so a header cannot behave differently depending on where it is. */
 .activity-hdr-section-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
   margin: 0;
-  padding: 7px 7px 4px;
+  padding: 3px 0 1px;
   font-size: var(--activity-hdr-fs-2xs);
   font-weight: 700;
   letter-spacing: 0.07em;
@@ -266,19 +268,105 @@ button.activity-hdr-freshness {
   color: var(--color-muted-fg);
 }
 
-.activity-hdr-section-dot {
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--tone-color);
-}
-
 .activity-hdr-section-count {
   font-family: var(--font-mono);
   font-size: var(--activity-hdr-fs-2xs);
   font-variant-numeric: tabular-nums;
   color: var(--tone-color);
+}
+
+/* Done lives in the full list, so the dropdown owes the reader a pointer to
+   it — a count they can click, not a silent omission. */
+.activity-hdr-done-handoff {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  margin: 4px 0 2px 8px;
+  padding: 3px 5px;
+  border-radius: 6px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-hdr-fs-xs);
+  font-weight: 600;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.activity-hdr-done-handoff:hover,
+.activity-hdr-done-handoff:focus-visible {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  outline: none;
+}
+
+/* ---- offline disclosure ------------------------------------------------ */
+
+.activity-hdr-offline-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-hdr-offline-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.activity-hdr-offline-head > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.activity-hdr-offline-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-accent);
+  font-size: var(--activity-hdr-fs-xs);
+  font-weight: 650;
+}
+
+.activity-hdr-offline-toggle:hover,
+.activity-hdr-offline-toggle:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.activity-hdr-offline-caret {
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.activity-hdr-offline-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.activity-hdr-offline-list {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.activity-hdr-offline-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+  color: var(--color-muted-fg);
+  font-size: var(--activity-hdr-fs-xs);
+}
+
+.activity-hdr-offline-list li > span:last-child {
+  flex-shrink: 0;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
 }
 
 .activity-hdr-overflow {
@@ -330,12 +418,19 @@ button.activity-hdr-freshness {
 /* All-clear is a state worth designing, not a gap to apologise for: one calm
    emerald dot breathing at rest, no icon shouting an absence. */
 .activity-hdr-calm-dot {
+  /* Emerald via the tone variable, not a literal: light mode swaps it for a
+     darker green so the dot stays legible on a pale popover. */
+  --tone-color: #34d399;
   position: relative;
   width: 9px;
   height: 9px;
   margin-bottom: 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, #34d399 78%, transparent);
+  background: color-mix(in srgb, var(--tone-color) 78%, transparent);
+}
+
+[data-theme="light"] .activity-hdr-calm-dot {
+  --tone-color: #047857;
 }
 
 .activity-hdr-calm-dot::after {
@@ -343,7 +438,7 @@ button.activity-hdr-freshness {
   position: absolute;
   inset: -6px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, #34d399 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone-color) 26%, transparent);
   animation: activity-hdr-calm 3.6s ease-in-out infinite;
 }
 

@@ -4,6 +4,8 @@ import {
   ATTENTION_PHASES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
+  runAcknowledgmentChunks,
+  unreachedOutcomeFields,
   type AttentionAction,
   type AttentionDestination,
   type AttentionEventKind,
@@ -20,7 +22,9 @@ import {
 import {
   deeplinkToNavigationTarget,
   parseDeeplink,
+  type DeeplinkTarget,
 } from "../../../shared/deeplinks";
+import { targetToWebUrl } from "../shell/webRoutes";
 import {
   browserAccountIsSignedIn,
   type BrowserAccountClient,
@@ -34,6 +38,25 @@ type RelayResult = {
   body: unknown;
 };
 
+/**
+ * Open an Activity destination in a new browser tab.
+ *
+ * Returns false when the tab could not be opened — no `window`, or a popup
+ * blocker that did not see this click as user-initiated — so the caller can
+ * fall back to navigating in place rather than leaving the click dead.
+ */
+function openWebTargetInNewTab(target: DeeplinkTarget): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    // `noopener` keeps the new tab from reaching back into this one; without it
+    // the opened document inherits a scriptable handle to the workspace.
+    const opened = window.open(targetToWebUrl(target), "_blank", "noopener,noreferrer");
+    return Boolean(opened);
+  } catch {
+    return false;
+  }
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -42,6 +65,42 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function optionalString(value: unknown): value is string | null | undefined {
   return value === undefined || value === null || typeof value === "string";
+}
+
+/** Matches the notch snapshot parser's bound on the same field. */
+const MAX_ALERT_FINGERPRINT_LENGTH = 1_024;
+
+/** One chunk's slice of a per-item map. Sent whole, it would name outside ids. */
+function pickForChunk<T>(source: Record<string, T>, chunk: string[]): Record<string, T> {
+  const picked: Record<string, T> = {};
+  for (const itemId of chunk) {
+    const value = source[itemId];
+    if (value !== undefined) picked[itemId] = value;
+  }
+  return picked;
+}
+
+/**
+ * Keep an acknowledgment's alert fence to the batch it belongs to.
+ *
+ * Mirrors `AttentionAccountCoordinator.resolveAlertFingerprints` so the browser
+ * shell and the Electron main process quote the same thing: entries for ids
+ * outside the batch, blanks, and over-long values are dropped rather than sent,
+ * and a dropped entry simply leaves that item unfenced.
+ */
+function boundedAlertFingerprints(
+  itemIds: readonly string[],
+  supplied: Record<string, string>,
+): Record<string, string> {
+  const fingerprints: Record<string, string> = {};
+  for (const itemId of itemIds) {
+    const value = supplied[itemId];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > MAX_ALERT_FINGERPRINT_LENGTH) continue;
+    fingerprints[itemId] = trimmed;
+  }
+  return fingerprints;
 }
 
 function parseMachine(value: unknown): AttentionMachineRef | null {
@@ -410,14 +469,10 @@ export function createAttentionNamespace(
 ): Window["ade"]["attention"] {
   let lastSnapshotScope: AttentionSnapshot["scope"] | null = null;
   let lastSnapshotAccountOwnerId: string | null = null;
-  let lastMachineItemIds = new Set<string>();
 
   const rememberSnapshot = (snapshot: AttentionSnapshot): AttentionSnapshot => {
     lastSnapshotScope = snapshot.scope ?? null;
     lastSnapshotAccountOwnerId = snapshot.accountOwnerId?.trim() || null;
-    lastMachineItemIds = snapshot.scope === "machine"
-      ? new Set(snapshot.items.map((item) => item.id))
-      : new Set();
     return snapshot;
   };
 
@@ -562,49 +617,94 @@ export function createAttentionNamespace(
           "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
         );
       }
+      // Deliberately NOT fenced on "did this adapter personally see the item at
+      // this exact revision". Revision is a raw epoch-ms that advances on every
+      // publish, so a live agent outruns any poll and that fence rejected the
+      // normal case. The narrow fence that remains is `alertFingerprints`: the
+      // caller quotes the alert identity it rendered per item, and the relay
+      // refuses only when the stored alert has since changed — which is exactly
+      // the case where an in-flight bulk ack would otherwise swallow a
+      // `needs_you` the user never saw. Items with no quoted fingerprint stay
+      // unfenced, so one bulk call still clears the inbox.
+      //
+      // Every per-item map is rebuilt PER CHUNK rather than sliced alongside:
+      // the relay rejects an acknowledgment whose fence names an id outside the
+      // batch, so a whole-batch map sent with a partial id list is a 400 for
+      // the entire call.
+      const chunkRequest = (chunk: string[]) => ({
+        ...args,
+        itemIds: chunk,
+        ...(args.alertFingerprints
+          ? { alertFingerprints: boundedAlertFingerprints(chunk, args.alertFingerprints) }
+          : {}),
+        ...(args.sourceRevisions
+          ? { sourceRevisions: pickForChunk(args.sourceRevisions, chunk) }
+          : {}),
+      });
+      // Chunked, never truncated: this shell used to send the whole list, so a
+      // "Clear all" over a large inbox hit the relay's hard `itemIds.length >
+      // 64` rejection and dismissed nothing at all. Chunking, the abort policy
+      // and the per-item aggregation all live in `runAcknowledgmentChunks`,
+      // shared with the Electron coordinator so the two shells cannot drift.
       if (lastSnapshotScope === "machine") {
-        if (
-          lastSnapshotScope !== "machine"
-          || args.itemIds.some((itemId) => !lastMachineItemIds.has(itemId))
-        ) {
-          throw new Error(
-            "Refresh this machine's Activity before acknowledging the item.",
-          );
-        }
-        if (
-          !args.sourceRevisions
-          || args.itemIds.some((itemId) =>
-            !Number.isFinite(args.sourceRevisions?.[itemId]))
-        ) {
-          throw new Error(
-            "Refresh this machine's Activity before acknowledging a changed item.",
-          );
-        }
         if (!infra.commands.hasAction("attention.acknowledgeMachine")) {
           const hostName = infra.client.getStatus().hostName?.trim() || "the connected ADE host";
           throw new Error(
             `Update ADE on ${hostName}, reconnect, then try this Activity action again.`,
           );
         }
-        await infra.commands.call(
-          "attention.acknowledgeMachine",
-          args as unknown as Record<string, unknown>,
-          {
-            fallback: () => {
-              throw new Error(
-                "The connected ADE host could not acknowledge this machine item.",
-              );
+        // The host answers per CHUNK, not per item: it applies the whole
+        // payload or throws. So no chunk yields stale ids, and an id that did
+        // not land was never answered for — `unreached`, not `stale`. It rolls
+        // back either way, but nothing about it changed underneath the user.
+        const machine = await runAcknowledgmentChunks(args.itemIds, async (chunk) => {
+          await infra.commands.call(
+            "attention.acknowledgeMachine",
+            chunkRequest(chunk) as unknown as Record<string, unknown>,
+            {
+              fallback: () => {
+                throw new Error(
+                  "The connected ADE host could not acknowledge this machine item.",
+                );
+              },
+              idempotent: false,
+              requireProject: false,
             },
-            idempotent: false,
-            requireProject: false,
-          },
-        );
-        return;
+          );
+          return [];
+        });
+        if (machine.acknowledged.length === 0 && machine.failure) throw machine.failure;
+        return {
+          acknowledged: machine.acknowledged,
+          stale: machine.stale,
+          ...unreachedOutcomeFields(machine.unreached, machine.failure),
+        };
       }
       if (lastSnapshotScope !== "account" || !currentAccountOwnerId) {
         throw new Error("Refresh account Activity before acknowledging this item.");
       }
-      await request("acknowledgment", "POST", "/attention/account/ack", args, { userInitiated: true });
+      // One relay call per chunk, and its per-item verdict is returned rather
+      // than discarded, so a partially applied "Clear all" keeps the rows it
+      // actually cleared.
+      const relay = await runAcknowledgmentChunks(args.itemIds, async (chunk) => {
+        const result = record(await request(
+          "acknowledgment",
+          "POST",
+          "/attention/account/ack",
+          chunkRequest(chunk),
+          { userInitiated: true },
+        ));
+        return Array.isArray(result?.stale)
+          ? result.stale.filter((itemId): itemId is string => typeof itemId === "string")
+          : [];
+      });
+      // Nothing landed: surface the real reason rather than a silent partial.
+      if (relay.acknowledged.length === 0 && relay.failure) throw relay.failure;
+      return {
+        acknowledged: relay.acknowledged,
+        stale: relay.stale,
+        ...unreachedOutcomeFields(relay.unreached, relay.failure),
+      };
     },
 
     async reportPresence(presence: AttentionPresence) {
@@ -717,7 +817,14 @@ export function createAttentionNamespace(
         item.project.projectId
         && item.project.projectId !== infra.state.getProjectId()
       ) {
-        const switched = await infra.client.switchProject(item.project.projectId);
+        // The item's projectId is the owning machine's `ade.db` uuid, which the
+        // host's project registry has never seen — its resolver matches the
+        // registry id OR the root path, so the root path is what actually
+        // lands. Sending both keeps a same-machine id match working.
+        const switched = await infra.client.switchProject(
+          item.project.projectId,
+          item.project.rootPath ?? null,
+        );
         if (!switched.ok) {
           throw new Error(
             `${item.machine.name} owns this item. Connect to that machine, then open ${item.project.name}.`,
@@ -726,10 +833,12 @@ export function createAttentionNamespace(
       }
       const parsed = parseDeeplink(attentionDestinationDeepLink(item.destination, item));
       if (!parsed.ok) throw new Error("This Activity destination is invalid.");
-      infra.events.emit("navigate", {
-        target: deeplinkToNavigationTarget(parsed.target),
-        source: "attention",
-      });
+      const target = deeplinkToNavigationTarget(parsed.target);
+      // Web opens the agent in a NEW TAB: the current tab is a workspace the
+      // user is in the middle of, and an Activity click is a side errand.
+      // A blocked popup is not a failure — fall back to navigating in place.
+      if (openWebTargetInNewTab(parsed.target)) return;
+      infra.events.emit("navigate", { target, source: "attention" });
     },
   };
 }

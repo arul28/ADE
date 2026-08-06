@@ -8,6 +8,14 @@ import {
   attentionDestinationDeepLink,
   sortAttentionItems,
 } from "../../../desktop/src/shared/types/attention";
+import {
+  activityStateGroup,
+  type ActivityStateGroup,
+} from "../../../desktop/src/renderer/components/activity/activityPresentation";
+import {
+  activityFeedItems,
+  activityNotificationItems,
+} from "../../../desktop/src/renderer/components/activity/activityPriority";
 import { formatRelativePastTime } from "./relativeTime";
 import type { AdeCodeConnection } from "./types";
 
@@ -16,7 +24,8 @@ export type ActivityPaneGroupId =
   | "failing"
   | "done"
   | "live"
-  | "recent";
+  | "recent"
+  | "notifications";
 
 export type ActivityPaneGroup = {
   id: ActivityPaneGroupId;
@@ -228,31 +237,36 @@ export async function acknowledgeActivityItem(
   });
 }
 
-function groupForItem(item: AttentionItem): ActivityPaneGroupId {
+/**
+ * The TUI's five headings, expressed purely as a function of the canonical
+ * Activity state group. The pane keeps its own vocabulary (it splits the
+ * canonical `done` band into unreviewed outcomes and the ambient tail, which a
+ * scrolling terminal list needs), but it may not disagree with the rule about
+ * WHICH band a row is in — that rule is mirrored across the renderer, the
+ * notch, iOS, and the relay, and this pane is a fifth mirror.
+ *
+ * Pinned by `activityStateGroup.cases.json` in activityPane.test.ts.
+ */
+export const ACTIVITY_PANE_GROUP_BY_STATE_GROUP = {
+  "needs-you": "needs-you",
+  failed: "failing",
+  planning: "live",
+  working: "live",
+  // `done` splits below on seen/idle; this is the band, not the final heading.
+  done: "done",
+} as const satisfies Record<ActivityStateGroup, ActivityPaneGroupId>;
+
+export function groupForItem(item: AttentionItem): ActivityPaneGroupId {
+  const group = ACTIVITY_PANE_GROUP_BY_STATE_GROUP[activityStateGroup(item)];
+  if (group !== "done") return group;
   // Disk-only roster rows are quiet history: an ended chat still carries phase
   // `completed` with no seenAt, which would otherwise file every session the
   // account has ever finished under DONE, UNREVIEWED and count it as waiting.
-  // Desktop files the same rows as the ambient tail — see `activitySectionId`
-  // in apps/desktop/src/renderer/components/activity/activityPriority.ts.
-  if (activityItemTier(item) === "idle") return "recent";
-  if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") {
-    return "needs-you";
-  }
-  if (
-    item.phase === "failed"
-    || item.phase === "blocked"
-    || item.phase === "checks_failing"
-    || item.phase === "changes_requested"
-  ) {
-    return "failing";
-  }
-  if ((item.phase === "completed" || item.phase === "merged") && item.seenAt === null) {
-    return "done";
-  }
-  if (item.phase === "starting" || item.phase === "running") {
-    return "live";
-  }
-  return "recent";
+  // Already-seen outcomes join them in the tail. Desktop orders the same rows
+  // the same way inside its `done` section — see `activitySections` in
+  // apps/desktop/src/renderer/components/activity/activityPriority.ts.
+  if (activityItemTier(item) === "idle" || item.seenAt !== null) return "recent";
+  return "done";
 }
 
 const GROUP_LABELS: Record<ActivityPaneGroupId, string> = {
@@ -261,12 +275,21 @@ const GROUP_LABELS: Record<ActivityPaneGroupId, string> = {
   done: "DONE, UNREVIEWED",
   live: "LIVE NOW",
   recent: "RECENT",
+  notifications: "NOTIFICATIONS",
 };
 
-export function buildActivityPaneModel(snapshot: AttentionSnapshot): ActivityPaneModel {
-  const visible = sortAttentionItems(
-    snapshot.items.filter((item) => item.dismissedAt === null),
-  );
+export function buildActivityPaneModel(
+  snapshot: AttentionSnapshot,
+  now = Date.now(),
+): ActivityPaneModel {
+  // Activity is an AGENT feed on every surface. Pull requests, checks and
+  // review outcomes still arrive — they push and badge — but they are not
+  // session rows, because a lane with an open PR rendered twice: once as the
+  // agent working it and once as the PR. `activityFeedItems` /
+  // `activityNotificationItems` are the same split the renderer and the notch
+  // use, and they also drop dismissed and expired rows, which this pane
+  // previously kept.
+  const visible = sortAttentionItems(activityFeedItems(snapshot.items, now));
   const buckets = new Map<ActivityPaneGroupId, AttentionItem[]>();
   for (const item of visible) {
     const group = groupForItem(item);
@@ -274,7 +297,17 @@ export function buildActivityPaneModel(snapshot: AttentionSnapshot): ActivityPan
     bucket.push(item);
     buckets.set(group, bucket);
   }
-  const order: ActivityPaneGroupId[] = ["needs-you", "failing", "done", "live", "recent"];
+  // The notification tail, mirroring `activityFeedOrder`: agent sections first,
+  // then everything that is not an agent and would have pushed a notification.
+  buckets.set("notifications", activityNotificationItems(snapshot.items, now));
+  const order: ActivityPaneGroupId[] = [
+    "needs-you",
+    "failing",
+    "done",
+    "live",
+    "recent",
+    "notifications",
+  ];
   const groups = order
     .map((id): ActivityPaneGroup => ({
       id,

@@ -103,6 +103,17 @@
   <array>
     <string>audio</string>
     <string>remote-notification</string>
+    <!--
+      The Activity widget renders a cached App-Group snapshot. Without a
+      background refresh path it only ever updates while the app is in the
+      foreground, so a backgrounded app leaves the widget re-rendering stale
+      counts. See ADEAppDelegate.registerBackgroundRefreshTask.
+    -->
+    <string>fetch</string>
+  </array>
+  <key>BGTaskSchedulerPermittedIdentifiers</key>
+  <array>
+    <string>com.ade.ios.activity.refresh</string>
   </array>
   <key>UILaunchScreen</key>
   <dict/>

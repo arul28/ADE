@@ -50,6 +50,7 @@ import type {
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import {
   RemoteConnectionService,
@@ -273,6 +274,23 @@ function localRuntimeEventBindingKey(
     : `local:${rootPath}`;
 }
 
+/**
+ * The `open` half of the pair → connect → open chain failed: the runtime was
+ * reached, but the project the caller named is not on it (or was never named).
+ *
+ * A CLASS rather than a message match, because the Activity click-through picks
+ * the user's recovery instruction from this distinction — "open this project"
+ * versus "make sure ADE is running there". Matching the sentence instead meant
+ * a copy edit silently handed the user the wrong instruction, with nothing
+ * failing to say so.
+ */
+export class RemoteProjectNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RemoteProjectNotFoundError";
+  }
+}
+
 function canBindRemoteProjectToSender(
   windowId: number | null,
   sender: WebContents,
@@ -302,9 +320,17 @@ export type RuntimeBridgeRegistration = {
   ): AccountMachineReconciliationResult;
   getLocalMachineIdentity(): AdeAccountLocalMachineIdentity;
   resolveTargetIdForMachineKey(machineKey: string): string | null;
+  /** Display name for the paired machine, for user-facing failure copy. */
+  resolveTargetNameForMachineKey(machineKey: string): string | null;
   openRemoteProjectForWindow(args: {
     targetId: string;
     projectId: string;
+    /**
+     * The owning machine's project root. Activity items carry it, and it is the
+     * only project identity that survives the uuid-vs-registry-id split, so it
+     * is the fallback when `projectId` matches nothing on the runtime.
+     */
+    rootPath?: string | null;
     windowId: number | null;
   }): Promise<OpenProjectBinding & { kind: "remote" }>;
 };
@@ -441,20 +467,27 @@ export function registerRuntimeBridge({
   powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
   powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
 
+  const targetForMachineKey = (machineKey: string): RemoteRuntimeTarget | null => {
+    const normalized = machineKey.trim();
+    if (!normalized) return null;
+    return remoteConnectionService.listTargets().find(
+      (target) => target.pairedMachine?.machineKey?.trim() === normalized,
+    ) ?? null;
+  };
+
   const registration: RuntimeBridgeRegistration = {
     reconcileAccountOwnership: (currentOwnerUserId) =>
       remoteConnectionService.reconcileAccountOwnership(currentOwnerUserId),
     getLocalMachineIdentity: () =>
       getLocalMachineIdentity?.() ?? getOrCreateLocalAccountMachineIdentity(),
-    resolveTargetIdForMachineKey: (machineKey) => {
-      const normalized = machineKey.trim();
-      if (!normalized) return null;
-      return remoteConnectionService.listTargets().find(
-        (target) => target.pairedMachine?.machineKey?.trim() === normalized,
-      )?.id ?? null;
+    resolveTargetIdForMachineKey: (machineKey) =>
+      targetForMachineKey(machineKey)?.id ?? null,
+    resolveTargetNameForMachineKey: (machineKey) => {
+      const target = targetForMachineKey(machineKey);
+      return target?.name?.trim() || target?.hostname?.trim() || null;
     },
-    openRemoteProjectForWindow: async ({ targetId, projectId, windowId }) => {
-      const binding = await resolveRemoteProjectBinding(targetId, projectId);
+    openRemoteProjectForWindow: async ({ targetId, projectId, rootPath, windowId }) => {
+      const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);
       return binding;
     },
@@ -463,27 +496,41 @@ export function registerRuntimeBridge({
   async function resolveRemoteProjectBinding(
     rawTargetId: string,
     rawProjectId: string,
+    rawRootPath?: string | null,
   ): Promise<OpenProjectBinding & { kind: "remote" }> {
     const targetId = rawTargetId.trim();
     const projectId = rawProjectId.trim();
+    const rootPath = rawRootPath?.trim() ?? "";
     const target = targetId ? remoteConnectionService.getTarget(targetId) : null;
     if (!target) throw new Error("Remote target was not found.");
-    if (!projectId) throw new Error("Remote project is required.");
+    if (!projectId && !rootPath) {
+      throw new RemoteProjectNotFoundError("Remote project is required.");
+    }
 
     const connection = await remoteConnectionService.connect(target.id, {
       explicit: true,
     });
-    let project =
-      connection.projects.find(
-        (candidate) => candidate.projectId === projectId,
-      ) ?? null;
+    // Two id spaces reach this lookup. A project opened from the runtime's own
+    // catalog carries the machine-registry id; an Activity item carries the
+    // owning machine's `ade.db` uuid, which `projects.list` has never heard of.
+    // Resolve by id first, then fall back to the project root both sides agree
+    // on, or every cross-machine click-through dies here.
+    const resolveProject = (
+      candidates: readonly RemoteRuntimeProjectRecord[],
+    ): RemoteRuntimeProjectRecord | null =>
+      (projectId
+        ? candidates.find((candidate) => candidate.projectId === projectId)
+        : undefined)
+      ?? matchRemoteProjectByRootPath(candidates, rootPath)
+      ?? null;
+
+    let project = resolveProject(connection.projects);
     if (!project) {
-      const projects = await remoteConnectionService.projects(target.id);
-      project =
-        projects.find((candidate) => candidate.projectId === projectId) ??
-        null;
+      project = resolveProject(await remoteConnectionService.projects(target.id));
     }
-    if (!project) throw new Error("Remote project was not found on this runtime.");
+    if (!project) {
+      throw new RemoteProjectNotFoundError("Remote project was not found on this runtime.");
+    }
 
     return {
       kind: "remote",

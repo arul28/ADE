@@ -37,8 +37,15 @@ public func adeAccountWideActivityMatchesCurrentOwnership(
 ///                     activeCount,
 ///                     runs: [Run],
 ///                     prs: [PullRequest],
-///                     ownershipEpoch?: Int
+///                     ownershipEpoch?: Int,
+///                     groups?: [{ group, count }],
+///                     moreCount?: Int
 ///                   }
+///
+/// `groups` and `moreCount` are the island's account-wide tallies. They are
+/// optional because the relay does not send them yet; without them the compact
+/// leading counts only the three-row roster, which undercounts but never lies.
+/// `groups[].group` is one of `needs_you | failed | planning | working | done`.
 ///
 /// Decoding is deliberately lenient — a run row with an unrecognised `phase`
 /// still renders (as `.running`), and a missing optional collapses to `nil`
@@ -56,23 +63,37 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         /// Repeated on every account-wide update so a delayed update from a
         /// prior owner cannot refresh an otherwise valid ActivityKit instance.
         public var ownershipEpoch: Int?
+        /// Account-wide state-group tallies — what the island's compact
+        /// leading counts. **Optional and additive.** The roster is capped at
+        /// three runs, so these cannot be derived from `runs`; when the
+        /// publisher omits them the island falls back to counting the visible
+        /// roster, which undercounts rather than lies.
+        public var groups: [StateGroupCount]?
+        /// How many rows the capped roster left off, straight from the
+        /// publisher. Absent → derived locally from `activeCount` and the
+        /// rendered rows.
+        public var moreCount: Int?
 
         public init(
             updatedAt: Double,
             activeCount: Int,
             runs: [Run],
             prs: [PullRequest] = [],
-            ownershipEpoch: Int? = nil
+            ownershipEpoch: Int? = nil,
+            groups: [StateGroupCount]? = nil,
+            moreCount: Int? = nil
         ) {
             self.updatedAt = updatedAt
             self.activeCount = activeCount
             self.runs = runs
             self.prs = prs
             self.ownershipEpoch = ownershipEpoch
+            self.groups = groups
+            self.moreCount = moreCount
         }
 
         private enum CodingKeys: String, CodingKey {
-            case updatedAt, activeCount, runs, prs, ownershipEpoch
+            case updatedAt, activeCount, runs, prs, ownershipEpoch, groups, moreCount
         }
 
         public init(from decoder: Decoder) throws {
@@ -85,11 +106,66 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             let decodedPrs = (try? c.decode([PullRequest].self, forKey: .prs)) ?? []
             self.prs = Array(decodedPrs.prefix(2))
             self.ownershipEpoch = try? c.decodeIfPresent(Int.self, forKey: .ownershipEpoch)
+            let decodedGroups = (try? c.decodeIfPresent([StateGroupCount].self, forKey: .groups))
+                ?? nil
+            // An all-zero or unparseable tally is worse than none: it would
+            // render a confident "0" over a roster that plainly has rows.
+            let usableGroups = decodedGroups?.filter { $0.resolvedGroup != nil && $0.count > 0 }
+            self.groups = (usableGroups?.isEmpty ?? true) ? nil : usableGroups
+            let decodedMore = (try? c.decodeIfPresent(Int.self, forKey: .moreCount)) ?? nil
+            self.moreCount = decodedMore.map { max(0, $0) }
+        }
+
+        /// Publisher-supplied tallies, resolved and ordered, or `nil` when the
+        /// payload predates the field.
+        public var resolvedGroups: [(group: ActivityStateGroup, count: Int)]? {
+            guard let groups else { return nil }
+            let resolved = groups.compactMap { entry -> (ActivityStateGroup, Int)? in
+                guard let group = entry.resolvedGroup, entry.count > 0 else { return nil }
+                return (group, entry.count)
+            }
+            guard !resolved.isEmpty else { return nil }
+            return resolved
+                .sorted { $0.0.rank < $1.0.rank }
+                .map { (group: $0.0, count: $0.1) }
         }
 
         /// `Date` view over the unix-seconds marker for relative formatting.
         public var updatedAtDate: Date {
             Date(timeIntervalSince1970: updatedAt)
+        }
+    }
+
+    /// One `{group, count}` tally on the Live Activity wire.
+    public struct StateGroupCount: Codable, Hashable, Identifiable, Sendable {
+        /// Wire slug: `needs_you` | `failed` | `planning` | `working` | `done`.
+        public let group: String
+        public let count: Int
+
+        public var id: String { group }
+
+        public init(group: String, count: Int) {
+            self.group = group
+            self.count = count
+        }
+
+        public init(group: ActivityStateGroup, count: Int) {
+            self.group = group.wireValue
+            self.count = count
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case group, count
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.group = (try? c.decode(String.self, forKey: .group)) ?? ""
+            self.count = max(0, (try? c.decode(Int.self, forKey: .count)) ?? 0)
+        }
+
+        public var resolvedGroup: ActivityStateGroup? {
+            ActivityStateGroup(wireValue: group)
         }
     }
 
@@ -303,6 +379,14 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
     }
 }
 
+/// Live Activity wire phase for a pull request.
+///
+/// **Presentation is not defined here.** Every hue and glyph is resolved by
+/// projecting onto `AccountAttentionPhase` and asking `ActivityPhaseVocabulary`
+/// — the single table the drawer, the row, the widget and the island all read.
+/// This enum used to carry its own copy, which is how the Live Activity ended
+/// up showing an octagon for a failure the rest of the app drew as a triangle.
+/// The raw values are the wire format and are not free to change.
 public enum PullRequestPhase: String, CaseIterable, Sendable {
     case opened
     case reopened
@@ -313,50 +397,51 @@ public enum PullRequestPhase: String, CaseIterable, Sendable {
     case changesRequested = "changes_requested"
     case mergeReady = "merge_ready"
 
-    public var tint: Color {
+    /// Projection onto the shared vocabulary's phase space.
+    public var attentionPhase: AccountAttentionPhase {
         switch self {
-        case .opened, .reopened:
-            return ADESharedTheme.statusRunning
-        case .merged, .mergeReady:
-            return ADESharedTheme.statusSuccess
-        case .checksFailing, .changesRequested:
-            return ADESharedTheme.statusFailed
-        case .reviewRequested:
-            return ADESharedTheme.statusReview
-        case .closed:
-            return ADESharedTheme.statusIdle
+        case .opened, .reopened: return .open
+        case .closed: return .closed
+        case .merged: return .merged
+        case .checksFailing: return .checksFailing
+        case .reviewRequested: return .reviewRequested
+        case .changesRequested: return .changesRequested
+        case .mergeReady: return .mergeReady
         }
     }
+
+    private var presentation: ActivityPhasePresentation {
+        ActivityPhaseVocabulary.presentation(for: attentionPhase)
+    }
+
+    public var tone: ActivityTone { presentation.tone }
+
+    public var stateGroup: ActivityStateGroup {
+        ActivityPhaseVocabulary.stateGroup(for: attentionPhase)
+    }
+
+    public var tint: Color { activityToneColor(tone) }
+
+    /// The shared glyph, with a PR-shaped fallback for the phases the session
+    /// vocabulary leaves glyph-less (a plain open PR is not a session state).
+    public var glyph: ActivityGlyph? { presentation.glyph }
 
     public var symbol: String {
+        if let glyph = presentation.glyph { return glyph.systemImage }
         switch self {
-        case .opened, .reopened:
-            return "arrow.triangle.pull"
-        case .closed:
-            return "xmark.circle.fill"
-        case .merged:
-            return "arrow.triangle.merge"
-        case .checksFailing:
-            return "xmark.octagon.fill"
-        case .reviewRequested:
-            return "person.crop.circle.badge.clock"
-        case .changesRequested:
-            return "exclamationmark.bubble.fill"
-        case .mergeReady:
-            return "checkmark.seal.fill"
+        case .closed: return "xmark.circle.fill"
+        default: return "arrow.triangle.pull"
         }
     }
 
+    /// Shared label, except for the two phases that collapse to one session
+    /// phase — a PR that was *reopened* is worth distinguishing from one that
+    /// was merely opened, and the shared table has no word for that.
     public var label: String {
         switch self {
         case .opened: return "Opened"
         case .reopened: return "Reopened"
-        case .closed: return "Closed"
-        case .merged: return "Merged"
-        case .checksFailing: return "Checks failing"
-        case .reviewRequested: return "Review requested"
-        case .changesRequested: return "Changes requested"
-        case .mergeReady: return "Ready to merge"
+        default: return presentation.label
         }
     }
 
@@ -404,63 +489,49 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
         self == .waitingForApproval || self == .waitingForInput
     }
 
-    /// Whether the state should pull the eye. Mirrors `prominent` in the
-    /// desktop's `sessionStatusPresentation`: an outcome (done, failed) or a
-    /// raised hand earns colour and weight; work in flight does not, because
+    /// Whether the state should pull the eye. Read straight off the shared
+    /// vocabulary's `prominent` flag: an outcome (done, failed) or a raised
+    /// hand earns colour and weight; work in flight does not, because
     /// prominence is a request for attention, not a progress report.
-    public var isProminent: Bool {
-        needsAttention || self == .completed || self == .failed
-    }
+    public var isProminent: Bool { presentation.prominent }
 
     public var isTerminal: Bool {
         self == .completed || self == .failed
     }
 
-    public var tint: Color {
+    /// Projection onto the shared vocabulary's phase space. Both waiting
+    /// variants collapse to `.needsYou`: the row says which kind of answer is
+    /// wanted in words and in its inline actions, and one state may not wear
+    /// two glyphs on a surface that shows five states side by side.
+    public var attentionPhase: AccountAttentionPhase {
         switch self {
-        // `statusRunning` is blue (#60A5FA), not green: green/emerald is spent
-        // on `.completed` alone, so in-flight work and finished work can never
-        // be confused at a glance.
-        case .starting, .running: return ADESharedTheme.statusRunning
-        case .waitingForApproval: return ADESharedTheme.warningAmber
-        case .waitingForInput: return ADESharedTheme.warningAmber
-        case .completed: return ADESharedTheme.statusSuccess
-        case .failed: return ADESharedTheme.statusFailed
-        // Neutral, not amber and not blue. A stale run is alive but silent —
-        // true, and worth reporting, but it is not asking you for anything.
-        case .stale: return ADESharedTheme.statusIdle
+        case .starting: return .starting
+        case .running: return .running
+        case .waitingForApproval, .waitingForInput: return .needsYou
+        case .completed: return .completed
+        case .failed: return .failed
+        case .stale: return .stale
         }
     }
 
-    public var symbol: String {
-        switch self {
-        case .starting: return "hourglass"
-        case .running: return "circle.dotted"
-        // iOS splits the desktop's single "needs-you" glyph in two: the
-        // Lock Screen can offer Approve/Deny inline, so it is worth saying up
-        // front which kind of answer is wanted.
-        case .waitingForApproval: return "bell.badge.fill"
-        case .waitingForInput: return "keyboard.badge.ellipsis"
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "xmark.octagon.fill"
-        // A clock, not `wifi.slash`. Stale means the process is alive and has
-        // produced no output for hours — a silence problem, not a network one,
-        // and the old glyph sent people to check their connection.
-        case .stale: return "clock.badge.exclamationmark"
-        }
+    private var presentation: ActivityPhasePresentation {
+        ActivityPhaseVocabulary.presentation(for: attentionPhase)
     }
 
-    /// Short trailing phase label. Sentence case, matching ADE copy norms and
-    /// the desktop vocabulary word-for-word ("Working", not "Running"; "Done",
-    /// not "Completed").
-    public var label: String {
-        switch self {
-        case .starting: return "Starting"
-        case .running: return "Working"
-        case .waitingForApproval, .waitingForInput: return "Needs you"
-        case .completed: return "Done"
-        case .failed: return "Failed"
-        case .stale: return "Stale"
-        }
+    public var tone: ActivityTone { presentation.tone }
+
+    public var stateGroup: ActivityStateGroup {
+        ActivityPhaseVocabulary.stateGroup(for: attentionPhase)
     }
+
+    public var glyph: ActivityGlyph? { presentation.glyph }
+
+    /// Hue, glyph and word all come from `ActivityPhaseVocabulary` — see the
+    /// note on `PullRequestPhase`. Nothing about a Live Activity justifies its
+    /// own colour table, and having one is what let the island drift.
+    public var tint: Color { activityToneColor(tone) }
+
+    public var symbol: String { presentation.glyph?.systemImage ?? "circle.dotted" }
+
+    public var label: String { presentation.label }
 }

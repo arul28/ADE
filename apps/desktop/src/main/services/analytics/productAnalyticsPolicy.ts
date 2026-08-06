@@ -104,6 +104,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  "machine_reconnect",
   "mention_expanded",
 ]);
 

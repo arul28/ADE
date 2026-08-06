@@ -4,37 +4,38 @@ import type {
   AttentionPreferences,
 } from "../../../shared/types";
 import {
-  DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
   DEFAULT_ATTENTION_PREFERENCES,
-  isAttentionNotchRevealMode,
+  normalizeAttentionNotchRevealMode,
 } from "../../../shared/types";
 
 const ATTENTION_NOTCH_ENABLED_KEY = "ade:attention:notch-enabled";
 const ATTENTION_NOTCH_REVEAL_MODE_KEY = "ade:attention:notch-reveal-mode";
 const ATTENTION_NOTCH_EXPANDED_PANEL_KEY = "ade:attention:notch-expanded-panel";
-// New settings get new keys: the three above are frozen wire for anyone who
-// has already made a choice on this Mac.
-const ATTENTION_NOTCH_AUTO_REVEAL_KEY = "ade:attention:notch-auto-reveal";
-const ATTENTION_NOTCH_TICKER_KEY = "ade:attention:notch-ticker";
+// `ade:attention:notch-auto-reveal` and `ade:attention:notch-ticker` are gone
+// from this module. Neither is a setting any more — the native helper reads
+// neither — so nothing here writes them and nothing reads them. An older build
+// on the same Mac may still have left values behind; they are simply ignored,
+// which is why the keys are not cleared: a downgrade should still find its own
+// choice where it left it.
 const ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT = "ade:attention-notch-settings-changed";
 
 /**
  * How the notch presents itself. Account preferences are authoritative when
  * loaded; this Mac keeps the same shape in localStorage as its offline cache.
+ *
+ * Two fields, not four. `automaticRevealEnabled` and `tickerEnabled` were both
+ * settings for behaviour the strip no longer has: the helper stopped reading
+ * either, so the switches promised something and did nothing.
  */
 export type ActivityNotchPresentation = {
   revealMode: AttentionNotchRevealMode;
   expandedPanelEnabled: boolean;
-  automaticRevealEnabled: boolean;
-  tickerEnabled: boolean;
 };
 
 /** What a Mac that has never been configured gets: today's behaviour. */
 export const DEFAULT_ACTIVITY_NOTCH_PRESENTATION: ActivityNotchPresentation = {
-  revealMode: DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
+  revealMode: normalizeAttentionNotchRevealMode(undefined),
   expandedPanelEnabled: true,
-  automaticRevealEnabled: true,
-  tickerEnabled: true,
 };
 
 /**
@@ -76,16 +77,17 @@ export function writeActivityNotchEnabled(enabled: boolean): void {
   writeLocalItem(ATTENTION_NOTCH_ENABLED_KEY, String(enabled));
 }
 
-/** A value this build has never heard of falls back to the shipped behaviour. */
+/**
+ * A value this build has never heard of falls back to the shipped behaviour,
+ * and the two retired modes map forward: `minimal` and `click` both kept a
+ * strip on screen, so both become `always` rather than silently hiding it.
+ */
 export function readActivityNotchPresentation(): ActivityNotchPresentation {
-  const revealMode = readLocalItem(ATTENTION_NOTCH_REVEAL_MODE_KEY);
   return {
-    revealMode: isAttentionNotchRevealMode(revealMode)
-      ? revealMode
-      : DEFAULT_ACTIVITY_NOTCH_PRESENTATION.revealMode,
+    revealMode: normalizeAttentionNotchRevealMode(
+      readLocalItem(ATTENTION_NOTCH_REVEAL_MODE_KEY),
+    ),
     expandedPanelEnabled: readLocalItem(ATTENTION_NOTCH_EXPANDED_PANEL_KEY) !== "false",
-    automaticRevealEnabled: readLocalItem(ATTENTION_NOTCH_AUTO_REVEAL_KEY) !== "false",
-    tickerEnabled: readLocalItem(ATTENTION_NOTCH_TICKER_KEY) !== "false",
   };
 }
 
@@ -97,11 +99,6 @@ export function writeActivityNotchPresentation(
     ATTENTION_NOTCH_EXPANDED_PANEL_KEY,
     String(presentation.expandedPanelEnabled),
   );
-  writeLocalItem(
-    ATTENTION_NOTCH_AUTO_REVEAL_KEY,
-    String(presentation.automaticRevealEnabled),
-  );
-  writeLocalItem(ATTENTION_NOTCH_TICKER_KEY, String(presentation.tickerEnabled));
 }
 
 /**
@@ -116,18 +113,12 @@ export function resolveActivityNotchPresentation(
 ): ActivityNotchPresentation {
   const account = preferences?.account;
   return {
-    revealMode: isAttentionNotchRevealMode(account?.notchRevealMode)
-      ? account.notchRevealMode
-      : local.revealMode,
+    revealMode: account?.notchRevealMode == null
+      ? local.revealMode
+      : normalizeAttentionNotchRevealMode(account.notchRevealMode),
     expandedPanelEnabled: typeof account?.notchExpandedPanel === "boolean"
       ? account.notchExpandedPanel
       : local.expandedPanelEnabled,
-    automaticRevealEnabled: typeof account?.notchAutomaticReveal === "boolean"
-      ? account.notchAutomaticReveal
-      : local.automaticRevealEnabled,
-    tickerEnabled: typeof account?.notchTicker === "boolean"
-      ? account.notchTicker
-      : local.tickerEnabled,
   };
 }
 
@@ -142,8 +133,6 @@ export function activityPreferencesWithNotchPresentation(
       ...preferences.account,
       notchRevealMode: presentation.revealMode,
       notchExpandedPanel: presentation.expandedPanelEnabled,
-      notchAutomaticReveal: presentation.automaticRevealEnabled,
-      notchTicker: presentation.tickerEnabled,
     },
   };
 }
@@ -153,10 +142,11 @@ export function persistActivityNotchSettings(
 ): void {
   writeActivityNotchEnabled(settings.enabled);
   writeActivityNotchPresentation({
-    revealMode: settings.revealMode,
+    // The native context menu can still be an older build handing back a
+    // retired mode, so normalize on the way in rather than caching a value no
+    // reader understands.
+    revealMode: normalizeAttentionNotchRevealMode(settings.revealMode),
     expandedPanelEnabled: settings.expandedPanelEnabled,
-    automaticRevealEnabled: settings.automaticRevealEnabled,
-    tickerEnabled: settings.tickerEnabled,
   });
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent<AttentionNotchSettings>(
@@ -214,8 +204,6 @@ export function activityNotchSettingsFromPreferences(
     enabled,
     revealMode: presentation.revealMode,
     expandedPanelEnabled: presentation.expandedPanelEnabled,
-    automaticRevealEnabled: presentation.automaticRevealEnabled,
-    tickerEnabled: presentation.tickerEnabled,
     preferredDisplayId: null,
     hideDetails: normalized.account.hideDetails,
     celebrationsEnabled: normalized.account.celebrationsEnabled,

@@ -12,6 +12,18 @@
   // Hourly prune of expired suppression / registration / rate-limit rows,
   // independent of request traffic (see the scheduled handler in index.ts).
   "triggers": { "crons": ["17 * * * *"] },
+  // REQUIRED SECRET — DIRECTORY_AUTH_SECRET
+  // Not a var: it is a credential, so it is set out of band and never committed.
+  //   wrangler secret put DIRECTORY_AUTH_SECRET
+  // Must hold the SAME value as ade-account-directory's secret of that name. It
+  // is the only provenance the relay can verify on POST
+  // /attention/account/machines/<key>/pairing — the one route whose effect is to
+  // UN-revoke a machine, which a removed machine's still-valid account token
+  // must never be enough to do on its own. A Cloudflare service binding leaves
+  // no attestable marker on the inbound request, so the directory presents this
+  // header over whichever transport it uses. Unset fails closed (503), and
+  // `npm run deploy` refuses to ship without it (verify:auth-preflight).
+  //
   // Spend + abuse controls. Change these without a code change; redeploy to apply.
   // DAILY_REQUEST_BUDGET is the hard daily request ceiling (the ~$10-ceiling
   // backstop — see DEFAULT_DAILY_REQUEST_BUDGET in relay.ts for the math).

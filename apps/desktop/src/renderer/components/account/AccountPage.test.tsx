@@ -4,13 +4,15 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AccountPage, SignInCard } from "./AccountPage";
+import { AccountPage, SignInCard, reconnectNeedsFreshSignIn } from "./AccountPage";
+import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 
 const beginLogin = vi.fn(async () => undefined);
 const refreshAccount = vi.fn(async () => SIGNED_OUT);
+const runAccountDeviceLogin = vi.fn();
 
 const SIGNED_OUT: AdeAccountStatus = {
   signedIn: false,
@@ -36,6 +38,10 @@ vi.mock("../../lib/accountLogin", () => ({
     beginLogin,
     cancel: vi.fn(),
   }),
+  runAccountDeviceLogin: (options?: {
+    onPrompt?: (prompt: { userCode: string; verificationUri: string; verificationUriComplete: string | null }) => void;
+    isCancelled?: () => boolean;
+  }) => runAccountDeviceLogin(options),
 }));
 
 vi.mock("../../lib/account", async () => {
@@ -146,6 +152,16 @@ describe("AccountPage signed-in", () => {
     machine({ machineKey, deviceId: "this-dev", name: "MacBook Pro", customName }),
   );
   const signOut = vi.fn(async () => SIGNED_OUT);
+  const repairMachinePairing = vi.fn();
+
+  /** The directory answers `ok` but has no row for this computer — i.e. removed. */
+  function machinesWithoutThisComputer() {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [machine({ machineKey: "studio-key", deviceId: "studio-dev", name: "Studio" })],
+    });
+  }
 
   beforeEach(() => {
     delete window.__adeWebClient;
@@ -174,8 +190,23 @@ describe("AccountPage signed-in", () => {
         getStatus: vi.fn(async () => ({ connected: false })),
         onStatusChanged: vi.fn(() => () => {}),
       },
-      account: { listMachines, getLocalMachineIdentity, removeMachine, renameMachine, signOut },
+      account: {
+        listMachines,
+        getLocalMachineIdentity,
+        removeMachine,
+        renameMachine,
+        repairMachinePairing,
+        signOut,
+      },
     } as unknown as typeof window.ade;
+    repairMachinePairing.mockResolvedValue({
+      repaired: true,
+      wasRevoked: true,
+      published: true,
+      pushRestored: true,
+      state: "registered",
+      reason: null,
+    });
   });
 
   afterEach(() => {
@@ -185,6 +216,8 @@ describe("AccountPage signed-in", () => {
     getLocalMachineIdentity.mockReset();
     removeMachine.mockClear();
     renameMachine.mockClear();
+    repairMachinePairing.mockReset();
+    runAccountDeviceLogin.mockReset();
     signOut.mockClear();
     window.ade = originalAde;
   });
@@ -356,6 +389,345 @@ describe("AccountPage signed-in", () => {
     await screen.findByText("MacBook Pro");
 
     expect(screen.queryByRole("button", { name: /Manage connections/ })).toBeNull();
+  });
+
+  // Removal revokes the machine durably: it cannot resurrect itself through its
+  // own heartbeat, and restarting, signing out and in, or reinstalling all
+  // leave it removed. These tests cover the only way back.
+  it("offers a reconnect when this computer is missing from its own account directory", async () => {
+    machinesWithoutThisComputer();
+    renderPage();
+
+    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    await waitFor(() => expect(repairMachinePairing).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText(
+        "This computer is back on your account. Activity and alerts are delivering again.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("shows the brain's reason and says the computer is still disconnected on failure", async () => {
+    machinesWithoutThisComputer();
+    repairMachinePairing.mockResolvedValue({
+      repaired: false,
+      wasRevoked: true,
+      published: false,
+      pushRestored: false,
+      state: "directory_rejected",
+      reason: "The account directory did not accept this machine",
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    expect(
+      await screen.findByText(
+        "Couldn't reconnect this computer: The account directory did not accept this machine. It's still disconnected from your account.",
+      ),
+    ).toBeTruthy();
+    // A rejected re-pair leaves the push gate latched on purpose; claiming
+    // success here is the failure this whole path exists to prevent.
+    expect(screen.queryByText(/back on your account\./)).toBeNull();
+  });
+
+  it("never calls a half-restored machine reconnected", async () => {
+    machinesWithoutThisComputer();
+    // The directory took the machine back, but the push half did not lift — it
+    // is on the roster and delivering nothing.
+    repairMachinePairing.mockResolvedValue({
+      repaired: true,
+      wasRevoked: true,
+      published: true,
+      pushRestored: false,
+      state: "registered",
+      reason: null,
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    expect(
+      await screen.findByText(
+        "This computer is back on your account, but it isn't delivering Activity yet. Reopen ADE on this computer to finish.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/delivering again/)).toBeNull();
+  });
+
+  it("blocks a second reconnect while the first is still in flight", async () => {
+    machinesWithoutThisComputer();
+    let release!: () => void;
+    const pendingRepair = new Promise((resolve) => {
+      release = () =>
+        resolve({
+          repaired: true,
+          wasRevoked: true,
+          published: true,
+          pushRestored: true,
+          state: "registered",
+          reason: null,
+        });
+    });
+    repairMachinePairing.mockReturnValue(pendingRepair);
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+    const pending = await screen.findByRole("button", { name: "Reconnecting…" });
+    expect(pending.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(pending);
+    expect(repairMachinePairing).toHaveBeenCalledTimes(1);
+
+    release();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy(),
+    );
+  });
+
+  it("keeps reconnect reachable from this computer's menu when detection cannot fire", async () => {
+    renderPage();
+    await screen.findByText("MacBook Pro");
+    // This computer IS on the directory, so no banner — but the action stays
+    // available for the cases detection cannot see (failed directory read, an
+    // account with no rows yet).
+    expect(screen.queryByText("This computer isn't on your account")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for MacBook Pro/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Reconnect this computer" }));
+    await waitFor(() => expect(repairMachinePairing).toHaveBeenCalledTimes(1));
+  });
+
+  // The directory refuses a re-pair without proof of a fresh interactive
+  // sign-in, and it can only observe — and therefore only prove — its own
+  // `/device/*` flow. The desktop's normal sign-in is a loopback PKCE flow
+  // straight to the issuer, so escalating to it here would hand the user back
+  // the same refusal they just tried to act on.
+  const REAUTHENTICATION_REFUSAL = {
+    repaired: false,
+    wasRevoked: true,
+    published: false,
+    pushRestored: false,
+    state: "http_error",
+    reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+  };
+
+  it("decides on the brain's reason code, not the sentence", () => {
+    // The code is what drives the recovery. Both refusals share
+    // `state: "http_error"`, so this is the only real discriminator.
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reasonCode: "pairing_authentication_required",
+      }),
+    ).toBe(true);
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reasonCode: "machine_revoked",
+        reason: "This machine was removed from your ADE account. Pair it again to reconnect.",
+      }),
+    ).toBe(false);
+    // A present code is authoritative in BOTH directions: reworded copy cannot
+    // switch the recovery off, and a re-auth-shaped sentence cannot switch it on
+    // when the directory said the machine is simply revoked.
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reasonCode: "pairing_authentication_required",
+        reason: "Some completely rewritten copy that mentions nothing familiar.",
+      }),
+    ).toBe(true);
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reasonCode: "machine_revoked",
+        reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+      }),
+    ).toBe(false);
+    // An unrecognised code from a newer brain fails closed rather than guessing.
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reasonCode: "pairing_grant_expired",
+        reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+      }),
+    ).toBe(false);
+    // A repaired result is never a refusal, whatever else it carries.
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        repaired: true,
+        reasonCode: "pairing_authentication_required",
+      }),
+    ).toBe(false);
+  });
+
+  // COMPATIBILITY SHIM COVERAGE — delete alongside the shim once every
+  // supported brain sends `reasonCode`.
+  it("falls back to the sentence when an older brain sends no reason code", () => {
+    expect(REAUTHENTICATION_REFUSAL).not.toHaveProperty("reasonCode");
+    expect(reconnectNeedsFreshSignIn(REAUTHENTICATION_REFUSAL)).toBe(true);
+    // A null code is the same "unknown" as an absent one — the main-process
+    // reader normalises missing to null — so it must not read as a negative.
+    expect(
+      reconnectNeedsFreshSignIn({ ...REAUTHENTICATION_REFUSAL, reasonCode: null }),
+    ).toBe(true);
+    // Fails closed: an unrecognised failure is reported, not escalated.
+    expect(
+      reconnectNeedsFreshSignIn({
+        ...REAUTHENTICATION_REFUSAL,
+        reason: "The account directory did not accept this machine.",
+      }),
+    ).toBe(false);
+    expect(reconnectNeedsFreshSignIn({ ...REAUTHENTICATION_REFUSAL, reason: null })).toBe(false);
+    expect(
+      reconnectNeedsFreshSignIn({ ...REAUTHENTICATION_REFUSAL, repaired: true }),
+    ).toBe(false);
+  });
+
+  it("signs in through the device flow when the directory demands fresh proof", async () => {
+    machinesWithoutThisComputer();
+    repairMachinePairing.mockResolvedValue(REAUTHENTICATION_REFUSAL);
+    runAccountDeviceLogin.mockImplementation(async (options?: {
+      onPrompt?: (prompt: { userCode: string; verificationUri: string; verificationUriComplete: string | null }) => void;
+    }) => {
+      options?.onPrompt?.({
+        userCode: "WDJB-MJHT",
+        verificationUri: "https://directory.test/device",
+        verificationUriComplete: "https://directory.test/device?user_code=WDJB-MJHT",
+      });
+      // The brain re-pairs on its own when an interactive sign-in completes
+      // while this machine is revoked, so the directory now lists it again.
+      listMachines.mockResolvedValue({
+        state: "ok",
+        message: null,
+        machines: [
+          machine({ machineKey: "studio-key", deviceId: "studio-dev", name: "Studio" }),
+          machine({ machineKey: "this-key", deviceId: "this-dev", name: "MacBook Pro", online: true }),
+        ],
+      });
+      return { status: "signed_in", authStatus: statusRef.current };
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    await waitFor(() => expect(runAccountDeviceLogin).toHaveBeenCalledTimes(1));
+    // The loopback sign-in the card uses is never reached from this path.
+    expect(beginLogin).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "This computer is back on your account. Activity and alerts are delivering again.",
+      ),
+    ).toBeTruthy();
+    // The brain's own post-sign-in repair is the follow-through. A second
+    // repair here would re-publish a pairing the grant can no longer prove.
+    expect(repairMachinePairing).toHaveBeenCalledTimes(1);
+    // And the user never had to press Reconnect again.
+    expect(screen.queryByText("This computer isn't on your account")).toBeNull();
+  });
+
+  it("names the code while the browser sign-in is in flight, and can be cancelled", async () => {
+    machinesWithoutThisComputer();
+    repairMachinePairing.mockResolvedValue(REAUTHENTICATION_REFUSAL);
+    let cancelled: (() => boolean) | undefined;
+    let finish!: () => void;
+    runAccountDeviceLogin.mockImplementation(async (options?: {
+      onPrompt?: (prompt: { userCode: string; verificationUri: string; verificationUriComplete: string | null }) => void;
+      isCancelled?: () => boolean;
+    }) => {
+      cancelled = options?.isCancelled;
+      options?.onPrompt?.({
+        userCode: "WDJB-MJHT",
+        verificationUri: "https://directory.test/device",
+        verificationUriComplete: null,
+      });
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { status: "cancelled" as const };
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    expect(
+      await screen.findByText(/Finish signing in in your browser to reconnect this computer/),
+    ).toBeTruthy();
+    expect(screen.getByText("WDJB-MJHT")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Signing in…" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelled?.()).toBe(true);
+
+    finish();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy(),
+    );
+    // A cancelled sign-in states nothing; the banner already says what is wrong.
+    expect(screen.queryByText(/back on your account/)).toBeNull();
+  });
+
+  it("says the sign-in landed but the reconnect did not, when the directory still omits it", async () => {
+    machinesWithoutThisComputer();
+    repairMachinePairing.mockResolvedValue(REAUTHENTICATION_REFUSAL);
+    runAccountDeviceLogin.mockResolvedValue({
+      status: "signed_in",
+      authStatus: statusRef.current,
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    expect(
+      await screen.findByText(
+        "You're signed in, but this computer still isn't on your account. Try reconnecting it again.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("never opens a browser for a failure a sign-in would not fix", async () => {
+    machinesWithoutThisComputer();
+    repairMachinePairing.mockResolvedValue({
+      repaired: false,
+      wasRevoked: true,
+      published: false,
+      pushRestored: false,
+      state: "transport_error",
+      reason: "The account directory could not be reached",
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    await screen.findByText(
+      "Couldn't reconnect this computer: The account directory could not be reached. It's still disconnected from your account.",
+    );
+    expect(runAccountDeviceLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not offer to reconnect a hosted browser, which owns no machine identity", async () => {
+    window.__adeWebClient = true;
+    machinesWithoutThisComputer();
+    // The web adapter reports a blank identity, so every row is "not this
+    // machine" — without the web guard the banner would fire on every session.
+    getLocalMachineIdentity.mockResolvedValue({ machineKey: "", deviceId: "" });
+    renderPage();
+    await screen.findByText("Studio");
+
+    expect(screen.queryByText("This computer isn't on your account")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    expect(screen.queryByRole("menuitem", { name: "Reconnect this computer" })).toBeNull();
   });
 
   it("directs hosted web users to the machine menu when the directory is unavailable", async () => {

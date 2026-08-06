@@ -1,5 +1,5 @@
 import React from "react";
-import { DesktopTower, GitPullRequest, Laptop } from "@phosphor-icons/react";
+import { DesktopTower, GitPullRequest, Laptop, X } from "@phosphor-icons/react";
 
 import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
@@ -120,6 +120,13 @@ export type ActivityCardProps = {
   item: AttentionItem;
   /** The row's only side effect. Navigation and acknowledgment live upstream. */
   onOpen: (item: AttentionItem) => void;
+  /**
+   * Optional escape hatch for the row. Every row that can appear in a list the
+   * user is expected to clear needs one: idle roster rows never expire, and
+   * until now dismiss was wired only from the inbox and the detail sheet, so
+   * the rows that outlive everything were the ones with no way out.
+   */
+  onDismiss?: (item: AttentionItem) => void;
   /** Mirrors the account's `hideDetails` preference. */
   hideDetails?: boolean;
   /** Two-line form for dense mirrors (notch panel, mobile hub strip). */
@@ -136,6 +143,7 @@ export type ActivityCardProps = {
 export function ActivityCard({
   item,
   onOpen,
+  onDismiss,
   hideDetails = false,
   compact = false,
   selected = false,
@@ -157,7 +165,7 @@ export function ActivityCard({
     />
   );
 
-  return (
+  const row = (
     <button
       type="button"
       data-activity-row={item.id}
@@ -232,5 +240,30 @@ export function ActivityCard({
         </div>
       )}
     </button>
+  );
+
+  if (!onDismiss) return row;
+
+  // The dismiss control is a SIBLING of the row, not a child: a button inside a
+  // button is invalid markup, and the roving-focus lists in both surfaces key
+  // off `[data-activity-row]` being the focusable element. It floats over the
+  // row's right edge behind a scrim so the truncated line underneath does not
+  // read as a collision.
+  return (
+    <div className="activity-card-shell">
+      {row}
+      <button
+        type="button"
+        className="activity-card-dismiss"
+        aria-label={`Dismiss ${item.title}`}
+        title="Dismiss"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDismiss(item);
+        }}
+      >
+        <X size={11} weight="bold" />
+      </button>
+    </div>
   );
 }

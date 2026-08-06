@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  attentionRemoteBindingMatches,
+  attentionNotchAppNavigation,
   attentionItemNavigationRequest,
   createAttentionNotchToastDeduper,
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
   parseAttentionNotchToast,
+  remoteBindingMatchesProject,
   resolveAttentionNotchOutput,
 } from "./attentionNotchRouter";
 import type { AttentionItem, AttentionSnapshot } from "../../../shared/types";
@@ -88,18 +89,70 @@ describe("Attention Notch routing", () => {
       rootPath: "/projects/ADE",
       displayName: "ADE",
     };
-    expect(attentionRemoteBindingMatches(
-      foreign,
+    // Root path alone is not evidence about which host a window is bound to,
+    // so an unresolved machine matches nothing.
+    expect(remoteBindingMatchesProject(
       binding,
+      { ...foreign.project, rootPath: "/projects/Other" },
       null,
-      true,
     )).toBe(false);
-    expect(attentionRemoteBindingMatches(
-      foreign,
+    expect(remoteBindingMatchesProject(
       binding,
+      foreign.project,
       "machine-a",
-      true,
     )).toBe(true);
+    expect(remoteBindingMatchesProject(
+      binding,
+      foreign.project,
+      "machine-b",
+    )).toBe(false);
+  });
+
+  it("matches a window already bound to the item's project under the runtime's own id", () => {
+    // The binding carries the registry id; the item carries the owning
+    // machine's uuid. Without the rootPath fallback every click opened another
+    // window for a project that was already on screen.
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:machine-a:project_9f2c1b7a4e",
+      targetId: "machine-a",
+      runtimeName: "Machine A",
+      projectId: "project_9f2c1b7a4e",
+      rootPath: "/projects/ADE/",
+      displayName: "ADE",
+    };
+    expect(remoteBindingMatchesProject(binding, item().project, "machine-a")).toBe(true);
+    // Machine unknown: the shared root path is the only identity left, and it
+    // still has a caller (an Activity item with no account machine key).
+    expect(remoteBindingMatchesProject(binding, item().project, null)).toBe(true);
+    expect(remoteBindingMatchesProject(
+      binding,
+      { ...item().project, rootPath: "/projects/Other" },
+      "machine-a",
+    )).toBe(false);
+  });
+
+  it("routes notch chrome clicks and always demands app activation", () => {
+    expect(attentionNotchAppNavigation({ type: "open_center" } as never)).toEqual({
+      request: {
+        target: { kind: "route", route: "/attention" },
+        source: "attention-notch",
+      },
+      activatesApp: true,
+    });
+    expect(attentionNotchAppNavigation({ type: "open_settings" } as never)).toEqual({
+      request: {
+        target: { kind: "settings", tab: "activity", anchor: null },
+        source: "attention-notch",
+      },
+      activatesApp: true,
+    });
+    expect(attentionNotchAppNavigation({ type: "refresh" } as never)).toBeNull();
+    expect(attentionNotchAppNavigation({
+      type: "open",
+      itemId: "agent-1",
+      destination: { kind: "session", sessionId: "session-1" },
+    } as never)).toBeNull();
   });
 
   it("accepts bounded canonical snapshots and settings", () => {
@@ -123,25 +176,46 @@ describe("Attention Notch routing", () => {
     })).toBeNull();
     expect(parseAttentionNotchSettings({
       enabled: true,
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
       preferredDisplayId: 12,
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
     })).toEqual({
       enabled: true,
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
       preferredDisplayId: 12,
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
     });
+  });
+
+  it("keeps a pinned strip pinned when a retired reveal mode is replayed", () => {
+    // A renderer that persisted `minimal`/`click` must not be dropped (which
+    // would discard the whole settings message) nor silently demoted to hover,
+    // which hides a strip the user deliberately pinned.
+    for (const legacy of ["minimal", "click"]) {
+      expect(parseAttentionNotchSettings({
+        enabled: true,
+        revealMode: legacy,
+        preferredDisplayId: null,
+        hideDetails: false,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+      })).toMatchObject({ revealMode: "always" });
+    }
+    // A non-string is still malformed, as before.
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      revealMode: 3,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    })).toBeNull();
   });
 
   // A renderer built before the presentation controls existed still has to
@@ -157,10 +231,6 @@ describe("Attention Notch routing", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
-      // Both new presentation booleans default on, so an older payload keeps
-      // the shipped behaviour rather than silently going quiet.
-      automaticRevealEnabled: true,
-      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: false,
       celebrationsEnabled: true,
@@ -168,26 +238,39 @@ describe("Attention Notch routing", () => {
     });
   });
 
-  it("rejects non-boolean automatic reveal or ticker flags", () => {
-    expect(parseAttentionNotchSettings({
-      enabled: true,
-      preferredDisplayId: null,
-      hideDetails: false,
-      celebrationsEnabled: true,
-      soundsEnabled: false,
-      automaticRevealEnabled: "sometimes",
-    })).toBeNull();
-    expect(parseAttentionNotchSettings({
-      enabled: true,
-      preferredDisplayId: null,
-      hideDetails: false,
-      celebrationsEnabled: true,
-      soundsEnabled: false,
-      tickerEnabled: 1,
-    })).toBeNull();
+  it("ignores the retired presentation flags rather than rejecting the payload", () => {
+    // `automaticRevealEnabled` / `tickerEnabled` are gone from the contract —
+    // the native helper stopped reading them. A renderer or helper still
+    // sending them, with any value, must still have its REAL preferences land;
+    // validating a key nothing consumes could only throw settings away.
+    for (const retired of [
+      { automaticRevealEnabled: "sometimes" },
+      { tickerEnabled: 1 },
+      { automaticRevealEnabled: false, tickerEnabled: false },
+    ]) {
+      expect(parseAttentionNotchSettings({
+        enabled: true,
+        preferredDisplayId: null,
+        hideDetails: false,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+        ...retired,
+      })).toEqual({
+        enabled: true,
+        revealMode: "hover",
+        expandedPanelEnabled: true,
+        preferredDisplayId: null,
+        hideDetails: false,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+      });
+    }
   });
 
-  it("rejects an invented notch reveal mode", () => {
+  it("normalizes an invented notch reveal mode instead of dropping the payload", () => {
+    // A settings message carries `enabled`, `hideDetails` and the rest too;
+    // rejecting all of it over one unrecognized mode string loses real user
+    // preferences. The mode falls back, the message lands.
     expect(parseAttentionNotchSettings({
       enabled: true,
       revealMode: "telepathy",
@@ -195,7 +278,7 @@ describe("Attention Notch routing", () => {
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
-    })).toBeNull();
+    })).toMatchObject({ enabled: true, revealMode: "hover" });
     expect(parseAttentionNotchSettings({
       enabled: true,
       expandedPanelEnabled: "yes",
@@ -304,6 +387,38 @@ describe("Attention Notch routing", () => {
       ...snapshot(),
       counts: { ...counts, machinesTotal: undefined },
     })).toBeNull();
+  });
+
+  it("treats the five-group counts as optional-if-present, never required", () => {
+    const counts = {
+      needsYou: 2,
+      working: 5,
+      done: 1,
+      total: 61,
+      machinesOnline: 1,
+      machinesTotal: 3,
+    };
+    // THE rollout case: a machine still on the three-group counts block omits
+    // `failed`/`planning`. Requiring them would drop the ENTIRE snapshot and
+    // blank the notch, so absence must parse.
+    expect(parseAttentionNotchSnapshot({ ...snapshot(), counts })).not.toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...snapshot(),
+      counts: { ...counts, failed: 0, planning: 4 },
+    })).not.toBeNull();
+    // Present but junk is still a malformed counts block: the strip reads
+    // "N failed" straight off it, so a wrong number must surface as a parse
+    // failure rather than be shown.
+    for (const bad of [-1, 1.5, "3", Number.NaN]) {
+      expect(parseAttentionNotchSnapshot({
+        ...snapshot(),
+        counts: { ...counts, failed: bad },
+      })).toBeNull();
+      expect(parseAttentionNotchSnapshot({
+        ...snapshot(),
+        counts: { ...counts, planning: bad },
+      })).toBeNull();
+    }
   });
 
   // The router's write cap has to stay under the helper's read cap, or an

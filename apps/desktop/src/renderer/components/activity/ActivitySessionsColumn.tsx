@@ -2,14 +2,17 @@ import React, { useMemo } from "react";
 
 import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
-import { cn } from "../ui/cn";
+import { ActivityAllClear } from "./ActivityAllClear";
 import { ActivityCard } from "./ActivityCard";
 import { ActivityCardSkeleton } from "./ActivityCardSkeleton";
+import { ActivitySectionHeader } from "./ActivitySectionHeader";
 import {
-  ACTIVITY_SECTION_TONE,
+  activitySectionCounts,
   activitySections,
   type ActivitySection,
 } from "./activityPriority";
+import { useActivitySectionCollapse } from "./activitySectionCollapse";
+import { useAllClearBeat } from "./useAllClearBeat";
 import { useProgressiveRows } from "./useProgressiveRows";
 
 type MachineGroup = {
@@ -59,11 +62,13 @@ function SectionRows({
   hideDetails,
   selectedItemId,
   onOpenItem,
+  onDismissItem,
 }: {
   section: ActivitySection;
   hideDetails: boolean;
   selectedItemId: string | null;
   onOpenItem: (item: AttentionItem) => void;
+  onDismissItem: (item: AttentionItem) => void;
 }) {
   const { online, offline } = useMemo(
     () => partitionByPresence(section.items),
@@ -77,6 +82,7 @@ function SectionRows({
       hideDetails={hideDetails}
       selected={selectedItemId === item.id}
       onOpen={onOpenItem}
+      onDismiss={onDismissItem}
     />
   );
 
@@ -105,8 +111,14 @@ function SectionRows({
 }
 
 /**
- * The left column: every tracked session, priority-flat across needs-you →
- * working → done, with section headings that stay put while the list scrolls.
+ * The left column: every tracked AGENT session, priority-flat across needs-you
+ * → failed → planning → working → done, with collapsible section headings that
+ * stay put while the list scrolls.
+ *
+ * Pull requests used to render here too, which is why a lane with an open PR
+ * appeared twice — once as the agent working on it and once as the PR. They
+ * belong to the Notifications column now; this column is agents, and only
+ * agents, so its count is the count of your sessions.
  */
 export function ActivitySessionsColumn({
   items,
@@ -115,6 +127,7 @@ export function ActivitySessionsColumn({
   filtered,
   loading,
   onOpenItem,
+  onDismissItem,
 }: {
   /** Already filtered. The column does not know the filter exists. */
   items: readonly AttentionItem[];
@@ -125,14 +138,24 @@ export function ActivitySessionsColumn({
   /** No snapshot has landed yet — which is not the same as nothing running. */
   loading: boolean;
   onOpenItem: (item: AttentionItem) => void;
+  onDismissItem: (item: AttentionItem) => void;
 }) {
   const sections = useMemo(() => activitySections(items), [items]);
+  // The unbudgeted truth for every section, built once: the headings report how
+  // many rows a section HAS, not how many the row budget let through.
+  const counts = useMemo(() => activitySectionCounts(sections), [sections]);
   const total = sections.reduce((count, section) => count + section.items.length, 0);
+  const collapse = useActivitySectionCollapse("pane");
+  const allClear = useAllClearBeat(counts["needs-you"]);
   // Flatten in section priority order before spending the shared row budget,
   // then rebuild headings for the visible slice. Needs-you rows stay first.
+  // Collapsed sections spend no budget at all — the rows they hide would push
+  // the rows you can see past the cap.
+  const isCollapsed = collapse.isCollapsed;
   const orderedRows = useMemo(
-    () => sections.flatMap((section) => section.items),
-    [sections],
+    () => sections.flatMap((section) =>
+      (isCollapsed(section.id) ? [] : section.items)),
+    [isCollapsed, sections],
   );
   const {
     visibleRows,
@@ -141,14 +164,16 @@ export function ActivitySessionsColumn({
     showMore,
   } = useProgressiveRows(orderedRows);
   const budgeted = useMemo(() => activitySections(visibleRows), [visibleRows]);
+  const populated = budgeted.filter((section) => counts[section.id] > 0);
 
   return (
-    <section className="activity-column" aria-label="Sessions">
+    <section className="activity-column" aria-label="Agents">
       <header className="activity-column-head">
-        <h3>Sessions</h3>
+        <h3>Agents</h3>
         <span className="activity-column-head-count">{total}</span>
       </header>
       <div className="activity-column-scroll" data-testid="activity-sessions-scroll">
+        {allClear ? <ActivityAllClear /> : null}
         {total === 0 && loading ? (
           // Placeholders, not an all-clear: claiming every agent is idle before
           // the first snapshot lands is a lie the user would act on.
@@ -170,29 +195,39 @@ export function ActivitySessionsColumn({
           </div>
         ) : (
           <>
-            {budgeted.map((section) => (
-              <React.Fragment key={section.id}>
-                <h4
-                  data-activity-section={section.id}
-                  className={cn(
-                    "activity-section-heading",
-                    `activity-tone-${ACTIVITY_SECTION_TONE[section.id]}`,
-                  )}
-                >
-                  <span className="activity-section-dot" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">{section.label}</span>
-                  <span className="activity-section-count">
-                    {sections.find((entry) => entry.id === section.id)?.items.length ?? 0}
-                  </span>
-                </h4>
-                <SectionRows
-                  section={section}
-                  hideDetails={hideDetails}
-                  selectedItemId={selectedItemId}
-                  onOpenItem={onOpenItem}
-                />
-              </React.Fragment>
-            ))}
+            {populated.map((section) => {
+              const collapsed = collapse.isCollapsed(section.id);
+              const regionId = `activity-pane-section-${section.id}`;
+              return (
+                <React.Fragment key={section.id}>
+                  <ActivitySectionHeader
+                    variant="pane"
+                    sectionId={section.id}
+                    regionId={regionId}
+                    label={section.label}
+                    count={counts[section.id]}
+                    group={section.id}
+                    collapsed={collapsed}
+                    onToggle={() => collapse.toggle(section.id)}
+                  />
+                  <div
+                    id={regionId}
+                    className="activity-section-rows"
+                    hidden={collapsed}
+                  >
+                    {collapsed ? null : (
+                      <SectionRows
+                        section={section}
+                        hideDetails={hideDetails}
+                        selectedItemId={selectedItemId}
+                        onOpenItem={onOpenItem}
+                        onDismissItem={onDismissItem}
+                      />
+                    )}
+                  </div>
+                </React.Fragment>
+              );
+            })}
             {hiddenCount > 0 ? (
               <button
                 type="button"

@@ -1,4 +1,4 @@
-import { handleRequest, type Env } from "./directory";
+import { cleanupExpiredPairingGrants, handleRequest, type Env } from "./directory";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 
 export default {
@@ -7,6 +7,9 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(cleanupExpiredDeviceAuthorizations(env));
+    ctx.waitUntil(Promise.all([
+      cleanupExpiredDeviceAuthorizations(env),
+      cleanupExpiredPairingGrants(env),
+    ]));
   },
 };

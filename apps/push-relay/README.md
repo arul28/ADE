@@ -52,6 +52,8 @@ its own (single D1 database, no Durable Objects, no queues).
 | PATCH | `/attention/account/preferences/devices/:deviceId` | Atomically merge one device's preference override without overwriting concurrent account or other-device changes |
 | PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
+| DELETE | `/attention/account/machines/:machineKey` | Remove a machine from the account feed: purge and tombstone its items, drop its presence link, release the installs it seeded, drop its legacy `device_registrations`/`live_activity_tokens`, and revoke it so it cannot publish again. Only revokes a machine the account currently holds. Called by the account directory when the user removes a machine. |
+| POST | `/attention/account/machines/:machineKey/pairing` | Clear that revocation when the user deliberately pairs the machine again |
 
 ### Account Activity semantics
 
@@ -81,7 +83,18 @@ its own (single D1 database, no Durable Objects, no queues).
   re-alert after the 7-day receipt is pruned. Alert payloads also set
   `content-available` as an opportunistic background refresh.
 - Seen and dismissed state belongs to the account, so acknowledging an item on
-  iPhone clears it on desktop and vice versa.
+  iPhone clears it on desktop and vice versa. Acknowledgments are keyed by item
+  id: seen/dismissed are monotonic and idempotent, so there is no lost update to
+  fence, and an item's `revision` is the raw epoch of its last source activity —
+  a running agent outruns any client every poll. `stale` in the response means
+  only "this account has no live row for that id"; a sealed tombstone is never
+  revived by an acknowledgment.
+- **Machine lifecycle.** Removing a machine (see the DELETE route above) is an
+  explicit account-level event that emits tombstones and revokes the machine.
+  Two cron sweeps cover the rest: items whose `expiresAt` has passed, and items
+  whose machine has been silent for 14 days (the only relief for a rotated
+  machine key, since the epoch reconcile is machine-scoped and needs that
+  machine to publish). Both leave tombstones so clients converge.
 - Routine running/progress state remains ambient. Needs-input, failure,
   checks-failing, review-requested, changes-requested, and merge-ready
   transitions may notify according to account/device preferences.
@@ -89,7 +102,20 @@ its own (single D1 database, no Durable Objects, no queues).
   unseen after the escalation window, a later machine heartbeat can send it.
 - An unchanged full-snapshot heartbeat also retries an account Live Activity
   start that never committed after a transient APNs failure. Once a start
-  succeeds, durable state plus the content fingerprint suppress duplicates.
+  succeeds, durable state plus the transition fingerprint suppress duplicates.
+- The account Live Activity content state carries two optional, additive
+  account-wide fields for the Dynamic Island: `groups` (`[{group, count}]` over
+  `needs_you | failed | planning | working | done`, agent rows only, idle tier
+  counted as `done`, `planning` taken from the item's `chatActivityMode` and
+  never inferred from a phase) and `moreCount` (agent rows the three-row roster
+  left off). Both are omitted rather than zero-filled, so an older client that
+  derives its own counts is unaffected.
+- ActivityKit throttles pushed updates, so a refresh is gated on the
+  **alert**-fingerprint projection, not the content one: exact `needs_you` and
+  `failed` counts plus the alert fingerprints in those groups, presence only for
+  `planning`/`working`/`done`/`moreCount`, and PR alert fingerprints exactly.
+  Preview churn, roster ordering, `updatedAt` and per-turn count ticks ride
+  along on the next earned push instead of spending one.
 - Device-registration preferences are compatibility fallbacks. Account
   preferences override them; only an explicit account `devices[deviceId]`
   override may supersede the account defaults for one device. The document also
@@ -209,6 +235,49 @@ npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
 
 Verified account keys are namespaced by issuer before persistence, so identical
 opaque user ids from development and production cannot collide.
+
+### Directory provenance (required for machine re-pairing)
+
+```bash
+npx wrangler secret put DIRECTORY_AUTH_SECRET   # same value on ade-account-directory
+```
+
+`POST /attention/account/machines/:machineKey/pairing` is the one account route
+whose effect is to **un-revoke** a machine, and the revocation design assumes a
+removed machine keeps a valid account token until it signs out. A bearer token
+is therefore exactly the credential an attacker on that route already holds, so
+the relay additionally requires an `x-ade-directory-auth` header matching this
+secret; without it the route answers `403 directory_auth_required` and the
+revocation stands. Unset on the relay it fails closed with
+`503 directory_auth_unavailable`, and `npm run deploy` refuses to ship.
+
+A Cloudflare service binding leaves no attestable marker on the inbound request,
+so the header is what proves provenance regardless of whether the directory
+reaches the relay through `ACTIVITY_RELAY` or a public HTTPS fetch.
+
+Machine removal is enforced on the legacy machine-signed routes too:
+`POST /machines/:key/publish`, `POST /machines/:key/live-activity-tokens`, and
+`PUT /machines/:key/devices/:deviceId` answer `403 machine_revoked` once the key
+is revoked **on any account**, so a removed machine running an older or modified
+binary cannot keep delivering to the owner's phone — nor stage a fresh
+registration to redeem when the revocation is later cleared.
+
+**Delivery targets leave with the ownership.** `device_registrations` and
+`live_activity_tokens` are keyed by machine key alone — they carry no account id
+— so they are dropped both when a machine is removed from an account and again,
+atomically with the clear, when the key links to a different account. Without
+that, an ownership transfer (which must clear the revocation, or the key is
+bricked forever) would hand a machine the previous owner's phones back. The new
+owner's devices re-register on their next launch, which is the only way a device
+enters those tables at all.
+
+`POST /machines/:key/attention` (the protocol-2 publish) carries BOTH an account
+bearer token and the machine HMAC signature. The bearer says who the caller is,
+never which machine they speak for, and machine keys are not secret — so the
+signature is what binds the path key, and the publish handler re-asserts that
+binding itself. Otherwise any signed-in account could claim a stranger's key,
+seed the ownership evidence the removal route checks, and terminal-403 that
+machine.
 
 `npm run deploy` now refuses to deploy unless both primary and secondary Clerk
 secret triples, `ADE_PUSH_RELAY_SMOKE_TOKEN`, and

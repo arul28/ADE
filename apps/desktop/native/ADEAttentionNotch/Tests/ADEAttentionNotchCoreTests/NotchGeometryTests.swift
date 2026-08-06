@@ -39,9 +39,7 @@ final class NotchGeometryTests: XCTestCase {
                 false
             )
         }
-        for presentation in [
-            NotchPresentationState.prehover, .peek, .expanded, .attention, .celebration,
-        ] {
+        for presentation in [NotchPresentationState.expanded, .flash, .celebration] {
             XCTAssertTrue(
                 notchPanelShouldShow(
                     surfaceEnabled: true,
@@ -53,9 +51,7 @@ final class NotchGeometryTests: XCTestCase {
     }
 
     func testPhysicalNotchPresentationIsUnchanged() {
-        for presentation in [
-            NotchPresentationState.compact, .prehover, .peek, .expanded, .attention, .celebration,
-        ] {
+        for presentation in NotchPresentationState.allSurfaceStates {
             XCTAssertTrue(
                 notchPanelShouldShow(
                     surfaceEnabled: true,
@@ -115,7 +111,7 @@ final class NotchGeometryTests: XCTestCase {
         let display = NotchRect(x: 0, y: 0, width: 1_440, height: 900)
         let status = NotchRect(x: 1_390, y: 875, width: 24, height: 24)
         let surface = notchSurfaceSize(presentation: .expanded, physicalNotchWidth: nil)
-        XCTAssertEqual(surface, NotchSize(width: 420, height: 440))
+        XCTAssertEqual(surface, NotchSize(width: 420, height: 452))
 
         let frame = menuBarAnchoredPanelFrame(
             statusItemFrame: status,
@@ -146,7 +142,7 @@ final class NotchGeometryTests: XCTestCase {
             physicalNotchWidth: notched.physicalNotchWidth,
             safeAreaTop: 34
         )
-        XCTAssertEqual(notchedSurface.height, 474)
+        XCTAssertEqual(notchedSurface.height, 486)
         XCTAssertGreaterThan(notched.frame.maxY - notchedSurface.height, display.y)
         XCTAssertLessThanOrEqual(notchedSurface.width, NotchDisplayGeometry.panelSize.width)
         XCTAssertLessThanOrEqual(notchedSurface.height, NotchDisplayGeometry.panelSize.height)

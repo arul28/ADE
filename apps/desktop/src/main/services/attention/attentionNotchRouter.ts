@@ -16,10 +16,10 @@ import {
   ATTENTION_NOTCH_TOAST_MIN_DURATION_MS,
   ATTENTION_NOTCH_TOAST_TREATMENTS,
   ATTENTION_TONES,
-  DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
-  isAttentionNotchRevealMode,
+  normalizeAttentionNotchRevealMode,
 } from "../../../shared/types/attention";
 import type { AttentionNotchOutput } from "./attentionNotchHelper";
+import { remoteProjectRootPathsMatch } from "./remoteProjectIdentity";
 
 // The write cap must stay under the helper's own read cap, or a snapshot the
 // router happily accepts is silently dropped on the far side of the pipe.
@@ -105,19 +105,36 @@ export type AttentionNotchResolvedOutput =
         | "unknown_action";
     };
 
-export function attentionRemoteBindingMatches(
-  item: AttentionItem,
+/**
+ * Does an open remote window already show this project?
+ *
+ * The one predicate every remote-window lookup uses — a deeplink's ownership,
+ * an Activity item, and the runtime's own catalog all reduce to the same
+ * `{projectId, rootPath}` pair.
+ *
+ * A remote binding carries the runtime's registry project id while an Activity
+ * item carries the publishing machine's `ade.db` uuid, so an id comparison
+ * alone never matches a window that IS already showing this project — and
+ * every click would open yet another window. `rootPath` is the identity both
+ * sides share; see `remoteProjectIdentity.ts`.
+ *
+ * `targetId` is the machine the caller means. Pass it whenever the machine is
+ * known — a canonical foreign-machine identity must never match a window bound
+ * to a different host. `null` means "machine unknown", which only ever accepts
+ * a root-path match: an id that came from another machine's id space is not
+ * evidence about which host a window is bound to.
+ */
+export function remoteBindingMatchesProject(
   binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  project: { projectId?: string | null; rootPath?: string | null },
   targetId: string | null,
-  requiresExactMachine: boolean,
 ): boolean {
-  if (binding.projectId !== item.project.projectId) return false;
-  if (requiresExactMachine) {
-    return Boolean(targetId && binding.targetId === targetId);
-  }
-  return targetId
-    ? binding.targetId === targetId
-    : binding.rootPath === item.project.rootPath;
+  const rootMatches = remoteProjectRootPathsMatch(binding.rootPath, project.rootPath);
+  const projectMatches =
+    (Boolean(project.projectId) && binding.projectId === project.projectId)
+    || rootMatches;
+  if (!projectMatches) return false;
+  return targetId ? binding.targetId === targetId : rootMatches;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -285,12 +302,28 @@ const ATTENTION_COUNT_KEYS = [
   "machinesTotal",
 ] as const;
 
+/**
+ * The two state groups the counts block gained after the notch strip moved to
+ * five groups. They must NEVER join `ATTENTION_COUNT_KEYS`: a failed count
+ * fails `isAttentionCounts`, which drops the ENTIRE snapshot, so requiring them
+ * would blank the notch for any machine mid-rollout that still omits them.
+ */
+const OPTIONAL_ATTENTION_COUNT_KEYS = ["failed", "planning"] as const;
+
+function isCountValue(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
 function isAttentionCounts(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return ATTENTION_COUNT_KEYS.every((key) => {
-    const count = value[key];
-    return Number.isSafeInteger(count) && Number(count) >= 0;
-  });
+  return ATTENTION_COUNT_KEYS.every((key) => isCountValue(value[key]))
+    // Optional-if-present: absent is the rollout case and must parse, but a
+    // present value still has to be a real count. A bad one is rejected rather
+    // than silently dropped — the counts block is what the strip's "N failed"
+    // reads from, and a machine sending junk there should show as a parse
+    // failure in the logs, not as a quietly wrong number.
+    && OPTIONAL_ATTENTION_COUNT_KEYS.every((key) =>
+      value[key] === undefined || isCountValue(value[key]));
 }
 
 export function parseAttentionNotchSnapshot(input: unknown): AttentionSnapshot | null {
@@ -366,29 +399,24 @@ export function parseAttentionNotchSettings(input: unknown): AttentionNotchSetti
       && (!Number.isSafeInteger(input.preferredDisplayId) || Number(input.preferredDisplayId) < 0)
     )
     // Presentation keys are optional so a renderer from before they existed
-    // still lands; an invented value is malformed and is rejected like any
-    // other bad field.
-    || (input.revealMode !== undefined && !isAttentionNotchRevealMode(input.revealMode))
+    // still lands. `revealMode` is normalized rather than validated against the
+    // current vocabulary: a renderer that persisted a retired value must not
+    // have its ENTIRE settings message rejected, and must not silently lose a
+    // strip it had pinned. Only a non-string is malformed here.
+    || (input.revealMode !== undefined && typeof input.revealMode !== "string")
     || (
       input.expandedPanelEnabled !== undefined
       && typeof input.expandedPanelEnabled !== "boolean"
     )
-    || (
-      input.automaticRevealEnabled !== undefined
-      && typeof input.automaticRevealEnabled !== "boolean"
-    )
-    || (input.tickerEnabled !== undefined && typeof input.tickerEnabled !== "boolean")
   ) {
     return null;
   }
   return {
     enabled: input.enabled,
-    revealMode: isAttentionNotchRevealMode(input.revealMode)
-      ? input.revealMode
-      : DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
+    // Legacy `minimal`/`click` map to `always`, so an upgrade keeps the strip
+    // the user pinned instead of dropping them into the hover mode.
+    revealMode: normalizeAttentionNotchRevealMode(input.revealMode),
     expandedPanelEnabled: input.expandedPanelEnabled !== false,
-    automaticRevealEnabled: input.automaticRevealEnabled !== false,
-    tickerEnabled: input.tickerEnabled !== false,
     preferredDisplayId: input.preferredDisplayId == null
       ? null
       : Number(input.preferredDisplayId),
@@ -450,6 +478,38 @@ export function attentionItemNavigationRequest(item: AttentionItem): AppNavigati
     },
     source: "attention-notch",
   };
+}
+
+/**
+ * The chrome outputs (Activity Center, Settings) a notch click asks for.
+ *
+ * `activatesApp` is always true and is deliberately part of the contract: the
+ * notch is a separate helper process, so dispatching a navigation without
+ * activating ADE lands it in a window behind whatever the user is looking at —
+ * which is exactly why the gear and the header read as dead.
+ */
+export function attentionNotchAppNavigation(
+  output: AttentionNotchOutput,
+): { request: AppNavigationRequest; activatesApp: true } | null {
+  if (output.type === "open_center") {
+    return {
+      request: {
+        target: { kind: "route", route: "/attention" },
+        source: "attention-notch",
+      },
+      activatesApp: true,
+    };
+  }
+  if (output.type === "open_settings") {
+    return {
+      request: {
+        target: { kind: "settings", tab: "activity", anchor: null },
+        source: "attention-notch",
+      },
+      activatesApp: true,
+    };
+  }
+  return null;
 }
 
 export function resolveAttentionNotchOutput(

@@ -4,21 +4,15 @@ import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../.
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
-  sanitizeAttentionPreview,
   sortAttentionItems,
-  type AttentionEventKind,
   type AttentionItem,
-  type AttentionPhase,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import type {
-  SyncRosterChatStatus,
-  SyncRosterProject,
-} from "../../../../desktop/src/shared/types/sync";
+import type { SyncRosterChatStatus } from "../../../../desktop/src/shared/types/sync";
 import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
@@ -36,11 +30,38 @@ import type {
   PushRelayClient,
   PushRelayLiveActivityItem,
 } from "./pushRelayClient";
-import { PushRelayRequestError } from "./pushRelayClient";
+import { PushRelayMachineRevokedError, PushRelayRequestError } from "./pushRelayClient";
 import {
   activityPublishFingerprint,
   withActivityFingerprints,
 } from "./activityFingerprint";
+import {
+  ATTENTION_RECENT_TTL_MS,
+  RUNNING_TTL_MS,
+  buildAttentionItems as projectAttentionItems,
+  laneTitleLine,
+  prNotificationCopy,
+  providerDisplayName,
+  runHasBackgroundWork,
+  runSubject,
+} from "./attentionItemBuilder";
+import type {
+  ActivityRosterProject,
+  AgentRunPhase,
+  AgentRunState,
+  PrLiveActivityState,
+  PushPrNotification,
+} from "./attentionItemBuilder";
+import { deriveProjectId } from "../projects/projectRegistry";
+
+/**
+ * The Activity projection and its vocabulary live in `attentionItemBuilder.ts`.
+ * Only `PushPrNotification` is re-exported here: `bootstrap.ts` names it off
+ * this module because this is the package's public push surface. Everything
+ * else in that vocabulary has no importer outside the builder, so it stays
+ * where it is defined — import it from `./attentionItemBuilder` directly.
+ */
+export type { PushPrNotification } from "./attentionItemBuilder";
 
 export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";
 export const AGENT_RUNS_ATTRIBUTES_TYPE = "ADEAgentRunsAttributes";
@@ -86,10 +107,8 @@ function isUserStoppedExit(exitCode: number | null | undefined): boolean {
   return canonicalSessionState({ status, exitCode }).phase === "stopped";
 }
 
-const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
-const ATTENTION_RECENT_TTL_MS = 24 * 60 * 60 * 1000;
 export const ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE = 300;
 export const ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE = 100;
 export const ACTIVITY_PUBLISH_PAGE_ITEMS = 48;
@@ -99,38 +118,23 @@ const LEGACY_ATTENTION_PUBLISH_MAX_ITEMS = 64;
 const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
+/**
+ * How long a run must have been terminal before trailing transcript activity is
+ * allowed to move it back to `running`. Providers emit a little output after
+ * their `done` bookend; without the window the row would flap done→working→done
+ * on every completion, and each flip is a new phase entry for the alert
+ * fingerprint (i.e. a notification).
+ */
+const TERMINAL_RESUME_GRACE_MS = 10_000;
+/**
+ * How often a live run re-reads its planning mode. There is no chat event for
+ * an interaction-mode change — the desktop derives it by reading session
+ * summaries too — so the publisher polls the same source, bounded so a busy
+ * machine cannot turn every flush into a summary read per run.
+ */
+const CHAT_ACTIVITY_MODE_REFRESH_MS = 10_000;
 const ATTENTION_HEARTBEAT_MS = 30_000;
 const APNS_HEALTH_CACHE_MS = 24 * 60 * 60 * 1000;
-
-export type AgentRunPhase =
-  | "starting"
-  | "running"
-  | "waiting_for_approval"
-  | "waiting_for_input"
-  | "completed"
-  | "failed"
-  | "stale";
-
-export type AgentRunState = {
-  sessionId: string;
-  /** Which attached project scope produced this run (for metadata resolution). */
-  scopeKey: string;
-  /** Chat runs come from agentChatService events; cli runs from PTY signals. */
-  kind: "chat" | "cli";
-  title: string | null;
-  lane: string | null;
-  model: string | null;
-  agent: string | null;
-  phase: AgentRunPhase;
-  detail: string | null;
-  /** Pending approval item id while phase is waiting_for_approval. */
-  itemId: string | null;
-  startedAt: number;
-  lastActiveAt: number;
-  /** Immutable while `phase` is unchanged. */
-  statusSinceAt: number;
-  metaResolved: boolean;
-};
 
 /** The OSC 133-derived terminal state pushed by ptyService.onSessionRuntimeSignal. */
 export type PushCliRuntimeSignal = {
@@ -145,30 +149,6 @@ export type PushSessionAttentionRequest = {
   title: string;
   message: string;
   laneId?: string | null;
-};
-
-export type PushPrNotification = {
-  kind: PrNotificationKind;
-  prId?: string | null;
-  prNumber: number;
-  prTitle: string | null;
-  laneId: string | null;
-  repoOwner?: string | null;
-  repoName?: string | null;
-};
-
-export type PrLiveActivityState = {
-  id: string;
-  scopeKey: string;
-  prId: string | null;
-  prNumber: number;
-  title: string;
-  phase: PrNotificationKind;
-  lane: string | null;
-  repoOwner: string | null;
-  repoName: string | null;
-  updatedAt: number;
-  statusSinceAt: number;
 };
 
 type PendingAlert = {
@@ -210,7 +190,7 @@ export type PushPublisherDeps = {
   } | null;
   getAccountOwnerId?: () => string | null;
   activityRosterProvider?: {
-    buildSnapshot(): Promise<SyncRosterProject[]>;
+    buildSnapshot(): Promise<ActivityRosterProject[]>;
   } | null;
   /** Test seams. */
   now?: () => number;
@@ -229,6 +209,14 @@ export type PushPublisherSources = {
   ptyService?: PushPtyService | null;
   /** Injected bridge over prPollingService's `pr-notification` events. */
   subscribePrNotifications?: (cb: (event: PushPrNotification) => void) => () => void;
+  /**
+   * Session deletions for this scope. Deletion is the only way a chat leaves
+   * the sidebar, so it must also be the moment Activity drops it: without this
+   * the row lingers until an unrelated flush or the 30-minute reconcile — and
+   * forever if the machine goes offline first, since only the owning machine
+   * can tombstone its own rows.
+   */
+  subscribeSessionRemovals?: (cb: (sessionId: string) => void) => () => void;
   resolveLaneName?: (laneId: string) => string | null | undefined;
   projectName?: string;
   projectRoot?: string;
@@ -473,107 +461,6 @@ function deviceScopedAlertDedupeKey(dedupeKey: string, deviceId: string): string
   return `alert-device:${deviceId.length}:${deviceId}:${dedupeKey}`;
 }
 
-function providerDisplayName(provider: string | null | undefined): string | null {
-  if (!provider) return null;
-  switch (provider) {
-    case "claude":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "cursor":
-      return "Cursor";
-    case "droid":
-      return "Droid";
-    case "opencode":
-      return "OpenCode";
-    case "gemini":
-      return "Gemini";
-    default:
-      return provider.charAt(0).toUpperCase() + provider.slice(1);
-  }
-}
-
-function agentAttentionPhase(phase: AgentRunPhase): AttentionPhase {
-  if (phase === "waiting_for_approval" || phase === "waiting_for_input") return "needs_you";
-  return phase;
-}
-
-function rosterAttentionPhase(status: SyncRosterChatStatus): AttentionPhase {
-  switch (status) {
-    case "awaiting":
-      return "needs_you";
-    case "failed":
-      return "failed";
-    case "running":
-      return "running";
-    case "idle":
-      return "stale";
-    case "ended":
-      return "completed";
-  }
-}
-
-function rosterActivityTier(status: SyncRosterChatStatus): "signal" | "ambient" | "idle" {
-  switch (status) {
-    case "awaiting":
-    case "failed":
-      return "signal";
-    case "running":
-      return "ambient";
-    case "idle":
-    case "ended":
-      return "idle";
-  }
-}
-
-function prActivityTier(phase: AttentionPhase): "signal" | "ambient" {
-  return phase === "checks_failing"
-    || phase === "changes_requested"
-    || phase === "review_requested"
-    || phase === "merge_ready"
-    ? "signal"
-    : "ambient";
-}
-
-function validTimestampMs(
-  value: string | null | undefined,
-  fallback: number,
-): number {
-  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function agentAttentionEventKind(phase: AgentRunPhase): AttentionEventKind {
-  if (phase === "waiting_for_approval" || phase === "waiting_for_input") return "agent_needs_you";
-  if (phase === "failed") return "agent_failed";
-  if (phase === "completed") return "agent_completed";
-  return "agent_running";
-}
-
-function prAttentionState(kind: PrNotificationKind): {
-  phase: AttentionPhase;
-  eventKind: AttentionEventKind;
-  tab: "overview" | "activity" | "checks";
-} {
-  switch (kind) {
-    case "checks_failing":
-      return { phase: "checks_failing", eventKind: "pr_checks_failing", tab: "checks" };
-    case "review_requested":
-      return { phase: "review_requested", eventKind: "pr_review_requested", tab: "activity" };
-    case "changes_requested":
-      return { phase: "changes_requested", eventKind: "pr_changes_requested", tab: "activity" };
-    case "merge_ready":
-      return { phase: "merge_ready", eventKind: "pr_merge_ready", tab: "overview" };
-    case "merged":
-      return { phase: "merged", eventKind: "pr_merged", tab: "overview" };
-    case "closed":
-      return { phase: "closed", eventKind: "pr_closed", tab: "overview" };
-    case "opened":
-    case "reopened":
-      return { phase: "open", eventKind: "pr_opened", tab: "overview" };
-  }
-}
-
 export function createPushPublisherService(deps: PushPublisherDeps) {
   const now = deps.now ?? (() => Date.now());
   const flushDebounceMs = deps.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS;
@@ -600,7 +487,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastOverflowRevisionById = new Map<string, number>();
   let activityProtocol = deps.store.getActivityProtocol?.() ?? null;
   let activityRosterProvider = deps.activityRosterProvider ?? null;
-  let rosterCache: { at: number; projects: SyncRosterProject[] } | null = null;
+  let rosterCache: { at: number; projects: ActivityRosterProject[] } | null = null;
   let rosterEpoch = 0;
   let reconcilePending = true;
   let lastReconcileAt = 0;
@@ -635,6 +522,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let finalAttentionSnapshotQueued = false;
   let disposed = false;
   let warmed = false;
+  /**
+   * Terminal: the account owner removed this machine and the relay answers 403
+   * `machine_revoked`. Seeded from the durable store so a brain restart does
+   * not resume publishing at a machine the account has already let go.
+   */
+  let machineRevoked = deps.store.isMachineRevoked?.() === true;
 
   type AttachedScope = {
     agentChatService?: PushAgentChatService | null;
@@ -660,9 +553,55 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const isGated = (): boolean => {
+    // A revoked machine may not deliver anything: not Activity, not alerts, not
+    // badge updates. The account no longer includes it.
+    if (machineRevoked) return true;
     if (!deps.store.hasRegisteredDevices()) return true;
     if (!deps.store.getStatusSnapshot().enabled) return true;
     return false;
+  };
+
+  /**
+   * Stop everything, permanently. The relay will answer 403 to every subsequent
+   * call, so retrying is pure noise — and a scheduled retry would keep the
+   * process warm around an identity the user has already removed. This is not
+   * `dispose()`: the instance stays alive so status reads still report the
+   * terminal state, and a deliberate re-pair can revive it.
+   */
+  const enterMachineRevoked = (error: PushRelayMachineRevokedError): void => {
+    if (machineRevoked) return;
+    machineRevoked = true;
+    deps.store.recordMachineRevoked?.(error.revokedAt);
+    deps.store.recordPublishResult({
+      at: new Date().toISOString(),
+      error: "This machine was removed from your ADE account.",
+    });
+    pendingAlerts = [];
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    flushFireAt = 0;
+    if (prExpiryTimer) clearTimeout(prExpiryTimer);
+    prExpiryTimer = null;
+    if (attentionHeartbeatTimer) clearInterval(attentionHeartbeatTimer);
+    attentionHeartbeatTimer = null;
+    deps.logger.error("attention.machine_revoked", {
+      revokedAt: error.revokedAt,
+    });
+  };
+
+  /**
+   * Latch a removal observed on a machine-signed route other than the publish
+   * loop (device registration, live-activity token upsert). The relay gates
+   * those server-side too, and learning about the removal there is just as
+   * authoritative — the error still reaches the caller, but the loop stops.
+   */
+  const latchRevocation = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof PushRelayMachineRevokedError) enterMachineRevoked(error);
+      throw error;
+    }
   };
 
   const ensureRun = (sessionId: string, scopeKey: string, kind: "chat" | "cli" = "chat"): AgentRunState => {
@@ -684,12 +623,26 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         lastActiveAt: ts,
         statusSinceAt: ts,
         metaResolved: false,
+        backgroundTaskIds: new Set<string>(),
+        deferredTerminalPhase: null,
+        chatActivityMode: null,
+        chatActivityModeCheckedAt: 0,
       };
       runs.set(sessionId, run);
     }
     recentRuns.delete(sessionId);
     return run;
   };
+
+  /**
+   * Detached copy for `recentRuns`. The background-task set must be copied, not
+   * aliased: the live run keeps mutating it, and a shared reference would let a
+   * later drain silently rewrite the archived snapshot's phase.
+   */
+  const snapshotRun = (run: AgentRunState): AgentRunState => ({
+    ...run,
+    backgroundTaskIds: new Set(run.backgroundTaskIds),
+  });
 
   const markRunUpdated = (run: AgentRunState): void => {
     run.lastActiveAt = Math.max(now(), run.lastActiveAt + 1);
@@ -701,14 +654,111 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     run.statusSinceAt = run.lastActiveAt;
   };
 
-  const runSubject = (run: AgentRunState): string => run.agent?.trim() || run.title?.trim() || "Agent";
-
-  const laneTitleLine = (run: AgentRunState): string => {
-    const parts = [run.lane?.trim(), run.title?.trim()].filter((part): part is string => Boolean(part));
-    return parts.length > 0 ? parts.join(" · ") : run.title?.trim() || "Agent run";
+  /**
+   * Settle a foreground turn. A clean completion defers while background
+   * subagents are still running: the run stays `running` and the terminal phase
+   * is replayed by `applyBackgroundTaskUpdate` once the last task drains.
+   * Failures never defer — a failed turn needs the user regardless of what its
+   * background work is doing.
+   */
+  const settleRun = (run: AgentRunState, phase: AgentRunPhase): void => {
+    if (phase === "completed" && runHasBackgroundWork(run)) {
+      run.deferredTerminalPhase = phase;
+      setRunPhase(run, "running");
+      return;
+    }
+    run.deferredTerminalPhase = null;
+    setRunPhase(run, phase);
   };
 
-  const loadActivityRoster = async (nowMs: number): Promise<SyncRosterProject[]> => {
+  /** Live background-task statuses. Everything else is a terminal outcome. */
+  const isLiveBackgroundTaskStatus = (status: string): boolean =>
+    status === "scheduled" || status === "running";
+
+  const applyBackgroundTaskUpdate = (
+    run: AgentRunState,
+    taskId: string,
+    status: string,
+  ): void => {
+    if (!taskId) return;
+    const had = runHasBackgroundWork(run);
+    if (isLiveBackgroundTaskStatus(status)) run.backgroundTaskIds.add(taskId);
+    else run.backgroundTaskIds.delete(taskId);
+    const has = runHasBackgroundWork(run);
+    if (has === had) return;
+    if (has && isTerminalPhase(run.phase)) {
+      // Background work started (or was first observed) after the turn already
+      // ended. Remember where the turn landed so the run can settle there.
+      run.deferredTerminalPhase = run.deferredTerminalPhase ?? run.phase;
+      setRunPhase(run, "running");
+      return;
+    }
+    if (!has && run.deferredTerminalPhase) {
+      // Only settle the phase we ourselves parked the run at. If something more
+      // important happened meanwhile — an approval prompt, a failure — that
+      // state owns the run and a drained background task must not erase it.
+      if (run.phase === "running") setRunPhase(run, run.deferredTerminalPhase);
+      run.deferredTerminalPhase = null;
+    }
+  };
+
+  /**
+   * A run that keeps emitting transcript events is working, even if a provider
+   * bookend already declared it done — a frozen `completed` row is precisely
+   * how a live session reads as "is done" everywhere in Activity. The grace
+   * window keeps the trailing events that legitimately arrive just after a
+   * `done` from flapping the row straight back to Working, and `failed` is left
+   * alone so a failure is never quietly erased by late output.
+   */
+  const resumeRunOnActivity = (run: AgentRunState): void => {
+    if (run.phase === "starting") {
+      setRunPhase(run, "running");
+      return;
+    }
+    if (!isTerminalPhase(run.phase) || run.phase === "failed") return;
+    if (run.lastActiveAt - run.statusSinceAt < TERMINAL_RESUME_GRACE_MS) return;
+    run.deferredTerminalPhase = null;
+    setRunPhase(run, "running");
+  };
+
+  /**
+   * Cross-machine identity for a published item's project.
+   *
+   * `project.projectId` is this machine's own `projects.id` — a `randomUUID()`
+   * that exists only in this machine's ade.db. A client opening a cross-machine
+   * item asks the OWNING runtime for that project, and its registry answers in
+   * `project_<sha256(rootPath)>` form, so the uuid could never match and every
+   * cross-machine open failed. `deriveProjectId` is that exact function applied
+   * to the same normalized root, so this value is byte-identical to what the
+   * owning runtime computes for itself.
+   *
+   * Returns null — never a fabricated id — when no root path is known. Readers
+   * fall back to `rootPath` and then `projectId`; an invented id would resolve
+   * confidently to the WRONG project, which is worse than resolving to none.
+   *
+   * Memoized: `deriveProjectId` normalizes through the filesystem (realpath plus
+   * ADE-managed-worktree detection), and the roster republishes every project on
+   * every flush.
+   */
+  const canonicalProjectIdByRoot = new Map<string, string>();
+  const canonicalProjectId = (rootPath: string | null | undefined): string | null => {
+    const trimmed = rootPath?.trim();
+    if (!trimmed) return null;
+    const cached = canonicalProjectIdByRoot.get(trimmed);
+    if (cached) return cached;
+    try {
+      const derived = deriveProjectId(trimmed);
+      canonicalProjectIdByRoot.set(trimmed, derived);
+      return derived;
+    } catch (error) {
+      // An unreadable root is a missing identity, not a reason to fail the
+      // publish — the item still carries rootPath for the fallback path.
+      logWarn("attention.canonical_project_id_failed", error);
+      return null;
+    }
+  };
+
+  const loadActivityRoster = async (nowMs: number): Promise<ActivityRosterProject[]> => {
     if (!activityRosterProvider) return [];
     if (rosterCache && nowMs - rosterCache.at < ACTIVITY_ROSTER_CACHE_MS) {
       return rosterCache.projects;
@@ -725,314 +775,34 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  /**
+   * Project the publisher's live state into wire items. The projection itself
+   * lives in `attentionItemBuilder.ts` — this seam only hands it the state it
+   * reads, so the rules are testable without booting a publisher.
+   */
   const buildAttentionItems = async (
     nowMs: number,
     includeRoster: boolean,
   ): Promise<AttentionItem[]> => {
-    const { machineKey } = deps.store.getOrCreateIdentity();
-    const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
-    const nowIso = new Date(nowMs).toISOString();
-    const machine = {
-      machineKey,
-      accountMachineKey: accountMachineIdentity?.machineKey ?? null,
-      deviceId: accountMachineIdentity?.deviceId ?? null,
-      name: deps.machineName,
-      online: true,
-      lastSeenAt: nowIso,
-    };
-    const attentionRuns = new Map<string, AgentRunState>([
-      ...recentRuns,
-      ...runs,
-    ]);
-    const runItems = [...attentionRuns.values()].map((run): AttentionItem => {
-      const scope = scopes.get(run.scopeKey);
-      const phase = agentAttentionPhase(run.phase);
-      const eventKind = agentAttentionEventKind(run.phase);
-      const subject = runSubject(run);
-      const preview = sanitizeAttentionPreview(
-        run.detail?.trim() || laneTitleLine(run),
-      );
-      const expiresAt = new Date(
-        run.lastActiveAt
-          + (
-            run.phase === "running" || run.phase === "starting" || run.phase === "stale"
-              ? RUNNING_TTL_MS
-              : ATTENTION_RECENT_TTL_MS
-          ),
-      ).toISOString();
-      const actions: AttentionItem["actions"] = [
-        { id: "open", kind: "open", label: "Open" },
-      ];
-      if (run.phase === "waiting_for_approval" && run.itemId) {
-        actions.unshift(
-          {
-            id: "approve",
-            kind: "approve",
-            label: "Approve",
-            payload: { sessionId: run.sessionId, itemId: run.itemId },
-          },
-          {
-            id: "deny",
-            kind: "deny",
-            label: "Deny",
-            destructive: true,
-            payload: { sessionId: run.sessionId, itemId: run.itemId },
-          },
-        );
-      } else if (run.phase === "waiting_for_input") {
-        actions.unshift({
-          id: "answer",
-          kind: "answer",
-          label: "Answer",
-          payload: { sessionId: run.sessionId },
-        });
-      }
-      const item: AttentionItem = {
-        contractVersion: ATTENTION_CONTRACT_VERSION,
-        id: `agent:${machineKey}:${run.sessionId}`,
-        revision: run.lastActiveAt,
-        fingerprint: "",
-        activityTier: phase === "needs_you" || phase === "failed" ? "signal" : "ambient",
-        kind: "agent",
-        eventKind,
-        phase,
-        machine,
-        project: {
-          projectId: run.scopeKey,
-          name: scope?.projectName ?? "ADE project",
-          rootPath: scope?.projectRoot ?? null,
-        },
-        laneId: null,
-        laneName: run.lane,
-        provider: run.agent,
-        model: run.model,
-        title: phase === "needs_you"
-          ? `${subject} needs you`
-          : phase === "failed"
-            ? `${subject} failed`
-            : phase === "completed"
-              // "Done", not "finished": the shared status vocabulary in
-              // apps/desktop/src/shared/sessionStatusPresentation.ts labels the
-              // ready/idle tier "Done" on every surface, and a push title that
-              // disagrees with the row the user taps through to is a bug.
-              ? `${subject} is done`
-              : `${subject} is working`,
-        preview,
-        privacyPreview: phase === "needs_you"
-          ? "An ADE agent needs your input."
-          : phase === "failed"
-            ? "An ADE agent run failed."
-            : phase === "completed"
-              ? "An ADE agent is done."
-              : "An ADE agent is working.",
-        detail: run.detail ? sanitizeAttentionPreview(run.detail, 1_000) : null,
-        recentActivity: run.detail ? [sanitizeAttentionPreview(run.detail)] : [],
-        planProgress: null,
-        destination: {
-          kind: "session",
-          sessionId: run.sessionId,
-          itemId: run.itemId,
-        },
-        actions,
-        occurredAt: new Date(run.startedAt).toISOString(),
-        updatedAt: new Date(run.lastActiveAt).toISOString(),
-        statusSince: new Date(run.statusSinceAt).toISOString(),
-        seenAt: null,
-        dismissedAt: null,
-        expiresAt,
-      };
-      return withActivityFingerprints(item);
-    });
-
-    const rosterItems = includeRoster
-      ? (await loadActivityRoster(nowMs)).flatMap((project): AttentionItem[] => {
-        const laneNames = new Map(project.lanes.map((lane) => [lane.id, lane.name]));
-        return project.chats.map((chat): AttentionItem => {
-          const phase = rosterAttentionPhase(chat.status);
-          const activityTier = rosterActivityTier(chat.status);
-          const revision = validTimestampMs(chat.lastActivityAt, nowMs);
-          const activityAt = new Date(revision).toISOString();
-          const id = `agent:${machineKey}:${chat.id}`;
-          const existingAnchor = rosterPhaseAnchors.get(id);
-          const statusSinceAt = existingAnchor?.status === chat.status
-            ? existingAnchor.statusSinceAt
-            : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
-          rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
-          const provider = providerDisplayName(chat.provider ?? chat.toolType);
-          const subject = provider ?? chat.title?.trim() ?? "Agent";
-          const preview = sanitizeAttentionPreview(
-            chat.attentionMessage?.trim()
-              || chat.statusNote?.trim()
-              || chat.preview?.trim()
-              || chat.title?.trim()
-              || laneNames.get(chat.laneId)
-              || "ADE session",
-          );
-          const actions: AttentionItem["actions"] = [
-            { id: "open", kind: "open", label: "Open" },
-          ];
-          if (phase === "needs_you") {
-            actions.unshift({
-              id: "answer",
-              kind: "answer",
-              label: "Answer",
-              payload: { sessionId: chat.id },
-            });
-          }
-          return withActivityFingerprints({
-            contractVersion: ATTENTION_CONTRACT_VERSION,
-            id,
-            revision,
-            fingerprint: "",
-            activityTier,
-            kind: "agent",
-            eventKind: phase === "needs_you"
-              ? "agent_needs_you"
-              : phase === "failed"
-                ? "agent_failed"
-                : phase === "completed"
-                  ? "agent_completed"
-                  : "agent_running",
-            phase,
-            machine,
-            project: {
-              projectId: project.projectId,
-              name: project.displayName,
-              rootPath: project.rootPath ?? null,
-            },
-            laneId: chat.laneId,
-            laneName: laneNames.get(chat.laneId) ?? null,
-            provider,
-            model: chat.model ?? null,
-            title: phase === "needs_you"
-              ? `${subject} needs you`
-              : phase === "failed"
-                ? `${subject} failed`
-                : phase === "completed"
-                  ? `${subject} is done`
-                  : phase === "stale"
-                    ? `${subject} is idle`
-                    : `${subject} is working`,
-            preview,
-            privacyPreview: phase === "needs_you"
-              ? "An ADE agent needs your input."
-              : phase === "failed"
-                ? "An ADE agent run failed."
-                : phase === "completed"
-                  ? "An ADE agent is done."
-                  : phase === "stale"
-                    ? "An ADE agent session is idle."
-                    : "An ADE agent is working.",
-            detail: chat.statusNote ? sanitizeAttentionPreview(chat.statusNote, 1_000) : null,
-            recentActivity: [],
-            planProgress: null,
-            destination: {
-              kind: "session",
-              sessionId: chat.id,
-              itemId: null,
-            },
-            actions,
-            occurredAt: activityAt,
-            updatedAt: activityAt,
-            statusSince: new Date(statusSinceAt).toISOString(),
-            seenAt: null,
-            dismissedAt: null,
-            expiresAt: activityTier === "idle"
-              ? null
-              : new Date(revision + (phase === "running" ? RUNNING_TTL_MS : ATTENTION_RECENT_TTL_MS)).toISOString(),
-          });
-        });
-      })
-      : [];
-    if (includeRoster) {
-      const rosterItemIds = new Set(rosterItems.map((item) => item.id));
-      for (const id of rosterPhaseAnchors.keys()) {
-        if (!rosterItemIds.has(id)) rosterPhaseAnchors.delete(id);
-      }
-    }
-
-    const prItems = [...prActivities.values()].map((pr): AttentionItem => {
-      const scopeKey = pr.scopeKey;
-      const scope = scopes.get(scopeKey);
-      const mapped = prAttentionState(pr.phase);
-      const title = prNotificationCopy({
-        kind: pr.phase,
-        prNumber: pr.prNumber,
-        prTitle: pr.title,
-        laneId: null,
-      }).title;
-      const actions: AttentionItem["actions"] = [
-        { id: "open", kind: "open", label: "Open pull request" },
-      ];
-      if (pr.phase === "checks_failing" && pr.prId) {
-        actions.unshift({
-          id: "rerun_checks",
-          kind: "rerun_checks",
-          label: "Rerun checks",
-          payload: { prId: pr.prId, prNumber: pr.prNumber },
-        });
-      }
-      const item: AttentionItem = {
-        contractVersion: ATTENTION_CONTRACT_VERSION,
-        id: `pull-request:${machineKey}:${pr.id}`,
-        revision: pr.updatedAt,
-        fingerprint: "",
-        activityTier: prActivityTier(mapped.phase),
-        kind: "pull_request",
-        eventKind: mapped.eventKind,
-        phase: mapped.phase,
-        machine,
-        project: {
-          projectId: scopeKey,
-          name: scope?.projectName ?? "ADE project",
-          rootPath: scope?.projectRoot ?? null,
-        },
-        laneId: null,
-        laneName: pr.lane,
-        provider: "GitHub",
-        model: null,
-        title,
-        preview: sanitizeAttentionPreview(pr.title),
-        privacyPreview: `Pull request #${pr.prNumber} changed state.`,
-        detail: null,
-        recentActivity: [],
-        planProgress: null,
-        destination: {
-          kind: "pull_request",
-          prId: pr.prId,
-          repoOwner: pr.repoOwner,
-          repoName: pr.repoName,
-          number: pr.prNumber,
-          tab: mapped.tab,
-        },
-        actions,
-        occurredAt: new Date(pr.updatedAt).toISOString(),
-        updatedAt: new Date(pr.updatedAt).toISOString(),
-        statusSince: new Date(pr.statusSinceAt).toISOString(),
-        seenAt: null,
-        dismissedAt: null,
-        expiresAt: new Date(pr.updatedAt + ATTENTION_RECENT_TTL_MS).toISOString(),
-      };
-      return withActivityFingerprints(item);
-    });
-
-    const agentItems = new Map<string, AttentionItem>();
-    for (const item of rosterItems) agentItems.set(item.id, item);
-    // Live state is authoritative on the shared terminal_sessions.id/sessionId
-    // namespace and therefore wins every collision with a roster row.
-    for (const item of runItems) agentItems.set(item.id, item);
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
-    const remoteRevisionById = new Map(
-      (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
-        .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
-    );
-    return [...agentItems.values(), ...prItems].map((item) => {
-      const revision = Math.max(
-        item.revision,
-        lastPublishedRevisionById.get(item.id) ?? 0,
-        remoteRevisionById.get(item.id) ?? 0,
-      );
-      return revision === item.revision ? item : { ...item, revision };
+    return await projectAttentionItems({
+      nowMs,
+      includeRoster,
+      machineKey: deps.store.getOrCreateIdentity().machineKey,
+      accountMachineIdentity: deps.getAccountMachineIdentity?.() ?? null,
+      machineName: deps.machineName,
+      runs,
+      recentRuns,
+      prActivities,
+      scopes,
+      rosterPhaseAnchors,
+      loadRoster: () => loadActivityRoster(nowMs),
+      canonicalProjectId,
+      lastPublishedRevisionById,
+      remoteAcknowledgedRevisionById: new Map(
+        (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
+          .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
+      ),
     });
   };
 
@@ -1148,7 +918,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const scheduleFlush = (immediate: boolean, activityChanged = true): void => {
-    if (disposed) return;
+    if (disposed || machineRevoked) return;
     if (activityChanged) scheduledFlushIncludesActivity = true;
     const delay = immediate ? promptFlushMs : flushDebounceMs;
     const fireAt = now() + delay;
@@ -1201,7 +971,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const dropTerminalRuns = (): void => {
     for (const [sessionId, run] of runs) {
       if (!isTerminalPhase(run.phase)) continue;
-      recentRuns.set(sessionId, { ...run });
+      recentRuns.set(sessionId, snapshotRun(run));
       runs.delete(sessionId);
     }
   };
@@ -1247,7 +1017,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           )
         ) {
           setRunPhase(run, "completed");
-          recentRuns.set(run.sessionId, { ...run });
+          recentRuns.set(run.sessionId, snapshotRun(run));
           runs.delete(run.sessionId);
           continue;
         }
@@ -1271,10 +1041,47 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           run.agent = providerDisplayName(summary.provider) ?? run.agent;
           const laneName = scope?.resolveLaneName?.(summary.laneId);
           run.lane = laneName ?? run.lane ?? (summary.laneId || null);
+          applyChatActivityMode(run, summary.interactionMode);
         }
         run.metaResolved = true;
       } catch {
         // Leave unresolved; retried on the next flush.
+      }
+    }
+  };
+
+  const applyChatActivityMode = (
+    run: AgentRunState,
+    interactionMode: string | null | undefined,
+  ): void => {
+    run.chatActivityMode = interactionMode === "plan" ? "planning" : null;
+    run.chatActivityModeCheckedAt = now();
+  };
+
+  /**
+   * Keep the planning hint current for live runs. Nothing on the chat event
+   * stream reports an interaction-mode change — the desktop sidebar derives it
+   * from session summaries as well — so this reads the same source on a bounded
+   * cadence rather than inferring "planning" from the phase, which would be a
+   * guess the design explicitly does not want.
+   */
+  const refreshChatActivityModes = async (nowMs: number): Promise<void> => {
+    for (const run of runs.values()) {
+      if (run.kind !== "chat" || !run.metaResolved) continue;
+      // A finished run's mode can no longer change, and a terminal row does not
+      // render the planning glyph anyway.
+      if (isTerminalPhase(run.phase)) continue;
+      if (nowMs - run.chatActivityModeCheckedAt < CHAT_ACTIVITY_MODE_REFRESH_MS) continue;
+      const chat = scopes.get(run.scopeKey)?.agentChatService;
+      if (!chat) continue;
+      // Stamp the attempt before awaiting so a slow/failing read cannot make
+      // every flush retry the same session.
+      run.chatActivityModeCheckedAt = nowMs;
+      try {
+        const summary = await chat.getSessionSummary(run.sessionId);
+        if (summary) applyChatActivityMode(run, summary.interactionMode);
+      } catch {
+        // Keep the last known mode: a failed read must not flip the glyph.
       }
     }
   };
@@ -1728,6 +1535,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         ? "published"
         : "unchanged";
     } catch (error) {
+      if (error instanceof PushRelayMachineRevokedError) {
+        enterMachineRevoked(error);
+        return "unavailable";
+      }
       reconcilePending = true;
       if (
         error instanceof PushRelayRequestError
@@ -1748,6 +1559,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     pruneRuns(nowMs);
     prunePrActivities(nowMs);
     await resolveMissingMeta();
+    await refreshChatActivityModes(nowMs);
     const attentionPublishResult = await publishActivity(nowMs, presenceOnly);
     const accountAttentionPublished = attentionPublishResult === "published";
     const accountAttentionAvailable = attentionPublishResult !== "unavailable";
@@ -1996,6 +1808,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         });
       }
     } catch (error) {
+      // A removal is terminal, not transient: re-queueing the alerts and
+      // retrying would spin against a relay that will answer 403 forever. The
+      // legacy publish route gates server-side too, so this path has to
+      // recognise it exactly like the account Activity path does.
+      if (error instanceof PushRelayMachineRevokedError) {
+        enterMachineRevoked(error);
+        return;
+      }
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
       pendingAlerts = [...consumedAlerts, ...pendingAlerts];
@@ -2009,7 +1829,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // With no attached scope there is no active work loop to retry. The final
     // detach snapshot is deliberately one-shot/nonblocking; a later attach or
     // heartbeat will naturally reconcile if that best-effort publish failed.
-    if (disposed || scopes.size === 0) return;
+    // A revoked machine has nothing to retry toward at all.
+    if (disposed || machineRevoked || scopes.size === 0) return;
     const fireAt = now() + PUBLISH_RETRY_MS;
     if (flushTimer && flushFireAt > 0 && flushFireAt <= fireAt) return;
     if (flushTimer) clearTimeout(flushTimer);
@@ -2022,7 +1843,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const runFlush = async (presenceOnly = false): Promise<void> => {
-    if (disposed) return;
+    if (disposed || machineRevoked) return;
     if (flushing) {
       if (scopes.size > 0) scheduleFlush(false, !presenceOnly);
       return;
@@ -2104,6 +1925,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       case "pending_input_resolved": {
         if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") {
+          run.deferredTerminalPhase = null;
           setRunPhase(run, "running");
         }
         run.itemId = null;
@@ -2115,34 +1937,48 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       case "status": {
         if (event.turnStatus !== "started") run.itemId = null;
         if (event.turnStatus === "started") {
+          run.deferredTerminalPhase = null;
           if (isTerminalPhase(run.phase)) setRunPhase(run, "running");
         } else if (event.turnStatus === "failed") {
-          setRunPhase(run, "failed");
+          settleRun(run, "failed");
           enqueueFailedAlert(run);
         } else if (event.turnStatus === "completed" || event.turnStatus === "interrupted") {
-          setRunPhase(run, "completed");
+          settleRun(run, "completed");
         }
         break;
       }
       case "done": {
         if (event.status === "failed") {
-          setRunPhase(run, "failed");
+          settleRun(run, "failed");
           if (!run.model && event.model) run.model = event.model;
           enqueueFailedAlert(run);
         } else {
-          setRunPhase(run, "completed");
+          settleRun(run, "completed");
         }
         break;
       }
-      default: {
-        if (!isTerminalPhase(run.phase) && run.phase === "starting") {
-          setRunPhase(run, "running");
+      case "scheduled_work_update": {
+        // `background_task` is the only scheduled-work flavour that represents
+        // work happening RIGHT NOW; wakeups/crons/loops are future intentions
+        // and must not hold a finished run open.
+        if (event.kind === "background_task") {
+          applyBackgroundTaskUpdate(
+            run,
+            event.sourceTaskId?.trim() || event.id.trim(),
+            event.status,
+          );
+          break;
         }
+        resumeRunOnActivity(run);
+        break;
+      }
+      default: {
+        resumeRunOnActivity(run);
         break;
       }
     }
     if (isTerminalPhase(run.phase)) {
-      recentRuns.set(sessionId, { ...run });
+      recentRuns.set(sessionId, snapshotRun(run));
     }
 
     scheduleFlush(immediate);
@@ -2182,7 +2018,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         existing.itemId = null;
         markRunUpdated(existing);
         setRunPhase(existing, "completed");
-        recentRuns.set(signal.sessionId, { ...existing });
+        recentRuns.set(signal.sessionId, snapshotRun(existing));
         runs.delete(signal.sessionId);
         pendingAlerts = pendingAlerts.filter(
           (alert) =>
@@ -2245,7 +2081,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (run && run.kind === "cli") {
       markRunUpdated(run);
       setRunPhase(run, event.exitCode == null || event.exitCode === 0 ? "completed" : "failed");
-      recentRuns.set(run.sessionId, { ...run });
+      recentRuns.set(run.sessionId, snapshotRun(run));
       scheduleFlush(false);
     }
     // Only surface non-clean exits of tracked CLI sessions — and only ones the
@@ -2269,35 +2105,49 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     scheduleFlush(false);
   };
 
-  const prNotificationCopy = (notification: PushPrNotification): { title: string; body: string; interruptionLevel: PendingAlert["interruptionLevel"] } => {
-    const fallbackTitle = notification.prTitle?.trim() || `Pull request #${notification.prNumber}`;
-    switch (notification.kind) {
-      case "opened":
-        return { title: `PR #${notification.prNumber} opened`, body: fallbackTitle, interruptionLevel: "passive" };
-      case "reopened":
-        return { title: `PR #${notification.prNumber} reopened`, body: fallbackTitle, interruptionLevel: "passive" };
-      case "closed":
-        return { title: `PR #${notification.prNumber} closed`, body: fallbackTitle, interruptionLevel: "passive" };
-      case "merged":
-        return { title: `PR #${notification.prNumber} merged`, body: fallbackTitle, interruptionLevel: "active" };
-      case "merge_ready":
-        return { title: `PR #${notification.prNumber} is ready to merge`, body: notification.prTitle ?? "Required checks passed and it has approval.", interruptionLevel: "active" };
-      case "checks_failing":
-        return { title: `PR #${notification.prNumber} checks are failing`, body: notification.prTitle ?? "One or more required checks failed.", interruptionLevel: "active" };
-      case "changes_requested":
-        return { title: `Changes requested on PR #${notification.prNumber}`, body: fallbackTitle, interruptionLevel: "active" };
-      case "review_requested":
-        return { title: `Review requested on PR #${notification.prNumber}`, body: fallbackTitle, interruptionLevel: "active" };
-    }
+  /**
+   * A deleted session must vanish from Activity now, not at the next reconcile.
+   * Dropping the live run and invalidating the roster cache is what makes the
+   * following delta emit a tombstone for the row (the protocol-2 delta
+   * tombstones every previously published id that is no longer selected).
+   */
+  const onSessionRemoved = (scopeKey: string, sessionId: string): void => {
+    if (disposed || !sessionId) return;
+    const live = runs.get(sessionId) ?? recentRuns.get(sessionId) ?? null;
+    // A foreign scope's id collision must not delete another project's run.
+    if (live && live.scopeKey !== scopeKey) return;
+    runs.delete(sessionId);
+    recentRuns.delete(sessionId);
+    pendingAlerts = pendingAlerts.filter((alert) => alert.sessionId !== sessionId);
+    // The roster is read from disk behind a 10s cache; without dropping it the
+    // deleted row would be republished from the stale snapshot.
+    rosterCache = null;
+    scheduleFlush(false);
   };
 
-  const prActivityId = (scopeKey: string, notification: PushPrNotification): string => {
+  /**
+   * Stable Activity id for a pull request. Repo coordinates ARE the identity —
+   * two repos inside one project scope can both have a PR #5 — so an event that
+   * arrives without them has no id of its own. It used to degrade to the
+   * literal scope `"number"`, which minted a SECOND live item for a PR that
+   * already had one under its repo-scoped id. Instead: adopt the existing row
+   * when the notification unambiguously refers to it, and otherwise publish
+   * nothing rather than a duplicate — the next event carrying repo metadata
+   * (prPollingService resolves it) reconciles the PR anyway.
+   */
+  const prActivityId = (scopeKey: string, notification: PushPrNotification): string | null => {
     const owner = notification.repoOwner?.trim().toLowerCase();
     const repo = notification.repoName?.trim().toLowerCase();
-    const repoScope = owner && repo
-      ? `repo:${encodeURIComponent(owner)}:${encodeURIComponent(repo)}`
-      : "number";
-    return `pr:${scopeKey}:${repoScope}:${notification.prNumber}`;
+    if (owner && repo) {
+      return `pr:${scopeKey}:repo:${encodeURIComponent(owner)}:${encodeURIComponent(repo)}:${notification.prNumber}`;
+    }
+    const prefix = `pr:${scopeKey}:`;
+    const prId = notification.prId?.trim() || null;
+    const scoped = [...prActivities.values()].filter((activity) => activity.id.startsWith(prefix));
+    const byPrId = prId ? scoped.filter((activity) => activity.prId === prId) : [];
+    if (byPrId.length === 1) return byPrId[0]!.id;
+    const byNumber = scoped.filter((activity) => activity.prNumber === notification.prNumber);
+    return byNumber.length === 1 ? byNumber[0]!.id : null;
   };
   const prDeepLink = (notification: PushPrNotification): string => {
     const owner = notification.repoOwner?.trim();
@@ -2328,6 +2178,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
     const activityId = prActivityId(scopeKey, notification);
+    if (!activityId) {
+      logWarn(
+        "attention.pr_activity_id_unresolved",
+        new Error(`PR #${notification.prNumber} arrived without repo metadata and no unambiguous existing item`),
+      );
+      return;
+    }
     const existingActivity = prActivities.get(activityId);
     const eventStamp = Math.max(
       now(),
@@ -2336,13 +2193,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     prActivities.set(activityId, {
       id: activityId,
       scopeKey,
-      prId: notification.prId?.trim() || null,
+      prId: notification.prId?.trim() || existingActivity?.prId || null,
       prNumber: notification.prNumber,
       title: notification.prTitle?.trim() || `Pull request #${notification.prNumber}`,
       phase: notification.kind,
       lane,
-      repoOwner: notification.repoOwner?.trim() || null,
-      repoName: notification.repoName?.trim() || null,
+      // Never let a metadata-less follow-up erase coordinates the row already
+      // has — the destination needs owner/repo to open the PR.
+      repoOwner: notification.repoOwner?.trim() || existingActivity?.repoOwner || null,
+      repoName: notification.repoName?.trim() || existingActivity?.repoName || null,
       updatedAt: eventStamp,
       statusSinceAt: existingActivity?.phase === notification.kind
         ? existingActivity.statusSinceAt
@@ -2355,7 +2214,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       sessionId: null,
       dedupeKey: `alert:${activityId}:${notification.kind}`,
       render: () => ({ title: copy.title, body: copy.body }),
-      deepLink: prDeepLink(notification),
+      // Deep-link off the merged row so a metadata-less follow-up still routes
+      // to the exact repo the row already resolved.
+      deepLink: prDeepLink({
+        ...notification,
+        repoOwner: prActivities.get(activityId)?.repoOwner ?? notification.repoOwner,
+        repoName: prActivities.get(activityId)?.repoName ?? notification.repoName,
+      }),
       threadId: activityId,
       phase: copy.interruptionLevel === "passive" ? "terminal" : "waiting",
       interruptionLevel: copy.interruptionLevel,
@@ -2468,6 +2333,50 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
+    /**
+     * Terminal removal state for this machine. Callers should present it as
+     * "this machine was removed from your ADE account", never as a retryable
+     * network failure.
+     */
+    getMachineRevocation(): { revoked: boolean; revokedAt: string | null } {
+      return {
+        revoked: machineRevoked,
+        revokedAt: deps.store.getStatusSnapshot().machineRevokedAt ?? null,
+      };
+    },
+
+    /**
+     * Lift the removal after the account directory accepted a deliberate
+     * re-pair. Clears BOTH halves — the durable `machineRevokedAt` a restart
+     * would re-read, and this process's in-memory latch — so delivery resumes
+     * in the running brain. Clearing only the durable half would leave the
+     * machine on the account roster but mute until the next restart, which is
+     * worse than an honest removal; only a caller that has just seen a
+     * successful pairing publish may call it.
+     */
+    clearMachineRevocation(): void {
+      deps.store.clearMachineRevoked?.();
+      if (!machineRevoked) return;
+      machineRevoked = false;
+      // Everything published before the removal was dropped, so the next flush
+      // must be a full reconcile rather than a delta against a stale baseline.
+      reconcilePending = true;
+      // `enterMachineRevoked` tore down all three timers. `flushTimer` comes
+      // back with the immediate flush below and `prExpiryTimer` re-arms itself
+      // on the flush path, but the heartbeat is otherwise only ever created by
+      // `attachSources` — without this the periodic liveness republish would
+      // stay dead until a new scope attached or the brain restarted.
+      if (!disposed && !attentionHeartbeatTimer && scopes.size > 0) {
+        attentionHeartbeatTimer = setInterval(
+          () => scheduleFlush(false, false),
+          ATTENTION_HEARTBEAT_MS,
+        );
+        attentionHeartbeatTimer.unref?.();
+      }
+      deps.logger.info?.("attention.machine_revocation_cleared", {});
+      if (!disposed && warmed) scheduleFlush(true);
+    },
+
     setActivityRosterProvider(
       provider: PushPublisherDeps["activityRosterProvider"],
     ): void {
@@ -2496,6 +2405,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (sources.subscribePrNotifications) {
         scopeUnsubscribes.push(sources.subscribePrNotifications((notification) => {
           onPrNotification(scopeKey, notification, sources.resolveLaneName);
+        }));
+      }
+      if (sources.subscribeSessionRemovals) {
+        scopeUnsubscribes.push(sources.subscribeSessionRemovals((sessionId) => {
+          onSessionRemoved(scopeKey, sessionId);
         }));
       }
       scopes.set(scopeKey, {
@@ -2584,7 +2498,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       run.itemId = null;
       markRunUpdated(run);
       setRunPhase(run, "completed");
-      recentRuns.set(sessionId, { ...run });
+      recentRuns.set(sessionId, snapshotRun(run));
       runs.delete(sessionId);
       pendingAlerts = pendingAlerts.filter(
         (alert) =>
@@ -2602,8 +2516,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     },
 
     async handleDeviceRegistered(registration: PushDeviceRegistration): Promise<PushDeliveryStatus> {
-      await deps.relayClient.claim();
-      await deps.relayClient.registerDevice(registration);
+      await latchRevocation(() => deps.relayClient.claim());
+      await latchRevocation(() => deps.relayClient.registerDevice(registration));
       deps.store.upsertDevice(registration);
       if (registration.clearPushToStartToken) {
         liveActivityEpochByDevice.set(
@@ -2619,12 +2533,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     },
 
     async handleLiveActivityToken(report: PushLiveActivityTokenReport): Promise<void> {
-      await deps.relayClient.claim();
-      await deps.relayClient.reportLiveActivityToken({
+      await latchRevocation(() => deps.relayClient.claim());
+      await latchRevocation(() => deps.relayClient.reportLiveActivityToken({
         deviceId: report.deviceId,
         activityId: report.activityId,
         token: report.token ?? "",
-      });
+      }));
       deps.store.recordRelayContact(new Date().toISOString());
       // An update/end published before this token arrived had no APNs target
       // and was left uncommitted — resend now so the activity catches up.
@@ -2717,15 +2631,35 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       await deps.relayClient.acknowledgeAttention?.(args);
     },
 
+    /**
+     * Acknowledge machine-scope Activity items by id.
+     *
+     * There is deliberately no revision fence here any more. `seen` and
+     * `dismissed` are monotonic and idempotent, so the lost-update the fence
+     * guarded against cannot happen — while the item `revision` is the run's
+     * `lastActiveAt`, which advances on every publish. Any actively-running
+     * item was therefore stale inside the renderer's 15 s poll window, and
+     * "Clear all" failed before the request ever left the machine.
+     *
+     * `sourceRevisions` stays on the signature (callers still send it) but is
+     * advisory: it only raises the durable record's revision floor. Unknown ids
+     * are reported back as `skipped` rather than throwing, so one bad id in a
+     * bulk clear cannot reject the whole batch. The never-revive-a-tombstoned-
+     * item guarantee is unaffected: `reconcileMachineAcknowledgments` only ever
+     * transmits acks for items present in the freshly built item set, so an ack
+     * for a swept row is never sent.
+     */
     async acknowledgeMachineAttention(args: {
       itemIds: string[];
       sourceRevisions: Record<string, number>;
       expectedAccountOwnerId: string | null;
       seenAt?: string;
       dismissedAt?: string | null;
-    }): Promise<void> {
+    }): Promise<{ acknowledged: string[]; skipped: string[] }> {
       const currentAccountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
       const expectedAccountOwnerId = args.expectedAccountOwnerId?.trim() || null;
+      // Account-owner fences stay: they prevent acking one account's items with
+      // another's identity, which is a real correctness boundary, not staleness.
       if (expectedAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
           "The ADE account changed after this machine Activity snapshot loaded. Refresh and try again.",
@@ -2734,22 +2668,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (lastMachineSnapshotAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
           "Refresh machine Activity after changing ADE accounts, then try again.",
-        );
-      }
-      const items = args.itemIds.flatMap((itemId) => {
-        const item = lastMachineSnapshotItems.get(itemId);
-        return item ? [item] : [];
-      });
-      if (items.length !== args.itemIds.length) {
-        throw new Error(
-          "This machine can only acknowledge items from its latest Activity snapshot. Refresh and try again.",
-        );
-      }
-      const staleItem = items.find((item) =>
-        args.sourceRevisions[item.id] !== item.revision);
-      if (staleItem) {
-        throw new Error(
-          "This Activity item changed after it loaded. Refresh before acknowledging the newer state.",
         );
       }
       const updatedAt = new Date(now()).toISOString();
@@ -2763,19 +2681,41 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       ) {
         throw new Error("Activity dismissedAt must be an ISO timestamp.");
       }
-      deps.store.recordAttentionAcknowledgments?.({
-        items: items.map((item) => ({ id: item.id, revision: item.revision })),
-        accountOwnerId: currentAccountOwnerId,
-        seenAt,
-        ...(args.dismissedAt === null || typeof args.dismissedAt === "string"
-          ? { dismissedAt: args.dismissedAt }
-          : {}),
-        updatedAt,
-      });
-      // Reconcile only after the normal Attention publish path has made the
-      // source revision available to the account relay. An immediate ack can
-      // succeed against zero rows and falsely clear the durable pending state.
-      scheduleFlush(true);
+      const acknowledged: Array<{ id: string; revision: number }> = [];
+      const skipped: string[] = [];
+      for (const itemId of args.itemIds) {
+        const item = lastMachineSnapshotItems.get(itemId);
+        if (!item) {
+          // Not in this machine's latest snapshot — nothing to ack against, but
+          // the rest of the batch still commits.
+          skipped.push(itemId);
+          continue;
+        }
+        acknowledged.push({
+          id: item.id,
+          // Take the highest revision either side has seen so the durable
+          // record is never written behind what the relay already stored.
+          revision: Math.max(item.revision, args.sourceRevisions[item.id] ?? 0),
+        });
+      }
+      if (acknowledged.length > 0) {
+        // One batch, one durable write: a bulk clear must not decay into N
+        // independent races over the pending-acknowledgment map.
+        deps.store.recordAttentionAcknowledgments?.({
+          items: acknowledged,
+          accountOwnerId: currentAccountOwnerId,
+          seenAt,
+          ...(args.dismissedAt === null || typeof args.dismissedAt === "string"
+            ? { dismissedAt: args.dismissedAt }
+            : {}),
+          updatedAt,
+        });
+        // Reconcile only after the normal Attention publish path has made the
+        // source revision available to the account relay. An immediate ack can
+        // succeed against zero rows and falsely clear the durable pending state.
+        scheduleFlush(true);
+      }
+      return { acknowledged: acknowledged.map((item) => item.id), skipped };
     },
 
     async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
@@ -2873,6 +2813,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       onChatEvent,
       onPtyExit,
       onPrNotification,
+      onSessionRemoved,
       flushNow: () => flush(),
     },
   };

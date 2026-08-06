@@ -2,14 +2,15 @@ import {
   sendApnsPush,
   type ApnsEnvironment,
   type ApnsKeyConfig,
-  type ApnsPushType,
   type ApnsSendResult,
 } from "./apns";
 import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
   inspectAttentionAuthConfiguration,
+  machineKeyRevokedAt,
   pruneAttentionState,
+  sweepAttentionState,
 } from "./attention";
 
 export type PushRelayEnv = {
@@ -22,6 +23,11 @@ export type PushRelayEnv = {
   APNS_TEAM_ID?: string;
   /** Fallback apns-topic when a registration has no bundle id (should not happen). */
   APNS_DEFAULT_TOPIC?: string;
+  /**
+   * Shared secret proving a request came from the account-directory worker.
+   * Required by the machine re-pair route; see `assertDirectoryProvenance`.
+   */
+  DIRECTORY_AUTH_SECRET?: string;
   REGISTRATION_RETENTION_DAYS?: string;
   MAX_DEVICES_PER_MACHINE?: string;
   /**
@@ -668,6 +674,15 @@ async function recordDailyBudget(env: PushRelayEnv): Promise<{ allowed: boolean 
   return { allowed: true };
 }
 
+/**
+ * Cron-only maintenance. Everything here is unbounded or fans out per account,
+ * so it must never hang off a user-facing request; the hourly `scheduled`
+ * handler owns it. `pruneRelayState` stays cheap enough to run opportunistically.
+ */
+export async function sweepRelayState(env: PushRelayEnv): Promise<void> {
+  await sweepAttentionState(env);
+}
+
 export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   const suppressionCutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   await env.DB
@@ -1029,6 +1044,13 @@ async function handleDeviceUpsert(
   }
   const auth = await assertMachineAuthorized(request, env, machineKey, body);
   if ("response" in auth) return auth.response;
+  // Registration is how a device becomes a delivery target, so it is gated like
+  // publishing. Removing a machine purges its registrations; without this gate a
+  // de-authorized machine could put them straight back and simply wait for the
+  // revocation to be cleared (an ownership transfer, a re-pair), which would
+  // reopen exactly the channel the purge closed.
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
   if (!DEVICE_ID_PATTERN.test(deviceId)) {
     return json({ ok: false, error: "invalid device id" }, { status: 400 });
   }
@@ -1164,6 +1186,21 @@ async function handleDeviceList(request: Request, env: PushRelayEnv, machineKey:
   });
 }
 
+/**
+ * The terminal 403 a de-authorized machine gets from every legacy machine-signed
+ * write path. Same shape as the account route's `machine_revoked` response so
+ * one client-side handler covers both.
+ */
+function machineRevokedResponse(revokedAt: string): Response {
+  return json({
+    ok: false,
+    error: "machine removed from account",
+    code: "machine_revoked",
+    revokedAt,
+    recovery: "This machine was removed from the ADE account. Pair it again to publish activity.",
+  }, { status: 403 });
+}
+
 async function handleActivityTokenUpsert(request: Request, env: PushRelayEnv, machineKey: string): Promise<Response> {
   const body = await request.arrayBuffer();
   if (body.byteLength > MAX_BODY_BYTES) {
@@ -1171,6 +1208,11 @@ async function handleActivityTokenUpsert(request: Request, env: PushRelayEnv, ma
   }
   const auth = await assertMachineAuthorized(request, env, machineKey, body);
   if ("response" in auth) return auth.response;
+  // A signature only proves the machine is who it says it is, never that it is
+  // still authorized. Registering a Live Activity token is how a removed machine
+  // re-arms its channel to the owner's phone, so it is gated like publishing.
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
   const payload = parseBodyJson(body);
   if (!payload) return json({ ok: false, error: "invalid json" }, { status: 400 });
   const deviceId = readString(payload, "deviceId");
@@ -1206,6 +1248,15 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   }
   const auth = await assertMachineAuthorized(request, env, machineKey, body);
   if ("response" in auth) return auth.response;
+  // Removal has to be enforced here, not only on the protocol-2 account route:
+  // this path delivers alerts and Live Activity frames straight to the owner's
+  // phone. A removed machine running an older or modified binary keeps pushing
+  // without it (its registrations are purged at removal, but nothing stops it
+  // re-registering a phone it still has in hand) — the
+  // publisher-side gate in the desktop app is enforcement in the client, on the
+  // one path where the client is the party being de-authorized.
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
   const config = apnsConfig(env);
   if (!config) {
     return json({ ok: false, error: "APNs signing key is not configured on the relay" }, { status: 503 });
@@ -1413,7 +1464,12 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     }
     const auth = await assertMachineAuthorized(request, env, machineKey, body);
     if ("response" in auth) return auth.response;
-    return await handleAttentionMachinePublish(request, env, machineKey, body);
+    // The signature is the only thing binding the path key to the caller; hand
+    // the verified identity down so the publish handler enforces that binding
+    // itself rather than trusting this router to have checked it.
+    return await handleAttentionMachinePublish(request, env, machineKey, body, {
+      machineKey: auth.machine.machine_key,
+    });
   }
   return text("not found", 404);
 }

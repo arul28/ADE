@@ -7,6 +7,7 @@ import {
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
+  AccountMachineActivityPurgeError,
   AccountMachineDirectoryService,
   reconcileAccountOwnedMachineTrust,
 } from "./accountMachineDirectoryService";
@@ -261,6 +262,43 @@ describe("AccountMachineDirectoryService", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer account-token");
     expect(new Headers(init?.headers).get("x-ade-correlation-id"))
       .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
+  it("reports a removal that left the machine's Activity behind", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({
+          ok: false,
+          code: "activity_purge_failed",
+          machineKey: "mk-studio",
+          machineRemoved: true,
+          activityPurged: false,
+          detail: "activity relay returned 500",
+        }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: true,
+        userId: "user",
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken: async () => "account-token",
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    // The roster row is gone, so this is not "try the removal again" — it is a
+    // partial removal the user can see in Activity.
+    const failure = await service.deleteMachine("mk-studio").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AccountMachineActivityPurgeError);
+    expect(failure).toMatchObject({
+      code: "activity_purge_failed",
+      machineKey: "mk-studio",
+      machineRemoved: true,
+      detail: "activity relay returned 500",
+    });
+    expect((failure as Error).message).toMatch(/Activity couldn't be cleared/);
   });
 
   it("renames a machine through the authenticated account directory route", async () => {

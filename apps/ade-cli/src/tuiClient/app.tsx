@@ -11173,6 +11173,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       return;
     }
+    if (name === "/reconnect") {
+      // The one way back from an account-side machine removal, mirroring
+      // `ade machines reconnect` and the desktop Account page's button. The
+      // brain re-registers as a deliberate pairing and lifts the push gate, so
+      // Activity resumes without restarting ADE Code.
+      addNotice("Reconnecting this computer to your ADE account…", "info");
+      let raw: unknown;
+      try {
+        raw = await conn.request<unknown>("account.call", {
+          action: "repairMachinePairing",
+          args: {},
+        });
+      } catch (error) {
+        addNotice(error instanceof Error ? error.message : String(error), "error");
+        return;
+      }
+      const envelope = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const result = envelope.result && typeof envelope.result === "object" && !Array.isArray(envelope.result)
+        ? envelope.result as Record<string, unknown>
+        : envelope;
+      if (result.repaired === true) {
+        addNotice("This computer is reconnected to your ADE account.", "success");
+        await refreshActivityPane();
+        return;
+      }
+      // The directory refuses a re-pair without proof of a freshly completed
+      // interactive sign-in, and only its own device flow can produce that
+      // proof. ADE Code cannot host that flow, so point at the command that
+      // carries it rather than dead-ending on the refusal.
+      const reason = typeof result.reason === "string" && result.reason.trim()
+        ? result.reason.trim()
+        : "This computer is still disconnected from your ADE account.";
+      addNotice(`${reason} Run \`ade machines reconnect\` in a terminal to finish.`, "error");
+      return;
+    }
     if (name === "/commit") {
       if (!laneId) {
         addNotice("No active lane is selected.", "error");

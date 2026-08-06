@@ -489,7 +489,12 @@ apps/ios/
 ├── ADEWidgets/
 │   ├── ADEWidgetBundle.swift        # WidgetBundle registering the lock-screen
 │   │                                # widget AND the "agent runs" Live Activity
-│   ├── ADELockScreenWidget.swift    # Lock Screen accessory widget + previews
+│   ├── ADELockScreenWidget.swift    # the widget definition, its timeline
+│   │                                # provider, and the accessory views
+│   ├── ADEActivityHomeWidget.swift  # Home Screen small/medium/large views for
+│   │                                # that same definition
+│   ├── LockScreenPriorityStatus.swift # machine-local single-focus derivation,
+│   │                                # used when there is no account feed
 │   └── ADEAgentActivityWidget.swift # ActivityKit Live Activity + Dynamic Island
 │                                    # presentation for active agent runs
 └── ADETests/
@@ -1362,15 +1367,31 @@ saved local/direct reconnect behavior.
 - iOS grants ~30 seconds per fetch window.
 - Priority order: sync cr-sqlite changesets and update shared workspace
   snapshots.
+- A second, Activity-specific task is registered under
+  `com.ade.ios.activity.refresh` (declared in
+  `BGTaskSchedulerPermittedIdentifiers`, alongside the `fetch` background mode).
+  It re-arms itself *before* doing any work, then bootstraps the account and
+  refreshes the Activity snapshot, and reloads widget timelines even when the
+  refresh fails — a widget that cannot be refreshed still has to stop claiming it
+  is current. It is submitted at launch and again on entering the background,
+  with an earliest-begin of 15 minutes.
+- Silent pushes refresh the snapshot before reloading timelines, and now reload
+  on the no-change path too: a push that found nothing new still proves the
+  snapshot is fresh.
 
-### Lock Screen widget
+### Widgets
 
 Source: `apps/ios/ADEWidgets/`.
 
-`ADEWidgetBundle` registers a single `ADELockScreenWidget` surface.
-The widget reads the shared `WorkspaceSnapshot` from the App Group
-(`ADESharedContainer.readWorkspaceSnapshot()`) and presents one
-prioritized status across agents and PRs:
+`ADEWidgetBundle` registers `ADELockScreenWidget` — one definition serving both
+the accessory families (rectangular, circular, inline) and the Home Screen
+families (small, medium, large) — plus the `agent-runs` Live Activity.
+
+The account Activity snapshot is the primary source. When there is none, the
+widget reads the shared `WorkspaceSnapshot` from the App Group
+(`ADESharedContainer.readWorkspaceSnapshot()`) and falls back to
+`LockScreenPriorityStatus`, which presents one prioritized status across agents
+and PRs:
 
 - awaiting user input,
 - failed agents,
@@ -1384,9 +1405,22 @@ prioritized status across agents and PRs:
 The rectangular accessory carries the richest summary and, when useful,
 an App Intent action from `AttentionActionIntents.swift` for approve,
 deny, restart, or retry checks. Circular and inline accessories use the
-same priority model with compact count/status treatments. The iOS app
-still updates the shared snapshot and calls
+same priority model with compact count/status treatments, and stay single-focus
+with one tap target. The iOS app still updates the shared snapshot and calls
 `WidgetCenter.shared.reloadAllTimelines()` after snapshot writes.
+
+The Home Screen families are a list rather than a single status: a header of
+per-state-group glyph counts, then two (small), three (medium), or six (large)
+rows, then a footer carrying the top event signal and an overflow link into
+Activity. Each row is its own `Link`, so a tap lands on the item.
+
+Freshness is explicit because a widget cannot prove it is current by rendering.
+`ADESharedContainer` stores a fetch timestamp beside the snapshot, and
+`ActivityWidgetPresentation.Freshness` grades the age as fresh, aging past
+10 minutes, or untrusted past 2 hours, showing a staleness tag on the last two.
+The timeline emits a second entry pre-dated to the aging threshold, so a widget
+that stops being refreshed degrades honestly instead of presenting hours-old work
+as live.
 
 The snapshot's `connection` field is a wire vocabulary the widget matches on
 string, not a mirror of `RemoteConnectionState`: `.connected` serializes to
@@ -1396,14 +1430,13 @@ string, not a mirror of `RemoteConnectionState`: `.connected` serializes to
 still resolve it — do not "clean it up" to match the enum.
 
 Agent rows mirror desktop's shared status vocabulary: blue `Working`, amber
-`Needs you`, emerald `Done`, red `Failed`, and neutral `Stale`. Amber is
-reserved for the one state asking the user to act. Syncing, offline hosts,
-blocked work, and a live-but-silent stale run remain neutral; stale uses a
-clock rather than a network-offline glyph.
+`Needs you`, emerald `Done`, red `Failed`, violet `Planning`, and neutral
+`Stale`. Amber is reserved for the one state asking the user to act. Syncing,
+offline hosts, blocked work, and a live-but-silent stale run remain neutral;
+stale uses a clock rather than a network-offline glyph.
 
-Home Screen widgets and Control Center widgets are intentionally not
-registered. ActivityKit and Dynamic Island **are** now registered — see
-the Live Activity section below.
+Control Center widgets are intentionally not registered. Home Screen widgets,
+ActivityKit, and Dynamic Island all are — see the Live Activity section below.
 
 Shared DTOs live in `apps/ios/ADE/Shared/ADESharedModels.swift`:
 `AgentSnapshot` and `PrSnapshot` — lightweight Codable structs
@@ -1542,7 +1575,22 @@ tone-to-colour binding plus the lock-screen ranking live beside it in
 `Shared/ActivityWidgetPresentation.swift`. Both compile into the widget
 extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
-both files are pinned to the extension's iOS 17 deployment target. The Hub's
+both files are pinned to the extension's iOS 17 deployment target.
+
+`ActivityRowPresentation.swift` also holds iOS's copy of the five-group state
+table (`ActivityStateGroup`: needs-you, failed, planning, working, done), pinned
+to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the same
+fixture the renderer, the native notch, and the relay run, because this copy
+drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
+in the very commit that created it. Its wire spelling is kept separate from the
+Swift case name and decoding accepts aliases. A row leads with a state mark —
+the group's glyph on a tone-tinted disc, pulsing while the work is live — rather
+than a provider logo plus a separate status dot, and the model renders as a
+compact brand chip. `chatActivityMode` decodes losslessly into `planning` or an
+unrecognized value; no `planning` member was added to the phase enum, which
+stays frozen wire.
+
+The Hub's
 "Live now" strip (`Views/Hub/HubLiveStrip.swift`) is a third reader of the same
 model, showing agents working on any account machine and hiding itself entirely
 when none are.
@@ -2437,7 +2485,8 @@ different machine's cached limits.
 | Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |
 | Account-wide Live Activity + Dynamic Island (`ADEAgentActivityWidget`) | Implemented; one prioritized activity per phone (push-to-start / background updates verifiable on-device only) |
 | Push delivery settings panel (`SettingsPushDeliverySection`) | Implemented |
-| Home Screen / Control Center widgets | Not shipped |
+| Home Screen widgets (`ADEActivityHomeWidget`, small/medium/large) | Implemented; state-group header, per-row deep links, and an explicit staleness tag |
+| Control Center widgets | Not shipped |
 | iPad adaptive layout | Planned |
 | Spotlight indexing | Planned |
 
