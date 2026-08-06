@@ -1,4 +1,3 @@
-import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrSummary } from "../../../shared/types";
@@ -22,7 +21,6 @@ function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: str
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "list" | "settleSessionsWithOutcome">;
-  agentChatService: Pick<ReturnType<typeof createAgentChatService>, "getSettlementBlockers">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
@@ -107,10 +105,6 @@ export function createPrMergeAutoSettlementService(args: {
 
       const settledSessionIds: string[] = [];
       for (const session of rows) {
-        const blockers = await args.agentChatService.getSettlementBlockers(
-          session.id,
-          { includeCurrentTurn: true },
-        );
         const currentSettings = getSessionLifecycleSettings(args.db);
         const currentState = getPrMergeAutoSettlementState(args.db);
         if (
@@ -121,18 +115,23 @@ export function createPrMergeAutoSettlementService(args: {
         ) {
           break;
         }
-        if (blockers.length === 0) {
-          settledSessionIds.push(...args.sessionService.settleSessionsWithOutcome(
-            [session.id],
-            `PR #${pr.githubPrNumber} merged`,
-            polledAt,
-            "pr_merge",
-          ));
-        }
+        // A merged PR is an explicit lifecycle decision: file the linked
+        // session even when it still owns scheduled work, a background task,
+        // or another normal settlement blocker. Real activity can unsettle it
+        // again, while handledPrIds prevents this PR from filing it twice.
+        settledSessionIds.push(...args.sessionService.settleSessionsWithOutcome(
+          [session.id],
+          `PR #${pr.githubPrNumber} merged`,
+          polledAt,
+          "pr_merge",
+        ));
       }
 
       const finalSettings = getSessionLifecycleSettings(args.db);
       const finalState = getPrMergeAutoSettlementState(args.db);
+      // Mark this PR handled even when its session had background work. The
+      // merge itself is the explicit override, and a later user reactivation
+      // belongs to a new lifecycle rather than this already-consumed merge.
       if (
         finalSettings.autoSettleLaneSessionsOnPrMerge
         && finalState?.enabledSince
@@ -145,10 +144,11 @@ export function createPrMergeAutoSettlementService(args: {
         });
       }
 
-      // Settling still happens for a PR we are meeting for the first time —
-      // its sessions really are finished and should be filed. Announcing it
-      // does not: "PR #977 merged" is news only if you did not already know,
-      // and a PR that was merged before we ever laid eyes on it is history.
+      // Filing still happens for a PR we are meeting for the first time — the
+      // merge is an explicit decision to file its linked sessions. Announcing
+      // it does not: "PR #977 merged" is news only if you did not already
+      // know, and a PR that was merged before we ever laid eyes on it is
+      // history.
       //
       // Gated here rather than in the toast so every consumer inherits it —
       // desktop toasts, mobile push, and anything added later.

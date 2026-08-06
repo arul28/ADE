@@ -1431,14 +1431,11 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     aiIntegrationService,
   });
-  const prMergeAutoSettlementService = agentChatService
-    ? createPrMergeAutoSettlementService({
-        db,
-        sessionService,
-        agentChatService,
-        emitEvent: emitPrEvent,
-      })
-    : null;
+  const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
+    db,
+    sessionService,
+    emitEvent: emitPrEvent,
+  });
 
   // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
   // this daemon instead of the desktop main process, so the daemon must own
@@ -1454,7 +1451,7 @@ export async function createAdeRuntime(args: {
       headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
     onEvent: emitPrEvent,
     onPullRequestsSnapshot: (snapshot) =>
-      prMergeAutoSettlementService?.processSnapshot(snapshot),
+      prMergeAutoSettlementService.processSnapshot(snapshot),
     onPullRequestsChanged: async ({ changedPrs, changes }) => {
       if (changedPrs.length > 0) {
         // Poll results must not start another hot-refresh window; doing so

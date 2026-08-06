@@ -1000,6 +1000,46 @@ describe("foreign payload decoding", () => {
     expect(decodeForeignSessions("nope")).toEqual([]);
   });
 
+  it("defaults an unprojected foreign chat to idle without masking explicit activity", () => {
+    const [quiet, active, waiting, cli] = decodeForeignSessions([
+      {
+        id: "chat-quiet",
+        laneId: "lane-1",
+        status: "running",
+        toolType: "claude-chat",
+      },
+      {
+        id: "chat-active",
+        laneId: "lane-1",
+        status: "running",
+        toolType: "claude-chat",
+        runtimeState: "running",
+      },
+      {
+        id: "chat-waiting",
+        laneId: "lane-1",
+        status: "running",
+        toolType: "claude-chat",
+        pendingInputItemId: "approval-1",
+      },
+      {
+        id: "cli-session",
+        laneId: "lane-1",
+        status: "running",
+        toolType: "codex",
+      },
+    ]);
+
+    expect(quiet).toEqual(expect.objectContaining({
+      runtimeState: "idle",
+      currentTurnStartedAt: null,
+      chatIdleSinceAt: null,
+    }));
+    expect(active?.runtimeState).toBe("running");
+    expect(waiting?.runtimeState).toBe("waiting-input");
+    expect(cli?.runtimeState).toBeUndefined();
+  });
+
   // A half-decoded PR renders "PR #undefined", or a badge whose click is a
   // silent no-op because the foreign click-through has nowhere to go. Dropping
   // the row shows no badge, which is honest.

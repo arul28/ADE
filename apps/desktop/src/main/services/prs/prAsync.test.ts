@@ -819,14 +819,14 @@ describe("prMergeAutoSettlementService", () => {
     };
   }
 
-  it("settles only eligible lane agent sessions after a newly observed merge", async () => {
+  it("settles lane agent sessions even when a merge has settlement blockers", async () => {
     const db = createMemoryDb();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const settledSessionIds = new Set<string>();
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+      ids.forEach((id) => settledSessionIds.add(id));
+      return ids;
+    });
     const emitEvent = vi.fn();
-    const getSettlementBlockers = vi.fn(async (sessionId: string) =>
-      sessionId === "cli-blocked"
-        ? [{ code: "scheduled_work", message: "Complete scheduled work." }]
-        : []);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: {
@@ -835,24 +835,23 @@ describe("prMergeAutoSettlementService", () => {
             id: "chat-ready",
             toolType: "codex-chat",
             archivedAt: null,
-            settledAt: null,
+            settledAt: settledSessionIds.has("chat-ready") ? "2026-03-24T12:01:05.000Z" : null,
           },
           {
             id: "cli-blocked",
             toolType: "codex",
             archivedAt: null,
-            settledAt: null,
+            settledAt: settledSessionIds.has("cli-blocked") ? "2026-03-24T12:01:05.000Z" : null,
           },
           {
             id: "raw-shell",
             toolType: "shell",
             archivedAt: null,
-            settledAt: null,
+            settledAt: settledSessionIds.has("raw-shell") ? "2026-03-24T12:01:05.000Z" : null,
           },
         ]),
         settleSessionsWithOutcome,
       } as any,
-      agentChatService: { getSettlementBlockers } as any,
       emitEvent,
     });
     const openPr = createSummary({ state: "open" });
@@ -872,13 +871,14 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(getSettlementBlockers).toHaveBeenCalledTimes(2);
-    expect(getSettlementBlockers).toHaveBeenCalledWith(
-      "chat-ready",
-      { includeCurrentTurn: true },
-    );
     expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
       ["chat-ready"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["cli-blocked"],
       "PR #101 merged",
       "2026-03-24T12:01:05.000Z",
       "pr_merge",
@@ -886,15 +886,100 @@ describe("prMergeAutoSettlementService", () => {
     expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr-sessions-auto-settled",
       prId: "pr-1",
-      settledSessionIds: ["chat-ready"],
-      settledCount: 1,
+      settledSessionIds: ["chat-ready", "cli-blocked"],
+      settledCount: 2,
     }));
 
     await service.processSnapshot({
       prs: [mergedPr],
       polledAt: "2026-03-24T12:02:00.000Z",
     });
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-settle after reactivation, but settles for a later PR", async () => {
+    const db = createMemoryDb();
+    let settled = false;
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+      settled = true;
+      return ids;
+    });
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => [{
+          id: "chat-waiting",
+          toolType: "claude-chat",
+          archivedAt: null,
+          settledAt: settled ? "2026-03-24T12:01:05.000Z" : null,
+        }]),
+        settleSessionsWithOutcome,
+      } as any,
+      emitEvent: vi.fn(),
+    });
+    const openPr = createSummary({
+      state: "open",
+      githubPrNumber: 101,
+      chatSessionIds: ["chat-waiting"],
+    });
+    const openSecondPr = createSummary({
+      id: "pr-2",
+      githubPrNumber: 202,
+      state: "open",
+      chatSessionIds: ["chat-waiting"],
+    });
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-waiting"],
+    });
+    const mergedSecondPr = {
+      ...openSecondPr,
+      state: "merged" as const,
+      mergedAt: "2026-03-24T12:03:00.000Z",
+    };
+
+    await service.processSnapshot({
+      prs: [openPr, openSecondPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [mergedPr, openSecondPr],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
     expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
+    expect(settleSessionsWithOutcome).toHaveBeenLastCalledWith(
+      ["chat-waiting"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1"]);
+
+    // The user reactivates the chat. The old merged PR is already handled, so
+    // it must not immediately file the chat again.
+    settled = false;
+    await service.processSnapshot({
+      prs: [mergedPr, openSecondPr],
+      polledAt: "2026-03-24T12:02:00.000Z",
+    });
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
+
+    // A distinct PR on the same lane gets its own one-shot settlement.
+    await service.processSnapshot({
+      prs: [mergedPr, mergedSecondPr],
+      polledAt: "2026-03-24T12:03:05.000Z",
+    });
+
+    expect(settleSessionsWithOutcome).toHaveBeenLastCalledWith(
+      ["chat-waiting"],
+      "PR #202 merged",
+      "2026-03-24T12:03:05.000Z",
+      "pr_merge",
+    );
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1", "pr-2"]);
   });
 
   it("baselines old merges and only settles merges observed after re-enabling", async () => {
@@ -911,7 +996,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         settleSessionsWithOutcome,
       } as any,
-      agentChatService: { getSettlementBlockers: vi.fn(async () => []) } as any,
       emitEvent: vi.fn(),
     });
     const oldMerge = createSummary({
@@ -975,7 +1059,6 @@ describe("prMergeAutoSettlementService", () => {
   it("settles only the chats explicitly linked to a merged PR", async () => {
     const db = createMemoryDb();
     const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
-    const getSettlementBlockers = vi.fn(async () => []);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: {
@@ -985,7 +1068,6 @@ describe("prMergeAutoSettlementService", () => {
         ]),
         settleSessionsWithOutcome,
       } as any,
-      agentChatService: { getSettlementBlockers } as any,
       emitEvent: vi.fn(),
     });
     const openPr = createSummary({ state: "open" });
@@ -998,8 +1080,6 @@ describe("prMergeAutoSettlementService", () => {
     });
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
 
-    expect(getSettlementBlockers).toHaveBeenCalledTimes(1);
-    expect(getSettlementBlockers).toHaveBeenCalledWith("chat-owned", { includeCurrentTurn: true });
     expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
       ["chat-owned"],
       "PR #101 merged",
@@ -1031,7 +1111,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         settleSessionsWithOutcome,
       } as any,
-      agentChatService: { getSettlementBlockers: vi.fn(async () => []) } as any,
       emitEvent,
     });
 
@@ -1081,16 +1160,8 @@ describe("prMergeAutoSettlementService", () => {
     }));
   });
 
-  it("honors a concurrent disable while blocker checks are in flight", async () => {
+  it("honors disabling auto-settle before a merged PR is processed", async () => {
     const db = createMemoryDb();
-    let releaseBlockerCheck: (() => void) | null = null;
-    const blockerCheckStarted = new Promise<void>((resolve) => {
-      releaseBlockerCheck = resolve;
-    });
-    let finishBlockerCheck!: () => void;
-    const blockerCheckFinished = new Promise<void>((resolve) => {
-      finishBlockerCheck = resolve;
-    });
     const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
@@ -1103,13 +1174,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         settleSessionsWithOutcome,
       } as any,
-      agentChatService: {
-        getSettlementBlockers: vi.fn(async () => {
-          releaseBlockerCheck?.();
-          await blockerCheckFinished;
-          return [];
-        }),
-      } as any,
       emitEvent: vi.fn(),
     });
     const openPr = createSummary({ state: "open" });
@@ -1121,26 +1185,22 @@ describe("prMergeAutoSettlementService", () => {
       state: "merged",
       mergedAt: "2026-03-24T12:01:00.000Z",
     });
-
-    const processing = service.processSnapshot({
-      prs: [mergedPr],
-      polledAt: "2026-03-24T12:01:05.000Z",
-    });
-    await blockerCheckStarted;
     setSessionLifecycleSettings({
       db: db as any,
       settings: { autoSettleLaneSessionsOnPrMerge: false },
-      currentPrs: [mergedPr],
-      now: "2026-03-24T12:01:06.000Z",
+      currentPrs: [openPr],
+      now: "2026-03-24T12:01:00.000Z",
     });
-    finishBlockerCheck();
-    await processing;
+    await service.processSnapshot({
+      prs: [mergedPr],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
 
     expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
     expect(getSessionLifecycleSettings(db as any).autoSettleLaneSessionsOnPrMerge).toBe(false);
     expect(getPrMergeAutoSettlementState(db as any)).toEqual({
       enabledSince: null,
-      handledPrIds: ["pr-1"],
+      handledPrIds: [],
     });
   });
 });
