@@ -220,14 +220,6 @@ export function ProjectSection() {
   const actionableIssues = snapshot ? countActionableIssues(snapshot) : 0;
   const healthy = snapshot ? actionableIssues === 0 : false;
 
-  useEffect(() => {
-    if (actionableIssues > 0) {
-      setDetailsOpen(true);
-      if (grouped.missing.length > 0) setFolderOpen(true);
-      if (snapshot?.config.trust.requiresSharedTrust) setConfigOpen(true);
-    }
-  }, [actionableIssues, grouped.missing.length, snapshot?.config.trust.requiresSharedTrust]);
-
   if (!snapshot) {
     return (
       <SettingsSectionShell

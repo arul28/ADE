@@ -34,6 +34,7 @@ describe("TabNav", () => {
 
   beforeEach(() => {
     resetStore();
+    window.localStorage.clear();
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,
       writable: true,
@@ -50,6 +51,7 @@ describe("TabNav", () => {
   afterEach(() => {
     vi.useRealTimers();
     cleanup();
+    window.localStorage.clear();
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,
       writable: true,
@@ -101,5 +103,22 @@ describe("TabNav", () => {
     // nobody agreed to. Activity lives in the header and opens as a modal.
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
+  });
+
+  it("reopens the active project's last settings location", () => {
+    window.localStorage.setItem(
+      "ade:project-route:local:/Users/arul/ADE",
+      "/settings?tab=appearance#chat-launch-clipboard",
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(
+      "/settings?tab=appearance#chat-launch-clipboard",
+    );
   });
 });

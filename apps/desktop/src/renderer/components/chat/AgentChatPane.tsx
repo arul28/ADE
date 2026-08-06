@@ -3364,7 +3364,7 @@ export function AgentChatPane({
     navigate(settingsRouteFor("integrations.linear"));
   }, [navigate]);
   const openLaunchPromptClipboardSettings = useCallback(() => {
-    navigate(settingsRouteFor("general.launch-prompt"));
+    navigate(settingsRouteFor("appearance.launch-prompt"));
   }, [navigate]);
   const copyPromptForLaunch = useCallback(async (promptText: string) => {
     if (!launchPromptClipboardEnabled) return;

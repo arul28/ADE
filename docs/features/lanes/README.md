@@ -110,7 +110,7 @@ Renderer components:
 | `renderer/components/terminals/WorkManageLaneDialogHost.tsx`, `useWorkLaneDeleteProgress.ts` | Work-tab integration for the shared manage/delete contracts. Right-click **Manage lane** opens `ManageLaneDialog` without changing routes; local and foreign rows both pass the lane's owning `OpenProjectBinding`, so risk reads, archive/reparent/delete mutations, parallel state, deletion events, and recovery stay on that machine even when the global project tab is bound elsewhere. The host starts delete optimistically, while the synchronizer blocks the affected Work lane and sessions and refreshes lane/session state immediately after completion with bounded retry recovery. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco diff editor used for editable working-tree views (invoked from `AdeDiffViewer`) |
 | `renderer/components/ui/PaneTilingLayout.tsx` | Persisted split-pane layout engine for lane panes. Validates saved pane trees against expected pane ids and falls back to the supplied tree when the saved layout is stale. |
-| `renderer/components/settings/LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Settings-side management UIs, under Settings > Lanes & Git. `LaneBehaviorSection` owns new-lane base, auto-rebase, and the rebase-suggestion display mode; lane *storage* rules live in `StorageSection.tsx`. |
+| `renderer/components/settings/LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Settings-side management UIs, under Settings > Lanes. `LaneBehaviorSection` owns new-lane base, auto-rebase, and the rebase-suggestion display mode; lane *storage* rules live in `StorageSection.tsx`. |
 
 Shared code:
 

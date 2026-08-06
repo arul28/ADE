@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it } from "vitest";
+import { SETTINGS_SECTIONS } from "../app/settingsSections";
 import {
   availableSettingsEntries,
   setWebMachineBindingResolver,
@@ -24,6 +25,12 @@ import {
  * resolves to the wrong page is invisible in review but very visible to users.
  */
 describe("settings manifest", () => {
+  it("storage_label_matches_manifest_tab", () => {
+    expect(SETTINGS_SECTIONS.find((section) => section.id === "storage")?.label).toBe(
+      settingsTabLabel("storage"),
+    );
+  });
+
   it("gives every tab at least one setting", () => {
     for (const tab of SETTINGS_TABS) {
       const entries = SETTINGS_ENTRIES.filter((entry) => entry.tab === tab.id);
@@ -61,7 +68,7 @@ describe("settings manifest", () => {
       "agents.providers",
       "agents.background-jobs",
       "agents.dictation",
-      "general.launch-prompt",
+      "appearance.launch-prompt",
       "lanes-git.lane-templates",
       "storage.usage",
       "storage.diagnostics",
@@ -70,6 +77,8 @@ describe("settings manifest", () => {
       expect(settingsRouteFor(id), `${id} has no manifest entry`).not.toBe("/settings");
     }
     expect(settingsRouteFor("integrations.github")).toBe("/settings?tab=integrations#github-connection");
+    expect(settingsRouteFor("appearance.launch-prompt")).toBe("/settings?tab=appearance#chat-launch-clipboard");
+    expect(resolveSettingsHash("chat-launch-clipboard")?.tab).toBe("appearance");
     expect(settingsRouteFor("nope.missing")).toBe("/settings");
   });
 
@@ -230,7 +239,7 @@ describe("settings command palette entries", () => {
     const autoRebase = results.find((command) => command.id === "setting-lanes-git.auto-rebase");
     expect(autoRebase).toBeDefined();
     expect(autoRebase!.title).toBe("Auto-rebase child lanes");
-    expect(autoRebase!.hint).toContain("Lanes & Git");
+    expect(autoRebase!.hint).toContain("Lanes");
     expect(autoRebase!.path).toBe("/settings?tab=lanes-git#auto-rebase");
   });
 

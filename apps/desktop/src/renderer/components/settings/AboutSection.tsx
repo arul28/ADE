@@ -4,6 +4,7 @@ import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../sh
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
+import { AutoUpdatesControls } from "./AutoUpdatesSection";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -454,6 +455,21 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
           )}
         </div>
       ) : null}
+      <div
+        id="auto-updates"
+        data-settings-anchor="auto-updates"
+        style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${COLORS.border}` }}
+      >
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700 }}>
+            Updates
+          </div>
+          <div style={{ marginTop: 4, color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
+            Choose whether ADE installs downloaded updates automatically.
+          </div>
+        </div>
+        <AutoUpdatesControls />
+      </div>
     </>
   );
 

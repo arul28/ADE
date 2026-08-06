@@ -105,7 +105,7 @@ export function SettingsGroup({
   return (
     // `data-settings-group` lets the settings page hide a heading whose cards
     // were all filtered out by search, instead of leaving it stranded.
-    <div data-settings-group={title} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div data-settings-group={title} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
         <h2
           style={{

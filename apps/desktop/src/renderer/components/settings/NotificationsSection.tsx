@@ -23,7 +23,7 @@ import {
 import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
 
 /**
- * Notifications & Sound.
+ * Notifications.
  *
  * The delivery model (`AttentionPreferences`) already existed and already had
  * balanced defaults, but only a subset of it was reachable — through a popover

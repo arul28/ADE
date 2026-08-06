@@ -26,6 +26,7 @@ import {
 } from "./terminalOptions";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ChatAppearancePreview } from "./ChatAppearancePreview";
+import { LaunchPromptSection } from "./LaunchPromptSection";
 import {
   SettingsCard,
   SettingsGroup,
@@ -342,6 +343,7 @@ export function AppearanceSection() {
             />
           }
         />
+        <LaunchPromptSection />
         <SettingsCard
           anchor="appearance-preview"
           title="Live preview"

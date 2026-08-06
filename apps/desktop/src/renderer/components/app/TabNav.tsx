@@ -32,6 +32,7 @@ import { docs } from "../../onboarding/docsLinks";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import { readStoredProjectSettingsRoute } from "./projectRouteStorage";
 
 const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
@@ -111,6 +112,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const { status: accountStatus } = useAccountStatus();
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const activeProjectBindingKey = projectBinding?.key ?? (activeProjectRoot ? `local:${activeProjectRoot}` : null);
+  // Read this on each render because the sidebar stays mounted while the
+  // settings tab changes and the route memory is updated by the app shell.
+  const storedSettingsRoute = activeProjectBindingKey
+    ? readStoredProjectSettingsRoute(activeProjectBindingKey)
+      ?? (activeProjectRoot && activeProjectRoot !== activeProjectBindingKey
+        ? readStoredProjectSettingsRoute(activeProjectRoot)
+        : null)
+    : null;
   const hasActiveProject = Boolean(activeProjectRoot);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const { ref: sidebarMenuRef, position: sidebarMenuPosition } = useClampedFixedPosition(contextMenu);
@@ -156,7 +166,11 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     const onWelcomeLanding = showWelcome || !hasActiveProject;
     const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = !showWelcome && hasActiveProject;
-    const navTarget = it.to === "/prs" ? readStoredPrsRoute(activeProjectRoot) ?? it.to : it.to;
+    const navTarget = it.to === "/prs"
+      ? readStoredPrsRoute(activeProjectRoot) ?? it.to
+      : it.to === "/settings"
+        ? storedSettingsRoute ?? it.to
+        : it.to;
     const tooltipBase = TAB_TOOLTIP_BY_PATH[it.to];
     const tooltip: SmartTooltipContent = {
       label: it.label,
