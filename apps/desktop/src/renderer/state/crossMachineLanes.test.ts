@@ -1007,6 +1007,7 @@ describe("foreign payload decoding", () => {
         laneId: "lane-1",
         status: "running",
         toolType: "claude-chat",
+        currentTurnStartedAt: "2026-08-06T12:00:00.000Z",
       },
       {
         id: "chat-active",
