@@ -250,6 +250,37 @@ describe("automation ingress enable gating", () => {
     return { service, projectConfig };
   }
 
+  it("allows manually running a disabled automation", async () => {
+    const rule = normalizeRuntimeRule({
+      id: "manual-disabled",
+      name: "Manual disabled",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: [],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:manual-disabled",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule);
+
+    try {
+      await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({
+        automationId: rule.id,
+        status: "succeeded",
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("blocks Linear rules without event ingress and allows them once the capability is connected", () => {
     const rule = normalizeRuntimeRule({
       id: "linear-label",
@@ -767,6 +798,214 @@ describe("automationService integration", () => {
       firstDb.close();
       secondDb.close();
       fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the current rule config when a schedule callback fires after a config reload", async () => {
+    const { db } = createInMemoryAdeDb();
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    const stops: Array<ReturnType<typeof vi.fn>> = [];
+    let rule = normalizeRuntimeRule({
+      id: "release-ade",
+      name: "Release ADE",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Run the release.",
+      modelConfig: { modelId: "anthropic/claude-opus-5" },
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:release-ade",
+      actions: [],
+    });
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: vi.fn(async () => [{
+        id: "lane-primary",
+        name: "Main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      }]),
+      getLaneWorktreePath: vi.fn(() => "/tmp"),
+      getLaneBaseAndBranch: vi.fn(() => ({
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      })),
+    } as any;
+    const agentChatService = {
+      createSession: vi.fn(async (args: any) => ({
+        id: "release-chat",
+        laneId: args.laneId,
+      })),
+      runSessionTurn: vi.fn(async () => ({ outputText: "Release complete." })),
+    } as any;
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService,
+      projectConfigService,
+      agentChatService,
+      cronScheduler: {
+        validate: vi.fn(() => true),
+        schedule: vi.fn((_expression: string, callback: (scheduledAt?: Date | string) => void) => {
+          callbacks.push(callback);
+          const stop = vi.fn();
+          stops.push(stop);
+          return { stop };
+        }),
+      },
+    });
+
+    try {
+      rule = normalizeRuntimeRule({
+        ...rule,
+        modelConfig: { modelId: "openai/gpt-5.6-luna", thinkingLevel: "xhigh" },
+      });
+      service.reloadFromConfig();
+      callbacks[0]!(new Date("2026-07-30T13:00:00.000Z"));
+
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      });
+      expect(agentChatService.createSession).toHaveBeenCalledWith(expect.objectContaining({
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        modelId: "openai/gpt-5.6-luna",
+        reasoningEffort: "xhigh",
+      }));
+      expect(agentChatService.runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "release-chat",
+      }));
+
+      rule = normalizeRuntimeRule({
+        ...rule,
+        triggers: [{ type: "schedule", cron: "0 10 * * 1-5" }],
+        trigger: { type: "schedule", cron: "0 10 * * 1-5" },
+      });
+      service.reloadFromConfig();
+      expect(stops[0]).toHaveBeenCalledTimes(1);
+      expect(callbacks).toHaveLength(2);
+
+      callbacks[0]!(new Date("2026-07-30T13:01:00.000Z"));
+      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      callbacks[1]!(new Date("2026-07-30T13:01:00.000Z"));
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("skips a queued scheduled occurrence after config reload", async () => {
+    const { db } = createInMemoryAdeDb();
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    let releaseFirstRun!: (result: { outputText: string }) => void;
+    const firstRun = new Promise<{ outputText: string }>((resolve) => {
+      releaseFirstRun = resolve;
+    });
+    let rule = normalizeRuntimeRule({
+      id: "queued-reload",
+      name: "Queued reload",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Run the queued job.",
+      modelConfig: { modelId: "openai/gpt-5.6-luna" },
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:queued-reload",
+      actions: [],
+    });
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: vi.fn(async () => [{
+        id: "lane-primary",
+        name: "Main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      }]),
+      getLaneWorktreePath: vi.fn(() => "/tmp"),
+      getLaneBaseAndBranch: vi.fn(() => ({
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      })),
+    } as any;
+    const agentChatService = {
+      createSession: vi.fn(async () => ({ id: "queued-chat", laneId: "lane-primary" })),
+      runSessionTurn: vi.fn(() => firstRun),
+    } as any;
+    const logger = createLogger();
+    logger.info = vi.fn();
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService,
+      projectConfigService,
+      agentChatService,
+      cronScheduler: {
+        validate: vi.fn(() => true),
+        schedule: vi.fn((_expression: string, callback: (scheduledAt?: Date | string) => void) => {
+          callbacks.push(callback);
+          return { stop: vi.fn() };
+        }),
+      },
+    });
+
+    try {
+      callbacks[0]!(new Date("2026-07-30T13:00:00.000Z"));
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      });
+
+      callbacks[0]!(new Date("2026-07-30T13:01:00.000Z"));
+      rule = normalizeRuntimeRule({ ...rule, enabled: false });
+      service.reloadFromConfig();
+      releaseFirstRun({ outputText: "First run complete." });
+
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          "automations.trigger.suppressed",
+          expect.objectContaining({ automationId: "queued-reload", triggerType: "schedule", reason: "disabled" }),
+        );
+      });
+      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+    } finally {
+      service.dispose();
     }
   });
 

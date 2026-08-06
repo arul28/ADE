@@ -63,6 +63,7 @@ import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 const execFileAsync = promisify(execFile);
 
 type CronTask = {
+  cronExpression: string;
   stop: () => void;
 };
 
@@ -263,6 +264,9 @@ export type TriggerContext = {
   commitSha?: string;
   reason?: string;
   scheduledAt?: string;
+  /** Internal schedule identity used to validate queued callbacks after reload. */
+  scheduleTriggerIndex?: number;
+  scheduleCronExpression?: string;
   reviewProfileOverride?: AutomationRule["reviewProfile"] | null;
   verboseTrace?: boolean;
   ingressEventId?: string;
@@ -1134,7 +1138,7 @@ export function createAutomationService({
     catch { return undefined; }
   };
 
-  const runQueuesByAutomationId = new Map<string, Promise<unknown>>();
+  const runQueuesByAutomationId = new Map<string, Promise<AutomationRun | null>>();
   const scheduleTasks = new Map<string, CronTask>();
   const fileWatchers = new Map<string, FSWatcher>();
   const fileChangeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3240,11 +3244,33 @@ export function createAutomationService({
     rule: AutomationRule,
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
-  ): Promise<AutomationRun> => {
+  ): Promise<AutomationRun | null> => {
     const previous = runQueuesByAutomationId.get(rule.id) ?? Promise.resolve();
     const queued = previous
       .catch(() => undefined)
-      .then(() => runRuleNow(rule, trigger, options));
+      .then(() => {
+        const isManualTrigger = trigger.triggerType === "manual";
+        const currentRule = isManualTrigger ? rule : findRule(rule.id);
+        const currentTrigger = typeof trigger.scheduleTriggerIndex === "number"
+          ? currentRule?.triggers[trigger.scheduleTriggerIndex]
+          : undefined;
+        const staleSchedule = !isManualTrigger && trigger.triggerType === "schedule" && (
+          !currentTrigger
+          || currentTrigger.type !== "schedule"
+          || (currentTrigger.cron ?? "").trim() !== (trigger.scheduleCronExpression ?? "").trim()
+        );
+        if (!isManualTrigger && (!currentRule || !currentRule.enabled || staleSchedule)) {
+          logger.info("automations.trigger.suppressed", {
+            automationId: rule.id,
+            triggerType: trigger.triggerType,
+            triggerIndex: trigger.scheduleTriggerIndex ?? null,
+            cron: trigger.scheduleCronExpression ?? null,
+            reason: !currentRule ? "missing" : !currentRule.enabled ? "disabled" : "trigger-changed",
+          });
+          return null;
+        }
+        return runRuleNow(currentRule ?? rule, trigger, options);
+      });
     runQueuesByAutomationId.set(rule.id, queued);
     try {
       return await queued;
@@ -3482,22 +3508,42 @@ export function createAutomationService({
         }
         const key = `${rule.id}:${index}`;
         desired.add(key);
-        if (scheduleTasks.has(key)) return;
+        const existingTask = scheduleTasks.get(key);
+        if (existingTask?.cronExpression === cronExpr) return;
+        if (existingTask) {
+          try {
+            existingTask.stop();
+          } catch {
+            // ignore
+          }
+          scheduleTasks.delete(key);
+        }
+        const automationId = rule.id;
         const task = cronScheduler.schedule(cronExpr, (scheduledAt) => {
+          const currentRule = findRule(automationId);
+          const currentTrigger = currentRule?.triggers[index];
+          if (
+            !currentRule
+            || !currentRule.enabled
+            || currentTrigger?.type !== "schedule"
+            || (currentTrigger.cron ?? "").trim() !== cronExpr
+          ) {
+            return;
+          }
           const firedAt = scheduledAt instanceof Date && Number.isFinite(scheduledAt.getTime())
             ? scheduledAt
             : new Date();
           let claim: ReturnType<typeof claimScheduledOccurrence>;
           try {
             claim = claimScheduledOccurrence({
-              rule,
+              rule: currentRule,
               triggerIndex: index,
               cronExpression: cronExpr,
               firedAt,
             });
           } catch (error) {
             logger.warn("automations.schedule.claim_failed", {
-              automationId: rule.id,
+              automationId,
               triggerIndex: index,
               cron: cronExpr,
               error: error instanceof Error ? error.message : String(error),
@@ -3506,25 +3552,28 @@ export function createAutomationService({
           }
           if (!claim) {
             logger.info("automations.schedule.duplicate_suppressed", {
-              automationId: rule.id,
+              automationId,
               triggerIndex: index,
               cron: cronExpr,
               scheduledSlot: scheduledMinuteSlot(firedAt),
             });
             return;
           }
-          void runRule(rule, {
+          void runRule(currentRule, {
             triggerType: "schedule",
             scheduledAt: claim.scheduledSlot,
-            reason: rule.id,
+            reason: automationId,
+            scheduleTriggerIndex: index,
+            scheduleCronExpression: cronExpr,
           }).then((run) => {
+            if (!run) return;
             db.run(
               "update automation_schedule_occurrences set run_id = ? where occurrence_key = ?",
               [run.id, claim.occurrenceKey],
             );
           }).catch(() => {});
         });
-        scheduleTasks.set(key, { stop: () => task.stop() });
+        scheduleTasks.set(key, { cronExpression: cronExpr, stop: () => task.stop() });
       });
     }
     for (const [key, task] of scheduleTasks.entries()) {
@@ -3889,7 +3938,7 @@ export function createAutomationService({
       if (requiresTriggerLane(rule) && !laneId) {
         throw new Error(missingTriggerLaneMessage({ triggerType: "manual" }));
       }
-      return await runRule(rule, {
+      const run = await runRule(rule, {
         triggerType: "manual",
         laneId,
         reason: id,
@@ -3897,6 +3946,8 @@ export function createAutomationService({
         reviewProfileOverride: args.reviewProfileOverride ?? null,
         verboseTrace: Boolean(args.verboseTrace),
       }, { dryRun: Boolean(args.dryRun) });
+      if (!run) throw new Error(`Automation '${id}' changed before it could run.`);
+      return run;
     },
 
     getHistory(args: { id: string; limit?: number }): AutomationRun[] {
