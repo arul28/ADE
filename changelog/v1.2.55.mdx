@@ -1,0 +1,34 @@
+---
+title: "v1.2.55"
+description: "Release notes for ADE v1.2.55 - August 5, 2026"
+---
+
+The one-command install now actually finishes: the brain registers at the right role, and your machine shows up in your account without opening a project first.
+
+---
+
+## Install
+
+- **`ade connect` failed on every clean install.** Both installers registered the machine brain through `ade serve --install-service`, which inherits `ADE_DEFAULT_ROLE`; on a fresh machine that is unset, so the brain came up at role `agent`. `ade connect` runs at `cto`, and an `agent` brain can never serve a `cto` caller. Both installers now register through `ade brain start`, which pins `cto` — the same role the desktop app spawns and the only one it will attach to. This affected macOS and Windows equally.
+- **One install experience, one implementation.** The shell scripts now own only what has to happen before the `ade` binary exists; everything after is `ade setup`. Numbered steps with live progress on both platforms, a summary that never claims success it did not achieve, and a failed step that names the command which fixes it. macOS having a download progress bar while Windows had none was drift between two copies of the same logic; there is now only one copy.
+- **The desktop download resumes.** A partial download picks up via Range instead of restarting the ~1 GB transfer, the artifact is verified against a streamed SHA-512 rather than being read whole into memory, and re-running the installer while another run is still going now waits for it instead of corrupting the shared file.
+- **Quieter and better behaved.** `node:sqlite` experimental warnings are filtered at CLI entry, the desktop app launches detached so a Windows GUI child no longer sprays Electron logs over your prompt, and an optional post-install extra that flakes no longer makes the whole install exit non-zero — which would fail any Dockerfile or CI step that trusted it.
+
+## Your account
+
+- **A signed-in machine publishes itself.** Previously the publisher's only source of truth was a project-scoped sync host, so a machine that had signed in but never opened a project could never appear in your account — it simply sat there, healthy and invisible. A headless box with an empty `~/.ade/projects.json` now publishes itself and dials the relay, which is the whole point of a one-line install on a server. This was never Windows-specific; a Mac that never opened a project was equally affected.
+- **`ade setup` no longer green-lights that state.** Verification reads the brain's publisher health and fails when the machine is not published, instead of printing "ADE is ready" over a machine missing from your account.
+- **The Connections pane explains faults in your words.** Per-state copy replaced the publisher's raw internal skip reason being concatenated into the UI, and the CLI and the pane now read from one shared table so they cannot drift apart again.
+
+## Windows
+
+- **Expect two prompts, and know why.** SmartScreen may say "Windows protected your PC" — More info, then Run anyway. Windows Firewall will ask once; allow it on private networks. Neither can be coded away: reputation accrues against the publisher identity over time, and a per-user, non-elevating install cannot pre-authorize a firewall rule because Windows has no per-user rule store. Both are now stated on the download page instead of surprising you mid-install.
+- **The installer progress bar moves.** The two PowerShell steps stream their output rather than buffering it until exit, so the bar no longer sits frozen through the part of the install that does the real work.
+
+## Desktop
+
+- **The turn timer froze at 0s.** The ticker captured the timer element once, but the status line swaps from a plain span into an expander button when a turn's first tool entry lands — React remounted the node and the ticker kept writing into a detached one. A working turn looked hung. Every platform and the web client, not just Windows.
+- **Background work is visible.** A session whose turn ended but still had a live background job read as a bare "Working" with no duration, indistinguishable from a stall; it now says "Background work" with its elapsed time. Background shell commands get a quiet one-line row in the thread from the moment they start, which they previously never did — the live runtime reports them on a stream the transcript dropped outright.
+- **The this-computer card is about you, not the routing table.** The identity tile carries the platform logo, the name gained an inline pencil that writes both the runtime and the account directory, and the readiness verdict and route breakdown are gone — a status line renders only for an actionable fault. Pairing moved behind a disclosure, since the ADE account is now the primary way to connect and pairing is the manual fallback.
+- **In-app settings links land where they should.** Ten hand-written settings routes had drifted from where their settings actually live; the GitHub App banner's button, for one, opened General and scrolled nowhere. Routes now derive from the settings manifest, so a card can no longer move out from under a link, and a `#hash` outranks a disagreeing `?tab=` so already-shipped links self-heal.
+- **The welcome video plays.** The packaged app loads its shell from a `file://` origin, which YouTube's embed player rejects outright. It is now a thumbnail that opens the video in your browser.
