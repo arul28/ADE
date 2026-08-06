@@ -40,6 +40,14 @@ export function readStoredProjectRoute(bindingKey: string): string | null {
   }
 }
 
+/** Read the last settings location without accidentally restoring another app tab. */
+export function readStoredProjectSettingsRoute(bindingKey: string): string | null {
+  const route = readStoredProjectRoute(bindingKey);
+  if (!route) return null;
+  const pathname = route.split(/[?#]/, 1)[0] ?? "";
+  return pathname === "/settings" ? route : null;
+}
+
 export function writeStoredProjectRoute(bindingKey: string, route: string): void {
   try {
     window.localStorage.setItem(projectRouteStorageKey(bindingKey), route);
