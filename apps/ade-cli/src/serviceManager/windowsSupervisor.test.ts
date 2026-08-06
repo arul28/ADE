@@ -8,7 +8,6 @@ import {
   readWindowsServicePidRecord,
   windowsPowerShellCommand,
 } from "./installWindows";
-import { trustedWindowsToolKernelPath } from "../lib/trustedWindowsTools";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
   BRAIN_HEARTBEAT_STALE_MS,
@@ -203,8 +202,11 @@ describe("windows supervisor wedge guard", () => {
       wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
     });
 
-    // Absolute System32 path, never a bare `taskkill` off PATH.
-    expect(script).toContain(`$taskkillPath = '${trustedWindowsToolKernelPath("taskkill")}'`);
+    // Absolute System32 path, never a bare `taskkill` off PATH. On a real
+    // Windows host the resolver returns the verified filesystem form
+    // (C:\Windows\System32\taskkill.exe); elsewhere it falls back to the
+    // kernel GLOBALROOT form — both end in System32\taskkill.exe.
+    expect(script).toMatch(/\$taskkillPath = '[^']*System32\\taskkill\.exe'/i);
     expect(script).toContain("& $taskkillPath '/PID' $process.Id '/T' '/F'");
     // Kill() alone orphans ConPTYs and agent CLIs, so the tree kill must come
     // first and Kill() must only mop up what taskkill could not.
