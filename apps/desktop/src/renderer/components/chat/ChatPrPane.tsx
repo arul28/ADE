@@ -26,7 +26,8 @@ import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
-import { openLanePr } from "../../lib/lanePrBadge";
+import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
+import { selectPrsForChat } from "../../lib/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
@@ -416,6 +417,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   laneId,
   branchName,
   sessionTitle = null,
+  sessionId = null,
   delta = null,
   onClose,
   runtimePin = null,
@@ -428,6 +430,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
    * without a session (the Work grid) fall back to the lane → target derivation.
    */
   sessionTitle?: string | null;
+  /** The chat whose explicit PR links should be shown first. */
+  sessionId?: string | null;
   /** Describes the PR change that triggered this pane's auto-pop (owned by the parent). */
   delta?: ChatPrDelta | null;
   /** Closes the pane — wired to the title bar's ✕ (the header PR pill also toggles it). */
@@ -437,6 +441,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 }) {
   const navigate = useNavigate();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  const lanes = useAppStore((s) => s.lanes);
   // See `ChatGitToolbar`: a local pin is a fresh object on every cross-machine
   // merge, so effects key on the stable pin key and read the object via a ref.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
@@ -479,7 +484,22 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     const requestIsCurrent = () => laneIdRef.current === laneId && refreshRequestRef.current === requestId;
     let cached: PrSummary | null = null;
     try {
-      cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+      if (typeof window.ade.prs.listAll === "function") {
+        const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
+        const ownedPrs = allPrs.filter((candidate) => candidate.laneId === laneId && !candidate.detached);
+        const scopedPrs = selectPrsForChat(ownedPrs, sessionId);
+        cached = selectPrimaryLanePr(
+          lanes.find((candidate) => candidate.id === laneId) ?? {
+            id: laneId,
+            laneType: "worktree",
+            branchRef: branchName ?? "",
+            baseRef: "",
+          },
+          scopedPrs,
+        );
+      } else {
+        cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+      }
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);
       setLoading(false);
@@ -496,7 +516,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     // See ChatGitToolbar: read via ref, but the identity must still follow the
     // pin so the effects keyed on it re-read from the new machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, projectRoot, runtimePinKey, setCurrentPr]);
+  }, [branchName, laneId, lanes, projectRoot, runtimePinKey, sessionId, setCurrentPr]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
@@ -747,6 +767,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             laneId={laneId}
             branchName={branchName ?? null}
             sessionTitle={sessionTitle}
+            sessionId={sessionId}
             onCreated={handleCreated}
           />
         )}

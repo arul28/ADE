@@ -32,6 +32,8 @@ export type LaneTabPrTag = {
   githubUrl: string;
   title: string;
   state: PrSummary["state"];
+  /** A live PR follows the lane's current branch; previous PRs remain history on the lane. */
+  laneRole?: "active" | "previous";
   // Optional richer fields used to render the hover popover card. Populated when
   // available from the mapped PrSummary and/or the GitHub list item; merged in
   // `selectLaneTabPrTag` so the card gets the richest data across both sources.
@@ -240,13 +242,33 @@ export function lanePrMatchesCurrentBranch(
   return true;
 }
 
+export function lanePrRole(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  pr: Pick<PrSummary, "laneId" | "headBranch">,
+): "active" | "previous" | null {
+  if (pr.laneId !== lane.id) return null;
+  if (!normalizeLanePrBranch(lane.branchRef) || !normalizeLanePrBranch(pr.headBranch)) return null;
+  return lanePrMatchesCurrentBranch(lane, pr) ? "active" : "previous";
+}
+
+export function selectLanePrs(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  prs: PrSummary[],
+): PrSummary[] {
+  return prs
+    .filter((pr) => !pr.detached && lanePrRole(lane, pr) != null)
+    .sort((a, b) => {
+      const aRole = lanePrRole(lane, a) === "active" ? 0 : 1;
+      const bRole = lanePrRole(lane, b) === "active" ? 0 : 1;
+      return aRole - bRole || comparePrTags(a, b);
+    });
+}
+
 export function selectLanePrTag(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
   prs: PrSummary[],
 ): PrSummary | null {
-  return prs
-    .filter((pr) => lanePrMatchesCurrentBranch(lane, pr))
-    .sort(comparePrTags)[0] ?? null;
+  return selectLanePrs(lane, prs)[0] ?? null;
 }
 
 export function githubPrMatchesCurrentBranch(
@@ -271,12 +293,19 @@ export function selectGithubLanePrTag(
   lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
   prs: GitHubPrListItem[],
 ): GitHubPrListItem | null {
-  return prs
-    .filter((pr) => pr.scope === "repo" && githubPrMatchesCurrentBranch(lane, pr))
-    .sort(comparePrTags)[0] ?? null;
+  return selectGithubLanePrTags(lane, prs)[0] ?? null;
 }
 
-function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
+export function selectGithubLanePrTags(
+  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
+  prs: GitHubPrListItem[],
+): GitHubPrListItem[] {
+  return prs
+    .filter((pr) => pr.scope === "repo" && githubPrMatchesCurrentBranch(lane, pr))
+    .sort(comparePrTags);
+}
+
+function toLaneTabPrTagFromPrSummary(pr: PrSummary, laneRole?: "active" | "previous"): LaneTabPrTag {
   return {
     source: "ade",
     id: pr.id,
@@ -285,6 +314,7 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
     githubUrl: pr.githubUrl,
     title: pr.title,
     state: pr.state,
+    laneRole,
     baseBranch: pr.baseBranch,
     headBranch: pr.headBranch,
     checksStatus: pr.checksStatus,
@@ -299,7 +329,11 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
   };
 }
 
-function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): LaneTabPrTag {
+function toLaneTabPrTagFromGithubItem(
+  pr: GitHubPrListItem,
+  laneId: string,
+  laneRole: "active" | "previous" = "active",
+): LaneTabPrTag {
   const linkedPrId = pr.linkedLaneId === laneId ? pr.linkedPrId : null;
   return {
     source: "github",
@@ -309,6 +343,7 @@ function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): Lan
     githubUrl: pr.githubUrl,
     title: pr.title,
     state: pr.isDraft ? "draft" : pr.state,
+    laneRole,
     baseBranch: pr.baseBranch,
     headBranch: pr.headBranch,
     updatedAt: pr.updatedAt,
@@ -342,6 +377,23 @@ function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null):
     author: base.author ?? secondary.author,
     stack: base.stack ?? secondary.stack ?? null,
   };
+}
+
+function compareLaneTabPrTags(a: LaneTabPrTag, b: LaneTabPrTag): number {
+  const aRole = a.laneRole === "active" ? 0 : 1;
+  const bRole = b.laneRole === "active" ? 0 : 1;
+  if (aRole !== bRole) return aRole - bRole;
+  const byState = prStateRank(a.state) - prStateRank(b.state);
+  if (byState !== 0) return byState;
+  const aUpdated = Date.parse(a.updatedAt ?? "");
+  const bUpdated = Date.parse(b.updatedAt ?? "");
+  if (!Number.isNaN(aUpdated) && !Number.isNaN(bUpdated) && aUpdated !== bUpdated) {
+    return bUpdated - aUpdated;
+  }
+  // Preserve ADE's richer mapped tag when an unlinked GitHub projection ties
+  // it on state and recency.
+  if (a.source !== b.source) return a.source === "ade" ? -1 : 1;
+  return b.githubPrNumber - a.githubPrNumber;
 }
 
 function githubPrMatchesAdePr(pr: PrSummary, githubPr: GitHubPrListItem): boolean {
@@ -385,25 +437,41 @@ export function selectLaneTabPrTag(
   prs: PrSummary[],
   githubPrs: GitHubPrListItem[],
 ): LaneTabPrTag | null {
-  const mappedPr = selectLanePrTag(lane, prs);
-  const githubPr = selectGithubLanePrTag(lane, githubPrs);
-  if (mappedPr) {
+  return selectLaneTabPrTags(lane, prs, githubPrs)[0] ?? null;
+}
+
+export function selectLaneTabPrTags(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  prs: PrSummary[],
+  githubPrs: GitHubPrListItem[],
+): LaneTabPrTag[] {
+  const mappedPrs = selectLanePrs(lane, prs);
+  const laneGithubPrs = selectGithubLanePrTags(lane, githubPrs);
+  const mappedTags = mappedPrs.map((mappedPr) => {
+    const githubPr = laneGithubPrs.find((candidate) => githubPrMatchesAdePr(mappedPr, candidate)) ?? null;
     // The PrSummary carries diff/checks/reviews; the matching GitHub item carries
     // labels/author. Merge so the popover card has the richest data available.
-    const githubTag = githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
+    const role = lanePrRole(lane, mappedPr) ?? "previous";
+    const githubTag = githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id, role) : null;
     const terminalGithubPr = selectTerminalGithubUpdateForPr(mappedPr, githubPrs);
     if (terminalGithubPr) {
       return mergeLaneTabPrTags(
-        toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id),
-        toLaneTabPrTagFromPrSummary(mappedPr),
+        toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id, role),
+        toLaneTabPrTagFromPrSummary(mappedPr, role),
       );
     }
     if (githubTag && shouldPreferGithubPrTag(mappedPr, githubPr!)) {
-      return mergeLaneTabPrTags(githubTag, toLaneTabPrTagFromPrSummary(mappedPr));
+      return mergeLaneTabPrTags(githubTag, toLaneTabPrTagFromPrSummary(mappedPr, role));
     }
-    return mergeLaneTabPrTags(toLaneTabPrTagFromPrSummary(mappedPr), githubTag);
-  }
-  return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
+    return mergeLaneTabPrTags(toLaneTabPrTagFromPrSummary(mappedPr, role), githubTag);
+  });
+  const mappedGithubKeys = new Set(mappedPrs.map((mappedPr) => (
+    laneGithubPrs.find((candidate) => githubPrMatchesAdePr(mappedPr, candidate))?.id
+  )).filter((id): id is string => Boolean(id)));
+  const unmappedTags = laneGithubPrs
+    .filter((githubPr) => !mappedGithubKeys.has(githubPr.id))
+    .map((githubPr) => toLaneTabPrTagFromGithubItem(githubPr, lane.id, "active"));
+  return [...mappedTags, ...unmappedTags].sort(compareLaneTabPrTags);
 }
 
 function isPrRefreshStale(pr: Pick<PrSummary, "lastSyncedAt">, nowMs: number, staleMs: number): boolean {
@@ -413,7 +481,7 @@ function isPrRefreshStale(pr: Pick<PrSummary, "lastSyncedAt">, nowMs: number, st
 
 export function selectVisibleLanePrRefreshIds(args: {
   visibleLaneIds: string[];
-  lanePrByLaneId: ReadonlyMap<string, LaneTabPrTag>;
+  lanePrByLaneId: ReadonlyMap<string, LaneTabPrTag | readonly LaneTabPrTag[]>;
   prs: PrSummary[];
   recentlyRequestedAtByPrId?: ReadonlyMap<string, number>;
   nowMs?: number;
@@ -430,17 +498,22 @@ export function selectVisibleLanePrRefreshIds(args: {
   const seen = new Set<string>();
 
   for (const laneId of args.visibleLaneIds) {
-    const prId = args.lanePrByLaneId.get(laneId)?.linkedPrId;
-    if (!prId || seen.has(prId)) continue;
-    seen.add(prId);
+    const entry = args.lanePrByLaneId.get(laneId);
+    const tags = Array.isArray(entry) ? entry : entry ? [entry] : [];
+    for (const tag of tags) {
+      const prId = tag.linkedPrId;
+      if (!prId || seen.has(prId)) continue;
+      seen.add(prId);
 
-    const pr = prById.get(prId);
-    if (!pr || !isPrRefreshStale(pr, nowMs, staleMs)) continue;
+      const pr = prById.get(prId);
+      if (!pr || !isPrRefreshStale(pr, nowMs, staleMs)) continue;
 
-    const requestedAt = args.recentlyRequestedAtByPrId?.get(prId);
-    if (requestedAt != null && nowMs - requestedAt < staleMs) continue;
+      const requestedAt = args.recentlyRequestedAtByPrId?.get(prId);
+      if (requestedAt != null && nowMs - requestedAt < staleMs) continue;
 
-    selected.push(prId);
+      selected.push(prId);
+      if (selected.length >= limit) break;
+    }
     if (selected.length >= limit) break;
   }
 

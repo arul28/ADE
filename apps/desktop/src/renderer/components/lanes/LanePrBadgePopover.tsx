@@ -15,6 +15,7 @@ import {
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+import { lanePrAttention, lanePrAttentionColor, lanePrAttentionRank } from "../../lib/lanePrBadge";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -78,13 +79,111 @@ function StatusDot({ color }: { color: string }) {
 }
 
 export function LanePrBadgePopover({
-  pr,
+  pr: legacyPr,
+  prs,
   onActivate,
+  onOpenList,
 }: {
-  pr: LaneTabPrTag;
+  pr?: LaneTabPrTag;
+  prs?: LaneTabPrTag[];
   /** Invoked when the badge itself is clicked (navigate to PR / open external). */
-  onActivate: (event: React.MouseEvent) => void;
+  onActivate: (event: React.SyntheticEvent, pr?: LaneTabPrTag) => void;
+  /** Invoked by the multi-PR counter to show the lane-filtered PR list. */
+  onOpenList?: () => void;
 }) {
+  const allPrs = prs?.length ? prs : legacyPr ? [legacyPr] : [];
+  const primaryPr = allPrs.length > 1
+    ? allPrs.reduce((best, candidate) => (
+      lanePrAttentionRank(candidate) > lanePrAttentionRank(best) ? candidate : best
+    ), allPrs[0]!)
+    : allPrs[0] ?? null;
+  if (!primaryPr) return null;
+  if (allPrs.length > 1) {
+    const aggregate = allPrs.reduce((best, candidate) => (
+      lanePrAttentionRank(candidate) > lanePrAttentionRank(best) ? candidate : best
+    ), allPrs[0]!);
+    const aggregateColor = lanePrAttentionColor(lanePrAttention(aggregate));
+    const activate = (event: React.SyntheticEvent, candidate = primaryPr) => {
+      event.stopPropagation();
+      onActivate(event, candidate);
+    };
+    return (
+      <span
+        className="group relative inline-flex shrink-0 items-center gap-1"
+        onClick={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="shrink-0"
+          style={{
+            ...inlineBadge(lanePrTagColor(primaryPr.state), { fontSize: 9 }),
+            gap: 4,
+            cursor: "pointer",
+            borderRadius: 6,
+          }}
+          title={`${formatPrBadgeLabel(primaryPr)}: ${primaryPr.title}`}
+          onClick={(event) => activate(event)}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: aggregateColor }} />
+          <GitPullRequest size={10} weight="bold" />
+          {formatPrBadgeLabel(primaryPr)}
+          <GitHubStackBadge stack={primaryPr.stack} compact bare />
+        </button>
+        <button
+          type="button"
+          className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px font-mono text-[9px] font-semibold text-muted-fg/65 transition-colors hover:border-white/[0.15] hover:text-fg/90"
+          title={`Show all ${allPrs.length} pull requests for this lane`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenList?.();
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          +{allPrs.length - 1}
+        </button>
+        <span className="pointer-events-none invisible absolute left-0 top-full z-[80] w-[300px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
+          <span className="block overflow-hidden" style={{ ...floatingPane(), fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+            <span className="block px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: COLORS.textMuted }}>
+              Pull requests ({allPrs.length})
+            </span>
+            {allPrs.map((candidate) => (
+              <span
+                key={candidate.id}
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 transition-colors hover:bg-white/[0.05]"
+                onClick={(event) => activate(event, candidate)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    activate(event, candidate);
+                  }
+                }}
+                title={candidate.title}
+              >
+                <StatusDot color={lanePrAttentionColor(lanePrAttention(candidate))} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                    <span className="font-mono">#{candidate.githubPrNumber}</span>
+                    <span style={{ color: lanePrTagColor(candidate.state) }}>{candidate.state}</span>
+                    {candidate.laneRole === "previous" ? <span className="text-[9px] font-normal" style={{ color: COLORS.textMuted }}>previous</span> : null}
+                  </span>
+                  <span className="block truncate text-[10px]" style={{ color: COLORS.textMuted }}>{candidate.title || "Untitled pull request"}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1" title={`CI ${candidate.checksStatus ?? "unknown"} · review ${candidate.reviewStatus ?? "unknown"}`}>
+                  <StatusDot color={getPrCiDotColor({ checksStatus: candidate.checksStatus ?? "none" })} />
+                  <StatusDot color={getPrReviewDotColor({ reviewStatus: candidate.reviewStatus ?? "none" })} />
+                </span>
+              </span>
+            ))}
+          </span>
+        </span>
+      </span>
+    );
+  }
+  const pr = primaryPr;
   const stateBadge = getPrStateBadge(pr.state);
   const hasChecks = pr.checksStatus != null;
   const hasReviews = pr.reviewStatus != null;

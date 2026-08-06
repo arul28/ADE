@@ -972,6 +972,42 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
+  it("settles only the chats explicitly linked to a merged PR", async () => {
+    const db = createMemoryDb();
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const getSettlementBlockers = vi.fn(async () => []);
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => [
+          { id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+          { id: "chat-other", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        settleSessionsWithOutcome,
+      } as any,
+      agentChatService: { getSettlementBlockers } as any,
+      emitEvent: vi.fn(),
+    });
+    const openPr = createSummary({ state: "open" });
+    await service.processSnapshot({ prs: [openPr], polledAt: "2026-03-24T12:00:00.000Z" });
+
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+
+    expect(getSettlementBlockers).toHaveBeenCalledTimes(1);
+    expect(getSettlementBlockers).toHaveBeenCalledWith("chat-owned", { includeCurrentTurn: true });
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-owned"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+  });
+
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
     // machine reconciles, backfilling rows for PRs it had never stored. Every

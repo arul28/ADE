@@ -469,6 +469,23 @@ create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id);
 
 create index if not exists idx_pull_requests_project_id on pull_requests(project_id);
 
+create table if not exists pull_request_chat_sessions (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      lane_id text not null,
+      session_id text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    );
+
+create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id);
+
+create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id);
+
+create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id);
+
 alter table pull_requests add column last_polled_at text;
 
 alter table pull_requests add column head_sha text;

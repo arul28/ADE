@@ -2769,6 +2769,7 @@ final class DatabaseService {
     for tableName in [
       "pull_request_snapshots",
       "pull_request_ai_summaries",
+      "pull_request_chat_sessions",
       "pr_group_members",
     ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
       try exec("""
@@ -2978,6 +2979,20 @@ final class DatabaseService {
     try ensureColumn(tableName: "integration_proposals", columnName: "merge_into_head_sha", definition: "text")
 
     try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
+    try exec("""
+      create table if not exists pull_request_chat_sessions (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        lane_id text not null,
+        session_id text not null,
+        created_at text not null,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)")
+    try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
+    try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 
@@ -3040,6 +3055,20 @@ final class DatabaseService {
     // "nothing ran". `checks_missing_required` is a JSON array of context names.
     try ensureColumn(tableName: "pull_requests", columnName: "checks_reason", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "checks_missing_required", definition: "text")
+    try exec("""
+      create table if not exists pull_request_chat_sessions (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        lane_id text not null,
+        session_id text not null,
+        created_at text not null,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)")
+    try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
+    try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
@@ -3153,6 +3182,7 @@ final class DatabaseService {
       "pull_request_snapshots",
       "pull_request_stack_snapshots",
       "pull_request_ai_summaries",
+      "pull_request_chat_sessions",
       "pr_group_members",
     ]
 
@@ -3335,6 +3365,9 @@ final class DatabaseService {
     }
     if hasTable(named: "claude_sessions") {
       _ = try execute("update claude_sessions set chat_session_id = null where chat_session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "pull_request_chat_sessions") {
+      _ = try execute("delete from pull_request_chat_sessions where session_id in (\(placeholders))", bind: bindSessionIds)
     }
     _ = try execute("delete from terminal_sessions where id in (\(placeholders))", bind: bindSessionIds)
     return retiredSessionIds.count

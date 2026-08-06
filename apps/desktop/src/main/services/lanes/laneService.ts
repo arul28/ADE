@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
-import { detachPullRequestRowsByIds, detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
+import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { pathsEqual } from "../shared/pathCompare";
@@ -4910,11 +4910,9 @@ export function createLaneService({
         };
       }
 
-      // Wrap the profile upsert + lanes update + stale-PR cleanup in a single
-      // transaction so a partial failure can't leave the lane row referencing
-      // the new branch while the orphaned PR rows linger (or vice versa), or
-      // leave the post-checkout profile written without the matching lanes
-      // row update.
+      // Wrap the profile upsert + lanes update in a single transaction so a
+      // partial failure can't leave the lane row referencing the new branch
+      // while the profile still points at the old one.
       db.run("begin");
       try {
         if (pendingProfileUpsert) {
@@ -4934,30 +4932,6 @@ export function createLaneService({
           `,
           [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
         );
-        // PR rows whose head_branch no longer matches the lane's current branch are
-        // stale references and must not bleed into PR lookups. Detach rather than
-        // delete: the PR still happened on this lane, and erasing it is what made
-        // merged PRs render as `unmapped`. detached_at takes them out of live lookups
-        // while keeping the history.
-        const stalePrRows = db.all<{ id: string }>(
-          `
-            select id from pull_requests
-            where lane_id = ?
-              and project_id = ?
-              and head_branch <> ?
-          `,
-          [row.id, projectId, targetBranchRef],
-        );
-        if (stalePrRows.length > 0) {
-          detachPullRequestRowsByIds(db, {
-            projectId,
-            laneId: row.id,
-            laneName: row.name ?? null,
-            laneColor: row.color ?? null,
-            detachedAt: new Date().toISOString(),
-            prIds: stalePrRows.map((r) => r.id),
-          });
-        }
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
@@ -5128,30 +5102,6 @@ export function createLaneService({
             projectId,
           ],
         );
-        // Same rationale as switchBranch: PR rows whose head branch no longer
-        // matches the lane are stale references and must not bleed into PR
-        // lookups now that the lane tracks a different branch. Detached, not deleted,
-        // so the merged view keeps the record. `row` is the pre-update snapshot, so
-        // `row.name` is the name these PRs were actually built under.
-        const stalePrRows = db.all<{ id: string }>(
-          `
-            select id from pull_requests
-            where lane_id = ?
-              and project_id = ?
-              and head_branch <> ?
-          `,
-          [row.id, projectId, targetBranchRef],
-        );
-        if (stalePrRows.length > 0) {
-          detachPullRequestRowsByIds(db, {
-            projectId,
-            laneId: row.id,
-            laneName: row.name ?? null,
-            laneColor: row.color ?? null,
-            detachedAt: new Date().toISOString(),
-            prIds: stalePrRows.map((entry) => entry.id),
-          });
-        }
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }

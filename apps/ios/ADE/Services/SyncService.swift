@@ -5432,6 +5432,7 @@ final class SyncService: ObservableObject {
       "pull_request_snapshots",
       "pr_groups",
       "pr_group_members",
+      "pull_request_chat_sessions",
       "integration_proposals",
       "lanes",
       "lane_list_snapshots",

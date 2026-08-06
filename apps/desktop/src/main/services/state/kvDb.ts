@@ -1182,6 +1182,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   if (rawHasTable(db, "session_linear_issues")) {
     runStatement(db, `delete from session_linear_issues where session_id in (${placeholders})`, retiredSessionIds);
   }
+  if (rawHasTable(db, "pull_request_chat_sessions")) {
+    runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
+  }
   if (rawHasTable(db, "session_deltas")) {
     runStatement(db, `delete from session_deltas where session_id in (${placeholders})`, retiredSessionIds);
   }
@@ -2413,6 +2416,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)");
   db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
+
+  // A PR can be opened from more than one chat over the lifetime of a lane,
+  // and a chat can move on to more than one PR. Keep that relationship in a
+  // separate CRR-friendly table instead of widening `pull_requests`: the latter
+  // is phone-critical and cannot be rebuilt with a nullable foreign key change.
+  // Tuple uniqueness is enforced by the service because CRR tables cannot carry
+  // unique indexes other than their primary key.
+  db.run(`
+    create table if not exists pull_request_chat_sessions (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      lane_id text not null,
+      session_id text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)");
+  db.run("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)");
+  db.run("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)");
   safeAddColumn(db, "alter table pull_requests add column last_polled_at text");
   safeAddColumn(db, "alter table pull_requests add column head_sha text");
   safeAddColumn(db, "alter table pull_requests add column creation_strategy text");

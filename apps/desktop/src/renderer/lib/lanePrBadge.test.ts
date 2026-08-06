@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrState } from "../../shared/types";
-import { openLanePr, pickPrimaryPr, primaryPrStateRank } from "./lanePrBadge";
+import {
+  lanePrAggregateAttention,
+  lanePrAttention,
+  openLanePr,
+  pickPrimaryPr,
+  primaryPrStateRank,
+  selectPrimaryLanePr,
+} from "./lanePrBadge";
 
 type TestPr = { id: string; state: PrState; updatedAt: string; githubPrNumber: number };
 
@@ -68,6 +75,71 @@ describe("pickPrimaryPr", () => {
       expect(pickPrimaryPr(prs)?.id ?? null).toBe(expected);
     });
   }
+});
+
+describe("selectPrimaryLanePr", () => {
+  const lane = {
+    id: "lane-1",
+    laneType: "worktree" as const,
+    branchRef: "refs/heads/current",
+    baseRef: "refs/heads/main",
+  };
+
+  const base = {
+    projectId: "project-1",
+    laneId: "lane-1",
+    repoOwner: "ade",
+    repoName: "desktop",
+    githubUrl: "https://github.com/ade/desktop/pull/1",
+    githubNodeId: null,
+    baseBranch: "main",
+    additions: 0,
+    deletions: 0,
+    lastSyncedAt: null,
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-02T00:00:00.000Z",
+  };
+
+  it("lets an actionable failing historical PR win over a healthy current PR", () => {
+    const healthyCurrent = {
+      ...base,
+      id: "current",
+      githubPrNumber: 10,
+      title: "Current",
+      state: "open" as const,
+      headBranch: "current",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+    };
+    const failingPrevious = {
+      ...base,
+      id: "previous",
+      githubPrNumber: 9,
+      title: "Previous failure",
+      state: "open" as const,
+      headBranch: "old-branch",
+      checksStatus: "failing" as const,
+      reviewStatus: "approved" as const,
+    };
+
+    expect(selectPrimaryLanePr(lane, [healthyCurrent, failingPrevious])?.id).toBe("previous");
+  });
+});
+
+describe("lane PR attention", () => {
+  it("keeps terminal failures visible in the aggregate state", () => {
+    const mergedFailure = {
+      state: "merged" as const,
+      checksStatus: "failing" as const,
+      reviewStatus: "approved" as const,
+    };
+
+    expect(lanePrAttention(mergedFailure)).toBe("danger");
+    expect(lanePrAggregateAttention([
+      { state: "open" as const, checksStatus: "passing" as const },
+      mergedFailure,
+    ])).toBe("danger");
+  });
 });
 
 describe("openLanePr", () => {

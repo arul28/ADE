@@ -5749,7 +5749,7 @@ describe("laneService - branchSwitch", () => {
       }
     });
 
-    it("preserves PR rows whose head_branch matches the new branch and deletes stale ones", async () => {
+    it("preserves current PR rows and retains previous-branch PR history", async () => {
       const repoRoot = makeTempRepoRoot("ade-bsw-switch-pr-detach-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
@@ -5797,22 +5797,22 @@ describe("laneService - branchSwitch", () => {
         );
         expect(keep?.lane_id).toBe("lane-a");
 
-        // Stale rows are detached, not deleted — the PR happened on this lane even
-        // though the lane now tracks a different branch.
+        // Branch switching changes the lane's current role, not the PR's lane
+        // ownership. The old row remains available as previous-branch history.
         const stale = db.get<{ lane_id: string | null; detached_at: string | null; detached_lane_name: string | null }>(
           "select lane_id, detached_at, detached_lane_name from pull_requests where id = ?",
           ["pr-stale"],
         );
-        expect(stale?.detached_at).toBeTruthy();
+        expect(stale?.detached_at).toBeNull();
         expect(stale?.lane_id).toBe("lane-a");
-        // A detached row must not be treated as live: the kept row is the only one
-        // still claiming the lane's current branch.
+        // Both rows still belong to the lane; the renderer derives active vs
+        // previous from the lane branch and each PR head branch.
         expect(
           db.get<{ count: number }>(
             "select count(1) as count from pull_requests where lane_id = ? and detached_at is null",
             ["lane-a"],
           )?.count,
-        ).toBe(1);
+        ).toBe(2);
       } finally {
         db.close();
         fs.rmSync(repoRoot, { recursive: true, force: true });

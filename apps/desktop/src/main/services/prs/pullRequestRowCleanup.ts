@@ -123,6 +123,15 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
      where pr_id in (${scope.selectSql})`,
     scope.params,
   );
+  try {
+    db.run(
+      `delete from pull_request_chat_sessions
+       where pr_id in (${scope.selectSql})`,
+      scope.params,
+    );
+  } catch {
+    // Older test/embedded databases may predate the optional edge table.
+  }
   db.run(`delete from pull_requests where id in (${scope.selectSql})`, scope.params);
   pruneEmptyPrGroups(db, projectId);
 }
@@ -216,6 +225,18 @@ function detachRows(
      where pr_id in (${scope.selectSql})`,
     scope.params,
   );
+  // Chat ownership is live routing metadata, not lane-deletion history. Once
+  // the lane is detached its sessions are deleted, so retaining these edges
+  // would send future PR cards to a chat that no longer exists.
+  try {
+    db.run(
+      `delete from pull_request_chat_sessions
+       where pr_id in (${scope.selectSql})`,
+      scope.params,
+    );
+  } catch {
+    // Older databases are upgraded before this path is normally reached.
+  }
   pruneEmptyPrGroups(db, projectId);
 }
 

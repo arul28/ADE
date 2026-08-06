@@ -55,6 +55,7 @@ import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
+import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getEffectiveBinding } from "../../lib/keybindings";
 import { laneRailTint, laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
@@ -1791,6 +1792,8 @@ export const SessionListPane = React.memo(function SessionListPane({
      * lane loses no capability, only chrome.
      */
     lanePr?: PrSummary | null;
+    lanePrs?: PrSummary[];
+    onOpenLanePrs?: () => void;
     laneActions?: SessionContextMenuLaneActions | null;
     /**
      * Set for cards rendered UNDER a lane header that already shows a machine
@@ -1819,14 +1822,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     // is read from that machine and filed under its composite key. A foreign
     // card is no longer excluded: it was only ever blank because the lookup
     // could not reach past the tab's own binding.
-    const sessionPr = sessionLane
-      ? selectPrimaryLanePr(
-          sessionLane,
-          foreignRow
-            ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, session.laneId)
-            : boundMachineLanePrs(prsByLaneId, session.laneId),
-        )
-      : null;
+    const sessionLanePrs = sessionLane
+      ? (foreignRow
+          ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, session.laneId)
+          : boundMachineLanePrs(prsByLaneId, session.laneId))
+      : [];
+    const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;
     // A card on an unreachable machine is shown as last reported and every
     // action on it would fail, so it is inert and says which machine is gone.
     const disabledReason = foreignRow
@@ -1885,6 +1886,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         compact={options?.compact}
         showLaneIdentity={options?.showLaneIdentity}
         lanePr={options?.lanePr}
+        lanePrs={options?.lanePrs}
+        onOpenLanePrs={options?.onOpenLanePrs}
         lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         runtimePin={foreignRow?.binding}
@@ -2262,11 +2265,19 @@ export const SessionListPane = React.memo(function SessionListPane({
         {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
       </span>
     );
-    const primaryPr = selectPrimaryLanePr(lane, boundMachineLanePrs(prsByLaneId, lane.id));
+    const lanePrs = boundMachineLanePrs(prsByLaneId, lane.id);
+    const primaryPr = selectPrimaryLanePr(lane, lanePrs);
     const prBadge = primaryPr ? (
       <LanePrBadge
         pr={primaryPr}
-        onOpen={() => openLanePr(primaryPr, { foreign: false, navigate })}
+        prs={lanePrs}
+        onOpen={(target) => openLanePr(target, { foreign: false, navigate })}
+        onOpenList={() => navigate(`/prs${buildPrsRouteSearch({
+          activeTab: "normal",
+          selectedPrId: null,
+          selectedLaneId: lane.id,
+          selectedRebaseItemId: null,
+        })}`)}
       />
     ) : null;
     // Never populated for a lane on the Mac you're sitting at — the marker says
@@ -2328,6 +2339,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           ? renderCards(list, {
               showLaneIdentity: true,
               lanePr: primaryPr,
+              lanePrs,
+              onOpenLanePrs: () => navigate(`/prs${buildPrsRouteSearch({
+                activeTab: "normal",
+                selectedPrId: null,
+                selectedLaneId: lane.id,
+                selectedRebaseItemId: null,
+              })}`),
               machineMarker,
               laneActions: {
                 laneId: lane.id,
@@ -2385,9 +2403,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     // bare lane id would answer out of whichever machine happened to claim it,
     // and cross-machine handoff makes that a real collision, not a theoretical
     // one.
+    const lanePrs = lanePrsForMachine(prsByLaneId, row.machineId, row.lane.id);
     const primaryPr = selectPrimaryLanePr(
       row.lane,
-      lanePrsForMachine(prsByLaneId, row.machineId, row.lane.id),
+      lanePrs,
     );
     // A group WITH a header names the machine there, so its rows never repeat
     // it. A headerless group has no such header, so its lone card takes the
@@ -2428,7 +2447,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         prBadge={primaryPr ? (
           <LanePrBadge
             pr={primaryPr}
-            onOpen={() => openLanePr(primaryPr, { foreign: true, navigate })}
+            prs={lanePrs}
+            onOpen={(target) => openLanePr(target, { foreign: true, navigate })}
           />
         ) : null}
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
@@ -2462,6 +2482,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               foreignRow: row,
               showLaneIdentity: true,
               lanePr: primaryPr,
+              lanePrs,
               machineMarker: headerMarker,
               ...(singletonLaneActions ? { laneActions: singletonLaneActions } : {}),
             })

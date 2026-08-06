@@ -179,7 +179,7 @@ describe("ChatPrInlineCreator create", () => {
     const createFromLane = vi.fn().mockResolvedValue({ id: "pr-1" });
     installAde(createFromLane);
     const onCreated = vi.fn();
-    renderCreator({ sessionTitle: "Redesign the in-chat PR panel", onCreated });
+    renderCreator({ sessionTitle: "Redesign the in-chat PR panel", sessionId: "chat-1", onCreated });
 
     await waitFor(() => expect(titleInput().value).toBe("Redesign the in-chat PR panel"));
     fireEvent.change(screen.getByLabelText("Pull request description"), {
@@ -194,6 +194,7 @@ describe("ChatPrInlineCreator create", () => {
       body: "Flow layout for the inline creator.",
       draft: false,
       baseBranch: "main",
+      sessionId: "chat-1",
     });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ id: "pr-1" }));
   });

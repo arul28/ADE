@@ -571,6 +571,28 @@ describe("prService.getForLane", () => {
     ]);
   });
 
+  it("hydrates explicit chat ownership edges onto every listed PR", () => {
+    const db = makeMockDb();
+    const row = makePrRow({ id: "pr-owned-by-chat", lane_id: LANE_ID });
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_request_chat_sessions")) {
+        return [{ pr_id: row.id, session_id: "chat-1" }];
+      }
+      if (text.includes("from pull_requests")) return [row];
+      return [];
+    });
+
+    const { service } = buildService({ db });
+
+    expect(service.listAll()).toEqual([
+      expect.objectContaining({
+        id: row.id,
+        chatSessionIds: ["chat-1"],
+      }),
+    ]);
+  });
+
   it("includes native GitHub stack membership in lane and list summaries", async () => {
     const lane = makeFakeLane({ branchRef: "refs/heads/stack-ui" });
     const service = buildGetForLaneService(
@@ -659,7 +681,7 @@ describe("prService.getForLane", () => {
     expect(service.getForLane(lane.id)).toBeNull();
   });
 
-  it("ignores stale PR rows whose head branch no longer matches the lane branch", () => {
+  it("returns a stale PR row as lane history when the lane moved on", () => {
     const lane = makeFakeLane({
       branchRef: "refs/heads/current-feature",
     });
@@ -671,7 +693,11 @@ describe("prService.getForLane", () => {
       }),
     ]);
 
-    expect(service.getForLane(lane.id)).toBeNull();
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: "pr-row-1",
+      headBranch: "old-feature",
+      state: "open",
+    });
   });
 
   it("prefers the PR whose head matches the current lane branch", () => {
@@ -728,7 +754,7 @@ describe("prService.getForLane", () => {
     expect(service.getForLane(lane.id)?.state).toBe("merged");
   });
 
-  it("ignores terminal PR rows whose head branch no longer matches the lane branch", () => {
+  it("returns terminal PR rows as lane history when the lane moved on", () => {
     const lane = makeFakeLane({
       branchRef: "refs/heads/current-feature",
     });
@@ -740,7 +766,11 @@ describe("prService.getForLane", () => {
       }),
     ]);
 
-    expect(service.getForLane(lane.id)).toBeNull();
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: "pr-row-1",
+      headBranch: "old-feature",
+      state: "merged",
+    });
   });
 
   it("allows primary to show an active PR only when checked out to that PR head branch", () => {
@@ -3666,15 +3696,24 @@ describe("prService.linkToLane", () => {
           throw new Error(`Unexpected GitHub API request: ${args.method} ${args.path}`);
         }),
       });
+      const pullRequestGet = db.get.getMockImplementation();
+      db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+        if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+        return pullRequestGet?.(sql, params) ?? null;
+      });
       const { service } = buildService({ db, githubService });
 
-      await service.linkToLane({ laneId: LANE_ID, prUrlOrNumber: "90" });
+      await service.linkToLane({ laneId: LANE_ID, prUrlOrNumber: "90", sessionId: "chat-90" });
 
       const insertCall = db.run.mock.calls.find(([sql]: [unknown]) =>
         String(sql).includes("insert into pull_requests(")
       );
       expect(insertCall?.[1]?.[17]).toBe(githubCreatedAt);
       expect(insertCall?.[1]?.[18]).toBe("2026-07-16T12:00:00.000Z");
+      const chatLinkInsert = db.run.mock.calls.find(([sql]: [unknown]) =>
+        String(sql).includes("insert into pull_request_chat_sessions")
+      );
+      expect(chatLinkInsert?.[1]).toEqual(expect.arrayContaining(["chat-90"]));
     } finally {
       vi.useRealTimers();
     }

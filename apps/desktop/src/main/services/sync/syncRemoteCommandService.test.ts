@@ -890,6 +890,7 @@ describe("createSyncRemoteCommandService", () => {
     it("prs.createFromLane parses laneId + title + draft", async () => {
       await service.execute(makePayload("prs.createFromLane", {
         laneId: "lane-1",
+        sessionId: "chat-1",
         title: "My PR",
         body: "Description",
         draft: true,
@@ -897,6 +898,7 @@ describe("createSyncRemoteCommandService", () => {
       }));
       expect(prService.createFromLane).toHaveBeenCalledWith({
         laneId: "lane-1",
+        sessionId: "chat-1",
         title: "My PR",
         body: "Description",
         draft: true,

@@ -202,7 +202,7 @@ export function GridTileSessionHeaderActions({
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      {session.laneId ? <ChatGitToolbar laneId={session.laneId} runtimePin={runtimePin} /> : null}
+      {session.laneId ? <ChatGitToolbar laneId={session.laneId} sessionId={session.id} runtimePin={runtimePin} /> : null}
       <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
       <SessionStatusDot session={session} />
       <SessionInfoButton session={session} onInfoClick={onInfoClick} />
@@ -286,6 +286,7 @@ export function CliSessionWorkSurfaceHeader({
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
       showGitToolbar
+      prSessionId={session.id}
       onTogglePrPane={onTogglePrPane}
       prPaneOpen={prPaneOpen}
       runtimePin={runtimePin}

@@ -23,7 +23,13 @@ import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
-import { openLanePr } from "../../lib/lanePrBadge";
+import {
+  lanePrAggregateAttention,
+  lanePrAttentionColor,
+  openLanePr,
+  selectPrimaryLanePr,
+} from "../../lib/lanePrBadge";
+import { selectPrsForChat } from "../../lib/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +38,8 @@ import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 type ChatGitToolbarProps = {
   laneId: string;
+  /** The chat owning this header; its explicit PR links win over lane fallback. */
+  sessionId?: string | null;
   /**
    * When provided (ADE chat surfaces), the PR pill/button toggles this instead
    * of opening the inline slide-out or navigating to the PRs tab. CLI surfaces
@@ -72,21 +80,6 @@ function checksIcon(status: PrSummary["checksStatus"], state: PrSummary["state"]
       return <MinusCircle size={10} weight="fill" className="text-fg/40" />;
     default:
       return null;
-  }
-}
-
-function prStateDot(state: PrSummary["state"]) {
-  switch (state) {
-    case "open":
-      return "bg-emerald-400";
-    case "draft":
-      return "bg-amber-400/60";
-    case "merged":
-      return "bg-violet-400";
-    case "closed":
-      return "bg-red-400/60";
-    default:
-      return "bg-fg/20";
   }
 }
 
@@ -133,6 +126,7 @@ function summarizeChecks(
 
 export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
+  sessionId = null,
   onTogglePrPane,
   prPaneOpen,
   runtimePin = null,
@@ -141,8 +135,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const runtime = useLaneGitActionRuntimeState(laneId);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  const lanes = useAppStore((s) => s.lanes);
 
   const [dirtyCount, setDirtyCount] = useState(0);
+  const [linkedPrs, setLinkedPrs] = useState<PrSummary[]>([]);
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
   const [prLoaded, setPrLoaded] = useState(false);
   const [prActionBusy, setPrActionBusy] = useState(false);
@@ -187,16 +183,37 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     refreshPrRequestRef.current = requestId;
     const requestIsCurrent = () => laneIdRef.current === laneId && refreshPrRequestRef.current === requestId;
     try {
-      const pr = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+      let lanePrs: PrSummary[];
+      if (typeof window.ade.prs.listAll === "function") {
+        const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
+        const ownedPrs = allPrs.filter((pr) => pr.laneId === laneId && !pr.detached);
+        lanePrs = selectPrsForChat(ownedPrs, sessionId);
+      } else {
+        // Older web-preview/test bridges only expose the original single-PR
+        // lookup. Keep that compatibility path while the desktop bridge rolls
+        // forward to the plural list.
+        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        lanePrs = legacy ? [legacy] : [];
+      }
+      const lane = lanes.find((candidate) => candidate.id === laneId) ?? null;
+      const pr = lane
+        ? selectPrimaryLanePr(lane, lanePrs)
+        : lanePrs[0] ?? null;
       if (!requestIsCurrent()) return null;
+      setLinkedPrs(lanePrs);
       setLinkedPr(pr);
       setPrLoaded(true);
       if (options.live && pr && !pr.unmapped) {
         try {
           const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot, pin: runtimePinRef.current });
           if (!requestIsCurrent()) return null;
-          setLinkedPr(refreshed);
-          return refreshed;
+          if (!refreshed) return pr;
+          const enriched = refreshed.chatSessionIds || !pr.chatSessionIds
+            ? refreshed
+            : { ...refreshed, chatSessionIds: pr.chatSessionIds };
+          setLinkedPrs((current) => current.map((candidate) => candidate.id === enriched.id ? enriched : candidate));
+          setLinkedPr(enriched);
+          return enriched;
         } catch {
           return pr;
         }
@@ -204,6 +221,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       return pr;
     } catch {
       if (requestIsCurrent()) {
+        setLinkedPrs([]);
         setLinkedPr(null);
         setPrLoaded(true);
       }
@@ -213,10 +231,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // it — but a callback that reads machine A must not be reused as if it reads
     // machine B, and its identity is what re-runs the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, projectRoot, runtimePinKey]);
+  }, [laneId, lanes, projectRoot, runtimePinKey, sessionId]);
 
   useEffect(() => {
     setDirtyCount(0);
+    setLinkedPrs([]);
     setLinkedPr(null);
     setPrLoaded(false);
     setPrMenuOpen(false);
@@ -264,40 +283,48 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         return;
       }
       if (event.type !== "prs-updated") return;
-      const eventIncludesLanePr = event.prs.some((pr) => pr.laneId === laneId);
+      const eventIncludesLanePr = event.prs.some((pr) => (
+        pr.laneId === laneId && (
+          !sessionId
+          || !pr.chatSessionIds?.length
+          || pr.chatSessionIds.includes(sessionId)
+        )
+      ));
       const eventIncludesLinkedPr = current ? event.prs.some((pr) => pr.id === current.id) : false;
       if (eventIncludesLanePr || eventIncludesLinkedPr) {
         void refreshPr();
       } else if (current) {
         // The linked PR vanished from the latest snapshot — clear the pill.
+        setLinkedPrs([]);
         setLinkedPr(null);
       }
     }, runtimePinRef.current);
     return () => {
       unsubscribe();
     };
-  }, [laneId, refreshPr, runtimePinKey]);
+  }, [laneId, refreshPr, runtimePinKey, sessionId]);
+
+  const openPr = useCallback((pr: PrSummary) => {
+    // The PRs tab resolves a PR id against the bound machine only, so a lane
+    // on another machine goes to GitHub — the one destination that means the
+    // same thing from either machine. The local branch keeps this surface's
+    // richer route (it also selects the lane), so it passes its own path.
+    openLanePr(pr, {
+      foreign: Boolean(runtimePin),
+      navigate,
+      localPath: `/prs${buildPrsRouteSearch({
+        activeTab: "normal",
+        selectedPrId: pr.id,
+        selectedLaneId: laneId,
+        selectedRebaseItemId: null,
+      })}`,
+    });
+  }, [laneId, navigate, runtimePin]);
 
   const handlePr = useCallback(async () => {
     // A PR operation is about to run against this worktree — arm the drift
     // warning strip so a wrong-branch PR is caught before it is opened.
     armLaneBranchDriftWarning(laneId);
-    const openPr = (pr: PrSummary) => {
-      // The PRs tab resolves a PR id against the bound machine only, so a lane
-      // on another machine goes to GitHub — the one destination that means the
-      // same thing from either machine. The local branch keeps this surface's
-      // richer route (it also selects the lane), so it passes its own path.
-      openLanePr(pr, {
-        foreign: Boolean(runtimePin),
-        navigate,
-        localPath: `/prs${buildPrsRouteSearch({
-          activeTab: "normal",
-          selectedPrId: pr.id,
-          selectedLaneId: laneId,
-          selectedRebaseItemId: null,
-        })}`,
-      });
-    };
     if (linkedPr) {
       openPr(linkedPr);
       return;
@@ -324,7 +351,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       target: "primary",
     });
     navigate(`/prs?${params.toString()}`);
-  }, [laneId, linkedPr, navigate, prLoaded, refreshPr, runtimePin]);
+  }, [laneId, linkedPr, openPr, prLoaded, refreshPr, runtimePin]);
 
   const handlePrClick = useCallback(() => {
     if (prActionBusy) return;
@@ -417,31 +444,92 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const prPillActive = onTogglePrPane ? Boolean(prPaneOpen) : prMenuOpen;
   const prBadge = useMemo(() => {
     if (!linkedPr) return null;
+    const allPrs = linkedPrs.length > 0 ? linkedPrs : [linkedPr];
     const label = formatPrBadgeLabel(linkedPr);
     return (
-      <button
-        type="button"
-        className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
-        onClick={() => {
-          if (onTogglePrPane) { onTogglePrPane(); return; }
-          setPrMenuOpen((open) => !open);
-        }}
-        aria-expanded={prPillActive}
-        aria-haspopup="menu"
-        title={`${label}: ${linkedPr.title}`}
-      >
-        <span className={cn("inline-block h-1.5 w-1.5 rounded-full", prStateDot(linkedPr.state))} />
-        <span>{label}</span>
-        <GitHubStackBadge stack={linkedPr.stack} compact bare />
-        {checksIcon(linkedPr.checksStatus, linkedPr.state)}
-        <CaretRight
-          size={9}
-          weight="bold"
-          className={cn("text-fg/35 transition-transform duration-150", prPillActive && "rotate-90 text-fg/65")}
-        />
-      </button>
+      <div className="group relative inline-flex items-center gap-1">
+        <button
+          type="button"
+          className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
+          onClick={() => {
+            if (onTogglePrPane) { onTogglePrPane(); return; }
+            setPrMenuOpen((open) => !open);
+          }}
+          aria-expanded={prPillActive}
+          aria-haspopup="menu"
+          title={`${label}: ${linkedPr.title}`}
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention(allPrs)) }} />
+          <span>{label}</span>
+          <GitHubStackBadge stack={linkedPr.stack} compact bare />
+          {checksIcon(linkedPr.checksStatus, linkedPr.state)}
+          <CaretRight
+            size={9}
+            weight="bold"
+            className={cn("text-fg/35 transition-transform duration-150", prPillActive && "rotate-90 text-fg/65")}
+          />
+        </button>
+        {allPrs.length > 1 ? (
+          <button
+            type="button"
+            className={cn(btnBase, "px-1.5 font-mono text-[9px] tabular-nums")}
+            onClick={() => {
+              if (runtimePin) {
+                // The local PR tab cannot resolve a foreign machine's rows.
+                // The hover list still exposes every PR; the counter opens the
+                // owning machine's primary PR instead of a misleading empty tab.
+                openPr(linkedPr);
+                return;
+              }
+              navigate(`/prs${buildPrsRouteSearch({
+                activeTab: "normal",
+                selectedPrId: null,
+                selectedLaneId: laneId,
+                selectedRebaseItemId: null,
+              })}`);
+            }}
+            title={runtimePin
+              ? "Open the primary pull request on its owning machine; hover for all"
+              : `Show all ${allPrs.length} pull requests for this lane`}
+            aria-label={runtimePin
+              ? "Open the primary pull request on its owning machine"
+              : `Show all ${allPrs.length} pull requests for this lane`}
+          >
+            +{allPrs.length - 1}
+          </button>
+        ) : null}
+        {allPrs.length > 1 ? (
+          <div className="pointer-events-none invisible absolute right-0 top-full z-[90] w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
+            <div className="rounded-lg border border-white/[0.10] bg-[#17171b] p-1.5 shadow-2xl shadow-black/30">
+              <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">Pull requests · {allPrs.length}</div>
+              {allPrs.map((candidate) => (
+                <button
+                  type="button"
+                  key={candidate.id}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
+                  onClick={() => openPr(candidate)}
+                  title={candidate.title || `PR #${candidate.githubPrNumber}`}
+                >
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention([candidate])) }} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 text-[10px] font-semibold text-fg/80">
+                      <span className="font-mono">#{candidate.githubPrNumber}</span>
+                      <span className="text-fg/55">{candidate.state}</span>
+                    </span>
+                    <span className="block truncate text-[9px] text-muted-fg/55">{candidate.title || "Untitled pull request"}</span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1" aria-label={`CI ${candidate.checksStatus}; review ${candidate.reviewStatus}`}>
+                    <span className={cn("h-1.5 w-1.5 rounded-full", candidate.checksStatus === "failing" ? "bg-red-400" : candidate.checksStatus === "passing" ? "bg-emerald-400" : "bg-fg/25")} />
+                    <span className={cn("h-1.5 w-1.5 rounded-full", candidate.reviewStatus === "changes_requested" ? "bg-red-400" : candidate.reviewStatus === "approved" ? "bg-emerald-400" : candidate.reviewStatus === "requested" ? "bg-amber-400" : "bg-fg/25")} />
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     );
-  }, [linkedPr, prPillActive, onTogglePrPane]);
+  }, [laneId, linkedPr, linkedPrs, navigate, onTogglePrPane, openPr, prPillActive]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {
