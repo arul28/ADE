@@ -2842,8 +2842,19 @@ private func eventCard(
       return nil
     case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
       // Background shell commands are owned by the Chat Info pane's Background
-      // section (and a compact timeline finish chip). Mirrors desktop, which
-      // stops rendering an inline scheduled-work card for background_task.
+      // section (and a compact timeline finish chip).
+      //
+      // KNOWN DIVERGENCE — desktop no longer drops these. It folds the
+      // background_task stream into a single live `background_job_line` in the
+      // thread (see `chatTranscriptRows.ts`), anchored at the job's first
+      // sighting and mutated in place at exit. Because the live Claude runtime
+      // reports a backgrounded shell ONLY through this stream — never as
+      // subagent lifecycle events — a running job currently has no mobile
+      // timeline presence at all; only legacy `subagent_*` transcripts produce
+      // the iOS finish chip.
+      //
+      // This is unported work, not a deliberate platform difference. Porting it
+      // needs a machine that can compile and run the iOS target.
       guard kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task" else {
         return nil
       }

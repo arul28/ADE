@@ -116,6 +116,7 @@ import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCac
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
+  ChatInfoHostContext,
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import {
@@ -12954,79 +12955,84 @@ export function AgentChatPane({
                         ))}
                       </div>
                     ) : null}
-                    <AgentChatMessageList
-                      key={subagentView ? `subagent-${subagentView.taskId}` : renderedSessionId ?? "chat-draft"}
-                      events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
-                      showStreamingIndicator={subagentView
-                        ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
-                        : turnActive && selectedSession?.status !== "ended"}
-                      sessionTurnActive={turnActive}
-                      sessionEnded={selectedSession?.status === "ended"}
-                      className="min-h-0 border-0"
-                      surfaceMode={surfaceMode}
-                      surfaceProfile={surfaceProfile}
-                      assistantLabel={assistantLabel}
-                      hasOlderHistory={Boolean(
-                        !subagentView
-                        && renderedSessionId
-                        && (olderHistoryCursorBySession[renderedSessionId] ?? 0) > 0,
-                      )}
-                      loadingOlderHistory={Boolean(
-                        !subagentView
-                        && renderedSessionId
-                        && olderHistoryLoadingBySession[renderedSessionId],
-                      )}
-                      olderHistoryError={
-                        !subagentView && renderedSessionId
-                          ? olderHistoryErrorBySession[renderedSessionId] ?? null
-                          : null
-                      }
-                      onLoadOlderHistory={
-                        !subagentView && renderedSessionId
-                          ? () => {
-                              void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
-                            }
-                          : undefined
-                      }
-                      onRetryOlderHistory={
-                        !subagentView && renderedSessionId
-                          ? () => {
-                              void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
-                            }
-                          : undefined
-                      }
-                      onReturnToLatest={
-                        !subagentView && renderedSessionId
-                          ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
-                          : undefined
-                      }
-                      respondingApprovalIds={respondingApprovalIds}
-                      pendingApprovalIds={pendingApprovalIds}
-                      laneId={laneId}
-                      sessionId={renderedSessionId}
-                      transcriptCollapseCacheKey={subagentView
-                        ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
-                        : undefined}
-                      onInsertDraft={insertComposerDraft}
-                      onRevealChatTerminal={revealChatTerminal}
-                      turnDiffSummaries={selectedTurnDiffSummaries}
-                      onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
-                      onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
-                      onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
-                      onApproval={handleListApproval}
-                      onCodexRecovery={handleListCodexRecovery}
-                      onRecoverContinuity={recoverContinuity}
-                      onRunUnprocessedMessage={handleRunUnprocessedMessage}
-                      onEditUnprocessedMessage={handleEditUnprocessedMessage}
-                      onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
-                      onRetryProviderFailure={handleListRetryProviderFailure}
-                      onChooseProviderFailureModel={handleListChooseProviderFailureModel}
-                      mosaic={subagentView ? undefined : mosaicContext}
-                      scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
-                      proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
-                      allowLocalProofArtifactProtocol={!isRemoteProject}
-                      onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
-                    />
+                    {/* This host owns the chat actions pane and listens for
+                        `ade:chat:open-info`, so transcript affordances that open it
+                        may render here. PersonalChatsPage provides no such context. */}
+                    <ChatInfoHostContext.Provider value={true}>
+                      <AgentChatMessageList
+                        key={subagentView ? `subagent-${subagentView.taskId}` : renderedSessionId ?? "chat-draft"}
+                        events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                        showStreamingIndicator={subagentView
+                          ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
+                          : turnActive && selectedSession?.status !== "ended"}
+                        sessionTurnActive={turnActive}
+                        sessionEnded={selectedSession?.status === "ended"}
+                        className="min-h-0 border-0"
+                        surfaceMode={surfaceMode}
+                        surfaceProfile={surfaceProfile}
+                        assistantLabel={assistantLabel}
+                        hasOlderHistory={Boolean(
+                          !subagentView
+                          && renderedSessionId
+                          && (olderHistoryCursorBySession[renderedSessionId] ?? 0) > 0,
+                        )}
+                        loadingOlderHistory={Boolean(
+                          !subagentView
+                          && renderedSessionId
+                          && olderHistoryLoadingBySession[renderedSessionId],
+                        )}
+                        olderHistoryError={
+                          !subagentView && renderedSessionId
+                            ? olderHistoryErrorBySession[renderedSessionId] ?? null
+                            : null
+                        }
+                        onLoadOlderHistory={
+                          !subagentView && renderedSessionId
+                            ? () => {
+                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
+                              }
+                            : undefined
+                        }
+                        onRetryOlderHistory={
+                          !subagentView && renderedSessionId
+                            ? () => {
+                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
+                              }
+                            : undefined
+                        }
+                        onReturnToLatest={
+                          !subagentView && renderedSessionId
+                            ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
+                            : undefined
+                        }
+                        respondingApprovalIds={respondingApprovalIds}
+                        pendingApprovalIds={pendingApprovalIds}
+                        laneId={laneId}
+                        sessionId={renderedSessionId}
+                        transcriptCollapseCacheKey={subagentView
+                          ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
+                          : undefined}
+                        onInsertDraft={insertComposerDraft}
+                        onRevealChatTerminal={revealChatTerminal}
+                        turnDiffSummaries={selectedTurnDiffSummaries}
+                        onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
+                        onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
+                        onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
+                        onApproval={handleListApproval}
+                        onCodexRecovery={handleListCodexRecovery}
+                        onRecoverContinuity={recoverContinuity}
+                        onRunUnprocessedMessage={handleRunUnprocessedMessage}
+                        onEditUnprocessedMessage={handleEditUnprocessedMessage}
+                        onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
+                        onRetryProviderFailure={handleListRetryProviderFailure}
+                        onChooseProviderFailureModel={handleListChooseProviderFailureModel}
+                        mosaic={subagentView ? undefined : mosaicContext}
+                        scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                        proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
+                        allowLocalProofArtifactProtocol={!isRemoteProject}
+                        onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
+                      />
+                    </ChatInfoHostContext.Provider>
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>

@@ -145,7 +145,7 @@ Two helpers summarise a parsed stream:
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
 | `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId`, `parentAgentId`, `agentType`, and `providerSessionId`; Claude start rows bind the native child to the owning Claude session so transcript drill-in never mistakes the ADE chat id for a provider session id. For Claude / ade-code `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Codex app-server `subAgentActivity` items also flow into these rows and may carry `label`, `model`, and `reasoningEffort` for richer roster labels. Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) and plain Claude Code task runs (`task_type` `other` with no agent metadata, e.g. "Re-run affected test files") are both tracked only for cleanup and filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them, while a backgrounded `Bash` shell (`task_type` `local_bash`/`background`) is routed to the background pane rather than the roster. Every `subagent_result` is gated on a recorded `subagent_started` (`emittedSubagentStartIds`), so an interrupt cannot emit a phantom stopped card for a subagent that never announced; terminal events clear both the taskId and agentId aliases. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. Two additional producers fan into the same three event types: **Claude Workflow runs** — the SDK's undocumented `workflow_progress` snapshot on `system:task_progress` is normalized by `claudeWorkflowProgress.ts` (defensive: malformed entries dropped, previews clipped, counts capped, unknown states degrade to queued/running; an unparseable snapshot leaves the generic task rendering untouched) and diffed per tick into started/progress/result transitions under a stable `<taskId>::a<index>` / latched-agentId identity, so each workflow agent renders as its own row with phase, tokens, and duration, reconnects upsert instead of duplicating, and agents left running when the workflow ends are closed out as `stopped`; and **child chat spawns** — a session created with `orchestrationParentSessionId` outside an orchestration run (e.g. `ade chat create` from a tracked agent shell) emits synthetic `subagent_started`/`subagent_result` events keyed `chat:<childSessionId>` into the parent so the child lists in the parent's subagents panel, its first finished turn reporting completed/failed/stopped. |
-| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. ADE emits it for provider-neutral action schedules and Claude `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, cron/background task lifecycle messages, and durable scheduler transitions. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `paused`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, `firedAt`, `late`, and `durable`; `shared/chatScheduledWork.ts` folds it into active/history Chat Info rows on desktop, ADE Code, and iOS. Parent turn completion does not imply background completion, and `background_task` snapshots whose `sourceTaskId` belongs to a real subagent are omitted from the Background roster to avoid duplicate Agent rows. One-shots progress through `scheduled` -> `fired` -> `completed`; crons record the fire and return to `scheduled` with `lastRunAt` plus their next occurrence. |
+| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. ADE emits it for provider-neutral action schedules and Claude `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, cron/background task lifecycle messages, and durable scheduler transitions. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `paused`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, `firedAt`, `late`, and `durable`; `shared/chatScheduledWork.ts` folds it into active/history Chat Info rows on desktop, ADE Code, and iOS. `background_task` is additionally how the live Claude runtime reports a backgrounded shell command — it emits no subagent lifecycle events for one — so on desktop those snapshots also drive the in-thread `background_job_line`; other kinds bundle as activity. Parent turn completion does not imply background completion, and `background_task` snapshots whose `sourceTaskId` belongs to a real subagent are omitted from the Background roster (and from the job line) to avoid duplicate Agent rows. One-shots progress through `scheduled` -> `fired` -> `completed`; crons record the fire and return to `scheduled` with `lastRunAt` plus their next occurrence. |
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Workflow step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Special-cased renders: the "Promoted to Cursor Cloud" pill, and the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`; the TUI shows the message line; iOS renders it through its existing system_notice mapping). |
@@ -242,12 +242,45 @@ implements a two-layer transform:
      stable render rows — a `subagent_spawn_anchor` at the start
      position (mutated in place as progress arrives) and a
      `subagent_result_card` at the settle position — while backgrounded
-     shell commands collapse to a single `background_finish_chip`. The
+     shell commands collapse to a single `background_job_line`, pushed on
+     the job's first sighting (so a running job is visible in the thread)
+     and mutated in place through to its terminal state, which is never
+     reopened by a late progress tick. Two producers feed that one row and
+     share its key space: the LIVE runtime, which reports background
+     shells only as `scheduled_work_update {kind:"background_task"}`
+     (`emitClaudeBackgroundTaskUpdate` — it emits no subagent lifecycle
+     events for them at all), and legacy `subagent_*` events carrying
+     `taskType: background`, which is all older persisted transcripts
+     hold. Other scheduled kinds are unaffected. Classification can
+     legitimately flip mid-task, so both directions are guarded: once a
+     task has opened a job line it stays a background job (a late
+     `agentType` cannot strand the running line and push a card pair for
+     the same task), and a task that proves itself a real subagent has
+     its job line spliced out before the spawn anchor lands — the
+     level-set path gates only on task type, so an agent that reports
+     none falls through to the background emitter and would otherwise
+     render as a line *and* a card pair. The
      anchor keys (`subagent-spawn:` / `subagent-result:` /
-     `background-chip:<agentKey>`) never change on rebind so the
+     `background-chip:<agentKey>`, the last kept from the finish-chip era
+     on purpose) never change on rebind so the
      virtualizer's measured heights survive; a `transcript_retraction`
-     splice repairs each stored row index. Raw lifecycle events are then
-     hidden.
+     splice repairs each stored row index, including the
+     `backgroundJobRowIndexByKey` map that resolves job lines. Raw
+     lifecycle events are then hidden.
+
+     `BackgroundJobLine` renders that row as a quiet centered rule-line
+     in the same idiom as the scheduled-wake and spawn-return dividers —
+     deliberately not a card, because background jobs are frequent and
+     rarely the point of the turn. Running reads
+     `⚙ Background · <command> · <elapsed>` with a once-per-second
+     ticker anchored to the real start timestamp; a terminal update
+     rewrites the same row to `✓/✗ · exit <code> · <duration>`. The
+     scheduled-work wire format carries no exit code, so a job reported
+     only through the live producer shows a duration measured from its
+     own first sighting and no exit. An `open` affordance dispatches
+     `ade:chat:open-info` to reveal the chat actions pane, where the
+     job's full state and output already live, and is omitted where no
+     host registered a listener for that event.
    - `ade_card` collapses per `cardId` into ONE permanent chronological row
      keyed `ade-card:<cardId>`. A repeat emit mutates that row in place — a new
      object under the same key, merged over the previous payload, so an update

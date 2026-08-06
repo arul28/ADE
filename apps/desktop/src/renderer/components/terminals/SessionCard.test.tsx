@@ -1041,13 +1041,46 @@ describe("SessionCard status vocabulary", () => {
     expect(status.textContent).not.toContain("12m");
   });
 
-  it("shows Working when the foreground turn is idle but background work remains", () => {
+  it("names background work and times it when the foreground turn is idle", () => {
+    // Regression: this row used to read as a bare "Working" with no duration,
+    // which is indistinguishable from a live turn that has stalled — it claimed
+    // the model was thinking when the turn had already ended, and gave no
+    // elapsed to judge it by.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-23T10:00:45.000Z"));
+    try {
+      const { container } = render(
+        <SessionCard
+          session={makeSession({
+            toolType: "claude-chat",
+            runtimeState: "idle",
+            lastActivityAt: "2026-05-23T10:00:00.000Z",
+            activeBackgroundTaskCount: 1,
+          })}
+          lane={lane}
+          isSelected={false}
+          onSelect={vi.fn()}
+          onContextMenu={vi.fn()}
+        />,
+      );
+
+      const status = container.querySelector("[data-session-status]")!;
+      expect(status.getAttribute("data-session-status")).toBe("Background work");
+      expect(status.getAttribute("data-session-tone")).toBe("blue");
+      expect(status.textContent).toContain("Background work");
+      expect(status.textContent).toContain("45s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts concurrent background jobs in the status label", () => {
     const { container } = render(
       <SessionCard
         session={makeSession({
           toolType: "claude-chat",
           runtimeState: "idle",
-          activeBackgroundTaskCount: 1,
+          activeBackgroundTaskCount: 3,
         })}
         lane={lane}
         isSelected={false}
@@ -1057,9 +1090,7 @@ describe("SessionCard status vocabulary", () => {
     );
 
     const status = container.querySelector("[data-session-status]")!;
-    expect(status.getAttribute("data-session-status")).toBe("Working");
-    expect(status.getAttribute("data-session-tone")).toBe("blue");
-    expect(status.textContent).toBe("Working");
+    expect(status.getAttribute("data-session-status")).toBe("Background work ×3");
   });
 
   it("shows a compact Waiting countdown only after the foreground turn is idle", () => {

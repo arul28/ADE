@@ -827,6 +827,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                     key={selectedId}
                     events={selectedEvents}
                     showStreamingIndicator={turnActive}
+                    // Same derivation as AgentChatPane. Rows that tick a live
+                    // clock (a background job stuck `running` after a restart)
+                    // must freeze on an ended chat here too, or an archived
+                    // personal chat counts up forever.
+                    sessionEnded={selectedSession?.status === "ended"}
                     laneId={null}
                     sessionId={selectedId}
                     assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}

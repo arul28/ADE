@@ -297,13 +297,20 @@ words, glyphs, tone, prominence, and elapsed-time behavior through
 `shared/sessionStatusPresentation.ts`. An active ADE chat in its authoritative
 plan interaction mode reads **Planning** in violet; other active turns retain
 **Working**. Once the foreground turn is idle, provider-reported background
-tasks keep the row at **Working**, while an armed `nextWakeAt` reads neutral
-**Waiting** with a compact countdown. These contextual labels do not change the
+tasks read blue **Background work** (**Background work ×N** when several are
+live), while an armed `nextWakeAt` reads neutral
+**Waiting** with a compact countdown. Naming that state rather than reusing
+**Working** matters because the turn has already ended: a duration-less
+"Working" on a finished turn is indistinguishable from one that has hung.
+These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working/Planning elapsed time ticks from
 the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
-use last activity. Waiting refreshes on a quiet 30-second cadence. On row hover or
+reset it; legacy chat rows without that anchor, plus Background work, CLI, and
+Stale durations, use last activity. That makes the Background work elapsed a
+proxy, not the job's own runtime — the session summary does not carry per-job
+start times, so a job launched early in a long turn reads near zero the moment
+the turn ends. Waiting refreshes on a quiet 30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
 the context-appropriate Settle or Un-settle action. An open snooze menu pins the
 action slot visible. A row whose snooze ended early shows the shared Woke
@@ -328,7 +335,7 @@ context menu, lowers opacity, and renders a centered spinner/status overlay.
 This is used while the card's owning lane is being deleted.
 
 Selected and hovered rows spend the reserved background surface; multi-select
-adds a subtle ring. Non-prominent states (working, starting, stale, stopped,
+adds a subtle ring. Non-prominent states (working, background work, starting, stale, stopped,
 ended, snoozed, and settled) recede until hovered, while Needs you, Done, and
 Failed keep full weight. Only canonical `needs_you` contributes to the Work-tab
 highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns

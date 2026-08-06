@@ -2466,6 +2466,40 @@ describe("subagent two-row rendering", () => {
         status: "failed",
         summary: "tests failed",
       }),
+      // Both background-job producers, so `background_job_line`'s context cache
+      // (`backgroundJobRowIndexByKey`) and the `backgroundLineOpened` latch are
+      // covered by the parity guarantee too — they are rebuilt from the event
+      // stream on a full recompute and must not diverge from the incremental
+      // path's carried state.
+      env("2026-06-01T10:00:08.000Z", {
+        type: "scheduled_work_update",
+        id: "background:bg-live",
+        kind: "background_task",
+        status: "running",
+        title: "cd /repo && npm run dev",
+        sourceTaskId: "bg-live",
+      }),
+      env("2026-06-01T10:00:09.000Z", {
+        type: "subagent_started",
+        taskId: "bg-legacy",
+        taskType: "background",
+        description: "cd /repo && npm install",
+      }),
+      env("2026-06-01T10:00:10.000Z", {
+        type: "scheduled_work_update",
+        id: "background:bg-live",
+        kind: "background_task",
+        status: "completed",
+        title: "cd /repo && npm run dev",
+        sourceTaskId: "bg-live",
+      }),
+      env("2026-06-01T10:00:11.000Z", {
+        type: "subagent_result",
+        taskId: "bg-legacy",
+        taskType: "background",
+        status: "completed",
+        summary: "exited 0",
+      }),
     ];
 
     const full = collapseChatTranscriptEvents(stream);
@@ -2584,7 +2618,7 @@ describe("subagent two-row rendering", () => {
     expect(incremental.rows).toEqual(full);
   });
 
-  it("renders old-style background shell subagent events as one finish chip, no cards", () => {
+  it("renders old-style background shell subagent events as one job line, no cards", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2607,13 +2641,123 @@ describe("subagent two-row rendering", () => {
     ]);
 
     expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "background_finish_chip") throw new Error("Expected finish chip");
+    if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("completed");
     expect(rows[0]!.event.label).toBe("npm run dev");
     expect(rows[0]!.key).toBe("background-chip:bg-1");
   });
 
-  it("dedupes a double background result into one finish chip", () => {
+  it("shows a background job in the thread while it is still running", () => {
+    // Regression: the line used to be pushed only on the terminal event, so a
+    // long background job left the thread completely silent while the sidebar
+    // flipped to a duration-less "Working" — together they read as a hung turn.
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm install",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
+    expect(rows[0]!.event.status).toBe("running");
+    expect(rows[0]!.event.label).toBe("npm install");
+    expect(rows[0]!.key).toBe("background-chip:bg-1");
+  });
+
+  it("mutates the running background line in place instead of adding a finish row", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm install",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_progress",
+        taskId: "bg-1",
+        summary: "resolving packages",
+      }),
+      env("2026-06-01T10:00:30.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        status: "completed",
+        summary: "exited 0",
+      }),
+    ]);
+
+    // One row for the job's whole life — spawn, progress, and finish all land
+    // on the same key, so a turn that starts several jobs cannot stack rows.
+    expect(rows).toHaveLength(1);
+    const settled = rows[0]!.event;
+    if (settled.type !== "background_job_line") throw new Error("Expected background job line");
+    if (settled.status === "running") throw new Error("Expected a settled job line");
+    expect(settled.status).toBe("completed");
+    expect(settled.durationMs).toBe(30_000);
+    expect(rows[0]!.key).toBe("background-chip:bg-1");
+  });
+
+  it("does not reopen a settled background line when a late progress tick arrives", () => {
+    // Providers do emit a trailing progress notification after a job already
+    // settled. Rewriting the row back to `running` would drop its exit code and
+    // duration and restart a ticker that then never stops.
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm install",
+      }),
+      env("2026-06-01T10:00:30.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        status: "completed",
+        summary: "exited 0",
+      }),
+      env("2026-06-01T10:00:31.000Z", {
+        type: "subagent_progress",
+        taskId: "bg-1",
+        summary: "late tick",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const settled = rows[0]!.event;
+    if (settled.type !== "background_job_line") throw new Error("Expected background job line");
+    expect(settled.status).toBe("completed");
+  });
+
+  it("keeps a background job as one line when a late agentType would reclassify it", () => {
+    // `preferredSubagentAgentType` upgrades "background" to a real agent type,
+    // which used to flip the classification mid-flight: the running one-liner
+    // was stranded forever AND a full subagent result card was pushed for the
+    // same task.
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm install",
+      }),
+      env("2026-06-01T10:00:30.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        agentType: "Explore",
+        status: "completed",
+        summary: "exited 0",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("background_job_line");
+  });
+
+  it("dedupes a double background result into one job line", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2638,18 +2782,25 @@ describe("subagent two-row rendering", () => {
     ]);
 
     expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "background_finish_chip") throw new Error("Expected finish chip");
+    if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("failed");
   });
 
-  it("drops background_task scheduled_work_update from the in-thread transcript", () => {
+  it("renders the LIVE background_task scheduled_work stream as the job line", () => {
+    // This is the only shape a running app actually emits for a backgrounded
+    // shell: `emitClaudeBackgroundTaskUpdate` fires a background_task
+    // scheduled_work_update on spawn and on exit, and deliberately emits NO
+    // subagent lifecycle events for these tasks. It used to be dropped outright,
+    // so the in-thread row existed only for legacy replayed transcripts and
+    // never appeared for a job you actually started.
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "scheduled_work_update",
-        id: "bg-task-1",
+        id: "background:bg-task-1",
         kind: "background_task",
         status: "running",
         title: "cd /repo && npm run dev",
+        sourceTaskId: "bg-task-1",
       }),
       env("2026-06-01T10:00:01.000Z", {
         type: "scheduled_work_update",
@@ -2660,10 +2811,115 @@ describe("subagent two-row rendering", () => {
       }),
     ]);
 
-    // background_task produces no thread row; the cron survives.
+    expect(rows).toHaveLength(2);
+    const job = rows[0]!.event;
+    if (job.type !== "background_job_line") throw new Error("Expected background job line");
+    expect(job.status).toBe("running");
+    expect(job.label).toBe("npm run dev");
+    // Same key space as the legacy subagent producer, so a transcript carrying
+    // both shapes for one task still renders exactly one row.
+    expect(rows[0]!.key).toBe("background-chip:bg-task-1");
+    // Other scheduled kinds are untouched.
+    if (rows[1]!.event.type !== "scheduled_work_update") throw new Error("Expected scheduled_work_update");
+    expect(rows[1]!.event.kind).toBe("cron");
+  });
+
+  it("never renders a job line for a real subagent reported through the background stream", () => {
+    // `applyClaudeBackgroundTasksLevel` gates only on task_type, so an agent
+    // that reports none reaches the background emitter. Without the identity
+    // guard the agent got its spawn/result cards AND a job line wedged between
+    // them. Both orderings are covered — the stream is unspecified.
+    const scheduledFirst = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "scheduled_work_update",
+        id: "background:agent-1",
+        kind: "background_task",
+        status: "running",
+        title: "Investigate route tree",
+        sourceTaskId: "agent-1",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate route tree",
+      }),
+    ]);
+    expect(scheduledFirst.map((row) => row.event.type)).toEqual(["subagent_spawn_anchor"]);
+
+    const lifecycleFirst = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate route tree",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "scheduled_work_update",
+        id: "background:agent-1",
+        kind: "background_task",
+        status: "running",
+        title: "Investigate route tree",
+        sourceTaskId: "agent-1",
+      }),
+    ]);
+    expect(lifecycleFirst.map((row) => row.event.type)).toEqual(["subagent_spawn_anchor"]);
+  });
+
+  it("drops the job line when a real subagent's ONLY lifecycle event is its result", () => {
+    // Reachable from a truncated or replayed transcript: history paging can
+    // drop `subagent_started` while the scheduled-work update survives. The
+    // guard used to live only on the spawn path, so this ordering left the job
+    // line in the transcript beside the agent's card pair.
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "scheduled_work_update",
+        id: "background:agent-1",
+        kind: "background_task",
+        status: "running",
+        title: "Investigate route tree",
+        sourceTaskId: "agent-1",
+      }),
+      env("2026-06-01T10:00:30.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        agentType: "Explore",
+        status: "completed",
+        summary: "found it",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.event.type)).not.toContain("background_job_line");
+    expect(rows.map((row) => row.event.type)).toEqual(["subagent_result_card"]);
+  });
+
+  it("settles the live background job line in place with a measured duration", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "scheduled_work_update",
+        id: "background:bg-task-1",
+        kind: "background_task",
+        status: "running",
+        title: "cd /repo && npm test",
+        sourceTaskId: "bg-task-1",
+      }),
+      env("2026-06-01T10:02:00.000Z", {
+        type: "scheduled_work_update",
+        id: "background:bg-task-1",
+        kind: "background_task",
+        status: "failed",
+        title: "cd /repo && npm test",
+        sourceTaskId: "bg-task-1",
+      }),
+    ]);
+
     expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "scheduled_work_update") throw new Error("Expected scheduled_work_update");
-    expect(rows[0]!.event.kind).toBe("cron");
+    const settled = rows[0]!.event;
+    if (settled.type !== "background_job_line") throw new Error("Expected background job line");
+    if (settled.status === "running") throw new Error("Expected a settled job line");
+    expect(settled.status).toBe("failed");
+    // Measured from the row's own first sighting, not from the terminal event.
+    expect(settled.durationMs).toBe(120_000);
   });
 
   it("derives a wake divider before every unattended scheduled turn", () => {

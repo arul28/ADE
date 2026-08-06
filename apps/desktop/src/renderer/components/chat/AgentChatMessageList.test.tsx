@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type {
   AgentChatApprovalDecision,
@@ -66,6 +66,7 @@ import {
   deriveTurnModelState,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
+  ChatInfoHostContext,
   getTranscriptCollapseCacheKeysForTests,
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
@@ -119,6 +120,7 @@ function renderMessageList(
     assistantLabel?: string;
     initialState?: Record<string, unknown>;
     showStreamingIndicator?: boolean;
+    sessionEnded?: boolean;
     sessionId?: string | null;
     transcriptCollapseCacheKey?: string | null;
     laneId?: string | null;
@@ -146,6 +148,7 @@ function renderMessageList(
         events={events}
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
+        sessionEnded={options?.sessionEnded}
         sessionId={options?.sessionId}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -3169,6 +3172,155 @@ describe("AgentChatMessageList transcript rendering", () => {
     const transcriptOnly = renderMessageList(sharedEvents, { showStreamingIndicator: false });
 
     expect(transcriptOnly.container.textContent).not.toContain("Running command");
+  });
+
+  it("keeps the elapsed timer ticking when the first tool call wraps the status line in a button", () => {
+    // The status line renders bare while a turn has no tool activity and moves
+    // inside an expander <button> the moment the first tool entry lands. That
+    // swap remounts the timer <span>, so a timer that captured the element once
+    // would keep writing into the detached node and freeze on screen at "0s"
+    // while "taking longer than usual" still appears — the reported bug.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-17T10:00:00.000Z"));
+    try {
+      const before: AgentChatEventEnvelope[] = [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          sequence: 1,
+          event: { type: "user_message", text: "go", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          sequence: 2,
+          event: { type: "text", text: "Let me check that.", itemId: "text-1", turnId: "turn-1" },
+        },
+      ];
+      const after: AgentChatEventEnvelope[] = [
+        ...before,
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:05.000Z",
+          sequence: 3,
+          event: {
+            type: "command",
+            command: "npm test",
+            cwd: "/repo",
+            output: "",
+            itemId: "cmd-1",
+            turnId: "turn-1",
+            status: "completed",
+            exitCode: 0,
+          },
+        },
+      ];
+
+      const view = renderMessageList(before, { showStreamingIndicator: true });
+      act(() => { vi.advanceTimersByTime(5_000); });
+      expect(view.container.textContent).toContain("working for 5s");
+
+      view.rerender(
+        <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+          <AgentChatMessageList events={after} showStreamingIndicator />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+      // The expander button is now present, so the status line remounted.
+      expect(screen.getByRole("button", { name: /activity from the active turn/i })).toBeTruthy();
+
+      act(() => { vi.advanceTimersByTime(5_000); });
+      expect(view.container.textContent).toContain("working for 10s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders a running background job as one line, with no dead open affordance", () => {
+    const runningJob: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "background:bg-1",
+          kind: "background_task",
+          status: "running",
+          title: "cd /repo && npm install",
+          sourceTaskId: "bg-1",
+        },
+      },
+    ];
+
+    // No host is listening for `ade:chat:open-info` (PersonalChatsPage is one),
+    // so the affordance must not render at all — a button that silently does
+    // nothing is worse than an absent one.
+    const withoutHost = renderMessageList(runningJob);
+    const line = withoutHost.container.querySelector("[data-background-job]")!;
+    expect(line).toBeTruthy();
+    expect(line.getAttribute("data-background-job-status")).toBe("running");
+    expect(line.textContent).toContain("npm install");
+    expect(withoutHost.container.querySelector("[data-background-job] button")).toBeNull();
+    // Windows parity: bare ⚙/✓/✗ codepoints resolve to Segoe UI Emoji there,
+    // rendering as heavier colour glyphs off the baseline of the rule line.
+    // Status is carried by a Phosphor <svg>, never a text codepoint.
+    expect(line.textContent).not.toMatch(/[⚙✓✗]/);
+    expect(line.querySelector("svg")).toBeTruthy();
+    cleanup();
+
+    // Inside a host that owns the actions pane, the affordance appears and works.
+    const withHost = render(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <ChatInfoHostContext.Provider value={true}>
+          <AgentChatMessageList events={runningJob} />
+        </ChatInfoHostContext.Provider>
+      </MemoryRouter>,
+    );
+    const openButton = withHost.container.querySelector("[data-background-job] button")!;
+    expect(openButton).toBeTruthy();
+
+    const openInfo = vi.fn();
+    window.addEventListener("ade:chat:open-info", openInfo);
+    try {
+      fireEvent.click(openButton);
+      expect(openInfo).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("ade:chat:open-info", openInfo);
+    }
+  });
+
+  it("does not tick a background job that never finished in an ended session", () => {
+    // An archived chat whose job never got a terminal update stays `running`
+    // forever. Reporting "1440h" is arithmetically right and useless; the row
+    // shows no duration at all rather than asserting a number nobody should act
+    // on.
+    const endedJob: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "background:bg-1",
+          kind: "background_task",
+          status: "running",
+          title: "cd /repo && npm run dev",
+          sourceTaskId: "bg-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ];
+
+    const rendered = renderMessageList(endedJob, { sessionEnded: true });
+    const line = rendered.container.querySelector("[data-background-job]")!;
+    expect(line).toBeTruthy();
+    expect(line.getAttribute("data-background-job-status")).toBe("running");
+    expect(line.textContent).toContain("npm run dev");
+    // No elapsed at all — not a frozen one, and not a ticking one.
+    expect(line.textContent).not.toMatch(/\d+\s*(s|m|h|d)\b/);
   });
 
   it("keeps narration and file changes inline while completed tool activity moves behind the status line", () => {

@@ -3,9 +3,10 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSpawnKind, CodexWebSearchResult } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, CodexWebSearchResult } from "../../../shared/types";
 import {
   isBackgroundShellCommand,
+  isRealSubagent,
   longerSubagentText,
   normalizeSubagentLifecycleEvent,
   preferSubagentSummary,
@@ -202,19 +203,46 @@ export type SubagentStoppedGroupEvent = {
 };
 
 /**
- * Compact finish chip for a backgrounded shell command (no spawn/result cards).
- * Row key: `background-chip:${agentKey}`.
+ * The whole in-thread presence of a backgrounded shell command: ONE quiet
+ * one-liner, pushed where the job started and mutated in place through to its
+ * terminal state (no spawn/result cards, and never a second row).
+ *
+ * It used to be a finish-only chip, so a job that ran for minutes left the
+ * thread completely silent while the sidebar flipped to a duration-less
+ * "Working" — the two together read as a stalled turn. Showing the line from
+ * the start costs no extra rows (the terminal update reuses this one) and gives
+ * the run somewhere to point at.
+ *
+ * TWO producers feed this one row type, and they must land on the SAME key or a
+ * mixed transcript renders the job twice:
+ *   - the live Claude runtime, which reports background shells as
+ *     `scheduled_work_update {kind:"background_task"}` (see
+ *     `emitClaudeBackgroundTaskUpdate`) — this is the only producer a running
+ *     app actually emits;
+ *   - legacy `subagent_*` lifecycle events carrying `taskType: background`,
+ *     which is all that older persisted transcripts contain.
+ *
+ * Row key: `background-chip:${agentKey}` — unchanged from the finish-chip era on
+ * purpose; the virtualizer's measuredHeights are keyed by it.
+ *
+ * Modelled as a union so "running ⇒ no outcome yet" is enforced by the type
+ * rather than by a comment on four independently-nullable fields.
  */
-export type BackgroundFinishChipRenderEvent = {
-  type: "background_finish_chip";
+export type BackgroundJobLineRenderEvent = {
+  type: "background_job_line";
   agentKey: string;
   label: string;
-  status: SubagentCardTerminalStatus;
-  exitCode: number | null;
-  durationMs: number | null;
   startedAt: string | null;
-  endedAt: string;
-};
+} & (
+  | { status: "running" }
+  | {
+      status: SubagentCardTerminalStatus;
+      /** Null when the producer reports no exit code (the live runtime does not). */
+      exitCode: number | null;
+      /** Wall-clock between the job's first and last row update. */
+      durationMs: number | null;
+    }
+);
 
 export type ScheduledWakeDividerRenderEvent = {
   type: "scheduled_wake_divider";
@@ -248,7 +276,7 @@ export type ChatTranscriptRenderEvent =
   | WorkLogRenderEvent
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
-  | BackgroundFinishChipRenderEvent
+  | BackgroundJobLineRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent;
 
@@ -274,8 +302,10 @@ type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }
 /**
  * Live per-subagent state threaded through the collapse pass. `rowIndex` lets an
  * appended progress/result event index back into the rows array and mutate the
- * anchor in place. Subagent lifecycle handling never splices rows; transcript
- * retractions repair every stored position after removing a text row.
+ * anchor in place. Subagent lifecycle handling splices exactly one kind of row —
+ * a stale background-job line the scheduled-work producer opened for what turns
+ * out to be a real subagent; transcript retractions remove text rows. Both
+ * repair every stored position afterwards.
  */
 type SubagentAnchorState = {
   agentKey: string;
@@ -291,7 +321,14 @@ type SubagentAnchorState = {
   /** Index of the result-card row once the agent ends (null until then). */
   resultRowIndex: number | null;
   /** Index of the background finish-chip row (null unless a background shell). */
-  chipRowIndex: number | null;
+  /**
+   * Latched once this task has opened a background-job line. Classification is
+   * derived per event and can legitimately FLIP: a late `agentType` upgrades
+   * `background` to a real subagent type, which would otherwise strand the
+   * running one-liner forever AND push a full result card for the same task.
+   * Once the line exists, the task stays a background job.
+   */
+  backgroundLineOpened: boolean;
   description: string | null;
   agentType: string | null;
   taskType: string | null;
@@ -344,6 +381,12 @@ type CollapseTranscriptContext = {
    * the update — the same discipline as the subagent spawn anchor above.
    */
   adeCardRowIndexById: Map<string, number>;
+  /**
+   * `background_job_line` rows keyed by their row key. Keyed by row key rather
+   * than task id because two different producers (live scheduled-work updates
+   * and legacy subagent lifecycle events) upsert into the same key space.
+   */
+  backgroundJobRowIndexByKey: Map<string, number>;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
@@ -357,6 +400,7 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     recoveryRowIndexByTurn: new Map(),
     stalledRowIndexByTurn: new Map(),
     adeCardRowIndexById: new Map(),
+    backgroundJobRowIndexByKey: new Map(),
   };
 }
 
@@ -965,7 +1009,7 @@ function backgroundChipKey(agentKey: string): string {
   return `background-chip:${agentKey}`;
 }
 
-type SubagentRowPosition = "rowIndex" | "resultRowIndex" | "chipRowIndex";
+type SubagentRowPosition = "rowIndex" | "resultRowIndex";
 
 function resolveSubagentRowPosition(
   rows: ChatTranscriptRenderEnvelope[],
@@ -991,7 +1035,7 @@ function repairSubagentRowPositionsAfterSplice(
   removedIndex: number,
 ): void {
   for (const state of new Set(context.subagentAnchors.values())) {
-    for (const position of ["rowIndex", "resultRowIndex", "chipRowIndex"] as const) {
+    for (const position of ["rowIndex", "resultRowIndex"] as const) {
       const storedIndex = state[position];
       if (storedIndex === removedIndex) state[position] = null;
       else if (storedIndex != null && storedIndex > removedIndex) state[position] = storedIndex - 1;
@@ -1010,6 +1054,7 @@ function repairIndexedTranscriptRowsAfterSplice(
     context.recoveryRowIndexByTurn,
     context.stalledRowIndexByTurn,
     context.adeCardRowIndexById,
+    context.backgroundJobRowIndexByKey,
   ]) {
     for (const [key, storedIndex] of rowIndexes) {
       if (storedIndex === removedIndex) rowIndexes.delete(key);
@@ -1025,18 +1070,27 @@ function repairIndexedTranscriptRowsAfterSplice(
  * appends without a context, and it guarantees a `cardId` can never mint two
  * rows sharing one React key. Both agree because only one row ever holds a key.
  */
+function resolveKeyedRowIndex(
+  rows: ChatTranscriptRenderEnvelope[],
+  rowIndexes: Map<string, number> | undefined,
+  lookupKey: string,
+  expectedKey: string,
+): number | null {
+  const stored = rowIndexes?.get(lookupKey);
+  if (stored != null && rows[stored]?.key === expectedKey) return stored;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]?.key === expectedKey) return index;
+  }
+  return null;
+}
+
 function resolveAdeCardRowIndex(
   rows: ChatTranscriptRenderEnvelope[],
   context: CollapseTranscriptContext | undefined,
   cardId: string,
   expectedKey: string,
 ): number | null {
-  const stored = context?.adeCardRowIndexById.get(cardId);
-  if (stored != null && rows[stored]?.key === expectedKey) return stored;
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    if (rows[index]?.key === expectedKey) return index;
-  }
-  return null;
+  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey);
 }
 
 type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
@@ -1114,6 +1168,120 @@ function durationMsBetween(startedAt: string | null, endedAt: string): number | 
 function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | null {
   const value = (event as { exitCode?: unknown }).exitCode;
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Human label for a background job's one-liner. `backgroundCommandLabel` strips
+ * the shell noise (`cd /repo && …`) down to the part worth reading; the raw
+ * command and description are the fallbacks, in that order.
+ */
+function backgroundJobLabel(state: SubagentAnchorState): string {
+  return backgroundCommandLabel(state.command ?? state.description ?? "")
+    || state.command
+    || state.description
+    || "Background command";
+}
+
+/**
+ * Row position of an existing background-job line, keyed by its own row key.
+ */
+function resolveBackgroundJobRowIndex(
+  rows: ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext | undefined,
+  expectedKey: string,
+): number | null {
+  return resolveKeyedRowIndex(rows, context?.backgroundJobRowIndexByKey, expectedKey, expectedKey);
+}
+
+/**
+ * Drop a background-job line that a later event proved was never a background
+ * job at all — see the real-subagent guard in the `background_task` handler.
+ */
+function removeBackgroundJobLine(
+  rows: ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext,
+  expectedKey: string,
+): void {
+  const rowIndex = resolveBackgroundJobRowIndex(rows, context, expectedKey);
+  if (rowIndex == null) return;
+  rows.splice(rowIndex, 1);
+  repairIndexedTranscriptRowsAfterSplice(context, rowIndex);
+}
+
+/**
+ * Push the job's one-liner, or mutate the existing one in place — a NEW object
+ * under the SAME row key, matching how the spawn anchor updates. Keeping one
+ * row for the job's whole life is what stops a busy turn from stacking a
+ * running row and a finished row for every background command it starts, and is
+ * what lets the live and legacy producers converge on one row.
+ *
+ * A terminal row is never reopened. Providers do emit a trailing progress tick
+ * after a job has already settled, and rewriting the row back to `running`
+ * would drop its exit code and duration and restart a ticker that then never
+ * stops.
+ */
+function upsertBackgroundJobLine(
+  rows: ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext | undefined,
+  expectedKey: string,
+  timestamp: string,
+  event: BackgroundJobLineRenderEvent,
+): void {
+  const rowIndex = resolveBackgroundJobRowIndex(rows, context, expectedKey);
+  if (rowIndex == null) {
+    context?.backgroundJobRowIndexByKey.set(expectedKey, rows.length);
+    rows.push({ key: expectedKey, timestamp, event });
+    return;
+  }
+  const existing = rows[rowIndex]!.event;
+  if (existing.type === "background_job_line" && existing.status !== "running") {
+    if (event.status === "running") return;
+  }
+  context?.backgroundJobRowIndexByKey.set(expectedKey, rowIndex);
+  rows[rowIndex] = { key: expectedKey, timestamp, event };
+}
+
+/**
+ * The job's start anchor: whatever the row already recorded, so a terminal
+ * update computes its duration from the first sighting rather than from itself.
+ */
+function backgroundJobStartedAt(
+  rows: ChatTranscriptRenderEnvelope[],
+  rowIndex: number | null,
+  fallback: string,
+): string {
+  if (rowIndex == null) return fallback;
+  const existing = rows[rowIndex]?.event;
+  if (existing?.type !== "background_job_line") return fallback;
+  return existing.startedAt ?? fallback;
+}
+
+/**
+ * Scheduled-work status → the job line's status. `paused` has no meaning for a
+ * background shell (nothing pauses one) and is treated as still running rather
+ * than inventing a terminal outcome the runtime never reported.
+ */
+function backgroundJobStatusFromScheduledWork(
+  status: AgentChatScheduledWorkStatus,
+): SubagentCardStatus {
+  // Enumerated rather than defaulted: a terminal status added to
+  // AgentChatScheduledWorkStatus later must fail the build here instead of
+  // silently rendering as a job that never finishes.
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "stopped":
+    case "cancelled":
+      return "stopped";
+    case "failed":
+    case "missed":
+      return "failed";
+    case "scheduled":
+    case "paused":
+    case "running":
+    case "fired":
+      return "running";
+  }
 }
 
 // Best-effort parent label from the anchors map — the parent's description or
@@ -1203,9 +1371,11 @@ function classificationInput(state: SubagentAnchorState) {
  * Handle one of the three subagent lifecycle events. Returns true if the event
  * was consumed (caller should stop). Mutates rows and context in place.
  *
- * INVARIANT: this never SPLICES rows — only pushes at the tail or replaces an
- * existing row by its stored index. Every replacement verifies the stable key
- * and repairs a stale position before mutating.
+ * INVARIANT: the ONLY splice is the stale background-job-line drop below, which
+ * repairs every stored position through `repairIndexedTranscriptRowsAfterSplice`.
+ * Card rows are never spliced — only pushed at the tail or replaced by their
+ * stored index, and every replacement verifies the stable key and repairs a
+ * stale position before mutating.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -1239,7 +1409,7 @@ function handleSubagentLifecycleEvent(
       renderKeyBase: agentKey,
       rowIndex: null,
       resultRowIndex: null,
-      chipRowIndex: null,
+      backgroundLineOpened: false,
       description: null,
       agentType: null,
       taskType: null,
@@ -1267,10 +1437,51 @@ function handleSubagentLifecycleEvent(
   }
 
   enrichSubagentStateFromEvent(state, event);
-  const backgroundShell = isBackgroundShellCommand(classificationInput(state));
+  const backgroundShell = state.backgroundLineOpened
+    || isBackgroundShellCommand(classificationInput(state));
+
+  // The counterpart to the real-subagent guard in the `background_task` handler:
+  // scheduled-work and lifecycle ordering is unspecified, so the job line may
+  // already exist by the time this task proves itself a real subagent. Drop it
+  // before any card lands, or the agent renders as a job line AND a card pair.
+  //
+  // Hoisted above the event-type split deliberately: a truncated or replayed
+  // transcript can deliver `subagent_result` as a task's ONLY lifecycle event,
+  // which never passes through the spawn branch.
+  //
+  // Note the two guards are counterparts, NOT complements: that one requires
+  // `isRealSubagent`, this one only requires "not proven a background shell".
+  // A task with neither `taskType` nor `agentType` satisfies neither, so it can
+  // still have its line re-created by a later scheduled-work update. That gap is
+  // unreachable today — the runtime emits no lifecycle events for background
+  // tasks — so both sides are deliberately left as they are rather than flipped
+  // blind to a predicate the tests do not pin.
+  if (!backgroundShell) {
+    for (const identity of [state.renderKeyBase, agentKey, taskId]) {
+      if (identity) removeBackgroundJobLine(rows, context, backgroundChipKey(identity));
+    }
+  }
 
   if (event.type === "subagent_started" || event.type === "subagent_progress") {
-    if (backgroundShell) return true; // background shell → chip only, no cards
+    // Background shell → the single one-liner, never spawn/result cards. Pushed
+    // on the first lifecycle event so the run is visible while it runs; the
+    // terminal event below mutates this same row rather than adding another.
+    // A progress tick that arrives AFTER the job settled is ignored rather than
+    // reopening the finished row (`upsertBackgroundJobLine` enforces the same
+    // rule for the live producer).
+    if (backgroundShell) {
+      if (state.endedAt == null) {
+        state.backgroundLineOpened = true;
+        upsertBackgroundJobLine(rows, context, backgroundChipKey(state.renderKeyBase), timestamp, {
+          type: "background_job_line",
+          agentKey: state.renderKeyBase,
+          label: backgroundJobLabel(state),
+          status: "running",
+          startedAt: state.startedAt,
+        });
+      }
+      return true;
+    }
     if (state.rowIndex == null) {
       // First lifecycle → push the spawn anchor and record its index.
       state.status = "running";
@@ -1312,29 +1523,17 @@ function handleSubagentLifecycleEvent(
   const terminalStatus = event.status;
 
   if (backgroundShell) {
-    const label = backgroundCommandLabel(state.command ?? state.description ?? "")
-      || state.command
-      || state.description
-      || "Background command";
     state.endedAt = timestamp;
-    const chipEvent: BackgroundFinishChipRenderEvent = {
-      type: "background_finish_chip",
+    state.backgroundLineOpened = true;
+    upsertBackgroundJobLine(rows, context, backgroundChipKey(state.renderKeyBase), timestamp, {
+      type: "background_job_line",
       agentKey: state.renderKeyBase,
-      label,
+      label: backgroundJobLabel(state),
       status: terminalStatus,
       exitCode: backgroundExitCode(event),
       durationMs: durationMsBetween(state.startedAt, timestamp),
       startedAt: state.startedAt,
-      endedAt: timestamp,
-    };
-    if (state.chipRowIndex == null) {
-      state.chipRowIndex = rows.length;
-      rows.push({ key: backgroundChipKey(state.renderKeyBase), timestamp, event: chipEvent });
-    } else {
-      const expectedKey = backgroundChipKey(state.renderKeyBase);
-      const rowIndex = resolveSubagentRowPosition(rows, state, "chipRowIndex", expectedKey);
-      if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: chipEvent };
-    }
+    });
     return true;
   }
 
@@ -1859,14 +2058,60 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
-  // `background_task` scheduled work is owned by the actions pane — never render
-  // an in-thread row for it. Other scheduled kinds keep their current behavior.
+  // `background_task` scheduled work IS how the live Claude runtime reports a
+  // backgrounded shell command — `emitClaudeBackgroundTaskUpdate` fires one of
+  // these on spawn and one on exit, and deliberately emits no subagent
+  // lifecycle events for these tasks at all. This used to be dropped outright
+  // ("the actions pane owns it"), which left a running job with no in-thread
+  // presence whatsoever while the sidebar flipped to a bare "Working" — the two
+  // together read as a hung turn. It now drives the same single one-liner the
+  // legacy subagent path produces, on the same row key, so a transcript holding
+  // both shapes still renders exactly one row per job.
+  //
+  // Other scheduled kinds (wakeup/cron/loop) keep their existing behavior.
   if (event.type === "scheduled_work_update" && event.kind === "background_task") {
+    const taskKey = event.sourceTaskId?.trim() || event.id;
+    if (!taskKey) return;
+    // A REAL subagent can also be reported through this stream: the level-set
+    // path (`applyClaudeBackgroundTasksLevel`) gates only on task_type, so an
+    // agent that reports none falls through to the background emitter. Without
+    // this guard the agent gets its spawn/result card pair AND a job line
+    // wedged between them. The identity filter matches the one
+    // `deriveBackgroundItems` and the iOS timeline already apply.
+    const anchor = context?.subagentAnchors.get(taskKey);
+    if (anchor && isRealSubagent(classificationInput(anchor))) return;
+    const expectedKey = backgroundChipKey(taskKey);
+    const rowIndex = resolveBackgroundJobRowIndex(rows, context, expectedKey);
+    const startedAt = backgroundJobStartedAt(rows, rowIndex, envelope.timestamp);
+    const status = backgroundJobStatusFromScheduledWork(event.status);
+    const label = backgroundCommandLabel(event.title ?? "")
+      || event.title
+      || "Background command";
+    upsertBackgroundJobLine(
+      rows,
+      context,
+      expectedKey,
+      envelope.timestamp,
+      status === "running"
+        ? { type: "background_job_line", agentKey: taskKey, label, startedAt, status }
+        : {
+            type: "background_job_line",
+            agentKey: taskKey,
+            label,
+            startedAt,
+            status,
+            // The scheduled-work wire format carries no exit code; duration is
+            // measured from the row's own first sighting instead of trusting
+            // the free-text summary the emitter composes.
+            exitCode: null,
+            durationMs: durationMsBetween(startedAt, envelope.timestamp),
+          },
+    );
     return;
   }
 
-  // Subagent lifecycle → two-row spawn/result cards (or a single finish chip for
-  // background shell commands). Normalize canonical dotted events first, then
+  // Subagent lifecycle → two-row spawn/result cards (or a single live one-liner
+  // for background shell commands). Normalize canonical dotted events first, then
   // fold every lifecycle event into the anchor state (handled BEFORE the generic
   // passthrough so no raw subagent_* row ever reaches the activity bundler).
   if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
@@ -2278,9 +2523,10 @@ export function groupConsecutiveWorkLogRows(
 }
 
 function isActivityBundleSourceEvent(event: ChatTranscriptRenderEvent): event is ChatActivityBundleItem["event"] {
-  // Subagent lifecycle events now render as dedicated spawn/result/chip rows and
-  // never reach here. `background_task` scheduled work is dropped in the collapse
-  // pass (the actions pane owns it); other scheduled kinds keep bundling.
+  // Subagent lifecycle events now render as dedicated spawn/result/job-line rows
+  // and never reach here. `background_task` scheduled work is consumed by the
+  // collapse pass into a `background_job_line`; other scheduled kinds keep
+  // bundling.
   return event.type === "todo_update"
     || (event.type === "scheduled_work_update" && event.kind !== "background_task");
 }

@@ -96,7 +96,7 @@ import {
   shouldCollapseUserMessageText,
   summarizeDiffStats,
   summarizeInlineText,
-  type BackgroundFinishChipRenderEvent,
+  type BackgroundJobLineRenderEvent,
   type ChatActivityBundleEvent,
   type ChatActivityBundleItem,
   type CollapseTranscriptResult,
@@ -109,7 +109,7 @@ import {
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
   type ChatWorkLogEntry,
 } from "./chatTranscriptRows";
-import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
+import { BackgroundJobLine, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { AdeCard } from "./AdeCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
@@ -957,7 +957,7 @@ type RenderEnvelope = {
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
   | SubagentStoppedGroupEvent
-  | BackgroundFinishChipRenderEvent
+  | BackgroundJobLineRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent;
 };
@@ -1407,6 +1407,23 @@ function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: 
     /* no-op */
   }
 }
+
+/**
+ * True inside a host that owns a chat actions pane and listens for
+ * `ade:chat:open-info` — i.e. `AgentChatPane`, which provides it.
+ * `PersonalChatsPage` mounts the same transcript with no actions pane and
+ * therefore leaves it false, so an affordance that opens that pane never
+ * renders as a button that silently does nothing.
+ *
+ * Deliberately a context and NOT a module-level "is any host alive" registry:
+ * `App` renders every `ProjectSurface` and only toggles `active`, so each
+ * `AgentChatPane` stays MOUNTED while Personal Chats is open. A global count
+ * would read true on exactly the surface that has no pane, and clicking would
+ * dispatch to a hidden pane that drops the event on the `sessionId` guard —
+ * recreating the dead affordance this is meant to prevent. Only the owning
+ * subtree can answer this question.
+ */
+export const ChatInfoHostContext = React.createContext(false);
 
 function activityBundleDedupeKey(item: ChatActivityBundleItem): string {
   const event = item.event;
@@ -1965,16 +1982,32 @@ function WorkingIndicator({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
-  const timerRef = useRef<HTMLSpanElement>(null);
+  const timerRef = useRef<HTMLSpanElement | null>(null);
+  const startMsRef = useRef<number | null>(null);
   const [longRunning, setLongRunning] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const hasToolActivity = toolEntries.length > 0;
+  // The status line swaps between a bare <span> and an expander <button> the
+  // moment the turn's first tool entry lands, which makes React unmount and
+  // remount the timer element. Painting through a *callback* ref (rather than
+  // an element captured once when the ticker started) reattaches the counter to
+  // whichever node is currently mounted and repaints it in the same commit, so
+  // the swap can't strand the ticker on a detached node — the bug that froze
+  // the display at "0s" while "taking longer than usual" still appeared.
+  const attachTimer = useCallback((el: HTMLSpanElement | null) => {
+    timerRef.current = el;
+    if (!el) return;
+    const startMs = startMsRef.current ?? startedAt ?? Date.now();
+    el.textContent = formatElapsedSeconds((Date.now() - startMs) / 1000);
+  }, [startedAt]);
   useEffect(() => {
     const startMs = startedAt ?? Date.now();
-    const el = timerRef.current;
+    startMsRef.current = startMs;
     let handle = 0;
     const tick = () => {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      // Re-read the ref every tick — see attachTimer above.
+      const el = timerRef.current;
       if (el) el.textContent = formatElapsedSeconds(elapsedSec);
       setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
       handle = window.setTimeout(tick, 1000);
@@ -1988,7 +2021,7 @@ function WorkingIndicator({
       <span className="min-w-0 truncate font-medium text-fg/55">{activity ?? "Working"}</span>
       <span className="shrink-0 text-fg/28" aria-hidden>·</span>
       <span className="shrink-0 text-fg/38">
-        working for <span ref={timerRef} className="tabular-nums">0s</span>
+        working for <span ref={attachTimer} className="tabular-nums">0s</span>
       </span>
       {longRunning ? (
         <>
@@ -2667,6 +2700,8 @@ function renderEvent(
     assistantTurnCopy?: { text: string } | null;
     /** Interrupt-receipt identities whose queued messages already ran → collapse. */
     staleInterruptReceipts?: Set<string>;
+    /** True when a host is listening for `ade:chat:open-info` (see the registry). */
+    chatInfoHostAvailable?: boolean;
     /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
     onCancelQueuedMessage?: (uuid: string) => void;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
@@ -3106,9 +3141,22 @@ function renderEvent(
     );
   }
 
-  /* ── Background command finish chip ── */
-  if (event.type === "background_finish_chip") {
-    return <BackgroundFinishChip event={event} />;
+  /* ── Background command one-liner (live from spawn through finish) ── */
+  if (event.type === "background_job_line") {
+    return (
+      <BackgroundJobLine
+        event={event}
+        sessionEnded={options?.sessionEnded}
+        // Same channel the sibling subagent card uses two branches up: the pane
+        // already listens for `ade:chat:open-info` and opens the agents tab,
+        // where background jobs live. A null taskId opens the tab without
+        // selecting an agent. Omitted entirely on a host with no actions pane,
+        // so the affordance never renders as a button that does nothing.
+        onOpenBackgroundJobs={options?.chatInfoHostAvailable
+          ? () => openChatInfoFromActivity(options?.sessionId, null)
+          : undefined}
+      />
+    );
   }
 
   /* ── Structured Question ── */
@@ -4613,6 +4661,7 @@ const EventRow = React.memo(function EventRow({
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
     && Boolean(isLatestWorkLog);
+  const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   return (
     <div
       data-chat-anchored-row={anchored ? "true" : undefined}
@@ -4689,6 +4738,7 @@ const EventRow = React.memo(function EventRow({
             sessionId,
             runtimeName,
             onRevealChatTerminal,
+            chatInfoHostAvailable,
             onRewindFiles,
             turnDiffSummaries,
             mosaic,

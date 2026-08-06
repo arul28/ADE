@@ -169,15 +169,24 @@ export function sessionStatusPresentation(
     };
   }
 
-  if (
-    (phase === "ready" || phase === "idle")
-    && (activity.activeBackgroundTaskCount ?? 0) > 0
-  ) {
+  // The turn is over but a backgrounded job outlives it. This previously read
+  // as a bare "Working" with no duration, which is indistinguishable from a
+  // live turn that has stalled — the row claimed the model was thinking when it
+  // had already finished, and offered no elapsed to judge it by. Name the state
+  // for what it is and let the row show its elapsed.
+  //
+  // That elapsed is time since the session's last activity (the caller supplies
+  // the anchor — see `SessionStatusSlot`), NOT the job's own runtime, which is
+  // not in the session summary. It is a proxy: a job launched early in a long
+  // turn reads ~0s at turn end. `showsElapsed` also re-enables the breathing
+  // animation, which is intended — background work genuinely is a live state.
+  const backgroundJobCount = activity.activeBackgroundTaskCount ?? 0;
+  if ((phase === "ready" || phase === "idle") && backgroundJobCount > 0) {
     return {
-      label: "Working",
+      label: backgroundJobCount > 1 ? `Background work ×${backgroundJobCount}` : "Background work",
       tone: "blue",
       glyph: "working",
-      showsElapsed: false,
+      showsElapsed: true,
       prominent: false,
     };
   }
