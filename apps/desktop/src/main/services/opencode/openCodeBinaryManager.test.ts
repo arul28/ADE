@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type * as ChildProcess from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMockState = vi.hoisted(() => ({
@@ -8,7 +9,7 @@ const childProcessMockState = vi.hoisted(() => ({
 }));
 
 vi.mock("node:child_process", async () => {
-  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const actual = await vi.importActual<typeof ChildProcess>("node:child_process");
   return {
     ...actual,
     execFileSync: (...args: unknown[]) => childProcessMockState.execFileSync(...args),
@@ -30,10 +31,18 @@ const originalEnv = {
   SHELL: process.env.SHELL,
 };
 const originalProcessPlatform = process.platform;
+const originalProcessArch = process.arch;
 
 function setProcessPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", {
     value: platform,
+    configurable: true,
+  });
+}
+
+function setProcessArch(arch: NodeJS.Architecture): void {
+  Object.defineProperty(process, "arch", {
+    value: arch,
     configurable: true,
   });
 }
@@ -89,6 +98,7 @@ describe("openCodeBinaryManager", () => {
 
   afterEach(() => {
     setProcessPlatform(originalProcessPlatform);
+    setProcessArch(originalProcessArch);
     clearOpenCodeBinaryCache();
     vi.restoreAllMocks();
     restoreEnv("ADE_DISABLE_BUNDLED_OPENCODE");
@@ -146,6 +156,7 @@ describe("openCodeBinaryManager", () => {
     // package plus an `opencode-ai` shell whose bin/ has been pruned. The AVX2
     // `opencode-windows-x64` package is deliberately absent from the installer.
     setProcessPlatform("win32");
+    setProcessArch("x64");
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
     const baselinePath = path.join(
       tempRoot, "node_modules", "opencode-windows-x64-baseline", "bin", "opencode.exe",

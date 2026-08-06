@@ -61,7 +61,10 @@ function collectBundledNodeModulesRoots(env: NodeJS.ProcessEnv): string[] {
   const roots: string[] = [];
   const explicitRoot = env.ADE_OPENCODE_BUNDLE_ROOT?.trim();
   if (explicitRoot) {
-    roots.push(explicitRoot.endsWith("node_modules") ? explicitRoot : join(explicitRoot, "node_modules"));
+    // Treat the explicit root as an override. This keeps development/test
+    // runtimes hermetic and prevents a stale checkout-local package from
+    // winning over the requested bundle.
+    return [explicitRoot.endsWith("node_modules") ? explicitRoot : join(explicitRoot, "node_modules")];
   }
 
   const processWithResources = process as NodeJS.Process & { resourcesPath?: string };
@@ -110,7 +113,7 @@ function bundledBinaryCandidatePaths(args?: {
   // Legacy packaged fallback for builds that copied the binary directly into
   // Resources/. New builds resolve the pinned npm runtime package below.
   const resourcesPath = (process as any).resourcesPath;
-  if (resourcesPath) {
+  if (resourcesPath && !env.ADE_OPENCODE_BUNDLE_ROOT?.trim()) {
     candidates.push(...fileNames.map((fileName) => join(resourcesPath, fileName)));
   }
 

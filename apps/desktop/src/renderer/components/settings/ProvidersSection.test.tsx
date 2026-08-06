@@ -262,6 +262,9 @@ describe("ProvidersSection", () => {
       builtInBrowser: {
         navigate: vi.fn().mockResolvedValue(undefined),
       },
+      app: {
+        openExternal: vi.fn().mockResolvedValue(undefined),
+      },
     } as any;
   });
 
@@ -488,7 +491,7 @@ describe("ProvidersSection", () => {
     });
   });
 
-  it("renders the Coding Agents section and the OpenCode group with the Moonshot key row", async () => {
+  it("renders the Coding Agents section and OpenCode popular provider cards", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
@@ -497,12 +500,14 @@ describe("ProvidersSection", () => {
 
     expect(await screen.findByText("Coding Agents")).toBeTruthy();
     expect(screen.getByText("OpenCode — Universal Model Access")).toBeTruthy();
-    expect(screen.getByText("API Provider Keys")).toBeTruthy();
-    // Moonshot AI was added to the API key grid.
+    expect(screen.getByText("All providers")).toBeTruthy();
+    expect(screen.getByLabelText("Search all OpenCode providers")).toBeTruthy();
+    // Popular cards include Moonshot and Kimi.
     expect(screen.getByText("Moonshot AI")).toBeTruthy();
-    expect(screen.getByText("MOONSHOT_API_KEY")).toBeTruthy();
-    // Kimi for Coding is always surfaced as a subscription/membership row.
     expect(screen.getByLabelText("Connect Kimi for Coding")).toBeTruthy();
+    // Hated status chrome is gone.
+    expect(screen.queryByText(/managed by ADE/i)).toBeNull();
+    expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
 
   it("collapses the OpenCode group to an install card when the binary is missing", async () => {
@@ -515,11 +520,11 @@ describe("ProvidersSection", () => {
     expect(await screen.findByText("npm i -g opencode-ai")).toBeTruthy();
     expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
-    // The group body (API keys, subscriptions) must be hidden while uninstalled.
-    expect(screen.queryByText("API Provider Keys")).toBeNull();
+    // The group body is hidden while uninstalled.
+    expect(screen.queryByText("All providers")).toBeNull();
   });
 
-  it("renders subscription connect rows and keeps chips visible while the provider catalog is stale", async () => {
+  it("renders provider cards and catalog-updating state while inventory is stale", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, [], {
@@ -539,12 +544,48 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    // OAuth subscription row built dynamically from auth methods.
     expect(await screen.findByLabelText("Connect OpenAI")).toBeTruthy();
-    // Stale label surfaces without blocking the catalog chips.
-    expect(screen.getByText("updating…")).toBeTruthy();
-    // Fireworks is not an API_KEY_PROVIDER, so it appears as a "More providers" chip.
-    expect(screen.getByText(/Fireworks/)).toBeTruthy();
+    expect(screen.getByText(/Updating provider catalog/i)).toBeTruthy();
+    // Search finds catalog-only providers.
+    fireEvent.change(screen.getByLabelText("Search all OpenCode providers"), {
+      target: { value: "Fireworks" },
+    });
+    expect(await screen.findByLabelText("Connect Fireworks")).toBeTruthy();
+  });
+
+  it("offers a retry when the initial OpenCode status probe fails", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockRejectedValue(new Error("status probe unavailable"));
+
+    renderProvidersSection();
+
+    expect(await screen.findByText("Could not load OpenCode status.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Re-check OpenCode" })).toBeTruthy();
+    expect(screen.getAllByText("status probe unavailable").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Binary Missing")).toBeNull();
+  });
+
+  it("keeps an auth-method outage out of an API-key-only provider", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{ id: "openai", name: "OpenAI", connected: false, modelCount: 12 }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockRejectedValue(new Error("catalog unavailable"));
+
+    renderProvidersSection();
+
+    await waitFor(() => {
+      expect(authMethodsMock).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(await screen.findByLabelText("Connect OpenAI"));
+
+    expect(screen.getByRole("dialog", { name: "OpenAI provider" })).toBeTruthy();
+    expect(screen.getAllByText("API key").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Could not load OpenCode sign-in methods/)).toBeNull();
   });
 
   it("keeps an OpenCode key editor open when provider registration fails", async () => {
@@ -556,9 +597,14 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const addButton = await screen.findByLabelText("Add OpenAI key");
+    const openAiCard = await screen.findByLabelText("Connect OpenAI");
     await act(async () => {
-      addButton.click();
+      openAiCard.click();
+    });
+    expect(screen.getByRole("dialog", { name: "OpenAI provider" })).toBeTruthy();
+
+    await act(async () => {
+      screen.getByLabelText("Add OpenAI key").click();
     });
     fireEvent.change(screen.getByLabelText("OpenAI API key"), {
       target: { value: "sk-test" },
@@ -577,17 +623,31 @@ describe("ProvidersSection", () => {
   it("clears an OpenCode provider credential before deleting its stored key", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 12 }],
+    }));
     const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
     listApiKeysMock.mockReset();
     listApiKeysMock.mockResolvedValue(["openai"]);
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockRejectedValue(new Error("catalog unavailable"));
 
     renderProvidersSection();
 
-    const menuButton = await screen.findByLabelText("More actions for OpenAI");
-    await act(async () => {
-      menuButton.click();
+    // Wait until stored keys hydrate so the card reflects key ownership.
+    await waitFor(() => {
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalled();
     });
+    const openCard =
+      screen.queryByLabelText("Open OpenAI")
+      ?? screen.queryByLabelText("Connect OpenAI");
+    expect(openCard).toBeTruthy();
+    await act(async () => {
+      openCard!.click();
+    });
+    expect(screen.queryByText("Subscription / OAuth")).toBeNull();
+    expect(screen.queryByText(/Could not load OpenCode sign-in methods/)).toBeNull();
     await act(async () => {
       screen.getByRole("button", { name: "Delete" }).click();
     });
@@ -599,10 +659,10 @@ describe("ProvidersSection", () => {
     const clearCall = (window.ade.ai.clearOpencodeProviderKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     const deleteCall = (window.ade.ai.deleteApiKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     expect(clearCall).toBeLessThan(deleteCall);
-    expect(await screen.findByText("openai key removed.")).toBeTruthy();
+    expect(await screen.findByText("OpenAI disconnected.")).toBeTruthy();
   });
 
-  it("drives the OAuth connect modal happy path", async () => {
+  it("drives the OAuth connect modal happy path via provider detail", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, [], {
@@ -618,12 +678,15 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const connectButton = await screen.findByLabelText("Connect OpenAI");
+    const openAiCard = await screen.findByLabelText("Connect OpenAI");
     await act(async () => {
-      connectButton.click();
+      openAiCard.click();
     });
+    expect(screen.getByRole("dialog", { name: "OpenAI provider" })).toBeTruthy();
 
-    // Modal opened.
+    await act(async () => {
+      screen.getByRole("button", { name: "Sign in to OpenAI" }).click();
+    });
     expect(screen.getByRole("dialog", { name: "Connect OpenAI" })).toBeTruthy();
 
     await act(async () => {
@@ -636,16 +699,13 @@ describe("ProvidersSection", () => {
         methodIndex: 0,
         inputs: undefined,
       });
-      expect(window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
-        url: "https://auth.openai.com/device",
-        newTab: true,
-      });
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://auth.openai.com/device");
     });
 
     // Waiting state renders the extracted device code.
     expect(await screen.findByText("ABCD-1234")).toBeTruthy();
 
-    // Backend reports success → modal closes.
+    // Backend reports success → oauth modal closes.
     await act(async () => {
       emitOAuthStatus?.({ providerId: "openai", state: "connected" });
     });

@@ -167,12 +167,18 @@ export function ProviderLogo({
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;
+    case "grok":
+      return <Grok.Avatar size={size} className={c} />;
     case "groq":
       return <Groq.Avatar size={size} className={c} />;
     case "openrouter":
       return <OpenRouter.Avatar size={size} className={c} />;
     case "google":
+    case "google-vertex":
+    case "google-vertex-anthropic":
       return <Google.Avatar size={size} className={c} />;
+    case "gemini":
+      return <Gemini.Color size={size} className={c} />;
     case "ollama":
       return <Ollama.Avatar size={size} className={c} />;
     case "lmstudio":
@@ -182,8 +188,17 @@ export function ProviderLogo({
     case "kimi":
     case "kimi-for-coding":
       return <Kimi.Color size={size} className={c} />;
+    case "github-copilot":
+    case "github":
+    case "github-models":
+      // No dedicated GitHub mark in the local set; initials avoid mislabeling as OpenAI.
+      return <FallbackInitialLogo family="github" size={size} className={className} />;
+    case "gitlab":
+    case "gitlab-duo":
+      return <FallbackInitialLogo family="gitlab" size={size} className={className} />;
     default: {
-      const lobeSrc = lobeProviderIconSrc(raw);
+      const lobeKey = raw === "togetherai" ? "together" : raw;
+      const lobeSrc = lobeProviderIconSrc(lobeKey);
       if (lobeSrc) {
         return <LobeStaticMark src={lobeSrc} size={size} className={className} />;
       }

@@ -8,12 +8,41 @@ import type {
   OpenCodeOAuthStatusEvent,
 } from "../../../shared/types/config";
 import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
+const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
+
+/** How the OAuth URL should be delivered to the user. */
+export type OAuthOpenTarget = "ade-browser" | "system" | "copy" | "view";
+
+const OPEN_TARGET_OPTIONS: Array<{ id: OAuthOpenTarget; label: string }> = [
+  { id: "system", label: "System browser" },
+  { id: "ade-browser", label: "ADE browser" },
+  { id: "copy", label: "Copy link" },
+  { id: "view", label: "View full link" },
+];
+
+function readStoredOpenTarget(): OAuthOpenTarget {
+  try {
+    const raw = localStorage.getItem(OPEN_TARGET_STORAGE_KEY);
+    if (raw === "ade-browser" || raw === "system" || raw === "copy" || raw === "view") return raw;
+  } catch {
+    // ignore
+  }
+  return "system";
+}
+
+function writeStoredOpenTarget(target: OAuthOpenTarget): void {
+  try {
+    localStorage.setItem(OPEN_TARGET_STORAGE_KEY, target);
+  } catch {
+    // ignore
+  }
+}
 
 /** Pull a human-typeable device code out of the CLI instructions blob. */
 function extractDeviceCode(instructions: string | undefined): string | null {
@@ -50,6 +79,27 @@ function buildPromptDefaults(prompts: OpenCodeProviderAuthPrompt[]): Record<stri
   return defaults;
 }
 
+function applyOpenTarget(
+  url: string,
+  target: OAuthOpenTarget,
+  onCopy: (url: string) => void,
+): void {
+  if (!url) return;
+  switch (target) {
+    case "ade-browser":
+      openUrlInAdeBrowser(url);
+      return;
+    case "system":
+      openExternalUrl(url);
+      return;
+    case "copy":
+      onCopy(url);
+      return;
+    case "view":
+      return;
+  }
+}
+
 type Phase = "form" | "starting" | "waiting" | "error";
 
 export function OAuthConnectModal({
@@ -75,10 +125,18 @@ export function OAuthConnectModal({
   const prompts = method?.prompts ?? [];
 
   const [inputs, setInputs] = useState<Record<string, string>>(() => buildPromptDefaults(prompts));
+  const [openTarget, setOpenTarget] = useState<OAuthOpenTarget>(() => readStoredOpenTarget());
   const [phase, setPhase] = useState<Phase>("form");
   const [startResult, setStartResult] = useState<OpenCodeOAuthStartResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const { copy, copied } = useCopyToClipboard();
+  const [showFullUrl, setShowFullUrl] = useState(false);
+  const { copy, isCopied } = useCopyToClipboard();
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  const copyText = async (text: string, kind: "url" | "code") => {
+    if (!text) return;
+    await copy(text, kind);
+  };
 
   const visiblePrompts = prompts.filter((prompt) => promptVisible(prompt, inputs));
   const deviceCode = extractDeviceCode(startResult?.instructions);
@@ -135,11 +193,24 @@ export function OAuthConnectModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Focus the dialog on open so keyboard focus is not stuck under the overlay.
+  useEffect(() => {
+    const node = dialogRef.current;
+    if (!node) return;
+    const previous = document.activeElement as HTMLElement | null;
+    node.focus();
+    return () => {
+      previous?.focus?.();
+    };
+  }, []);
+
   const startFlow = async () => {
     cancelRequestedRef.current = false;
     startPendingRef.current = true;
+    writeStoredOpenTarget(openTarget);
     setPhase("starting");
     setErrorMessage(null);
+    setShowFullUrl(openTarget === "view");
     try {
       const filteredInputs: Record<string, string> = {};
       for (const prompt of visiblePrompts) {
@@ -159,7 +230,11 @@ export function OAuthConnectModal({
         await window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
         throw new Error("OpenCode returned an unsafe OAuth URL.");
       }
-      openUrlInAdeBrowser(result.url);
+      if (result.url) {
+        applyOpenTarget(result.url, openTarget, (url) => {
+          void copyText(url, "url");
+        });
+      }
       setStartResult(result);
       flowActiveRef.current = true;
       setPhase("waiting");
@@ -185,7 +260,12 @@ export function OAuthConnectModal({
   const copyCode = async () => {
     const text = deviceCode ?? startResult?.instructions ?? "";
     if (!text) return;
-    await copy(text);
+    await copyText(text, "code");
+  };
+
+  const copyUrl = async () => {
+    if (!startResult?.url) return;
+    await copyText(startResult.url, "url");
   };
 
   const labelStyle: React.CSSProperties = {
@@ -206,16 +286,32 @@ export function OAuthConnectModal({
     outline: "none",
   };
 
+  const waitingHint =
+    openTarget === "ade-browser"
+      ? host
+        ? `We opened ${host} in ADE’s browser.`
+        : "We opened ADE’s browser."
+      : openTarget === "system"
+        ? host
+          ? `We opened ${host} in your system browser.`
+          : "We opened your system browser."
+        : openTarget === "copy"
+          ? "Sign-in link copied — paste it where you can complete login."
+          : "Use the full link below to finish signing in.";
+
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-[60] flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.70)" }}
       onClick={() => void handleCancel()}
     >
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={`Connect ${providerName}`}
-        className="w-full max-w-md max-h-[85vh] overflow-y-auto"
+        tabIndex={-1}
+        className="w-full max-w-md max-h-[85vh] overflow-y-auto outline-none"
         style={{
           background: COLORS.cardBgSolid,
           border: `1px solid ${COLORS.outlineBorder}`,
@@ -333,8 +429,24 @@ export function OAuthConnectModal({
                 ),
               )}
 
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={labelStyle}>Open sign-in link in</span>
+                <select
+                  aria-label="Open sign-in link in"
+                  value={openTarget}
+                  onChange={(event) => setOpenTarget(event.target.value as OAuthOpenTarget)}
+                  style={fieldStyle}
+                >
+                  {OPEN_TARGET_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                We'll open your browser to finish signing in with {providerName}.
+                OpenCode completes sign-in on the machine running the runtime. This dialog closes automatically after approval.
               </div>
 
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -347,7 +459,7 @@ export function OAuthConnectModal({
                   disabled={phase === "starting"}
                   onClick={() => void startFlow()}
                 >
-                  {phase === "starting" ? "Opening…" : "Connect"}
+                  {phase === "starting" ? "Starting…" : "Connect"}
                 </button>
               </div>
             </>
@@ -356,7 +468,7 @@ export function OAuthConnectModal({
           {phase === "waiting" ? (
             <>
               <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, lineHeight: 1.5 }}>
-                {host ? `We opened ${host} in your browser.` : "We opened your browser."}
+                {waitingHint}
               </div>
 
               {deviceCode ? (
@@ -396,9 +508,41 @@ export function OAuthConnectModal({
                 </code>
               ) : null}
 
+              {startResult?.url ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span style={labelStyle}>Sign-in link</span>
+                    <button
+                      type="button"
+                      style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: "none" }}
+                      onClick={() => setShowFullUrl((v) => !v)}
+                    >
+                      {showFullUrl ? "Hide" : "View full link"}
+                    </button>
+                  </div>
+                  {showFullUrl || openTarget === "view" ? (
+                    <code
+                      style={{
+                        display: "block",
+                        fontSize: 11,
+                        fontFamily: MONO_FONT,
+                        color: COLORS.textSecondary,
+                        background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
+                        border: `1px solid ${COLORS.border}`,
+                        padding: "10px 12px",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {startResult.url}
+                    </code>
+                  ) : null}
+                </div>
+              ) : null}
+
               <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
                 <li style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Approve the request in the page we opened.
+                  Approve the request in the sign-in page.
                 </li>
                 {deviceCode ? (
                   <li style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -424,11 +568,26 @@ export function OAuthConnectModal({
                 Waiting for approval…
               </div>
 
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                {startResult?.url ? (
+                  <button type="button" style={outlineButton()} onClick={() => void copyUrl()}>
+                    {isCopied("url") ? <CheckCircle size={13} weight="fill" /> : <Copy size={13} weight="bold" />}
+                    {isCopied("url") ? "Link copied" : "Copy link"}
+                  </button>
+                ) : null}
                 {deviceCode || startResult?.instructions ? (
                   <button type="button" style={outlineButton()} onClick={() => void copyCode()}>
-                    {copied ? <CheckCircle size={13} weight="fill" /> : <Copy size={13} weight="bold" />}
-                    {copied ? "Copied" : "Copy code"}
+                    {isCopied("code") ? <CheckCircle size={13} weight="fill" /> : <Copy size={13} weight="bold" />}
+                    {isCopied("code") ? "Code copied" : "Copy code"}
+                  </button>
+                ) : null}
+                {startResult?.url ? (
+                  <button
+                    type="button"
+                    style={outlineButton()}
+                    onClick={() => openExternalUrl(startResult.url)}
+                  >
+                    System browser
                   </button>
                 ) : null}
                 <button type="button" style={outlineButton()} onClick={() => void handleCancel()}>
