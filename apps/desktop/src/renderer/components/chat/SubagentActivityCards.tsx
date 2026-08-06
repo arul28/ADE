@@ -17,6 +17,7 @@ import {
 } from "./chatCardPrimitives";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import type {
+  BackgroundJobGroupRenderEvent,
   BackgroundJobLineRenderEvent,
   SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
@@ -398,13 +399,18 @@ export function SubagentResultCard({
  * `open` reveals the chat actions pane, which is where a background job's full
  * state and output already live — the line points at it rather than duplicating
  * it inline.
+ *
+ * Also renders a folded run of identical jobs (`background_job_group`) as the
+ * SAME line with a multiplier — `⚙ Background · wait for desktop agents ×8 · 4m`
+ * — rather than a second component: a fan-out is one fact at one altitude, and
+ * the `open` target is identical either way.
  */
 export function BackgroundJobLine({
   event,
   sessionEnded = false,
   onOpenBackgroundJobs,
 }: {
-  event: BackgroundJobLineRenderEvent;
+  event: BackgroundJobLineRenderEvent | BackgroundJobGroupRenderEvent;
   /**
    * Freezes the ticker. A job whose terminal update was never written (app
    * killed mid-run, provider crash) stays `running` in the transcript forever;
@@ -424,8 +430,9 @@ export function BackgroundJobLine({
   const liveMs = useLiveDurationMs(event.startedAt, running && !sessionEnded);
   const ok = event.status === "completed";
   const duration = formatSubagentDurationMs(running ? (stale ? null : liveMs) : event.durationMs);
+  const count = event.type === "background_job_group" ? event.count : 1;
   const parts = [
-    event.label,
+    count > 1 ? `${event.label} ×${count}` : event.label,
     !running && typeof event.exitCode === "number" ? `exit ${event.exitCode}` : null,
     duration,
     !running && !ok ? event.status : null,
@@ -443,8 +450,9 @@ export function BackgroundJobLine({
         "my-2 flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
         skin.tone,
       )}
-      data-background-job={event.agentKey}
+      data-background-job={event.type === "background_job_group" ? event.agentKeys[0] : event.agentKey}
       data-background-job-status={event.status}
+      data-background-job-count={count > 1 ? count : undefined}
     >
       <span className={cn("h-px flex-1", skin.rule)} />
       <span className="inline-flex min-w-0 shrink items-center gap-1.5" title={event.label}>

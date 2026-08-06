@@ -1467,6 +1467,70 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("keeps one usage notice per turn even when other rows land between the copies", () => {
+    // Regression: dedupe compared against the IMMEDIATELY previous row, so the
+    // background job lines a fan-out pushes between two copies of the same
+    // notice broke the adjacency and the card repeated all through the turn.
+    const notice = {
+      type: "system_notice" as const,
+      noticeKind: "rate_limit" as const,
+      message: "Approaching Claude plan limit",
+      turnId: "turn-1",
+    };
+    const rows = collapseChatTranscriptEvents([
+      env("2026-08-06T10:00:00.000Z", notice),
+      env("2026-08-06T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "wait for desktop agents",
+      }),
+      env("2026-08-06T10:00:02.000Z", { ...notice }),
+      env("2026-08-06T10:00:03.000Z", {
+        type: "subagent_started",
+        taskId: "bg-2",
+        taskType: "background",
+        description: "wait for desktop agents",
+      }),
+      env("2026-08-06T10:00:04.000Z", { ...notice }),
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "system_notice")).toHaveLength(1);
+    expect(rows.filter((row) => row.event.type === "background_job_line")).toHaveLength(2);
+  });
+
+  it("still renders distinct notice kinds and the same notice in a later turn", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-08-06T10:00:00.000Z", {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        message: "Approaching Claude plan limit",
+        turnId: "turn-1",
+      }),
+      env("2026-08-06T10:00:01.000Z", {
+        type: "system_notice",
+        noticeKind: "warning",
+        message: "Approaching Claude plan limit",
+        turnId: "turn-1",
+      }),
+      env("2026-08-06T10:00:02.000Z", {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        message: "A different usage message",
+        turnId: "turn-1",
+      }),
+      // Same notice, next turn — a fresh turn hitting the limit is news again.
+      env("2026-08-06T10:05:00.000Z", {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        message: "Approaching Claude plan limit",
+        turnId: "turn-2",
+      }),
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "system_notice")).toHaveLength(4);
+  });
+
   it("keeps populated plan steps when a streaming delta updates the same turn", () => {
     const rows = collapseChatTranscriptEvents([
       {
@@ -3157,6 +3221,94 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(resultCards).toHaveLength(1);
     if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(resultCards[0]!.event.status).toBe("stopped");
+  });
+});
+
+describe("background job line grouping", () => {
+  const startBackground = (index: number, label: string, at: string) =>
+    env(at, {
+      type: "subagent_started",
+      taskId: `bg-${index}`,
+      taskType: "background",
+      description: label,
+    });
+  const finishBackground = (index: number, at: string, status: "completed" | "failed" = "completed") =>
+    env(at, {
+      type: "subagent_result",
+      taskId: `bg-${index}`,
+      taskType: "background",
+      status,
+      summary: "exited",
+    });
+
+  it("folds 8 consecutive same-label running jobs into one counted line", () => {
+    // The screenshot that motivated this: eight identical centered rules in a
+    // row, one per waiter shell, filling the whole viewport.
+    const grouped = groupEvents(
+      Array.from({ length: 8 }, (_, index) =>
+        startBackground(index + 1, "wait for desktop agents", `2026-08-06T10:00:0${index}.000Z`),
+      ),
+    );
+
+    expect(grouped).toHaveLength(1);
+    const row = grouped[0]!;
+    if (row.event.type !== "background_job_group") throw new Error("Expected a background job group");
+    expect(row.key).toBe("background-job-group:background-chip:bg-1");
+    expect(row.event.count).toBe(8);
+    expect(row.event.label).toBe("wait for desktop agents");
+    expect(row.event.status).toBe("running");
+    // One ticker, seeded from the EARLIEST job in the run.
+    expect(row.event.startedAt).toBe("2026-08-06T10:00:00.000Z");
+    expect(row.event.agentKeys).toHaveLength(8);
+    expect(row.event.agentKeys[0]).toBe("bg-1");
+  });
+
+  it("keeps different labels and different statuses on their own lines", () => {
+    const differentLabels = groupEvents([
+      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
+      startBackground(2, "npm install", "2026-08-06T10:00:01.000Z"),
+    ]);
+    expect(differentLabels.map((row) => row.event.type)).toEqual([
+      "background_job_line",
+      "background_job_line",
+    ]);
+
+    const differentStatuses = groupEvents([
+      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
+      startBackground(2, "wait for desktop agents", "2026-08-06T10:00:01.000Z"),
+      // bg-1 settles in place, so the run is now completed-then-running.
+      finishBackground(1, "2026-08-06T10:00:02.000Z"),
+    ]);
+    expect(differentStatuses.map((row) => row.event.type)).toEqual([
+      "background_job_line",
+      "background_job_line",
+    ]);
+  });
+
+  it("leaves a lone background job as its own line (no group of one)", () => {
+    const grouped = groupEvents([
+      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
+    ]);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.event.type).toBe("background_job_line");
+    expect(grouped[0]!.key).toBe("background-chip:bg-1");
+  });
+
+  it("folds a settled run and reports the longest duration in the group", () => {
+    const grouped = groupEvents([
+      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
+      startBackground(2, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
+      finishBackground(1, "2026-08-06T10:00:10.000Z"),
+      finishBackground(2, "2026-08-06T10:04:00.000Z"),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    const settled = grouped[0]!.event;
+    if (settled.type !== "background_job_group") throw new Error("Expected a background job group");
+    if (settled.status === "running") throw new Error("Expected a settled group");
+    expect(settled.count).toBe(2);
+    expect(settled.status).toBe("completed");
+    expect(settled.durationMs).toBe(240_000);
   });
 });
 

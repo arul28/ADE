@@ -244,6 +244,41 @@ export type BackgroundJobLineRenderEvent = {
     }
 );
 
+/**
+ * A run of 2+ consecutive background job lines that share a label AND a status,
+ * folded into ONE line — `Background · wait for desktop agents ×8 · 4m [open ›]`.
+ *
+ * Row identity upstream is already correct (`upsertBackgroundJobLine` guarantees
+ * one row per task and never a duplicate), so eight rows genuinely means eight
+ * distinct shells. They are still eight near-identical centered rules in a row,
+ * which is what made a real transcript unreadable — a fan-out of identical
+ * waiters is one fact, not eight.
+ *
+ * Nothing is lost by folding: the `open ›` affordance is not per-job (it opens
+ * the agents tab with a null taskId), so the group carries the identical one.
+ *
+ * Produced by the second-layer grouping pass; never emitted by the first-layer
+ * collapse. Row key: `background-job-group:${firstRowKey}`.
+ */
+export type BackgroundJobGroupRenderEvent = {
+  type: "background_job_group";
+  count: number;
+  label: string;
+  /** Every folded job, first to last — the group's row keys stay recoverable. */
+  agentKeys: string[];
+  /** Earliest start in the run, so a running group tickers from the oldest job. */
+  startedAt: string | null;
+} & (
+  | { status: "running" }
+  | {
+      status: SubagentCardTerminalStatus;
+      /** Only when every folded job reported the SAME exit code; null otherwise. */
+      exitCode: number | null;
+      /** Longest run in the group — the wall-clock the fan-out actually took. */
+      durationMs: number | null;
+    }
+);
+
 export type ScheduledWakeDividerRenderEvent = {
   type: "scheduled_wake_divider";
   scheduleId: string;
@@ -293,7 +328,8 @@ export type ChatTranscriptGroupedEnvelope = {
     | ChatTranscriptRenderEvent
     | ChatWorkLogGroupEvent
     | ChatActivityBundleEvent
-    | SubagentStoppedGroupEvent;
+    | SubagentStoppedGroupEvent
+    | BackgroundJobGroupRenderEvent;
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
@@ -387,6 +423,17 @@ type CollapseTranscriptContext = {
    * and legacy subagent lifecycle events) upsert into the same key space.
    */
   backgroundJobRowIndexByKey: Map<string, number>;
+  /**
+   * Identical system notices already rendered, scoped per turn. Dedupe used to
+   * compare against the IMMEDIATELY previous row, so any row pushed between two
+   * copies of the same notice — a background job line, a work-log entry — broke
+   * the adjacency and the notice repeated. A real transcript ended up with the
+   * same `Approaching Claude plan limit` card half a dozen times in one turn.
+   *
+   * Keyed by the full notice signature INCLUDING its turn id, so a different
+   * kind, different text, different detail, or a later turn all still render.
+   */
+  systemNoticeSignatures: Set<string>;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
@@ -401,7 +448,23 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     stalledRowIndexByTurn: new Map(),
     adeCardRowIndexById: new Map(),
     backgroundJobRowIndexByKey: new Map(),
+    systemNoticeSignatures: new Set(),
   };
+}
+
+/**
+ * Identity of a system notice for per-turn dedupe: everything a reader would use
+ * to tell two notices apart, plus the turn they belong to.
+ */
+function systemNoticeSignature(
+  event: Extract<AgentChatEvent, { type: "system_notice" }>,
+): string {
+  return JSON.stringify([
+    event.turnId ?? null,
+    event.noticeKind ?? null,
+    event.message.trim(),
+    event.detail ?? null,
+  ]);
 }
 
 function todoSnapshotKey(turnId: string | null): string {
@@ -2011,15 +2074,25 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "system_notice") {
-    const previous = rows[rows.length - 1];
-    if (
-      previous?.event.type === "system_notice"
-      && previous.event.noticeKind === event.noticeKind
-      && previous.event.message.trim() === event.message.trim()
-      && JSON.stringify(previous.event.detail ?? null) === JSON.stringify(event.detail ?? null)
-      && (previous.event.turnId ?? null) === (event.turnId ?? null)
-    ) {
-      return;
+    // Per-TURN, not per-previous-row: rows pushed between two copies of the same
+    // notice (background job lines, work-log rows) used to break the adjacency
+    // check and let the notice repeat. Replayed history self-heals — there is no
+    // stored state to migrate.
+    if (context) {
+      const signature = systemNoticeSignature(event);
+      if (context.systemNoticeSignatures.has(signature)) return;
+      context.systemNoticeSignatures.add(signature);
+    } else {
+      const previous = rows[rows.length - 1];
+      if (
+        previous?.event.type === "system_notice"
+        && previous.event.noticeKind === event.noticeKind
+        && previous.event.message.trim() === event.message.trim()
+        && JSON.stringify(previous.event.detail ?? null) === JSON.stringify(event.detail ?? null)
+        && (previous.event.turnId ?? null) === (event.turnId ?? null)
+      ) {
+        return;
+      }
     }
   }
 
@@ -2666,9 +2739,98 @@ export function mergeAdjacentActivityBundleRows(
 export function groupChatTranscriptRows(
   rows: ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptGroupedEnvelope[] {
-  return groupStoppedSubagentResultCards(
-    collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows)),
+  return groupBackgroundJobLines(
+    groupStoppedSubagentResultCards(
+      collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows)),
+    ),
   );
+}
+
+/**
+ * Two background job lines fold together only when they are the same fact: the
+ * same (already-normalized) label AND the same status. A finished job next to a
+ * running one, or `npm install` next to `wait for desktop agents`, stays split.
+ */
+function backgroundJobGroupKey(event: BackgroundJobLineRenderEvent): string {
+  return `${event.status}|${event.label}`;
+}
+
+// Fold a run of 2+ consecutive same-(label,status) `background_job_line` rows
+// into one `background_job_group` line carrying the count. Runs on the FINAL
+// array, after the collapse pass has mutated every job row into its last known
+// state, so a job that finished out of order has already left the run by the
+// time grouping sees it. The pre-group array is untouched, which keeps
+// `backgroundJobRowIndexByKey` valid for the next incremental append.
+function groupBackgroundJobLines(
+  rows: ChatTranscriptGroupedEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  const result: ChatTranscriptGroupedEnvelope[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const row = rows[index]!;
+    const event = row.event;
+    if (event.type !== "background_job_line") {
+      result.push(row);
+      index += 1;
+      continue;
+    }
+
+    const groupKey = backgroundJobGroupKey(event);
+    let end = index;
+    while (end < rows.length) {
+      const candidate = rows[end]!.event;
+      if (candidate.type !== "background_job_line") break;
+      if (backgroundJobGroupKey(candidate) !== groupKey) break;
+      end += 1;
+    }
+    const run = rows.slice(index, end);
+    index = end;
+
+    if (run.length < 2) {
+      // A lone background job keeps its own line (no group of one).
+      result.push(run[0]!);
+      continue;
+    }
+
+    const events = run.map((entry) => entry.event as BackgroundJobLineRenderEvent);
+    const startedAts = events
+      .map((entry) => entry.startedAt)
+      .filter((value): value is string => Boolean(value))
+      .sort();
+    const lastInRun = run[run.length - 1]!;
+    const shared = {
+      count: run.length,
+      label: event.label,
+      agentKeys: events.map((entry) => entry.agentKey),
+      startedAt: startedAts[0] ?? null,
+    } as const;
+
+    let grouped: BackgroundJobGroupRenderEvent;
+    if (event.status === "running") {
+      grouped = { type: "background_job_group", ...shared, status: "running" };
+    } else {
+      const terminal = events as Array<Extract<BackgroundJobLineRenderEvent, { status: SubagentCardTerminalStatus }>>;
+      const exitCodes = terminal.map((entry) => entry.exitCode);
+      const uniformExitCode = exitCodes.every((code) => code === exitCodes[0]) ? exitCodes[0]! : null;
+      const durations = terminal
+        .map((entry) => entry.durationMs)
+        .filter((value): value is number => typeof value === "number");
+      grouped = {
+        type: "background_job_group",
+        ...shared,
+        status: event.status,
+        exitCode: uniformExitCode,
+        durationMs: durations.length ? Math.max(...durations) : null,
+      };
+    }
+
+    result.push({
+      key: `background-job-group:${run[0]!.key}`,
+      timestamp: lastInRun.timestamp,
+      event: grouped,
+    });
+  }
+  return result;
 }
 
 // A `stopped` terminal status is only ever emitted when the user interrupts a
