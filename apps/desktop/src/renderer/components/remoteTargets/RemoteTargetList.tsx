@@ -38,17 +38,21 @@ import {
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
 import {
+  accountMachineMatchesTarget,
   assignMachineSections,
   describePublishHealth,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
+  isMachineVersionOutdated,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
+  newestKnownAdeVersion,
   type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
 import { SavedMachineRow } from "./SavedMachineRow";
+import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import {
@@ -184,6 +188,11 @@ export function RemoteTargetList({
   const [loadingDiscovered, setLoadingDiscovered] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null);
+  const [updateResultByTargetId, setUpdateResultByTargetId] = useState<
+    Record<string, { ok: boolean; message: string }>
+  >({});
+  const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
@@ -931,6 +940,17 @@ export function RemoteTargetList({
     return matches;
   }, [discoveredMachines, visibleAccountMachines]);
 
+  // A saved paired target that is also on this ADE account can be re-adopted
+  // from the directory — that is what "Pair again" runs when a machine rejects
+  // the stale pairing. Without a directory match there is nothing to re-adopt.
+  const accountMachineForTarget = useCallback(
+    (target: RemoteRuntimeTarget): AdeAccountMachine | null =>
+      (visibleAccountMachines ?? []).find((machine) =>
+        accountMachineMatchesTarget(machine, target),
+      ) ?? null,
+    [visibleAccountMachines],
+  );
+
   const accountToastByTargetId = useMemo(() => {
     const labels = new Map<string, string>();
     for (const toast of Object.values(accountConnectionToasts)) {
@@ -938,6 +958,54 @@ export function RemoteTargetList({
     }
     return labels;
   }, [accountConnectionToasts]);
+
+  // The newest ADE this computer knows about — what it runs today, or a newer
+  // build it has already seen published. A connected machine behind that gets
+  // the "Update & restart" button; a machine that is level with us gets none.
+  const newestKnownVersion = useMemo(
+    () =>
+      newestKnownAdeVersion({
+        currentVersion: updateSnapshot.currentVersion,
+        latestKnownVersion: updateSnapshot.latestKnownVersion,
+      }),
+    [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
+  );
+
+  const updateAndRestartTarget = useCallback(
+    async (targetId: string, targetVersion: string | null, machineName: string) => {
+      if (!window.ade.remoteRuntime.updateAndRestart) return;
+      setUpdatingTargetId(targetId);
+      setUpdateResultByTargetId((current) => {
+        if (!(targetId in current)) return current;
+        const next = { ...current };
+        delete next[targetId];
+        return next;
+      });
+      try {
+        const result = await window.ade.remoteRuntime.updateAndRestart(
+          targetId,
+          targetVersion,
+        );
+        setUpdateResultByTargetId((current) => ({
+          ...current,
+          [targetId]: {
+            ok: result.ok,
+            message:
+              result.message?.trim() ||
+              `${machineName} updated — reconnecting…`,
+          },
+        }));
+      } catch (err) {
+        setUpdateResultByTargetId((current) => ({
+          ...current,
+          [targetId]: { ok: false, message: extractError(err) },
+        }));
+      } finally {
+        setUpdatingTargetId(null);
+      }
+    },
+    [],
+  );
 
   function renderSection(section: MachineSection) {
     const rows = sections[section];
@@ -947,6 +1015,7 @@ export function RemoteTargetList({
         <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
         {rows.map((row) => {
           if (row.kind === "saved") {
+            const pairAgainMachine = accountMachineForTarget(row.target);
             return (
               <SavedMachineRow
                 key={row.id}
@@ -977,6 +1046,21 @@ export function RemoteTargetList({
                 transientStatus={
                   accountToastByTargetId.get(row.target.id) ?? null
                 }
+                updateTargetVersion={
+                  row.connected &&
+                  isMachineVersionOutdated(row.version, newestKnownVersion)
+                    ? newestKnownVersion
+                    : null
+                }
+                updating={updatingTargetId === row.target.id}
+                updateStatus={updateResultByTargetId[row.target.id] ?? null}
+                onUpdateAndRestart={(targetVersion) =>
+                  void updateAndRestartTarget(
+                    row.target.id,
+                    targetVersion,
+                    row.target.name,
+                  )
+                }
                 hostKeyTrust={
                   selectedId === row.target.id ? selectedHostKeyTrust : null
                 }
@@ -1003,6 +1087,9 @@ export function RemoteTargetList({
                 }}
                 onTrustAndConnect={() => void trustAndConnect()}
                 onCancelHostKeyTrust={() => setHostKeyTrust(null)}
+                onPairAgain={pairAgainMachine
+                  ? () => void connectAccountMachine(pairAgainMachine)
+                  : null}
               />
             );
           }
@@ -1017,6 +1104,11 @@ export function RemoteTargetList({
                   accountConnectingMachineKey === row.machine.machineKey
                 }
                 error={accountRowErrors[row.machine.machineKey] ?? null}
+                errorInfo={
+                  row.matchedTargetId
+                    ? statusById.get(row.matchedTargetId)?.lastErrorInfo ?? null
+                    : null
+                }
                 stageLabel={accountRowStages[row.machine.machineKey] ?? null}
                 successLabel={
                   accountConnectionToasts[row.machine.machineKey]?.label ?? null

@@ -155,6 +155,10 @@ import {
   syncDpopFailureMessage,
 } from "./syncDpop";
 import {
+  authenticateSyncAccountHello,
+  SYNC_REPAIR_REQUIRED_MESSAGE,
+} from "./syncAccountHelloAuth";
+import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
   type RelayAuthorizationLifecycle,
@@ -205,6 +209,12 @@ import {
   wsDataToText,
   type ParsedSyncEnvelope,
 } from "./syncProtocol";
+// One parser for both ingress paths (this host and the brain's projectless
+// fallback handler). See syncHelloProtocol.ts for why the copy had to go.
+import {
+  parseHelloPayload,
+  parsePairingRequestPayload,
+} from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
@@ -1503,100 +1513,6 @@ export function buildSyncHostHelloOkPayload(args: {
     : { ...payload, projects: [] };
 }
 
-function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
-  const value = payload as SyncHelloPayload | null;
-  const peer = value?.peer;
-  if (!peer || typeof peer !== "object") return null;
-  if (!toOptionalString(peer.deviceId) || !toOptionalString(peer.deviceName) || !toOptionalString(peer.siteId)) {
-    return null;
-  }
-  const auth = value?.auth;
-  let normalizedAuth = auth ?? null;
-  if (!normalizedAuth) {
-    const token = toOptionalString(value?.token);
-    if (!token) return null;
-    normalizedAuth = {
-      kind: "bootstrap",
-      token,
-    };
-  }
-  if (normalizedAuth.kind === "bootstrap") {
-    if (!toOptionalString(normalizedAuth.token)) return null;
-  } else if (normalizedAuth.kind === "paired") {
-    if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.secret)) return null;
-    if (
-      normalizedAuth.relayAccountToken != null
-      && (
-        !toOptionalString(normalizedAuth.relayAccountToken)
-        || normalizedAuth.relayAccountToken.length > 16_384
-      )
-    ) return null;
-  } else if (normalizedAuth.kind === "account") {
-    if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.accountToken)) return null;
-    if (
-      normalizedAuth.dpop != null
-      && (typeof normalizedAuth.dpop !== "object" || Array.isArray(normalizedAuth.dpop))
-    ) return null;
-    if (normalizedAuth.runtimeHostGrant != null && !toOptionalString(normalizedAuth.runtimeHostGrant)) return null;
-  } else if (normalizedAuth.kind === "account_sealed") {
-    if (
-      normalizedAuth.v !== 1
-      || !toOptionalString(normalizedAuth.deviceId)
-      || !toOptionalString(normalizedAuth.sealed)
-    ) return null;
-  } else {
-    return null;
-  }
-  const dbVersionBySite: Record<string, number> = {};
-  if (peer.dbVersionBySite && typeof peer.dbVersionBySite === "object" && !Array.isArray(peer.dbVersionBySite)) {
-    for (const [site, version] of Object.entries(peer.dbVersionBySite)) {
-      const normalizedSite = site.trim();
-      const normalizedVersion = Number(version);
-      if (normalizedSite && Number.isFinite(normalizedVersion) && normalizedVersion >= 0) {
-        dbVersionBySite[normalizedSite] = Math.floor(normalizedVersion);
-      }
-    }
-  }
-  const rawConnectionAttempt = peer.connectionAttempt;
-  let connectionAttempt: SyncPeerMetadata["connectionAttempt"];
-  if (rawConnectionAttempt != null) {
-    const id = toOptionalString(rawConnectionAttempt.id);
-    const startedAtMs = Number(rawConnectionAttempt.startedAtMs);
-    if (
-      !id
-      || id.length > CONNECTION_ATTEMPT_ID_MAX_CHARS
-      || !/^[A-Za-z0-9._:-]+$/.test(id)
-      || !Number.isSafeInteger(startedAtMs)
-      || startedAtMs <= 0
-      || startedAtMs > Date.now() + CONNECTION_ATTEMPT_MAX_FUTURE_MS
-    ) return null;
-    connectionAttempt = { id, startedAtMs };
-  }
-  return {
-    peer: {
-      deviceId: String(peer.deviceId).trim(),
-      deviceName: String(peer.deviceName).trim(),
-      platform: peer.platform ?? "unknown",
-      deviceType: peer.deviceType ?? "unknown",
-      siteId: String(peer.siteId).trim(),
-      dbVersion: Number(peer.dbVersion ?? 0),
-      ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
-      ...(connectionAttempt ? { connectionAttempt } : {}),
-      capabilities: Array.isArray(peer.capabilities)
-        ? peer.capabilities
-          .filter((capability): capability is string => typeof capability === "string")
-          .map((capability) => capability.trim())
-          .filter(Boolean)
-        : [],
-      ...(toOptionalString(peer.appVersion) ? { appVersion: toOptionalString(peer.appVersion)! } : {}),
-      ...(toOptionalString(peer.appBuild) ? { appBuild: toOptionalString(peer.appBuild)! } : {}),
-      ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
-    },
-    auth: normalizedAuth,
-    compression: normalizeSyncApplicationCompressionOffer(value?.compression),
-  };
-}
-
 type ParsedAccountChallenge = {
   nonce: string;
   nonceBytes: Buffer;
@@ -1681,38 +1597,6 @@ function isMobilePairingRecord(record: SyncPairingRecord | null): boolean {
   return record?.peerPlatform === "iOS" || record?.peerDeviceType === "phone";
 }
 
-function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload | null {
-  const value = payload as SyncPairingRequestPayload | null;
-  const code = toOptionalString(value?.code);
-  const peer = value?.peer;
-  if (!code || !peer || typeof peer !== "object") return null;
-  if (!toOptionalString(peer.deviceId) || !toOptionalString(peer.deviceName) || !toOptionalString(peer.siteId)) {
-    return null;
-  }
-  const dpopPublicKey = toOptionalString(value?.dpopPublicKey);
-  const relayAccountToken = toOptionalString(value?.relayAccountToken);
-  if (value?.relayAccountToken != null && (!relayAccountToken || relayAccountToken.length > 16_384)) {
-    return null;
-  }
-  const runtimeHostGrant = toOptionalString(value?.runtimeHostGrant);
-  const pairingCommitVersion = value?.pairingCommitVersion === 1 ? 1 : null;
-  return {
-    code,
-    peer: {
-      deviceId: String(peer.deviceId).trim(),
-      deviceName: String(peer.deviceName).trim(),
-      platform: peer.platform ?? "unknown",
-      deviceType: peer.deviceType ?? "unknown",
-      siteId: String(peer.siteId).trim(),
-      dbVersion: Number(peer.dbVersion ?? 0),
-    },
-    ...(dpopPublicKey ? { dpopPublicKey } : {}),
-    ...(relayAccountToken ? { relayAccountToken } : {}),
-    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
-    ...(pairingCommitVersion ? { pairingCommitVersion } : {}),
-  };
-}
-
 function shouldAttemptTailnetServiceAdvertise(): boolean {
   if (process.env.ADE_TAILSCALE_SERVE === "0") return false;
   if (process.env.NODE_ENV === "test" || process.env.VITEST) return false;
@@ -1790,8 +1674,6 @@ export const TERMINAL_INPUT_ID_MAX_CHARS = 128;
 export const TERMINAL_INPUT_RETRY_WINDOW_MS = 60_000;
 export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
 export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
-export const CONNECTION_ATTEMPT_ID_MAX_CHARS = 128;
-export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
 export const CONNECTION_ATTEMPT_RESERVATION_TTL_MS = 30_000;
 const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
@@ -2392,14 +2274,63 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const readExplicitAccountStatus = (): { userId: string | null; expiresAtMs: number | null } => {
+  let retainedAccountOwnerUserId: string | null = null;
+  /**
+   * Ownership, not usability. `signedIn` answers "can this machine call the
+   * account API right now"; this answers "is this still the same person's
+   * machine". They differ for everything except a deliberate sign-out: an
+   * expired grant or an unreadable credential store is an accident, and
+   * reading one as a sign-out is what made `applyAccountLease(null)` revoke
+   * every account-owned pairing — and close every peer holding one — over a
+   * token problem. Only a genuine `signed_out`, or a different user signing
+   * in, drops ownership. Anything that needs a live token still gates on the
+   * token round trip in `refreshAccountLease`.
+   *
+   * `ownerUnknown` covers the case retention alone cannot: a brain that BOOTS
+   * with a locked keychain has never seen an owner to retain, so it knows
+   * nothing rather than knowing the machine is signed out. Applying null there
+   * would delete every account-owned pairing on the box because a credential
+   * store was briefly unreadable.
+   */
+  const readExplicitAccountStatus = (): {
+    userId: string | null;
+    expiresAtMs: number | null;
+    retained: boolean;
+    ownerUnknown: boolean;
+  } => {
     const status = args.accountAuthService?.getStatus();
     const userId = status?.signedIn ? status.userId?.trim() || null : null;
     const expiresAtMs = status?.expiresAt ? Date.parse(status.expiresAt) : Number.NaN;
-    return {
-      userId,
-      expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
-    };
+    if (userId) {
+      retainedAccountOwnerUserId = userId;
+      return {
+        userId,
+        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
+        retained: false,
+        ownerUnknown: false,
+      };
+    }
+    const sessionState = status?.sessionState;
+    if (sessionState === "expired" || sessionState === "unreadable") {
+      return {
+        userId: retainedAccountOwnerUserId,
+        expiresAtMs: null,
+        retained: retainedAccountOwnerUserId != null,
+        ownerUnknown: retainedAccountOwnerUserId == null,
+      };
+    }
+    retainedAccountOwnerUserId = null;
+    return { userId: null, expiresAtMs: null, retained: false, ownerUnknown: false };
+  };
+  /**
+   * Apply a lease read, unless the read said nothing. No information is not a
+   * sign-out — only a real `signed_out` state revokes account-owned trust.
+   */
+  const applyAccountLeaseFromStatus = (
+    status: { userId: string | null; ownerUnknown: boolean },
+  ): void => {
+    if (status.ownerUnknown) return;
+    applyAccountLease(status.userId);
   };
   const seedAccountContinuity = (userId: string, expiresAtMs: number | null): void => {
     const nowMs = Date.now();
@@ -2418,8 +2349,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const check = (async (): Promise<{ userId: string | null }> => {
       const initialStatus = readExplicitAccountStatus();
       const userId = initialStatus.userId;
-      applyAccountLease(userId);
+      applyAccountLeaseFromStatus(initialStatus);
       if (!userId || !args.accountAuthService) return { userId: null };
+      // Retained ownership has no live token to prove with, and asking for one
+      // would only churn a grant this machine already knows is dead. The
+      // identity is unchanged, so already-paired devices keep connecting.
+      if (initialStatus.retained) return { userId };
       if (accountLeaseContinuityUserId !== userId) {
         seedAccountContinuity(userId, initialStatus.expiresAtMs);
       }
@@ -2427,13 +2362,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const token = (await args.accountAuthService.getAccessToken()).trim();
         const refreshedStatus = readExplicitAccountStatus();
         const refreshedUserId = refreshedStatus.userId;
-        if (refreshedUserId !== accountLeaseUserId) applyAccountLease(refreshedUserId);
+        if (refreshedUserId !== accountLeaseUserId) applyAccountLeaseFromStatus(refreshedStatus);
+        // The token round trip can itself be what marks the session expired.
+        // Re-read ownership so that lands as retained, not as a lost lease.
+        if (refreshedStatus.retained && refreshedUserId === userId) return { userId };
         if (!token || refreshedUserId !== userId) return { userId: null };
         seedAccountContinuity(userId, refreshedStatus.expiresAtMs);
         return { userId };
       } catch {
-        const refreshedUserId = readExplicitAccountStatus().userId;
-        if (refreshedUserId !== accountLeaseUserId) applyAccountLease(refreshedUserId);
+        const refreshedStatus = readExplicitAccountStatus();
+        const refreshedUserId = refreshedStatus.userId;
+        if (refreshedUserId !== accountLeaseUserId) applyAccountLeaseFromStatus(refreshedStatus);
+        if (refreshedStatus.retained && refreshedUserId === userId) return { userId };
         const retainsLastKnownGood = refreshedUserId === userId
           && accountLeaseContinuityUserId === userId
           && Date.now() <= accountLeaseContinuityUntilMs;
@@ -7123,10 +7063,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (code) authFailureCode = code;
         return true;
       };
-      const REPAIR_REQUIRED = "This device is not paired with this machine, or its saved"
-        + " pairing is no longer valid. Pair it again.";
-      const ACCOUNT_SESSION_CHANGED = "The ADE account session on this machine changed"
-        + " while connecting. Try again.";
       // Return semantics: `true` means authentication FAILED -> the caller below
       // sends a `hello_error` and closes the socket (4003). `false` means the
       // device is authenticated.
@@ -7276,7 +7212,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               deviceId: pairedAuth.deviceId,
               reason: knownRecord ? "secret_mismatch" : "unknown_device",
             });
-            return authFail(REPAIR_REQUIRED);
+            return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
           }
           authenticatedPairingRecord = pairingStore.getPairingRecordForSecret(
             pairedAuth.deviceId,
@@ -7337,202 +7273,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         if (hello.auth?.kind === "account") {
           const accountAuth = hello.auth;
-          if (accountAuth.deviceId !== hello.peer.deviceId) {
-            return authFail(
-              "The account identity in this connection did not match the device that sent it.",
-            );
+          // Shared with the projectless brain fallback. The divergences that
+          // are real — sealed adoption and single-connection arbitration, both
+          // of which only the project host serves — ride in as options.
+          const accountResult = await authenticateSyncAccountHello({
+            auth: accountAuth,
+            peer: hello.peer,
+            transportOrigin: peer.transportOrigin,
+            logger: args.logger,
+            logPrefix: "sync_host",
+            pairingStore,
+            dpopNonceCache,
+            captureAccountAuthorization,
+            getAccountAttestationConfig: () => args.getAccountAttestationConfig?.() ?? null,
+            verifyAccountAttestation,
+            withCommitLock: withHelloCommitLock,
+            isPeerCurrent: () => isPeerLifecycleCurrent(peer, lifecycleGeneration),
+            sealedAdoption: Boolean(sealedAdoption),
+            arbitrateConnectionAttempt: () =>
+              arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer),
+            allowLegacyUpgrade: true,
+            pairingCodeNoun: "PIN",
+            notSignedInCode: "auth_failed",
+          });
+          if (accountResult.kind === "stale") return true;
+          if (accountResult.kind === "rejected") {
+            return authFail(accountResult.message, accountResult.code);
           }
-          // Account bearer credentials must never traverse or authenticate a
-          // plaintext direct sync route. Existing devices reconnect directly
-          // with their stored paired secret + DPoP key instead.
-          if (!sealedAdoption && peer.transportOrigin !== "relay-bridge") {
-            args.logger.warn("sync_host.account_auth_requires_relay", {
-              deviceId: accountAuth.deviceId,
-              transportOrigin: peer.transportOrigin,
-            });
-            return authFail(
-              "Signing in cannot authenticate a direct connection to this machine."
-                + " Connect through ADE Relay, or pair this device with a PIN.",
-            );
+          if (accountResult.kind === "superseded") {
+            connectionAttemptRejected = true;
+            return false;
           }
-          try {
-            const authorization = await captureAccountAuthorization();
-            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-            if (!authorization) {
-              args.logger.warn("sync_host.account_owner_missing", {
-                deviceId: accountAuth.deviceId,
-              });
-              return authFail(
-                "This machine is not signed in to an ADE account. Sign in on this computer, then try again.",
-              );
-            }
-            const config = args.getAccountAttestationConfig?.();
-            if (!config) {
-              return authFail(
-                "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
-              );
-            }
-            const attestation = await verifyAccountAttestation({
-              token: accountAuth.accountToken,
-              expectedUserId: authorization.userId,
-              config,
-            });
-            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-            relayAccountOwnerUserId = attestation.userId;
-            relayAccountExpiresAtMs = attestation.expiresAtMs;
-            const commitAuthorization = await captureAccountAuthorization();
-            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-            if (
-              !commitAuthorization
-              || commitAuthorization.userId !== authorization.userId
-              || commitAuthorization.generation !== authorization.generation
-            ) {
-              args.logger.warn("sync_host.account_auth_session_changed", {
-                deviceId: accountAuth.deviceId,
-              });
-              return authFail(ACCOUNT_SESSION_CHANGED);
-            }
-            return await withHelloCommitLock(accountAuth.deviceId, async () => {
-              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-              // The account can change while this candidate waits behind a
-              // concurrent route's commit. Re-capture inside the lock, before
-              // any pairing mutation or connection-attempt reservation.
-              const lockedAuthorization = await captureAccountAuthorization();
-              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-              if (
-                !lockedAuthorization
-                || lockedAuthorization.userId !== authorization.userId
-                || lockedAuthorization.generation !== authorization.generation
-              ) {
-                return authFail(ACCOUNT_SESSION_CHANGED);
-              }
-
-              const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
-              // Validity, not truthiness. `evaluatePairedHelloDpop` resolves its
-              // stored key with `.trim() || null`, so a whitespace-only field
-              // would pass a truthy check here and then fall into that
-              // function's TOFU branch — verifying the proof against the key the
-              // CALLER supplied. Both guards have to agree on what a key is.
-              if (existingPairingRecord && !isValidDpopPublicKey(existingPairingRecord.dpopPublicKey ?? "")) {
-                args.logger.warn("sync_host.account_existing_keyless_rejected", {
-                  deviceId: accountAuth.deviceId,
-                });
-                return authFail(
-                  "This device's saved pairing predates device-key security."
-                    + " Remove it on this computer and pair it again.",
-                );
-              }
-              const dpopFailure = evaluatePairedHelloDpop({
-                storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
-                deviceId: accountAuth.deviceId,
-                secret: accountAuth.accountToken,
-                proof: accountAuth.dpop ?? null,
-                requireDpop: true,
-                nonceCache: dpopNonceCache,
-              });
-              if (dpopFailure) {
-                args.logger.warn("sync_host.account_dpop_rejected", {
-                  deviceId: accountAuth.deviceId,
-                  reason: dpopFailure,
-                });
-                return authFail(syncDpopFailureMessage(dpopFailure));
-              }
-              const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
-              if (existingAccountOwner && existingAccountOwner !== authorization.userId) {
-                return authFail(
-                  "This device is already paired to this machine under a different ADE account.",
-                );
-              }
-              if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
-                connectionAttemptRejected = true;
-                return false;
-              }
-              connectionAttemptReserved = true;
-              // A legacy manual (QR/PIN/SSH) record for this same deviceId used
-              // to end the handshake right here: the host kept the local record
-              // and answered hello_ok with no `accountPairing`, so a signed-in
-              // device that no longer held the manual secret could never
-              // reconnect without physically returning to the Mac. It is
-              // adopted instead — the DPoP proof above already established,
-              // against the key pinned on THIS record, that the caller is the
-              // same physical device, and the account attestation was verified
-              // and re-captured under the commit lock. The record gains an
-              // owner and the device gets a usable secret.
-              //
-              // NOT identical to first-time adoption, and the differences are
-              // the point: the pinned key is kept rather than taken from the
-              // hello, `createdAt` survives, and `localTrustOrigin` marks the
-              // record so signing out of this Mac cannot delete a pairing the
-              // user made by hand.
-              const upgradingLegacyPairing = Boolean(existingPairingRecord) && !existingAccountOwner;
-              // A PIN re-pair the device has not acknowledged yet is staged on
-              // this record. Adoption writes through, which would drop that
-              // staged secret and leave the device's `pairing_commit` with
-              // nothing to promote ("the staged pairing expired"). The staging
-              // window exists to make a re-pair survive a lost reply, so it
-              // wins: keep the old no-`accountPairing` behaviour for this one
-              // hello. That is no longer a dead end — every client now falls
-              // back to the secret it already holds, and a device mid-re-pair
-              // has one by definition.
-              if (upgradingLegacyPairing && pairingStore.hasPendingRotation(accountAuth.deviceId)) {
-                args.logger.info("sync_host.account_adoption_deferred_pending_rotation", {
-                  deviceId: accountAuth.deviceId,
-                });
-                authenticatedPairingRecord = existingPairingRecord;
-                return false;
-              }
-              // Written through rather than staged. Staging exists to protect a
-              // credential the device is still holding across two more round
-              // trips, and only PIN pairing has that shape: the device
-              // acknowledges with `pairing_commit`, which the host only ever
-              // arms on the `pairing_request` path (`pairingCommitOfferedForDeviceId`).
-              // An account hello has no acknowledgement to arm, and staging
-              // deliberately withholds elevations — `writeNewPairingRecord`
-              // keeps the committed `accountOwnerUserId` until promotion — so a
-              // staged adoption would leave the record local for exactly as
-              // long as the bug it fixes.
-              //
-              // A device holding a working secret is not blocked from taking
-              // this path, so write-through can invalidate one that was in use;
-              // the guard above covers the case where that secret is a staged
-              // re-pair, and otherwise a lost reply costs one more account
-              // hello rather than a walk back to the Mac.
-              const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
-                dpopPublicKey: existingPairingRecord
-                  ? null
-                  : accountAuth.dpop?.publicKey ?? null,
-                runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
-              });
-              // Read-only: this confirms the record we just wrote is readable,
-              // and must not be mistaken for the device proving it received the
-              // secret (which is what promotes a staged rotation).
-              if (!pairingStore.verifySecret(paired.deviceId, paired.secret)) {
-                return authFail("This machine could not save the new pairing for this device. Try again.");
-              }
-              accountPairing = paired;
-              authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
-              if (!authenticatedPairingRecord) {
-                return authFail("This machine could not save the new pairing for this device. Try again.");
-              }
-              if (upgradingLegacyPairing) {
-                args.logger.info("sync_host.account_legacy_pairing_upgraded", {
-                  deviceId: accountAuth.deviceId,
-                });
-              }
-              return false;
-            });
-          } catch (error) {
-            args.logger.warn("sync_host.account_auth_rejected", {
-              deviceId: accountAuth.deviceId,
-              reason: typeof (error as { code?: unknown } | null)?.code === "string"
-                ? (error as { code: string }).code
-                : "verification_failed",
-            });
-            return authFail(
-              "This machine could not verify your ADE account session."
-                + " Sign out and back in on this device, then try again.",
-            );
-          }
+          authenticatedPairingRecord = accountResult.pairingRecord;
+          accountPairing = accountResult.accountPairing;
+          relayAccountOwnerUserId = accountResult.attestation.userId;
+          relayAccountExpiresAtMs = accountResult.attestation.expiresAtMs;
+          connectionAttemptReserved = accountResult.connectionAttemptReserved;
+          return false;
         }
         return authFail(
           "This connection did not present any way to authenticate. Update ADE on this device.",

@@ -75,6 +75,14 @@ Release proof records these as separate bounded signals, not one inferred
   the channel's runtime endpoint after startup or recovery; and
 - a bounded startup/recovery log extract correlated by a proof-local alias.
 
+The launcher's wait is sliced, not unbounded. Every 15 s it reads the brain's
+heartbeat file (`<ADE home>\runtime\heartbeat.json`) and, if the beat is older
+than 90 s **and** belongs to the child it started, stops that child and lets its
+own restart path take over. This is the Windows half of the cross-platform wedge
+watchdog — macOS uses a separate `com.ade.watchdog` launch agent because launchd
+has no loop to fold the check into. An absent, unreadable, or foreign heartbeat
+is never read as a wedge, so the guard cannot fire on a brain it does not own.
+
 The PID JSON is advisory ownership evidence. It is not a readiness file, and an
 ONLOGON Scheduled Task is not a current supervisor or readiness mechanism.
 The Run entry re-establishes the supervisor at the next user logon; the launcher

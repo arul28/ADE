@@ -29,6 +29,15 @@ const accountStatus = vi.hoisted(() => ({
   source: null,
   provider: null as "github" | null,
   imageUrl: null as string | null,
+  sessionState: undefined as
+    | "active"
+    | "signed_out"
+    | "expired"
+    | "unreadable"
+    | undefined,
+}));
+const sessionReadState = vi.hoisted(() => ({
+  current: undefined as "available" | "missing" | "unreadable" | undefined,
 }));
 const pollLogin = vi.hoisted(() => vi.fn());
 const signOut = vi.hoisted(() => vi.fn());
@@ -49,6 +58,7 @@ vi.mock(
       pollLogin,
       cancelLogin: vi.fn(),
       signOut,
+      getSessionReadState: () => sessionReadState.current,
     }),
     registerAccountConfigProjectRoot: vi.fn(),
     resolveAccountOAuthConfig: () => ({
@@ -428,6 +438,8 @@ describe("desktop account machine lifecycle", () => {
     accountStatus.userId = null;
     accountStatus.provider = null;
     accountStatus.imageUrl = null;
+    accountStatus.sessionState = undefined;
+    sessionReadState.current = undefined;
     pollLogin.mockReset();
     signOut.mockReset().mockReturnValue({ ...accountStatus });
     deleteMachine.mockReset();
@@ -484,6 +496,50 @@ describe("desktop account machine lifecycle", () => {
 
     bridge.signOut();
     expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+  });
+
+  // `signedIn: false` is three different facts, and the renderer decides
+  // whether to invite a fresh sign-in from them. Signing in overwrites the
+  // stored session, so mislabelling an unreadable read as a sign-out is how a
+  // perfectly valid session gets thrown away.
+  it("reports the account session tri-state to the renderer", async () => {
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+
+    accountStatus.sessionState = "signed_out";
+    sessionReadState.current = "missing";
+    expect(bridge.status()).toMatchObject({ signedIn: false, sessionState: "signed_out" });
+
+    accountStatus.sessionState = "expired";
+    expect(bridge.status()).toMatchObject({ signedIn: false, sessionState: "expired" });
+
+    accountStatus.sessionState = "unreadable";
+    sessionReadState.current = "unreadable";
+    expect(bridge.status()).toMatchObject({
+      signedIn: false,
+      sessionState: "unreadable",
+      sessionReadState: "unreadable",
+    });
+
+    accountStatus.signedIn = true;
+    accountStatus.sessionState = "active";
+    sessionReadState.current = "available";
+    expect(bridge.status()).toMatchObject({ signedIn: true, sessionState: "active" });
+  });
+
+  it("derives the session tri-state when the daemon only reports a read state", async () => {
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+
+    sessionReadState.current = "unreadable";
+    expect(bridge.status()).toMatchObject({ sessionState: "unreadable" });
+
+    sessionReadState.current = "missing";
+    expect(bridge.status()).toMatchObject({ sessionState: "signed_out" });
+
+    // Nothing known at all stays silent rather than asserting a sign-out.
+    sessionReadState.current = undefined;
+    expect(bridge.status().sessionState).toBeUndefined();
   });
 
   it("surfaces enriched profile fields and wires account machine removal", async () => {

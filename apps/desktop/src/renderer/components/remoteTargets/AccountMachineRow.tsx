@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { CaretDown, CaretUp, Check, Cloud, PencilSimple, PlugsConnected, X } from "@phosphor-icons/react";
-import type { AdeAccountMachine } from "../../../shared/types";
+import type {
+  AdeAccountMachine,
+  RemoteRuntimeConnectErrorInfo,
+} from "../../../shared/types";
 import {
   accountMachineConnectionState,
   accountMachineDisplayName,
 } from "../../../shared/accountDirectory";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
+import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import {
   formatMachineEndpoint,
   relativeLastSeenPhrase,
@@ -29,6 +33,9 @@ type AccountMachineRowProps = {
   busy: boolean;
   connecting: boolean;
   error?: string | null;
+  /** Structured failure for the machine's saved target, when one exists. Feeds
+   * the collapsed route list; the headline stays the plain-language `error`. */
+  errorInfo?: RemoteRuntimeConnectErrorInfo | null;
   stageLabel?: string | null;
   successLabel?: string | null;
   onPairNearby?: (() => void) | null;
@@ -60,6 +67,7 @@ export function AccountMachineRow({
   busy,
   connecting,
   error = null,
+  errorInfo = null,
   stageLabel = null,
   successLabel = null,
   onPairNearby = null,
@@ -267,6 +275,14 @@ export function AccountMachineRow({
               </button>
             ) : null}
           </div>
+        ) : null}
+
+        {error ? (
+          <ConnectionRouteDetails
+            attempts={errorInfo?.attempts ?? []}
+            correlationId={errorInfo?.correlationId ?? null}
+            omittedAttemptCount={errorInfo?.omittedAttemptCount ?? 0}
+          />
         ) : null}
 
         {renameError ? <div role="alert" style={inlineErrorTextStyle}>{renameError}</div> : null}

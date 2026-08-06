@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildWindowsProcessCommandLineQueryArgs,
@@ -368,12 +369,23 @@ describe("Windows background service helpers", () => {
       path: taskName,
       message: "ADE per-user startup entry installed and channel brain is ready.",
     });
+    const machineLayout = resolveMachineAdeLayout(
+      { ...process.env, ...(serviceCommand.env ?? {}) },
+      "win32",
+    );
     expect(fs.readFileSync(launcherPath, "utf8")).toBe(
       `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
         pidPath,
         logPath: `${launcherPath}.log`,
+        // The supervisor loop doubles as this platform's wedge watchdog.
+        heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
+        wedgeBreadcrumbPath: path.win32.join(
+          machineLayout.runtimeDir,
+          "event-loop-wedge.json",
+        ),
       })}`,
     );
+    expect(fs.readFileSync(launcherPath, "utf8")).toContain("Test-BrainWedged");
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
       command: serviceCommand,
       launcherPath,

@@ -65,7 +65,16 @@ export function createSyncPinStore(args: SyncPinStoreArgs) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
 
   let cachedPlainPin: string | null = null;
-  let cachedRecord: HashedSyncPinFile | null | undefined;
+  // Identity of the record `cachedPlainPin` belongs to. More than one store
+  // instance reads this same path — the machine brain's projectless ingress
+  // handler and, once a project opens, that scope's sync service — so every
+  // read goes to disk and the plaintext PIN is dropped as soon as the record on
+  // disk is no longer the one this instance wrote. The file is a few hundred
+  // bytes; there is nothing worth caching across calls.
+  let plainPinRecordId: string | null = null;
+
+  const recordId = (record: HashedSyncPinFile | null): string | null =>
+    record ? `${record.salt}:${record.hash}` : null;
 
   const writeRecord = (record: HashedSyncPinFile): void => {
     writeTextAtomic(args.filePath, `${JSON.stringify(record, null, 2)}\n`);
@@ -92,18 +101,28 @@ export function createSyncPinStore(args: SyncPinStoreArgs) {
     const migrated = createHashedPinFile(pin, (parsed as LegacySyncPinFile).updatedAt);
     writeRecord(migrated);
     cachedPlainPin = pin;
+    plainPinRecordId = recordId(migrated);
     return migrated;
   };
 
   const loadRecord = (): HashedSyncPinFile | null => {
-    if (cachedRecord !== undefined) return cachedRecord;
-    cachedRecord = readFromDisk();
-    return cachedRecord;
+    const record = readFromDisk();
+    // The plaintext PIN only ever comes from this instance's own `setPin` (or a
+    // legacy-file migration), so a record written elsewhere invalidates it:
+    // `hasPin`/`verifyPin` still work, `getPin` honestly reports that this
+    // instance cannot show the code.
+    if (recordId(record) !== plainPinRecordId) {
+      cachedPlainPin = null;
+      plainPinRecordId = null;
+    }
+    return record;
   };
 
   return {
     getPin(): string | null {
-      if (cachedPlainPin !== null) return cachedPlainPin;
+      // Reload first: another instance may have replaced the PIN on disk, and
+      // handing back the code this instance last set would show the user a
+      // pairing code no device can use.
       loadRecord();
       return cachedPlainPin;
     },
@@ -128,8 +147,8 @@ export function createSyncPinStore(args: SyncPinStoreArgs) {
       }
       const payload = createHashedPinFile(trimmed);
       writeRecord(payload);
-      cachedRecord = payload;
       cachedPlainPin = trimmed;
+      plainPinRecordId = recordId(payload);
     },
 
     clearPin(): void {
@@ -138,8 +157,8 @@ export function createSyncPinStore(args: SyncPinStoreArgs) {
       } catch {
         // ignore cleanup failures
       }
-      cachedRecord = null;
       cachedPlainPin = null;
+      plainPinRecordId = null;
     },
   };
 }

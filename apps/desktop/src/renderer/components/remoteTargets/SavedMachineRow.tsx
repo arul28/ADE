@@ -1,4 +1,5 @@
 import {
+  ArrowClockwise,
   CaretDown,
   CaretUp,
   CheckCircle,
@@ -7,7 +8,6 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import type {
-  RemoteRuntimeConnectionAttempt,
   RemoteRuntimeConnectResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
@@ -20,6 +20,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
+import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import {
   connectionStateLabel,
@@ -36,100 +37,12 @@ import {
 import {
   helperTextStyle,
   inlineDetailStyle,
+  inlineErrorTextStyle,
   inlineSuccessTextStyle,
   machineRowStyle,
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
-
-const ROUTE_LABELS: Record<RemoteRuntimeConnectionAttempt["kind"], string> = {
-  lan: "LAN",
-  tailnet: "Tailscale",
-  relay: "ADE relay",
-  ssh: "SSH",
-};
-
-function safeDiagnosticHost(value: string): string {
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 160);
-  if (!normalized) return "Unknown host";
-  try {
-    const url = new URL(normalized.includes("://") ? normalized : `ws://${normalized}`);
-    return url.host || "Unknown host";
-  } catch {
-    return normalized.split(/[/?#]/, 1)[0] || "Unknown host";
-  }
-}
-
-function ConnectionRouteDetails({
-  attempts,
-  correlationId,
-}: {
-  attempts: RemoteRuntimeConnectionAttempt[];
-  correlationId: string | null;
-}) {
-  if (attempts.length === 0 && !correlationId) return null;
-  return (
-    <details
-      style={{
-        borderTop: `1px solid ${COLORS.border}`,
-        paddingTop: 7,
-        color: COLORS.textMuted,
-        fontFamily: SANS_FONT,
-        fontSize: 11,
-      }}
-    >
-      <summary
-        style={{
-          cursor: "pointer",
-          color: COLORS.textSecondary,
-          fontWeight: 650,
-          userSelect: "none",
-        }}
-      >
-        Route details
-      </summary>
-      <div style={{ display: "grid", gap: 5, marginTop: 7 }}>
-        {attempts.slice(0, 8).map((attempt, index) => {
-          const outcome = attempt.outcome === "connected"
-            ? "Connected"
-            : attempt.outcome === "skipped"
-              ? "Skipped"
-              : `Failed${attempt.failure ? ` (${attempt.failure})` : ""}`;
-          return (
-            <div
-              key={`${attempt.kind}:${attempt.startedAt}:${index}`}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "max-content minmax(0, 1fr)",
-                columnGap: 8,
-              }}
-            >
-              <span style={{ color: COLORS.textSecondary, fontWeight: 650 }}>
-                {ROUTE_LABELS[attempt.kind]}
-              </span>
-              <span>
-                {`${safeDiagnosticHost(attempt.host)} · ${Math.max(0, Math.round(attempt.durationMs))}ms · ${outcome}`}
-              </span>
-            </div>
-          );
-        })}
-        {correlationId ? (
-          <div>
-            <span style={{ color: COLORS.textSecondary, fontWeight: 650 }}>
-              Diagnostic ID
-            </span>
-            {" "}
-            <code style={{ userSelect: "text" }}>{correlationId}</code>
-          </div>
-        ) : null}
-      </div>
-    </details>
-  );
-}
 
 type SavedMachineRowProps = {
   row: SavedMachineRowModel;
@@ -143,6 +56,15 @@ type SavedMachineRowProps = {
   error: string | null;
   stageLabel?: string | null;
   transientStatus?: string | null;
+  /**
+   * The version this computer wants the machine on. Non-null means the machine
+   * is behind and can be offered "Update & restart"; null hides the button.
+   */
+  updateTargetVersion?: string | null;
+  updating?: boolean;
+  /** Outcome of the last update run on this machine. */
+  updateStatus?: { ok: boolean; message: string } | null;
+  onUpdateAndRestart?: (targetVersion: string | null) => void;
   hostKeyTrust: RemoteRuntimeSshHostKeyTrustStatus | null;
   trustingHostKey: boolean;
   onConnect: (targetId: string) => void;
@@ -154,6 +76,9 @@ type SavedMachineRowProps = {
   onAutoConnectChange: (targetId: string, enabled: boolean) => void;
   onTrustAndConnect: () => void;
   onCancelHostKeyTrust: () => void;
+  /** Re-runs account adoption for this machine. Offered only when the host
+   * rejected the saved pairing and the machine is on this ADE account. */
+  onPairAgain?: (() => void) | null;
 };
 
 export function SavedMachineRow({
@@ -168,6 +93,10 @@ export function SavedMachineRow({
   error,
   stageLabel = null,
   transientStatus = null,
+  updateTargetVersion = null,
+  updating = false,
+  updateStatus = null,
+  onUpdateAndRestart,
   hostKeyTrust,
   trustingHostKey,
   onConnect,
@@ -179,6 +108,7 @@ export function SavedMachineRow({
   onAutoConnectChange,
   onTrustAndConnect,
   onCancelHostKeyTrust,
+  onPairAgain = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const targetConnecting =
@@ -205,6 +135,10 @@ export function SavedMachineRow({
   const errorInfo = status?.state === "error" ? status.lastErrorInfo : null;
   const routeAttempts = (activeRoute?.attempts ?? errorInfo?.attempts ?? []).slice(0, 8);
   const routeCorrelationId = activeRoute?.correlationId ?? errorInfo?.correlationId ?? null;
+  const omittedAttemptCount =
+    activeRoute?.omittedAttemptCount ?? errorInfo?.omittedAttemptCount ?? 0;
+  // Re-pairing only helps when the machine actually refused the pairing.
+  const pairAgain = errorCard?.failure === "pairing" ? onPairAgain : null;
   const formOpen = formPrefill?.targetId === target.id;
 
   return (
@@ -260,10 +194,25 @@ export function SavedMachineRow({
               justifyContent: "flex-end",
             }}
           >
+            {row.connected && updateTargetVersion && onUpdateAndRestart ? (
+              <button
+                type="button"
+                disabled={busyId != null || updating}
+                onClick={() => onUpdateAndRestart(updateTargetVersion)}
+                style={outlineButton({
+                  height: 30,
+                  padding: "0 10px",
+                  fontSize: 11,
+                })}
+              >
+                <ArrowClockwise size={14} weight="bold" />
+                {updating ? "Updating…" : "Update & restart"}
+              </button>
+            ) : null}
             {row.connected ? (
               <button
                 type="button"
-                disabled={busyId != null}
+                disabled={busyId != null || updating}
                 onClick={() => onDisconnect(target.id)}
                 style={outlineButton({
                   height: 30,
@@ -353,17 +302,30 @@ export function SavedMachineRow({
           </div>
         ) : null}
 
+        {updateStatus ? (
+          <div
+            role="status"
+            style={updateStatus.ok ? inlineSuccessTextStyle : inlineErrorTextStyle}
+          >
+            {updateStatus.message}
+          </div>
+        ) : null}
+
         {errorCard ? (
           <RemoteErrorCard
             card={errorCard}
             onRetry={busyId == null ? () => onConnect(target.id) : undefined}
             retrying={busyId === target.id}
+            action={pairAgain && busyId == null
+              ? { label: "Pair again", onClick: pairAgain }
+              : null}
           />
         ) : null}
 
         <ConnectionRouteDetails
           attempts={routeAttempts}
           correlationId={routeCorrelationId}
+          omittedAttemptCount={omittedAttemptCount}
         />
 
         {warnings.length > 0 ? (

@@ -471,6 +471,14 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         machines: AccountService.shared.machines
       )
     }
+    // One name for the whole card. While an attempt is in flight — or has just
+    // failed — every line names the machine the user aimed at; the saved host
+    // takes over again only once the card is idle or attached.
+    let subjectMachineName = syncConnectionSubjectMachineName(
+      transport: health.transport,
+      attemptMachineName: attemptHostName,
+      hostDisplayName: hostDisplayName
+    )
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
     let displayedDiscovery = syncDiscoveredHostsForDisplay(
       savedHosts: syncService.savedReconnectHosts,
@@ -483,13 +491,9 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         health: health,
         connectionState: syncService.connectionState,
         routeKind: health.transport.isConnected ? syncService.lastConnectedRouteKind : nil,
-        hostDisplayName: hostDisplayName,
+        hostDisplayName: subjectMachineName,
         connectAttemptHostName: health.transport == .connecting || health.transport == .unreachable
-          ? syncConnectionSubjectMachineName(
-            transport: health.transport,
-            attemptMachineName: attemptHostName,
-            hostDisplayName: hostDisplayName
-          )
+          ? subjectMachineName
           : nil,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,

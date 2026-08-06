@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+// The supervisor polls the heartbeat on the brain's own beat interval and judges
+// it stale on the brain's own threshold, so it uses the brain's own constants: a
+// copy here could drift from the value the brain actually writes with, and the
+// supervisor would either kill a healthy brain or wait out a wedged one.
+import {
+  BRAIN_HEARTBEAT_INTERVAL_MS,
+  BRAIN_HEARTBEAT_STALE_MS,
+} from "../services/runtime/brainHeartbeat";
 import {
   type AdeServiceCommand,
   cmdQuote,
@@ -26,6 +34,23 @@ let windowsPowerShellCommandCache: string | null = null;
 export function windowsPowerShellCommand(): string {
   windowsPowerShellCommandCache ??= resolveTrustedWindowsTool("powershell");
   return windowsPowerShellCommandCache;
+}
+
+/**
+ * Trusted `taskkill.exe`, or `null` on a host that will not hand one over.
+ *
+ * Resolved through the same GLOBALROOT/System32 discipline as `powershell.exe`
+ * -- a PATH-planted `taskkill.exe` would be handed a process id and told to
+ * kill a tree, which is not a thing to let the environment choose. Never
+ * throws: the launcher must still render (and the supervisor still stop a
+ * wedged brain via `Process.Kill()`) on a host where the lookup fails.
+ */
+function windowsTaskkillCommandOrNull(): string | null {
+  try {
+    return resolveTrustedWindowsTool("taskkill");
+  } catch {
+    return null;
+  }
 }
 
 export type WindowsServicePidRecord = {
@@ -113,6 +138,17 @@ export function renderWindowsServiceLauncher(
     initialRestartDelayMs?: number;
     maxRestartDelayMs?: number;
     healthyRuntimeMs?: number;
+    /**
+     * The brain's heartbeat file. When given, the supervisor also stops a brain
+     * that hangs while staying alive. Omitted (or unreadable) means the
+     * supervisor keeps its old exit-only behaviour -- an absent heartbeat is
+     * never read as a wedge.
+     */
+    heartbeatPath?: string;
+    /** Breadcrumb the next brain start promotes into its `lastWedge` record. */
+    wedgeBreadcrumbPath?: string;
+    heartbeatStaleMs?: number;
+    heartbeatPollMs?: number;
   },
 ): string {
   const environment = Object.entries(command.env ?? {}).sort(([left], [right]) =>
@@ -125,6 +161,7 @@ export function renderWindowsServiceLauncher(
     return `[System.Environment]::SetEnvironmentVariable(${powerShellSingleQuotedLiteral(key)}, ${powerShellSingleQuotedLiteral(value)}, 'Process')`;
   });
   const commandLine = command.args.map(cmdQuote).join(" ");
+  const taskkillCommand = windowsTaskkillCommandOrNull();
   const logLines = options.logPath
     ? [
       `$logPath = ${powerShellSingleQuotedLiteral(options.logPath)}`,
@@ -142,6 +179,51 @@ export function renderWindowsServiceLauncher(
     `$initialRestartDelayMs = ${Math.max(100, Math.floor(options.initialRestartDelayMs ?? 1_000))}`,
     `$maxRestartDelayMs = ${Math.max(100, Math.floor(options.maxRestartDelayMs ?? 30_000))}`,
     `$healthyRuntimeMs = ${Math.max(1_000, Math.floor(options.healthyRuntimeMs ?? 60_000))}`,
+    `$heartbeatPath = ${
+      options.heartbeatPath
+        ? powerShellSingleQuotedLiteral(options.heartbeatPath)
+        : "$null"
+    }`,
+    `$wedgeBreadcrumbPath = ${
+      options.wedgeBreadcrumbPath
+        ? powerShellSingleQuotedLiteral(options.wedgeBreadcrumbPath)
+        : "$null"
+    }`,
+    `$taskkillPath = ${
+      taskkillCommand ? powerShellSingleQuotedLiteral(taskkillCommand) : "$null"
+    }`,
+    `$heartbeatStaleMs = ${Math.max(30_000, Math.floor(options.heartbeatStaleMs ?? BRAIN_HEARTBEAT_STALE_MS))}`,
+    `$heartbeatPollMs = ${Math.max(1_000, Math.floor(options.heartbeatPollMs ?? BRAIN_HEARTBEAT_INTERVAL_MS))}`,
+    // Returns the heartbeat age in ms when the brain has clearly stopped
+    // beating, and $null for every other outcome -- absent file, unreadable
+    // file, a beat from a different pid, a clock step that puts the beat in the
+    // future. Only a beat that is BOTH stale and owned by this exact child is a
+    // wedge; everything else means "no judgement available", never "kill it".
+    "function Test-BrainWedged([int]$runtimePid) {",
+    "  if ([string]::IsNullOrEmpty($heartbeatPath)) { return $null }",
+    "  try {",
+    "    if (-not (Test-Path -LiteralPath $heartbeatPath)) { return $null }",
+    "    $beat = (Get-Content -LiteralPath $heartbeatPath -Raw -ErrorAction Stop) | ConvertFrom-Json",
+    "    if ($null -eq $beat -or $null -eq $beat.ts -or $null -eq $beat.pid) { return $null }",
+    "    if ([int]$beat.pid -ne $runtimePid) { return $null }",
+    "    $ageMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$beat.ts",
+    "    if ($ageMs -le $heartbeatStaleMs) { return $null }",
+    "    return $ageMs",
+    "  } catch { return $null }",
+    "}",
+    "function Write-WedgeBreadcrumb([long]$ageMs) {",
+    "  if ([string]::IsNullOrEmpty($wedgeBreadcrumbPath)) { return }",
+    "  try {",
+    "    $record = [ordered]@{",
+    "      lastCommand = 'external-watchdog'",
+    "      blockedMs = $ageMs",
+    "      ts = [DateTimeOffset]::UtcNow.ToString('o')",
+    "      thresholdMs = $heartbeatStaleMs",
+    "      diagnosticReportPath = $null",
+    "    }",
+    "    [IO.File]::WriteAllText($wedgeBreadcrumbPath, ($record | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))",
+    "  } catch { }",
+    "}",
     "$restartCount = 0",
     "$lastExitCode = $null",
     "$lastExitAt = $null",
@@ -216,8 +298,46 @@ export function renderWindowsServiceLauncher(
     "      $nextRestartAt = $null",
     "      Write-PidRecord -runtimePid $process.Id -runtimeStartedAtMs $runtimeStartedAt.ToUnixTimeMilliseconds()",
     "      Write-SupervisorLog \"brain started pid=$($process.Id) restartCount=$restartCount\"",
-    "      $process.WaitForExit()",
-    "      $lastExitCode = $process.ExitCode",
+    // Not a bare `WaitForExit()`. A brain that WEDGES never exits, so an
+    // unbounded wait leaves the supervisor blocked forever on a process that
+    // stopped serving -- the Windows shape of the 2026-08-05 macOS incident.
+    // Waiting in slices lets the supervisor read the brain's heartbeat file
+    // between slices and stop a brain that stopped beating; the loop below then
+    // restarts it exactly as it would after any other exit. This is the Windows
+    // equivalent of the `com.ade.watchdog` launch agent, folded into the
+    // supervisor that is already running rather than added as a Scheduled Task.
+    "      while (-not $process.WaitForExit($heartbeatPollMs)) {",
+    "        $wedgeAgeMs = Test-BrainWedged $process.Id",
+    "        if ($null -ne $wedgeAgeMs) {",
+    "          Write-SupervisorLog \"brain stopped responding pid=$($process.Id) heartbeatAgeMs=$wedgeAgeMs; stopping it\"",
+    "          Write-WedgeBreadcrumb $wedgeAgeMs",
+    // Tree first. `Process.Kill()` on .NET Framework stops ONLY the brain, and a
+    // wedged brain is exactly the process most likely to be holding a subtree:
+    // ConPTY hosts, agent CLIs, spawned helpers. Killing the parent alone
+    // reparents that subtree to nothing and leaves it running forever, holding
+    // the ports and worktrees the restarted brain is about to want back.
+    // `Kill($true)` would do this natively but is .NET Core only, and the
+    // supervisor must keep running under Windows PowerShell 5.1 -- so use
+    // `taskkill /T /F`, resolved to its absolute System32 path so a
+    // PATH-planted taskkill.exe cannot take over the kill.
+    "          if (-not [string]::IsNullOrEmpty($taskkillPath)) {",
+    "            try { & $taskkillPath '/PID' $process.Id '/T' '/F' | Out-Null } catch { Write-SupervisorLog \"could not stop the wedged brain's process tree: $($_.Exception.Message)\" }",
+    "          }",
+    // Still call Kill(): taskkill may be missing, refused, or may have raced the
+    // brain into a state where the tree walk found nothing.
+    "          try { if (-not $process.HasExited) { $process.Kill() } } catch { Write-SupervisorLog \"could not stop the wedged brain: $($_.Exception.Message)\" }",
+    // Bounded. If taskkill was unresolvable and Kill() threw, the process is
+    // still there and a bare WaitForExit() would park the supervisor on it
+    // forever -- no restart, no log, the exact wedge this block exists to end.
+    "          if (-not $process.WaitForExit(30000)) { Write-SupervisorLog \"wedged brain pid=$($process.Id) did not exit after the kill; continuing\" }",
+    "          break",
+    "        }",
+    "      }",
+    // The wedge path above can `break` with the process STILL ALIVE (taskkill
+    // missing, Kill() refused, 30s elapsed). `.ExitCode` throws on a live
+    // process, and that throw lands in the launch-failure catch below -- which
+    // would log the wedge as "brain launch failed" and never restart cleanly.
+    "      if ($process.HasExited) { $lastExitCode = $process.ExitCode } else { $lastExitCode = $null }",
     "      $lastExitAt = [DateTimeOffset]::UtcNow.ToString('o')",
     "      $runtimeLifetimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $runtimeStartedAt.ToUnixTimeMilliseconds()",
     "      Write-SupervisorLog \"brain exited pid=$($process.Id) exitCode=$lastExitCode lifetimeMs=$runtimeLifetimeMs\"",

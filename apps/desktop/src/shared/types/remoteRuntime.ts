@@ -181,8 +181,13 @@ export type RemoteRuntimeRouteKind = "lan" | "tailnet" | "relay" | "ssh";
 export type RemoteRuntimeConnectionAttemptFailure =
   | "unreachable"
   | "timeout"
+  /** Signed-in-account problem — the relay would not vouch for this device. */
   | "authentication"
+  /** The machine has no usable pairing for this device. Pair it again. */
+  | "pairing"
   | "identity"
+  /** Another route won the same connection attempt; nothing is wrong. */
+  | "superseded"
   | "capability"
   | "protocol"
   | "unknown";
@@ -218,6 +223,11 @@ export type RemoteRuntimeConnectErrorInfo = {
   correlationId?: string;
   attempts?: RemoteRuntimeConnectionAttempt[];
   omittedAttemptCount?: number;
+  /**
+   * Dominant cause across `attempts` — what the plain-language message was
+   * written from. The UI keys recovery actions off this, never off the text.
+   */
+  failure?: RemoteRuntimeConnectionAttemptFailure;
 };
 
 const REMOTE_RUNTIME_ERROR_DETAIL_MAX_CHARS = 4_000;
@@ -443,6 +453,39 @@ export type RuntimeEventsReleaseRequest =
 
 export type RuntimeEventsReleaseResult = {
   released: number;
+};
+
+/**
+ * "Update & restart", run on a connected machine at this desktop's request.
+ *
+ * Mirrors the host-side `MachineUpdateAndRestartResult` returned by the
+ * `machine.updateAndRestart` runtime method. Deliberately re-declared here
+ * rather than imported from the CLI package so the desktop wire contract does
+ * not depend on the host's internal module layout.
+ */
+export type RemoteRuntimeUpdateStepId = "check" | "apply" | "restart";
+
+export type RemoteRuntimeUpdateStepStatus =
+  | "ok"
+  | "skipped"
+  | "failed"
+  | "pending";
+
+export type RemoteRuntimeUpdateStep = {
+  id: RemoteRuntimeUpdateStepId;
+  status: RemoteRuntimeUpdateStepStatus;
+  detail: string;
+};
+
+export type RemoteRuntimeUpdateAndRestartResult = {
+  ok: boolean;
+  /** True when a new version was actually installed, not just a restart. */
+  updateApplied: boolean;
+  currentVersion: string | null;
+  targetVersion: string | null;
+  steps: RemoteRuntimeUpdateStep[];
+  /** One plain line to show the user. Already names the failed step. */
+  message: string;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

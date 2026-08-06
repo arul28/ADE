@@ -149,10 +149,17 @@ Two consequences follow for copy anywhere in the product:
   to open a project would hand them an action that cannot change anything. The
   per-state advice lives in one table,
   `describeUnpublishedAccountDirectory` in `apps/desktop/src/shared/types/sync.ts`.
-- **A projectless brain still has no project-scoped state to report.** Runtime
-  name, pairing PIN, and Tailscale Serve publication belong to a project scope,
-  so the snapshot reports them absent rather than inventing them. Publication to
-  the account directory deliberately does not require a pairing PIN: account
+- **A projectless brain still has no project-scoped state to report.** The
+  runtime name and Tailscale Serve publication belong to a project scope, so the
+  snapshot reports them absent rather than inventing them (the tailnet row reads
+  "Open a project to publish this machine on your tailnet."). The pairing PIN is
+  *not* in that category: it is the only nearby-pairing path a projectless
+  machine has, so the snapshot reports its real state from the same
+  machine-level store the ingress handler verifies against, and the plaintext
+  PIN plus the machine bootstrap token are exposed under the same
+  `hosting` gate the scoped host applies. Hardcoding "no PIN" here is what made
+  a fresh install look unpairable even after one had been set. Publication to
+  the account directory still does not require a pairing PIN: account
   membership is the auth path, and the PIN is the fallback for nearby devices
   that are not signed in.
 
@@ -163,6 +170,75 @@ LAN-only. `machineRelayTunnel.ts` is now the one construction both paths use;
 Relay is an extra route, never a precondition for hosting sync, so a failure to
 build it is logged (`sync.projectless_relay_start_failed`) and startup
 continues.
+
+#### One ingress implementation, two ingress paths
+
+A projectless machine and a project-scoped machine accept the *same* clients,
+so the handshake they run is one implementation with options, not two similar
+ones. Two shared modules replaced the copies that used to drift within a
+release:
+
+- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`.
+  The brain's fallback handler previously carried a narrower hand-rolled copy
+  that understood only `bootstrap` and `paired` auth, so every newer auth shape
+  (the web client's `account` hello, the desktop's `account_sealed` adoption)
+  was answered with a flat "Invalid hello payload." on exactly the machine those
+  clients are meant to reach. The copy also dropped `connectionAttempt`, leaving
+  route arbitration blind on that path.
+- `syncAccountHelloAuth.ts` — the account-hello gate chain (attestation,
+  same-account check, device-key validity, pairing mint/rotate, commit-lock
+  discipline) plus the canonical rejection messages. The real differences are
+  options: the brain has no connection arbitration and no sealed adoption, so it
+  leaves those options unset. Everything else — gate order, strings, codes — is
+  shared, which is what stopped the two ingresses from returning different codes
+  for the same cause.
+
+`brainMachineSyncStores.ts` is the matching state half: the machine-level PIN,
+pairing, and security stores, created once per secrets directory and handed to
+every surface. Pairing identity belongs to the machine, not the caller, so the
+ingress handler and the RPC surface must hold the same instances — a PIN
+generated over RPC is only live immediately if the socket that verifies it reads
+the same in-memory store. The map key is `pathKey(resolvedDir)` so a Windows
+path spelled `C:\Users\…` and `\\?\C:\Users\…` cannot hand out two store sets
+for one directory.
+
+#### `sync.*` on a machine with no project
+
+Every `sync.*` RPC method used to resolve a project-scoped sync service and fail
+with "Sync service is not available. Register a project first." A machine that
+had never opened a project therefore could not set its pairing PIN — so it could
+not be paired at all, despite hosting sync perfectly well. `ade sync pin
+generate` and the desktop's `ade.sync.setPin` both hit that wall.
+
+`multiProjectRpcServer.ts` now routes those methods through `withSyncService`:
+the project-scoped service when one owns sync, otherwise the
+`ProjectlessSyncControls` the brain injects (`createProjectlessSyncControls`,
+backed by `brainMachineSyncStores`). A handler built *without* controls (tests,
+embedded runtimes) still fails loudly with the old error rather than pretending
+to host.
+
+Only the methods a bare machine can honestly answer have a fallback:
+`sync.getPin` / `setPin` / `generatePin` / `clearPin`, `sync.forgetDevice`,
+`sync.getRequireDpop` / `setRequireDpop`, and `sync.getCloudRelayStatus`. The
+rest answer with the honest empty shape rather than an error:
+`sync.refreshDiscovery` returns the machine snapshot as-is (there is no
+project-published discovery to re-run), `sync.listDevices` returns an empty list
+(the machine pairing file is keyed by device id with no listing API, and the
+runtime state that fills that list is a project's device registry), and
+`sync.getRuntimeName` returns `null` because a runtime name is a per-project
+setting. Mutating project-scoped methods (`sync.setRuntimeName`,
+`sync.updateLocalDevice`, transfer readiness, lane presence) keep failing with
+the register-a-project error, which is the truth for them. A
+just-written PIN is echoed back on the returned snapshot by
+`machineSyncStatusWithPin`, because a store only reports a plaintext code it set
+itself and the snapshot builder may read through a different handle — without
+it, setting a PIN returned a snapshot claiming there wasn't one.
+
+Relay status is likewise one projection: `buildSyncCloudRelayStatus` in
+`syncCloudRelayStore.ts`, used by both the scoped and machine paths so the
+desktop and the CLI cannot tell two different relay stories about one machine.
+Its `accountSignedIn` gate is *ownership*, not usability — see
+[remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
 
 ## Who participates
 
@@ -383,7 +459,25 @@ Runtime support files outside `services/sync/`:
   once through `consumePairingGrant` and cleared on sign-out. That grant is the
   proof a removed machine needs to re-pair, which is why the desktop's Reconnect
   affordance and `ade machines reconnect` both run the device flow rather than
-  the loopback PKCE flow.
+  the loopback PKCE flow. A definitively rejected grant is **marked dead, not
+  deleted** (`rejectedAt` / `needsReauth` / `rejectedReason` on the stored
+  record) and `sessionState` reports `active | signed_out | expired |
+  unreadable` so every surface can say which it is; see
+  [onboarding and settings → Account session state](../onboarding-and-settings/README.md#account-session-state-is-a-tri-state-not-a-boolean).
+- `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
+  crash-safe journal that makes a rotating refresh grant recoverable. The
+  identity provider consumes the old grant the instant the exchange is accepted,
+  but the replacement is only durable once written back; a crash inside that
+  window burns the token family and the next refresh gets a perfectly truthful
+  `invalid_grant` indistinguishable from a revoked session. The journal records
+  that an exchange *started* against a specific token generation and is cleared
+  once the replacement is durable, so a surviving entry means "the stored token
+  may already have been consumed" and the following `invalid_grant` is not
+  definitive. It is stored as `account.session.rotation.v1`, a sibling of the
+  session record, and is deliberately kept in the same file-backed credential
+  bucket — migrating it into the Electron-only store would hide an interrupted
+  desktop rotation from the brain and the CLI, which is exactly the process pair
+  it exists to coordinate.
 - `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
   account-machine list/delete/rename/adoption for ADE Code and the runtime.
   Rename writes the account-owned `customName` field without changing the
@@ -849,7 +943,40 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   all-down shape for callers with neither. It replaced a hardcoded placeholder
   that claimed `listenerBound: false` and `pairingConnectInfo: null` for a
   genuinely bound listener — the two fields the account-directory publisher
-  gates on.
+  gates on. Optional `pin` and `bootstrapToken` args let a caller that holds
+  the machine stores report the real pairing state; both are gated on `hosting`,
+  so a runtime that is not the machine's sync host never leaks a plaintext PIN
+  or bootstrap token.
+- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`
+  payloads, imported by both ingress paths (`syncHostService` and
+  `brainProjectActionsSyncHandler`). Normalizes the legacy top-level `token`
+  into `auth: { kind: "bootstrap" }`, validates each of the four auth shapes
+  (`bootstrap`, `paired`, `account`, `account_sealed`), bounds the carried
+  relay account token, and parses `connectionAttempt` (id capped at
+  `CONNECTION_ATTEMPT_ID_MAX_CHARS`, timestamps no further ahead than
+  `CONNECTION_ATTEMPT_MAX_FUTURE_MS`) plus `dbVersionBySite` and the
+  application-compression offer. There is no second copy; the brain's narrower
+  hand-rolled one is gone.
+- `syncAccountHelloAuth.ts` — the shared account-hello gate chain for both
+  ingresses, and the canonical rejection strings
+  (`SYNC_REPAIR_REQUIRED_MESSAGE`, `SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE`,
+  `SYNC_ACCOUNT_VERIFY_UNAVAILABLE_MESSAGE`, `SYNC_ACCOUNT_NOT_SIGNED_IN_MESSAGE`,
+  `SYNC_ACCOUNT_DEVICE_MISMATCH_MESSAGE`, `SYNC_ACCOUNT_KEYLESS_RECORD_MESSAGE`,
+  `SYNC_ACCOUNT_OTHER_OWNER_MESSAGE`, `SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE`,
+  `SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE`). "No usable pairing record" and "unknown
+  device" deliberately return the same wire answer: distinguishing them would
+  turn the handshake into an existence oracle for an unauthenticated caller.
+  Connection arbitration and sealed adoption are options the brain leaves unset,
+  which is the only genuine divergence between the two callers.
+- `brainMachineSyncStores.ts` — the machine-level PIN / pairing / security
+  stores for a brain hosting sync with no project scope
+  (`sync-pin.json`, `sync-paired-devices.json`, `sync-security.json` under
+  `~/.ade/secrets/`), memoized per resolved secrets directory under a
+  `pathKey` so one directory can never yield two store sets. Also exports
+  `generateMachinePairingPin` and `createProjectlessSyncControls`, the
+  `ProjectlessSyncControls` implementation the RPC surface falls back to. The
+  ingress handler and the RPC surface share these instances, so a PIN generated
+  over RPC is live for the very next handshake instead of after a restart.
 - `machineRelayTunnel.ts` — `createMachineRelayTunnel`, the machine's one relay
   tunnel client plus its authority gate. Both brains that can host phone sync
   build it: `createAdeRuntime` for a project scope, and `runServe`'s projectless
@@ -864,7 +991,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   listener wins regardless of who created the instance, and the gate's first
   `start()` already has a bridge to validate. Only the reaction to a
   publication-state change differs between the two callers, so that stays a
-  parameter.
+  parameter. Its account lease asks "is this machine still theirs", not "can I
+  call the API": a process-lifetime `retainedAccountOwnerId` keeps the tunnel up
+  through an `expired` or `unreadable` session (lease `expiresAt: null`, no
+  token churn against a grant already known dead), and only a deliberate
+  `signed_out` drops it. See
+  [remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
 - `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes (an `auth_failed`
   rejection is attributed with the rejecting machine's
@@ -1052,7 +1184,22 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   adoption by the next project host. A self-owned server path remains
   for tests/standalone hosts.
 - `brainProjectActionsSyncHandler.ts` — machine-wide fallback sync
-  handler used by `ade serve` before any project host is active. It
+  handler used by `ade serve` before any project host is active. It takes a
+  `secretsDir` (not individual PIN/pairing file paths) and resolves its stores
+  through `resolveBrainMachineSyncStores`, so the RPC surface mutates the same
+  instances it verifies against. It parses helloes with the shared
+  `syncHelloProtocol` and runs account helloes through the shared
+  `syncAccountHelloAuth` gate chain. Account helloes used to be refused here on
+  the theory that only a project sync host owns the account session — which made
+  "install, sign in, connect from anywhere" impossible until the user opened a
+  project, since the web client authenticates this way and no other. They are
+  now accepted with the project host's own gates. Connection arbitration and
+  sealed adoption are options it leaves unset: an `account_sealed` hello needs
+  an `account_challenge` round trip this handler does not serve, so it is
+  answered with a plain "pair with a code, or open a project" under
+  `account_session_changed` rather than `auth_failed`, because the device's
+  saved pairing is untouched by that refusal. `connectionAttempt` metadata is
+  now parsed rather than silently discarded. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, attributes its
   `auth_failed` rejections with the same `host: { deviceId, name }`
@@ -1286,7 +1433,15 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the challenge signature input (`aead` field) so it cannot be downgraded by an
   on-path attacker. A client that sends no AEAD list, and both sides by default,
   fall back to `chacha20-poly1305`.
-- `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity at
+- `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity, and
+  exports `buildSyncCloudRelayStatus`, the one projection of relay state that
+  the desktop and the CLI read whether a project scope owns sync or the brain
+  answers for the bare machine. Both surfaces had their own copy and they had
+  already drifted in whitespace, one edit away from telling two different relay
+  stories about one machine. `accountSignedIn` is the gate: without it the live
+  fields collapse to their off values and `lastError` becomes the sign-in
+  prompt, so a signed-out machine never reports a connection it cannot have.
+  The identity itself lives at
   `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted 32-hex `machineKey` +
   HMAC `secret`, chmod `0600`). The identity is stable in normal operation.
   Only a claim endpoint response with the exact HTTP status `409` can trigger
@@ -2149,6 +2304,32 @@ iOS clients treat the error as terminal and name the side that needs an update
 instead of silently dropping or retrying the connection. Non-integer versions
 remain malformed envelopes.
 
+#### `hello_error` codes are the contract; the message is not
+
+A rejected handshake carries a structured `code`, and clients must branch on it.
+The message beside it is prose for a human and may be reworded at any time, so
+pattern-matching it is a defect. `SyncHelloErrorPayload` (in
+`apps/desktop/src/shared/types/sync.ts`) currently defines:
+
+| Code | What it means | What the client should do |
+| --- | --- | --- |
+| `repair_required` | The host has no usable pairing record for this device. | Pair again. This is the one rejection the user can act on directly. |
+| `auth_failed` | The older, generic form of the same thing. | Treat exactly as `repair_required`. |
+| `host_update_required` | The host cannot verify ADE accounts yet. | Update ADE **on that machine**. Never destroy a saved pairing. |
+| `account_session_changed` | The host's account session moved under the handshake, or the ingress cannot finish this sign-in shape. | Sign in / retry. Never destroy a saved pairing. |
+| `relay_account_required` | The route needs an account-authenticated hello. | Sign in on this device. |
+| `connection_attempt_superseded` | Another route won the same attempt. | Nothing is wrong; drop this attempt quietly. |
+| `invalid_hello` | The payload was malformed. | Client bug or version skew. |
+| `protocol_version_mismatch` | Version floor/ceiling, as above. | Update the side named by `updateTarget`. |
+
+`host_update_required` and `account_session_changed` exist because
+`auth_failed` reads as "pair again" on every client, and that is the wrong — and
+destructive — instruction for a host that simply cannot verify accounts yet or
+whose session moved mid-handshake. Where a rejection *can* legitimately lead a
+client to drop a saved pairing, the host also attributes itself with
+`hello_error.host: { deviceId, name }`, and the client only acts when that
+identity matches the pairing it holds.
+
 Application compression is negotiated in the authenticated handshake. A new
 iOS or hosted-web client offers an ordered `hello.compression` list; the host
 selects the first mutual codec and returns
@@ -2590,6 +2771,9 @@ feature is merged or because a deliberately isolated-port host is running.
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
 | Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
 | Account publication + relay for a machine with no registered project | Implemented (`projectlessSyncSnapshot`, `machineRelayTunnel`, `runServe` publisher snapshot fallback) |
+| One hello parser + one account-hello gate chain across both ingresses | Implemented (`syncHelloProtocol`, `syncAccountHelloAuth`) |
+| Machine-level pairing PIN / device forget / DPoP posture on a projectless brain | Implemented (`brainMachineSyncStores`, `ProjectlessSyncControls`, `withSyncService`) |
+| Code-first `hello_error` classification with non-destructive `host_update_required` / `account_session_changed` | Implemented (desktop `classifyPairedRuntimeFailure`, web `SyncConnection`, iOS `syncCodeIsPairingRejection`) |
 | Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
 | Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |

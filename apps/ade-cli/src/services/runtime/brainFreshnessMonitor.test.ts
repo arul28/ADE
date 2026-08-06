@@ -59,8 +59,10 @@ describe("brain freshness monitor", () => {
     await monitor.probeNow();
 
     expect(computeHash).toHaveBeenCalledTimes(1);
+    // One sleep: the settle pause that proves the swap finished. The idle-wait
+    // loop finds the brain already idle and never polls.
     expect(sleep).toHaveBeenCalledTimes(1);
-    expect(isIdle).toHaveBeenCalledTimes(2);
+    expect(isIdle).toHaveBeenCalledTimes(1);
     expect(restart).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith("brain.freshness_mismatch", {
       runningHash: "running-hash",
@@ -96,5 +98,89 @@ describe("brain freshness monitor", () => {
     await monitor.probeNow();
 
     expect(restart).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("brain freshness monitor swap-window guard", () => {
+  it("does not hash a file that is still being written", async () => {
+    // Every stat differs from the last: the installer is mid-copy.
+    let mtime = 10;
+    const stat = vi.fn(async () => ({ mtimeMs: (mtime += 1), size: mtime }));
+    const computeHash = vi.fn(async () => "disk-hash");
+    const restart = vi.fn();
+    const monitor = createBrainFreshnessMonitor({
+      filePath: "/tmp/cli.cjs",
+      runningHash: "running-hash",
+      isIdle: () => true,
+      restart,
+      logger: { warn: vi.fn() },
+      stat,
+      computeHash,
+      sleep: async () => {},
+    });
+
+    await monitor.probeNow();
+    await monitor.probeNow();
+    await monitor.probeNow();
+
+    expect(computeHash).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("does not restart while the runtime file is missing mid-swap", async () => {
+    const stats: Array<{ mtimeMs: number; size: number } | null> = [
+      { mtimeMs: 10, size: 20 },
+      null,
+      null,
+    ];
+    const stat = vi.fn(async () => {
+      const next = stats.shift();
+      if (!next) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return next;
+    });
+    const computeHash = vi.fn(async () => "disk-hash");
+    const restart = vi.fn();
+    const monitor = createBrainFreshnessMonitor({
+      filePath: "/tmp/cli.cjs",
+      runningHash: "running-hash",
+      isIdle: () => true,
+      restart,
+      logger: { warn: vi.fn() },
+      stat,
+      computeHash,
+      sleep: async () => {},
+    });
+
+    await monitor.probeNow();
+    await monitor.probeNow();
+    await monitor.probeNow();
+
+    expect(computeHash).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("restarts once the replacement file holds still", async () => {
+    const stats = [
+      { mtimeMs: 10, size: 20 },
+      { mtimeMs: 11, size: 21 },
+      { mtimeMs: 11, size: 21 },
+    ];
+    const stat = vi.fn(async () => stats.shift() ?? { mtimeMs: 11, size: 21 });
+    const restart = vi.fn();
+    const monitor = createBrainFreshnessMonitor({
+      filePath: "/tmp/cli.cjs",
+      runningHash: "running-hash",
+      isIdle: () => true,
+      restart,
+      logger: { warn: vi.fn() },
+      stat,
+      computeHash: async () => "disk-hash",
+      sleep: async () => {},
+    });
+
+    await monitor.probeNow();
+    await monitor.probeNow();
+
+    expect(restart).toHaveBeenCalledTimes(1);
   });
 });

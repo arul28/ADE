@@ -279,7 +279,7 @@ export type AccountMachineRegistrationSnapshot = Pick<
 };
 
 type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> &
-  Partial<Pick<AccountAuthStatus, "userId">> & {
+  Partial<Pick<AccountAuthStatus, "userId" | "sessionState">> & {
     sessionReadState: AccountSessionReadState;
     /** Which read path produced an unreadable session (analytics only). */
     sessionReadFailureReason?: AccountSessionReadFailureReason | null;
@@ -319,6 +319,25 @@ function isPublisherSignedOut(
   return status !== null
     && !status.signedIn
     && status.source !== "env-token";
+}
+
+/**
+ * The session cannot be used right now, but the machine is still THIS user's.
+ *
+ * `expired` (a rotating grant was rejected) and `unreadable` (the keychain/DPAPI
+ * item could not be read) are accidents, not decisions. Treating them as a
+ * sign-out is what made a token problem look like a lost machine: the retained
+ * Relay route was cleared, the row stopped being anyone's, and every already
+ * paired phone lost its only route to a machine the user still owns. Only a
+ * deliberate `signed_out` means the user is done with this machine here.
+ */
+function publisherSessionNeedsSignIn(
+  status: PublisherAccountStatus | null,
+): boolean {
+  if (status === null || status.signedIn || status.source === "env-token") return false;
+  return status.sessionState === "expired"
+    || status.sessionState === "unreadable"
+    || status.sessionReadState === "unreadable";
 }
 
 function validatedRelayUrl(raw: string, machineKey: string): string | null {
@@ -952,14 +971,22 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
     observeSessionReadState(accountStatus);
+    // Ordered before the sign-out branch on purpose: a stale-token machine must
+    // not fall through into the path that clears its retained Relay route.
+    if (publisherSessionNeedsSignIn(accountStatus)) {
+      outcome("token_unreadable", {
+        attemptAt,
+        skipReason: "Sign in to ADE again — this machine stays paired.",
+        directoryOrigin,
+        reachableEndpointCount: observedReachableEndpointCount,
+      });
+      return;
+    }
     if (isPublisherSignedOut(accountStatus)) {
       clearRetainedRelayState();
-      const unreadable = accountStatus?.sessionReadState === "unreadable";
-      outcome(unreadable ? "token_unreadable" : "account_signed_out", {
+      outcome("account_signed_out", {
         attemptAt,
-        skipReason: unreadable
-          ? "The ADE brain could not read the stored account session."
-          : "The ADE brain is signed out of the ADE account.",
+        skipReason: "The ADE brain is signed out of the ADE account.",
         directoryOrigin,
         reachableEndpointCount: observedReachableEndpointCount,
       });
@@ -1256,6 +1283,7 @@ export function createAccountMachinePublisherService(options: {
     if (!started || disposed || options.isSyncEnabled?.() === false) return;
     try {
       const accountStatus = options.getAccountStatus?.() ?? null;
+      if (publisherSessionNeedsSignIn(accountStatus)) return;
       if (isPublisherSignedOut(accountStatus)) {
         clearRetainedRelayState();
         return;
@@ -1461,6 +1489,10 @@ export function createBrainAccountMachinePublisherService(options: {
         signedIn: status.signedIn,
         userId: status.userId,
         source: status.source ?? null,
+        // Why `signedIn` is false, not just that it is. The publisher holds a
+        // machine's Relay route across an expired/unreadable session and drops
+        // it only for a deliberate sign-out.
+        sessionState: status.sessionState,
         sessionReadState: accountAuthService.getSessionReadState(),
         sessionReadFailureReason: accountAuthService.getSessionReadFailureReason(),
       };

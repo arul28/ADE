@@ -2174,6 +2174,37 @@ private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
 /// userInfo key carrying `hello_error.host.deviceId` — the identity of the
 /// machine that rejected the hello, when the host was new enough to send it.
 private let syncRespondingHostIdentityKey = "ADERespondingHostIdentity"
+/// userInfo key carrying `hello_error.host.name` — the human name of the
+/// machine that rejected the hello, so copy can say which computer to fix.
+/// Never used for any trust decision; identity is what those read.
+private let syncRespondingHostNameKey = "ADERespondingHostName"
+
+/// Hosts reject a saved pairing with `auth_failed` or, on newer builds, the
+/// more specific `repair_required`. Both mean the same thing to this phone —
+/// the saved pairing is no longer usable — so every pairing decision reads
+/// this instead of comparing against a single code.
+///
+/// Deliberately NOT every rejection code. A host that cannot verify accounts
+/// yet (`host_update_required`) or whose account session moved under the
+/// handshake (`account_session_changed`) is still the machine this phone is
+/// paired with, and neither is a reason to drop the pairing. Any code this
+/// list does not name — including ones added to the host after this build
+/// shipped — falls through to "show the host's message, keep the pairing,
+/// keep retrying".
+private func syncCodeIsPairingRejection(_ code: String?) -> Bool {
+  code == "auth_failed" || code == "repair_required"
+}
+
+/// Copy for the rejection codes worth rewording on the phone. Everything else
+/// shows the host's own message, which is already written for a person.
+func syncHelloErrorFriendlyMessage(code: String?, respondingHostName: String?) -> String? {
+  guard code == "host_update_required" else { return nil }
+  let machine = respondingHostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let machine, !machine.isEmpty {
+    return "Update ADE on \(machine), then try again."
+  }
+  return "Update ADE on that machine, then try again."
+}
 
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   [
@@ -2382,8 +2413,14 @@ enum SyncUserFacingError {
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
-    if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
+    if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."
+    }
+    if let friendly = syncHelloErrorFriendlyMessage(
+      code: nsError.userInfo["ADEErrorCode"] as? String,
+      respondingHostName: nsError.userInfo[syncRespondingHostNameKey] as? String
+    ) {
+      return friendly
     }
 
     let rawMessage = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5850,6 +5887,14 @@ final class SyncService: ObservableObject {
       return false
     }
     saveProfile(profile)
+    // Re-point the attempt at the machine actually being dialled. The tapped
+    // row can carry only an mDNS short name ("arul") and no identity, which is
+    // what left the connecting copy naming a machine nobody chose. The saved
+    // profile has the identity the directory resolves to the real name.
+    setConnectAttemptTarget(
+      machineName: profile.hostName,
+      machineIdentity: profile.hostIdentity ?? profile.lastHostDeviceId
+    )
     await reconnectIfPossible(userInitiated: true)
     // Attached AND attached to the machine that was asked for. Testing the
     // state alone would report success for a restore of the PREVIOUS machine,
@@ -14650,6 +14695,10 @@ final class SyncService: ObservableObject {
        !respondingHostIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
     }
+    if let respondingHostName = ((errorPayload?["host"] as? [String: Any])?["name"] as? String),
+       !respondingHostName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      userInfo[syncRespondingHostNameKey] = respondingHostName
+    }
     return NSError(domain: "ADE", code: 5, userInfo: userInfo)
   }
 
@@ -14803,7 +14852,7 @@ final class SyncService: ObservableObject {
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return false
     }
-    return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
+    return syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String)
   }
 
   /// A destructive `forgetHost()` needs positive attribution: the rejection
@@ -14819,7 +14868,7 @@ final class SyncService: ObservableObject {
     expectedHostIdentity: String?
   ) -> Error {
     let nsError = error as NSError
-    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed" else {
+    guard syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) else {
       return error
     }
     let responding = syncNonEmpty(nsError.userInfo[syncRespondingHostIdentityKey] as? String)
@@ -15769,14 +15818,18 @@ final class SyncService: ObservableObject {
     currentPeerMetadata()["dbVersion"] as? Int ?? -1
   }
 
+  /// - Parameter code: the host's `hello_error.code`. Defaults to the legacy
+  ///   `auth_failed` an older brain sends, which must keep behaving exactly as
+  ///   it did before newer codes existed.
   func shouldInvalidateSavedPairingAfterAuthFailureForTesting(
     address: String,
     respondingHostIdentity: String? = nil,
-    expectedHostIdentity: String? = nil
+    expectedHostIdentity: String? = nil,
+    code: String = "auth_failed"
   ) -> Bool {
     var userInfo: [String: Any] = [
       NSLocalizedDescriptionKey: "Authentication failed.",
-      "ADEErrorCode": "auth_failed",
+      "ADEErrorCode": code,
     ]
     if let respondingHostIdentity {
       userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
@@ -16741,6 +16794,11 @@ final class SyncService: ObservableObject {
       ]
       if let respondingHostIdentity, !respondingHostIdentity.isEmpty {
         userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+      }
+      if let respondingHostName = ((errorPayload?["host"] as? [String: Any])?["name"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+         !respondingHostName.isEmpty {
+        userInfo[syncRespondingHostNameKey] = respondingHostName
       }
       resolve(requestId: requestId, result: .failure(NSError(
         domain: "ADE",

@@ -207,6 +207,24 @@ describe("doctor row evaluation", () => {
     });
   });
 
+  it("says the external watchdog stopped the brain rather than naming it as the blocker", () => {
+    const input = healthyInput();
+    // The external checker leaves the same breadcrumb the in-process loop
+    // watchdog does, so `lastCommand` is the watchdog itself here.
+    input.wedge = {
+      lastCommand: "external-watchdog",
+      blockedMs: 120_000,
+      ts: new Date(NOW - 60_000).toISOString(),
+    };
+
+    const wedge = evaluateDoctorRows(input).find((row) => row.key === "wedge");
+
+    expect(wedge).toMatchObject({ status: "warn" });
+    expect(wedge?.detail).toContain("stopped by the watchdog");
+    expect(wedge?.detail).toContain("no heartbeat");
+    expect(wedge?.detail).not.toContain("external-watchdog blocked");
+  });
+
   it("fails a mismatched brain and a publish episode over two minutes", () => {
     const input = healthyInput();
     input.brain.mismatchReason = "build hash changed";

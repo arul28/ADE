@@ -36,6 +36,7 @@ import type {
   AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
   AdeAccountSessionReadState,
+  AdeAccountSessionState,
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
@@ -332,11 +333,30 @@ function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
   });
 }
 
+/**
+ * The tri-state the renderer branches on. The daemon reports it directly; a
+ * runtime that predates the split reports nothing, so derive the same answer
+ * from the read state rather than falling back to a flat "signed out" — that
+ * fallback is what made a failed decrypt look like a sign-out.
+ */
+function toSessionState(
+  status: AccountAuthStatus,
+  sessionReadState?: AdeAccountSessionReadState,
+): AdeAccountSessionState | undefined {
+  if (status.signedIn) return "active";
+  // Never let a stale "active" ride along on a signed-out status.
+  if (status.sessionState && status.sessionState !== "active") return status.sessionState;
+  if (sessionReadState === "unreadable") return "unreadable";
+  if (sessionReadState === "missing") return "signed_out";
+  return undefined;
+}
+
 function toAccountStatus(
   status: AccountAuthStatus,
   configured: boolean,
   sessionReadState?: AdeAccountSessionReadState,
 ): AdeAccountStatus {
+  const sessionState = toSessionState(status, sessionReadState);
   return {
     signedIn: status.signedIn,
     userId: status.userId,
@@ -347,6 +367,7 @@ function toAccountStatus(
     imageUrl: status.imageUrl ?? null,
     configured,
     ...(sessionReadState ? { sessionReadState } : {}),
+    ...(sessionState ? { sessionState } : {}),
   };
 }
 
@@ -470,7 +491,9 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       const accountService = service();
       // Read the state alongside the status: `signedIn: false` with an
       // "unreadable" session is a failed decrypt, not a sign-out, and the
-      // renderer must be able to tell them apart.
+      // renderer must be able to tell them apart. `status.sessionState` adds
+      // the third case — a session the issuer rejected, kept on disk and
+      // reported as "expired" rather than silently deleted.
       const status = accountService.getStatus();
       // Optional call: a runtime that predates the split simply reports no read
       // state, and the renderer then falls back to its previous behaviour.

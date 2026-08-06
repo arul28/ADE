@@ -106,6 +106,11 @@ const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n")
  */
 const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
   "account.session.v1",
+  // The crash-safe rotation journal is only meaningful next to the session it
+  // describes. Migrating it into the Electron-only file would hide an
+  // interrupted desktop rotation from the brain and the CLI, which is exactly
+  // the process pair the journal exists to coordinate.
+  "account.session.rotation.v1",
   "sync.bootstrapToken.v1",
 ];
 
@@ -120,7 +125,18 @@ function fileBackedCredentialWriteError(key: string): Error {
     + "brain cannot read.",
   );
 }
-const LOCK_TIMEOUT_MS = 15_000;
+/**
+ * How long a writer waits for the credential-file lock before giving up.
+ *
+ * Exported because cross-process protocols layered on this store have to
+ * out-wait it. In particular the account service polls for a peer's rotated
+ * refresh token after a definitive `invalid_grant`: if that poll window were
+ * shorter than this timeout, a peer that legitimately won the exchange but is
+ * still queued behind the lock would have its session declared dead by the
+ * loser.
+ */
+export const CREDENTIAL_STORE_LOCK_TIMEOUT_MS = 15_000;
+const LOCK_TIMEOUT_MS = CREDENTIAL_STORE_LOCK_TIMEOUT_MS;
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
 const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;

@@ -8,10 +8,15 @@ import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
   KeytarCredentialStore,
+  CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
   createDefaultCredentialStore,
   isFileBackedCredentialKey,
 } from "./credentialStore";
-import { ACCOUNT_SESSION_CREDENTIAL_KEY } from "../account/accountAuthService";
+import {
+  ACCOUNT_SESSION_CREDENTIAL_KEY,
+  ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
+  DEFAULT_REFRESH_ROTATION_WAIT_MS,
+} from "../account/accountAuthService";
 import { BOOTSTRAP_TOKEN_KEY } from "../sync/brainProjectActionsSyncHandler";
 import {
   createMacKeychainMaterialResolver,
@@ -656,10 +661,22 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
   it("keeps the account-session key excluded from safeStorage migration", () => {
     expect(isFileBackedCredentialKey(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(true);
+    // The rotation journal is only meaningful next to the session it describes:
+    // migrating it into the Electron-only file would hide an interrupted
+    // desktop rotation from the brain and the CLI.
+    expect(isFileBackedCredentialKey(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBe(true);
     // Asserted against the real constant: renaming it in the sync handler must
     // fail here instead of silently moving the token into safeStorage.
     expect(isFileBackedCredentialKey(BOOTSTRAP_TOKEN_KEY)).toBe(true);
     expect(isFileBackedCredentialKey("linear.token.v1")).toBe(false);
+  });
+
+  it("out-waits its own lock timeout in the account rotation window", () => {
+    // The credential store's lock timeout is the floor for any cross-process
+    // wait layered on top of it: a shorter wait lets an impatient loser condemn
+    // a peer that legitimately won and is still queued for the lock.
+    expect(CREDENTIAL_STORE_LOCK_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DEFAULT_REFRESH_ROTATION_WAIT_MS).toBeGreaterThan(CREDENTIAL_STORE_LOCK_TIMEOUT_MS);
   });
 
   it("migrates a shared-path safeStorage file to the dedicated safeStorage file", () => {

@@ -22,6 +22,8 @@ import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
   accountAvatarImage,
   accountInitials,
+  accountSessionState,
+  accountSessionShortLabel,
   providerTint,
   useAccountStatus,
 } from "../../lib/account";
@@ -117,12 +119,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const githubConnected = Boolean(githubStatus?.connected);
   const avatarImage = accountAvatarImage(accountStatus, githubLogin);
   const accountRingTint = providerTint(accountStatus, githubConnected);
-  const accountLabel = accountStatus.signedIn
-    ? accountStatus.name?.trim() ||
-      accountStatus.email?.trim() ||
-      githubLogin ||
-      "Account"
-    : "Signed out";
+  // "Signed out" is only true for a real sign-out. An expired or unreadable
+  // session says something different, and the sidebar should not flatten them.
+  const accountSession = accountSessionState(accountStatus);
+  // A signed-in account always resolves to the "active" state, so the label for
+  // the current state is the right fallback in both branches — no literal.
+  const accountIdentityLabel = accountStatus.signedIn
+    ? accountStatus.name?.trim() || accountStatus.email?.trim() || githubLogin
+    : null;
+  const accountLabel = accountIdentityLabel || accountSessionShortLabel(accountSession);
   const accountRouteActive =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
   const accountReturnTo = accountRouteActive
@@ -358,7 +363,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           aria-label={
             accountStatus.signedIn
               ? `ADE account — ${accountLabel}`
-              : "ADE account — signed out"
+              : `ADE account — ${accountLabel.toLowerCase()}`
           }
           title={accountLabel}
         >

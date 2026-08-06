@@ -122,7 +122,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Brain startup ordering.** `ade serve` claims its RPC endpoint *before* entering the sync-host startup loop. The order matters: that loop retries forever by design (so mobile sync auto-recovers the moment a rival owner exits), so a brain whose socket was already owned never reached the bind check and simply lived on as a zombie — signed in, dialing the relay, and fighting the legitimate brain for the machine's relay slot. A brain that cannot own its socket has no reason to exist, so both the pre-loop claim and the later bind share one `assertBrainSocketUnowned` contract (message, cause, and the `socket_owned_by_other` code project recovery keys on) and fail fast. Symmetrically, `apps/ade-cli/src/services/runtime/runtimeSpawnRecord.ts` stops the CLI from stacking up detached brains: every `ade` command that cannot reach the brain spawns one detached-and-unref'd and forgets it, so a burst of failures used to leave a burst of immortal brains. The record (under the ADE-owned `runtime/spawns` dir, keyed by a hash of the socket path, `0600`) suppresses a duplicate spawn while a previously spawned brain is still alive and within `RUNTIME_SPAWN_RECORD_GRACE_MS` (30 s), reports success so the caller proceeds to its connect-with-retry, expires so a genuinely wedged brain never blocks recovery, and is cleared explicitly on the deliberate-shutdown path whose whole purpose is to make room for a replacement.
 
-**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call` and `personalChats.streamEvents`; they never enter project dispatch and their capability/version is advertised by `runtime/info`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves at most 24 host-side project icons within 750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps; records outside those budgets get a null icon instead of blocking connection setup.
+**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `machine.updateAndRestart`, `runtimeEvents.subscribe/unsubscribe`) directly. `sync.*` is answered by the project-scoped sync service when a project owns sync and by machine-level `ProjectlessSyncControls` when none does, so a machine that has never opened a project can still set its pairing PIN — previously it could not be paired at all. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call` and `personalChats.streamEvents`; they never enter project dispatch and their capability/version is advertised by `runtime/info`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves at most 24 host-side project icons within 750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps; records outside those budgets get a null icon instead of blocking connection setup.
 
 **Runtime-side services** (under `apps/ade-cli/src/services/`):
 
@@ -166,6 +166,36 @@ banner). Disabled with `ADE_DISABLE_LOOP_WATCHDOG=1` and off under vitest unless
 forced. The brain's own log stream is written by
 `apps/ade-cli/src/services/runtime/brainLogger.ts` (see §15.1).
 
+**External wedge watchdog.** The loop watchdog lives inside the process it
+guards, so it cannot report a brain whose whole runtime is stuck (or one where
+the worker never started). `apps/ade-cli/src/services/runtime/brainHeartbeat.ts`
+publishes the same liveness signal where something *outside* the process can
+read it: `<ADE home>/runtime/heartbeat.json` (`{pid, ts, seq, startedAt}`),
+rewritten every 15 s through `atomicJson.writeJsonAtomic` from a timer that
+ticks while the brain is idle. `ade runtime watchdog-check`
+(`brainWatchdogCheck.ts`) is the reader. It kills a brain only when the beat is
+older than 90 s (`ADE_BRAIN_HEARTBEAT_STALE_MS` overrides) **and** the pid is
+still alive **and** positively identified as the process that wrote that beat —
+`/bin/ps -o lstart` under `LC_ALL=C`, accepted within a −2 s … +5 min window
+around the first beat. Without that identity check the watchdog would SIGKILL an
+unrelated process once the OS recycled a dead brain's pid, once a minute,
+forever. An absent or unreadable heartbeat means "no judgement available", never
+"wedged", and a stale beat with a dead writer belongs to whichever supervisor
+already owns the restart. It never
+opens the runtime socket, because a wedged brain is exactly the case where
+connecting hangs. On macOS a separate `com.ade.watchdog` launch agent
+(`serviceManager/installLaunchdWatchdog.ts`, `StartInterval` 60 s, per channel,
+installed/removed alongside the brain's agent and best effort) runs the check;
+`com.ade.runtime`'s `KeepAlive` does the restart, so the watchdog never starts
+anything and cannot become a competing supervisor. On Windows the PowerShell
+supervisor already runs a restart loop, so it waits in 15 s slices instead of
+one unbounded `WaitForExit()` and stops a child that stopped beating — no
+Scheduled Task. A kill writes the same `event-loop-wedge.json` breadcrumb, so
+recovery reporting stays on the single `lastWedge` path above. The brain's
+launch agent also pins `ThrottleInterval` to 10 s so a restart into a
+half-replaced `/Applications/ADE.app` becomes a slow self-healing retry rather
+than a hot spin.
+
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`. `ADE_DEFAULT_ROLE` is an authority ceiling, not an identity grant: `resolveSessionBoundRole` clamps a chat-bound caller that would otherwise inherit a daemon-wide `cto` role to `agent`, preserves an explicitly declared `orchestrator`, and never accepts a requested role above the runtime ceiling. SDK-backed chats receive `ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for a lead), and tracked provider CLI launch/resume does the same. Persistent SDK guidance names the concrete `--session <id>` for lifecycle commands so shared provider servers do not depend on process-global env inheritance. Browser automation adds a separate bearer capability: ADE-launched chat and owned-terminal environments receive an opaque `ADE_BROWSER_ACTOR_TOKEN` bound in Electron memory to that chat's trusted lane/project or personal tab collection. The runtime requires the token, strips caller-supplied routing, and carries it only over the authenticated desktop bridge. Electron validates it in the same process that issued it before restoring the bound scope; role alone never grants access to a human-authenticated browser profile.
 
 **Optional ADE account auth.** `ade login` preserves the local-browser loopback OAuth path, but selects the account-directory device authorization bridge for explicit `--headless`, SSH, display-less hosts, or a failed browser launch. The brain generates and retains the device redemption secret, polls the bridge, and persists the resulting refresh-capable session under `account.session.v1`. For a JWT access token, its decoded `exp` claim is authoritative over the OAuth `expires_in` bookkeeping: status reports that expiry, and `getAccessToken()` refreshes inside the two-minute skew even when an older stored session record claims a later expiry. Tokens without a usable JWT expiry retain the stored `expiresAt` fallback. The desktop and brain share the encrypted session file and may race a rotating refresh credential; after an OAuth `invalid_grant`, the loser re-reads persistence and retries once only when another process has written a different refresh token. Other refresh failures are not replayed, and raw tokens are never logged. `ADE_ACCOUNT_TOKEN` takes precedence without starting a login flow: JWT access credentials are used through their declared expiry, while refresh credentials are exchanged and rotated only in memory. `ade account token create` wraps the current interactive refresh credential with its public issuer/client context in a versioned secret envelope, so a newly provisioned agent or CI host needs no local Clerk configuration. Legacy raw opaque refresh tokens retain local-config compatibility and return migration guidance when that config is absent. Distributed CLI/brain binaries and packaged Electron set `ADE_RUNTIME_PACKAGED=1` before account services start. In that mode, a Clerk issuer or JWKS URL under `*.clerk.accounts.dev`, plus the exact ADE development directory override, is rejected atomically in favor of the complete built-in production OAuth, attestation, and directory configuration; a non-development custom issuer remains valid, and source checkouts retain their existing override behavior. Persisted sessions pinned to a development issuer/client, sessions carrying a development `iss` access-token claim, and equivalent `ADE_ACCOUNT_TOKEN` credentials are rejected before token return, refresh, userinfo, or directory use. A rejected environment credential is treated as absent by status, access-token resolution, interactive login, device login, and durable-token provisioning, so it cannot block a new production sign-in. When the credential store supports atomic updates, a persisted development session is compare-and-deleted, then persistence is re-read exactly once: a peer-written acceptable production replacement is returned in the same status call. Without compare-and-delete support, ADE leaves the stored value untouched to avoid erasing a peer write but continues to report that development session as signed out. `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit packaged-build escape hatch for controlled development testing. The desktop Account page exposes one honest browser continuation because the bridge opens the generic hosted account flow rather than selecting a provider; the browser presents whichever methods are enabled. Native iOS uses ClerkKit's transferable OAuth result to distinguish new accounts from returning users. Its identifier-first email path starts sign-in, falls back to sign-up only for Clerk's precise account-not-found codes, sends the sign-up email verification code, and verifies against the matching sign-in or sign-up attempt. Account status exposes `loopback`, `device`, or `env-token`; signed-out state never gates local projects, `ade code`, local pairing, or PIN workflows. When product analytics is enabled, a known signed-in account produces one quota-counted PostHog `$identify` using only a one-way account hash plus plan, platform, and app version; explicit sign-out rotates the analytics anonymous identity.
@@ -199,6 +229,21 @@ ade brain update status --text
 ```
 
 Use `ADE_VERSION=vX.Y.Z` for a pinned release or `ADE_INSTALL_DIR` to choose the destination directory. The installer defaults to `$ADE_HOME/bin/ade`; both install and `ade brain update` verify downloaded runtime assets against `SHA256SUMS`. `ade brain update` stages the next release under `$ADE_HOME/runtime/updates/`, verifies the staged binary against the staged native deps, promotes the binary/deps into place, and restarts the per-user brain service.
+
+That same update path is reachable *remotely*, because a machine quietly running
+old code — or one no local desktop ever connects to — has to be fixable from
+wherever the user is. The runtime method `machine.updateAndRestart`
+(`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role, exists
+only on the authenticated runtime RPC endpoint, and is never automatic. The
+caller names the version it believes is newest (`targetVersion`); a host already
+on that version refuses to "update" and just restarts, which is still the useful
+action for a wedge-adjacent machine. The reply is step-attributed —
+`check`, `apply`, `restart` — and `restart` comes back `pending` by design: it
+tears down the process answering the call, so the client confirms by
+reconnecting and reading the version. A brain cannot report on its own
+replacement. Embedded/test runtimes have no installed service and refuse rather
+than pretend. The desktop surfaces this as **Update & restart** on a connected
+machine that is behind, over `ade.remoteRuntime.updateAndRestart`.
 
 Windows x64 uses the equivalent PowerShell installer:
 
@@ -508,6 +553,12 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
     ├── personal-chats/
     │   ├── state/               # Hidden chat runtime DB, transcripts, attachments
     │   └── workspaces/          # Separate provider cwd + personal terminal scratch
+    ├── runtime/
+    │   ├── brain.jsonl          # Brain log stream (10 MiB rotation)
+    │   ├── heartbeat.json       # Brain liveness beat read by the external watchdog
+    │   ├── event-loop-wedge.json / last-wedge.json  # Wedge breadcrumb, promoted on next boot
+    │   ├── spawns/              # Detached-brain spawn records (0600)
+    │   └── updates/             # Staged `ade brain update` payloads
     └── logs/                    # Main-process structured logs
 ```
 
@@ -793,7 +844,15 @@ ade.appControl.*             # Electron app control bridge over Chrome DevTools 
 ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/requestOriginAccess/getProfileDiagnostics/listPermissions/clearPermissions/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startSession/listSessions/endSession/observe/getTrace/click/typeText/dispatchKey/scroll/fill/clear/wait/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection/claim, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab, personal chat's independent tab collection on the global profile, and the renderer-wide `openUrlInAdeBrowser()` link router. Profile diagnostics and permission administration are trusted-renderer-only and rejected on CLI/runtime bridge paths.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
 ade.update.*                 # check/snapshot/install/cancel plus
-                             # machine-local getPreferences/setPreferences
+                             # machine-local getPreferences/setPreferences.
+                             # The post-update swap/service/restart/health
+                             # transaction result rides the existing
+                             # AutoUpdateSnapshot as `updateTransaction`
+                             # rather than adding a channel
+ade.remoteRuntime.*          # remote target registry, connect/projects/project-open,
+                             # action/sync/event dispatch, port forwards, and
+                             # ade.remoteRuntime.updateAndRestart — the desktop half
+                             # of the host's `machine.updateAndRestart` (§2.1)
 ```
 
 ### 5.3 Main-process handlers

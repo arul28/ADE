@@ -348,6 +348,63 @@ describe("productAnalyticsService", () => {
     expect(JSON.stringify(harness.messages)).not.toContain("private");
   });
 
+  it("accepts a failed update transaction as a coarse step name and dedupes it per hour", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "updates",
+        action: "transaction_failed",
+        outcome: "health",
+        // None of these may cross the boundary.
+        failure_message: "Updated the app, but the background service isn't answering",
+        version: "1.2.55",
+        app_path: "/Applications/ADE.app",
+      },
+      dedupeKey: "update_transaction_failed:health",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "updates",
+      action: "transaction_failed",
+      outcome: "health",
+    });
+    for (const key of ["failure_message", "version", "app_path"]) {
+      expect(harness.messages[0]?.properties).not.toHaveProperty(key);
+    }
+    expect(JSON.stringify(harness.messages)).not.toContain("Applications");
+
+    // A relaunch loop on the same failing step costs one accepted event an hour.
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "updates", action: "transaction_failed", outcome: "health" },
+      dedupeKey: "update_transaction_failed:health",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+
+    // A different failing step is a different product fact and still reports.
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "updates", action: "transaction_failed", outcome: "service" },
+      dedupeKey: "update_transaction_failed:service",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    // An arbitrary step name cannot invent an outcome value.
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "updates", action: "transaction_failed", outcome: "brain_pid_4213" },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[2]?.properties).not.toHaveProperty("outcome");
+
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("accepts the storage-doctor maintenance event with numeric aggregates and coarse outcome", () => {
     const harness = makeHarness();
     const result = harness.service.capture({

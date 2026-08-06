@@ -62,6 +62,11 @@ import {
   syncConnectionTransportForOrigin,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
+import {
+  generateMachinePairingPin,
+  resetBrainMachineSyncStoresForTests,
+  resolveBrainMachineSyncStores,
+} from "./brainMachineSyncStores";
 import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
@@ -825,8 +830,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: credentials,
       bootstrapTokenKey: "test.bootstrap",
-      pairingSecretsPath: path.join(secretsDir, "pairings.json"),
-      pinPath: path.join(secretsDir, "pin.json"),
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "device-id"),
       localSiteIdPath: path.join(secretsDir, "site-id"),
     });
@@ -906,8 +910,7 @@ describe("brain project actions fallback handler", () => {
           secretsDir,
           keyMaterial: { read: () => null },
         }),
-        pairingSecretsPath: pairing.pairingSecretsPath,
-        pinPath: pairing.pinPath,
+        secretsDir,
         localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
         localSiteIdPath: path.join(secretsDir, "sync-site-id"),
         accountAuthService: {
@@ -991,8 +994,7 @@ describe("brain project actions fallback handler", () => {
       projectCatalogProvider: { listProjects, prepareProjectConnection: vi.fn() },
       bootstrapCredentialStore: credentials,
       bootstrapTokenKey: "test.bootstrap",
-      pairingSecretsPath: path.join(secretsDir, "pairings.json"),
-      pinPath: path.join(secretsDir, "pin.json"),
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "device-id"),
       localSiteIdPath: path.join(secretsDir, "site-id"),
     });
@@ -1044,8 +1046,7 @@ describe("brain project actions fallback handler", () => {
         secretsDir,
         keyMaterial: { read: () => null },
       }),
-      pairingSecretsPath: pairing.pairingSecretsPath,
-      pinPath: pairing.pinPath,
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
       accountAuthService: {
@@ -1164,8 +1165,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: credentialStore,
       bootstrapTokenKey: "test.bootstrap",
-      pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
-      pinPath: path.join(secretsDir, "sync-pin.json"),
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
       pollIntervalMs: 100,
@@ -1351,8 +1351,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: credentialStore,
       bootstrapTokenKey: "test.bootstrap",
-      pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
-      pinPath: path.join(secretsDir, "sync-pin.json"),
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
     });
@@ -1431,8 +1430,7 @@ describe("brain project actions fallback handler", () => {
         secretsDir,
         keyMaterial: { read: () => null },
       }),
-      pairingSecretsPath: pairing.pairingSecretsPath,
-      pinPath: pairing.pinPath,
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
     });
@@ -1492,8 +1490,7 @@ describe("brain project actions fallback handler", () => {
         secretsDir,
         keyMaterial: { read: () => null },
       }),
-      pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
-      pinPath,
+      secretsDir,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
     });
@@ -4034,6 +4031,73 @@ describe("sync host account authentication", () => {
     }
   });
 
+  /**
+   * The keychain-clobber incident on the project-scoped host. Retaining the
+   * last known owner only helps a process that already saw one — a host that
+   * STARTS with a locked keychain has nothing retained, so reading "unreadable"
+   * as a sign-out ran `applyAccountLease(null)` and deleted every account-owned
+   * pairing on the machine before the user could unlock anything.
+   */
+  it.each(["expired", "unreadable"] as const)(
+    "keeps account-owned pairings when it starts with a %s credential store",
+    async (sessionState) => {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, ".ade", "secrets");
+      const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+      const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+      const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+      const peer = {
+        deviceId: "cold-boot-account-peer",
+        deviceName: "Account-owned iPhone",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "cold-boot-account-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const attestation = await verifyClerkAccountAttestation({
+        token: await mintAccountToken(),
+        expectedUserId: ownerUserId,
+        config: { issuer, jwksUrl, oauthClientId },
+      });
+      pairingStore.pairPeerViaAccount(peer, attestation);
+      const baseArgs = createHostArgs(projectRoot, []);
+      const host = createSyncHostService({
+        ...baseArgs,
+        ...accountDependencies(),
+        accountAuthService: {
+          getStatus: () => ({
+            signedIn: false,
+            userId: null,
+            email: null,
+            name: null,
+            expiresAt: null,
+            sessionState,
+          }),
+          getAccessToken: async () => {
+            throw new Error("Credential store is unreadable");
+          },
+        },
+        pinStore,
+        pairingStore,
+        pairingSecretsPath,
+        discoveryEnabled: false,
+        deviceRegistryService: {
+          ...baseArgs.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      try {
+        await host.waitUntilListening();
+        // The lease refresh runs on start and on a timer; give it both.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(pairingStore.getPairingRecord(peer.deviceId)).not.toBeNull();
+      } finally {
+        await host.dispose();
+        cleanup();
+      }
+    },
+  );
+
   it("rejects account auth while signed out and leaves PIN pairing available", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
@@ -4256,6 +4320,549 @@ describe("sync host account authentication", () => {
       cleanup();
     }
   });
+
+  /**
+   * Regression: a machine installed with the one-liner, signed in, brain
+   * running, and NO project ever opened.
+   *
+   * Projectless connections never touch the project sync host — cli.ts attaches
+   * `createBrainProjectActionsSyncHandler` as the shared listener's FALLBACK
+   * handler, and that handler used to carry its own narrower hello parser plus a
+   * blanket refusal of account auth. The ADE web client authenticates with an
+   * `account` hello and nothing else, so it was answered with a flat "Invalid
+   * hello payload." on exactly the machine ADE promises you can reach from
+   * anywhere. Both handlers now share `syncHelloProtocol`, and this path
+   * authenticates accounts the same way the project host does.
+   */
+  it("projectless brain: accepts a signed-in web client account hello and adopts a pairing", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const deviceKey = makeDpopKeyPair();
+    const accountToken = await mintAccountToken();
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      // No projects registered: the whole point of the fixture.
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }),
+        getAccessToken: async () => "host-account-lease",
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      // Account credentials are relay-only on both handlers.
+      transportOrigin: "relay-bridge",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const opened = await openAccountClient((server.address() as AddressInfo).port);
+      client = opened.ws;
+      opened.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "account-hello",
+        payload: {
+          peer: {
+            deviceId: "web-projectless-device",
+            deviceName: "ADE Web",
+            platform: "unknown",
+            deviceType: "browser",
+            siteId: "web-projectless-site",
+            dbVersion: 0,
+            // The capability list and the connection attempt are exactly what
+            // the old private parser silently dropped or choked on.
+            capabilities: [
+              "sync.relay.reauthorize.v1",
+              "sync.invalidationOnly.v1",
+              "sync.compactInvalidation.v1",
+            ],
+            connectionAttempt: { id: "attempt-1", startedAtMs: Date.now() },
+          },
+          auth: {
+            kind: "account",
+            deviceId: "web-projectless-device",
+            accountToken,
+            dpop: signAccountDpop({
+              privateKey: deviceKey.privateKey,
+              publicKeyX963: deviceKey.publicKeyX963,
+              deviceId: "web-projectless-device",
+              accountToken,
+            }),
+          },
+        },
+      }));
+      const hello = await waitForEnvelope(opened.envelopes, "hello_ok", "account-hello");
+      // A real secret comes back, so the browser can reconnect as a paired
+      // device instead of re-proving its account on every socket.
+      expect(hello.payload).toMatchObject({
+        accountPairing: { deviceId: "web-projectless-device" },
+      });
+      expect(
+        (hello.payload as { accountPairing?: { secret?: string } }).accountPairing?.secret,
+      ).toBeTruthy();
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
+  /**
+   * Regression: the same fresh machine, reached by a phone over the LAN.
+   * `ade sync pin generate` and the desktop's pairing card write the machine
+   * PIN through `resolveBrainMachineSyncStores`; the ingress handler has to
+   * verify against that SAME instance, because `createSyncPinStore` caches its
+   * record and a second instance would never see the write.
+   */
+  it("projectless brain: pairs a phone against the PIN written through the shared machine store", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    resetBrainMachineSyncStoresForTests();
+    const stores = resolveBrainMachineSyncStores(secretsDir);
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+    });
+    // Stands in for `ade sync pin generate` / the desktop pairing card, which
+    // both reach this store through the brain's RPC surface.
+    const pin = generateMachinePairingPin();
+    stores.pinStore.setPin(pin);
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      const phonePeer = {
+        deviceId: "ios-projectless-device",
+        deviceName: "Projectless iPhone",
+        platform: "iOS" as const,
+        deviceType: "phone" as const,
+        siteId: "ios-projectless-site",
+        dbVersion: 0,
+      };
+      client.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId: "projectless-pair",
+        payload: { code: pin, peer: phonePeer },
+      }));
+      const paired = await waitForEnvelope(envelopes, "pairing_result", "projectless-pair");
+      expect(paired.payload).toMatchObject({ ok: true, deviceId: phonePeer.deviceId });
+      const secret = (paired.payload as { secret: string }).secret;
+
+      client.close();
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const second = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "projectless-hello",
+        payload: {
+          peer: phonePeer,
+          auth: { kind: "paired", deviceId: phonePeer.deviceId, secret },
+        },
+      }));
+      // An empty roster is legitimate here — transport, auth and pairing are
+      // what a projectless machine owes its phone.
+      await expect(waitForEnvelope(second.envelopes, "hello_ok", "projectless-hello"))
+        .resolves.toBeTruthy();
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
+  /**
+   * Regression (2026-08-06): an expired or unreadable account session read as a
+   * deliberate sign-out.
+   *
+   * `readExplicitAccountStatus` blanked `userId` for both, so the ingress
+   * called `applyExplicitAccountUserId(null)` -> `revokeAccountOwnedExcept(null)`
+   * and DELETED every account-owned pairing on the machine. That is the same
+   * token accident that used to take every remote route down, except this time
+   * it destroys credentials: the fix is a walk back to the Mac. Ownership now
+   * survives the accident; only a genuine sign-out, or a different user signing
+   * in, revokes.
+   */
+  describe("projectless brain: account ownership across session states", () => {
+    type BrainAccountStatus = {
+      signedIn: boolean;
+      userId: string | null;
+      email: null;
+      name: null;
+      expiresAt: string | null;
+      sessionState?: "active" | "signed_out" | "expired" | "unreadable";
+    };
+
+    const signedInStatus = (userId: string): BrainAccountStatus => ({
+      signedIn: true,
+      userId,
+      email: null,
+      name: null,
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      sessionState: "active",
+    });
+
+    async function createOwnershipHarness(initialStatus?: BrainAccountStatus) {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      // The SAME stores the handler resolves, so assertions read the instance
+      // the ingress path mutates rather than a second view of the same files.
+      resetBrainMachineSyncStoresForTests();
+      const { pinStore, pairingStore } = resolveBrainMachineSyncStores(secretsDir);
+      pinStore.setPin("428193");
+      const peer = {
+        deviceId: "brain-account-owned-device",
+        deviceName: "Account-owned iPhone",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "brain-account-owned-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const attestation = await verifyClerkAccountAttestation({
+        token: await mintAccountToken(),
+        expectedUserId: ownerUserId,
+        config: { issuer, jwksUrl, oauthClientId },
+      });
+      // No device key on purpose: this fixture exercises the account-ownership
+      // gate, not DPoP.
+      const { secret } = pairingStore.pairPeerViaAccount(peer, attestation);
+      let status: BrainAccountStatus = initialStatus ?? signedInStatus(ownerUserId);
+      const handler = createBrainProjectActionsSyncHandler({
+        logger: createDiscoveryLogger(),
+        projectCatalogProvider: {
+          listProjects: vi.fn(async () => ({ projects: [] })),
+          prepareProjectConnection: vi.fn(),
+        },
+        bootstrapCredentialStore: new EncryptedFileCredentialStore({
+          secretsDir,
+          keyMaterial: { read: () => null },
+        }),
+        secretsDir,
+        localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+        localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+        accountAuthService: {
+          getStatus: () => status,
+          getAccessToken: async () => (status.signedIn ? "host-account-lease" : ""),
+        },
+        getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+      });
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      server.on("connection", (ws, request) => handler({
+        ws,
+        remoteAddress: request.socket.remoteAddress ?? null,
+        remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "direct",
+      }));
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const port = (server.address() as AddressInfo).port;
+      const openClients: WebSocket[] = [];
+      const pairedHello = async (
+        requestId: string,
+        overrides: { deviceId?: string; secret?: string } = {},
+      ): Promise<ParsedSyncEnvelope> => {
+        const client = new WebSocket(`ws://127.0.0.1:${port}`);
+        openClients.push(client);
+        const { envelopes } = trackClientEnvelopes(client);
+        await new Promise<void>((resolve, reject) => {
+          client.once("open", resolve);
+          client.once("error", reject);
+        });
+        client.send(encodeSyncEnvelope({
+          type: "hello",
+          requestId,
+          payload: {
+            peer,
+            auth: {
+              kind: "paired",
+              deviceId: overrides.deviceId ?? peer.deviceId,
+              secret: overrides.secret ?? secret,
+            },
+          },
+        }));
+        const reply = await waitForValue(
+          () => envelopes.find((envelope) =>
+            (envelope.type === "hello_ok" || envelope.type === "hello_error")
+            && envelope.requestId === requestId),
+          `hello reply ${requestId}`,
+        );
+        client.close();
+        return reply;
+      };
+      return {
+        peer,
+        pairingStore,
+        pairedHello,
+        setStatus: (next: BrainAccountStatus) => { status = next; },
+        cleanup: async () => {
+          for (const client of openClients) client.close();
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+          cleanup();
+        },
+      };
+    }
+
+    it.each(["expired", "unreadable"] as const)(
+      "keeps account-owned pairings usable while the session is %s",
+      async (sessionState) => {
+        const harness = await createOwnershipHarness();
+        try {
+          // Seeds the last known owner, exactly as a working machine would.
+          expect((await harness.pairedHello("owned-hello-1")).type).toBe("hello_ok");
+
+          harness.setStatus({
+            signedIn: false,
+            userId: null,
+            email: null,
+            name: null,
+            expiresAt: null,
+            sessionState,
+          });
+
+          expect((await harness.pairedHello("owned-hello-2")).type).toBe("hello_ok");
+          expect(harness.pairingStore.getPairingRecord(harness.peer.deviceId)).not.toBeNull();
+        } finally {
+          await harness.cleanup();
+        }
+      },
+    );
+
+    /**
+     * The keychain-clobber incident, from the top. Retaining the last known
+     * owner only helps a process that already saw one — a brain that BOOTS with
+     * a locked keychain has nothing retained, so reading "unreadable" as a
+     * sign-out deleted every account-owned pairing on the machine before the
+     * user could unlock anything. No information is not a sign-out.
+     */
+    it.each(["expired", "unreadable"] as const)(
+      "keeps account-owned pairings when it boots with a %s credential store",
+      async (sessionState) => {
+        const harness = await createOwnershipHarness({
+          signedIn: false,
+          userId: null,
+          email: null,
+          name: null,
+          expiresAt: null,
+          sessionState,
+        });
+        try {
+          // No prior hello: this process has never seen the owner.
+          expect((await harness.pairedHello("cold-boot-hello")).type).toBe("hello_ok");
+          expect(harness.pairingStore.getPairingRecord(harness.peer.deviceId)).not.toBeNull();
+        } finally {
+          await harness.cleanup();
+        }
+      },
+    );
+
+    it("revokes account-owned pairings when the machine actually signs out", async () => {
+      const harness = await createOwnershipHarness();
+      try {
+        expect((await harness.pairedHello("signed-out-hello-1")).type).toBe("hello_ok");
+
+        harness.setStatus({
+          signedIn: false,
+          userId: null,
+          email: null,
+          name: null,
+          expiresAt: null,
+          sessionState: "signed_out",
+        });
+
+        expect((await harness.pairedHello("signed-out-hello-2")).type).toBe("hello_error");
+        expect(harness.pairingStore.getPairingRecord(harness.peer.deviceId)).toBeNull();
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("revokes account-owned pairings when a different user signs in", async () => {
+      const harness = await createOwnershipHarness();
+      try {
+        expect((await harness.pairedHello("switch-hello-1")).type).toBe("hello_ok");
+
+        harness.setStatus(signedInStatus("user_someone_else"));
+
+        expect((await harness.pairedHello("switch-hello-2")).type).toBe("hello_error");
+        expect(harness.pairingStore.getPairingRecord(harness.peer.deviceId)).toBeNull();
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    /**
+     * The brain answered every paired rejection with a bare
+     * "Sync authentication failed." under `auth_failed`. Clients classify from
+     * the code, so an unknown device and a stale secret both have to arrive as
+     * `repair_required` — identical on the wire, so the handshake stays out of
+     * the business of confirming which device ids this machine knows.
+     */
+    it("rejects an unusable paired secret with repair_required, not a bare auth_failed", async () => {
+      const harness = await createOwnershipHarness();
+      try {
+        const stale = await harness.pairedHello("stale-secret-hello", { secret: "not-the-secret" });
+        expect(stale.type).toBe("hello_error");
+        expect(stale.payload).toMatchObject({ code: "repair_required" });
+        const unknown = await harness.pairedHello("unknown-device-hello", {
+          deviceId: harness.peer.deviceId,
+          secret: "still-not-the-secret",
+        });
+        expect(unknown.payload).toMatchObject({
+          code: "repair_required",
+          message: (stale.payload as { message: string }).message,
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
+  });
+
+  /**
+   * `auth_failed` reads as "pair it again" on every client. A machine that
+   * simply cannot verify accounts yet has nothing wrong with its pairing, so it
+   * says so with its own code and the client shows the update headline.
+   */
+  it("projectless brain: answers an account hello with host_update_required when it cannot verify accounts", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const deviceKey = makeDpopKeyPair();
+    const accountToken = await mintAccountToken();
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }),
+        getAccessToken: async () => "host-account-lease",
+      },
+      // The whole fixture: this build has no attestation configuration.
+      getAccountAttestationConfig: () => null,
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "relay-bridge",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const opened = await openAccountClient((server.address() as AddressInfo).port);
+      client = opened.ws;
+      opened.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "unverifiable-account-hello",
+        payload: {
+          peer: {
+            deviceId: "web-unverifiable-device",
+            deviceName: "ADE Web",
+            platform: "unknown",
+            deviceType: "browser",
+            siteId: "web-unverifiable-site",
+            dbVersion: 0,
+          },
+          auth: {
+            kind: "account",
+            deviceId: "web-unverifiable-device",
+            accountToken,
+            dpop: signAccountDpop({
+              privateKey: deviceKey.privateKey,
+              publicKeyX963: deviceKey.publicKeyX963,
+              deviceId: "web-unverifiable-device",
+              accountToken,
+            }),
+          },
+        },
+      }));
+      const rejection = await waitForEnvelope(
+        opened.envelopes,
+        "hello_error",
+        "unverifiable-account-hello",
+      );
+      expect(rejection.payload).toMatchObject({ code: "host_update_required" });
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
 });
 
 describe("paired runtime host authorization", () => {

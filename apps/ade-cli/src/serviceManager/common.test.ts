@@ -55,6 +55,7 @@ import {
   renderLaunchdPlist,
   uninstallLaunchdService,
 } from "./installLaunchd";
+import { resolveWatchdogServiceName } from "./installLaunchdWatchdog";
 import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
 import { isWindowsTaskStateRunning } from "./installWindows";
 
@@ -132,6 +133,10 @@ function writeSyncHostSingletonLock(args: {
     }, null, 2)}\n`,
     "utf8",
   );
+}
+
+function watchdogPath(homeDir: string): string {
+  return path.join(homeDir, "Library", "LaunchAgents", `${resolveWatchdogServiceName()}.plist`);
 }
 
 function currentLaunchdDomain(): string {
@@ -770,6 +775,9 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      // A successful install also arms the wedge watchdog.
+      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
+      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
     ]);
   });
 
@@ -794,6 +802,10 @@ describe("launchd service install", () => {
     });
     expect(calls).toEqual([
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+      // Machines that were already running when the watchdog shipped take this
+      // path, so it has to arm one too.
+      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
+      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
     ]);
   });
 
@@ -830,6 +842,9 @@ describe("launchd service install", () => {
       "print",
       "unload",
       "-axo",
+      "load",
+      // The watchdog agent is (re)armed alongside the repaired brain.
+      "unload",
       "load",
     ]);
   });
@@ -889,6 +904,9 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      // A successful install also arms the wedge watchdog.
+      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
+      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
     ]);
   });
 
@@ -917,6 +935,9 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      // A successful install also arms the wedge watchdog.
+      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
+      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
     ]);
   });
 
@@ -1020,6 +1041,8 @@ describe("launchd service install", () => {
       ["launchctl", "print"],
       ["launchctl", "unload"],
       ["ps", "-axo"],
+      ["launchctl", "load"],
+      ["launchctl", "unload"],
       ["launchctl", "load"],
     ]);
   });
@@ -1130,7 +1153,8 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(fs.existsSync(servicePath)).toBe(true);
-    expect(calls.map((call) => call.args[0])).toEqual(["print", "unload", "-axo", "load"]);
+    expect(calls.map((call) => call.args[0]))
+      .toEqual(["print", "unload", "-axo", "load", "unload", "load"]);
   });
 
   it("refuses to uninstall a launch agent from a descendant of the loaded service", () => {
@@ -1205,7 +1229,8 @@ describe("launchd service install", () => {
       action: "uninstall",
       path: servicePath,
     });
-    expect(calls.map((call) => call.args[0])).toEqual(["print", "bootout", "bootout", "unload"]);
+    expect(calls.map((call) => call.args[0]))
+      .toEqual(["print", "bootout", "bootout", "unload", "bootout", "unload"]);
     expect(killed).toEqual([{ pid: 100, signal: "SIGTERM" }]);
     expect(fs.existsSync(servicePath)).toBe(false);
   });

@@ -221,6 +221,44 @@ top-right `AutoUpdateControl` and does not duplicate that control with a wide
 banner. Banner dismissal is keyed on a stable failure signature so a fresh
 abort or failed attempt reappears while an unchanged state stays hidden.
 
+## Applying an update is one transaction
+
+Replacing the application bundle does not touch the background service, which
+keeps running the old code until something reinstalls and restarts it. That
+repair used to happen invisibly inside `localRuntimeConnectionPool`'s
+build-hash mismatch path, so a failure produced a silently broken app.
+
+The relaunch after an update now runs one explicit transaction with four steps —
+`swap`, `service`, `restart`, `health` — modelled by the dependency-injected
+`runUpdateTransaction` in `apps/desktop/src/main/services/updates/updateTransaction.ts`.
+It is pure: no Electron, no timers. `main.ts` runs it once when the snapshot
+carries `recentlyInstalled`, binding the steps to the paths that already exist —
+`localRuntimePool.installServiceBestEffort()` for `service`, the shared
+`ProjectRecoveryService.restartBrain()` (i.e. `restartServiceAndWait`) for
+`restart`, and the side-effect-free `probeMachineRuntimeHealth()` for `health`.
+There is no second restart path, and `main.ts` now owns the single recovery
+service instance it shares with `registerIpc`, so repair and restart stay
+mutually exclusive.
+
+The typed result rides the existing `AutoUpdateSnapshot` over
+`IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
+failure names the step in plain words and `AutoUpdateBanner` renders that one
+line beside the shared **Repair** control:
+
+| Step | Line |
+| --- | --- |
+| `swap` | The update didn't finish installing — ADE is still on the old version. |
+| `service` | Updated the app, but the background service couldn't be set up — click Repair. |
+| `restart` | Updated the app, but the background service didn't restart — click Repair. |
+| `health` | Updated the app, but the background service isn't answering — click Repair. |
+
+The first failure stops the sequence; later steps are recorded `skipped`. A
+dependency that throws becomes a `failed` step, never an unhandled rejection.
+Every step is platform-agnostic: install and restart both dispatch through the
+ade-cli service manager, which picks launchd or the Windows per-user service,
+and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
+(unix socket on macOS/Linux, named pipe on Windows).
+
 ## Automatic installation policy
 
 Packaged builds keep checking for and downloading updates, but restarting to

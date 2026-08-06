@@ -45,6 +45,7 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+  RemoteRuntimeUpdateAndRestartResult,
   RuntimeEventsReleaseRequest,
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
@@ -99,6 +100,12 @@ type RuntimeBridgeArgs = {
 };
 
 const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
+/**
+ * A machine update downloads a full build before it restarts, so the normal
+ * call timeout is far too short. Fifteen minutes covers a slow link without
+ * leaving the request open forever.
+ */
+const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -1169,6 +1176,36 @@ export function registerRuntimeBridge({
         projectId,
         method,
         params,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeUpdateAndRestart,
+    async (
+      _event,
+      arg: { id: string; targetVersion?: string | null },
+    ): Promise<RemoteRuntimeUpdateAndRestartResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const targetVersion =
+        typeof arg?.targetVersion === "string" && arg.targetVersion.trim()
+          ? arg.targetVersion.trim()
+          : null;
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("Remote target was not found.");
+      return await remoteConnectionService.callMachineMethod<
+        RemoteRuntimeUpdateAndRestartResult
+      >(
+        target.id,
+        "machine.updateAndRestart",
+        { targetVersion },
+        {
+          // Downloading and installing a build can take minutes, and the
+          // restart itself drops the connection — a silent retry would run the
+          // whole update a second time.
+          timeoutMs: REMOTE_MACHINE_UPDATE_TIMEOUT_MS,
+          retryOnConnectionError: false,
+        },
       );
     },
   );

@@ -7,9 +7,15 @@ import {
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../../../desktop/src/shared/accountDirectory";
-import type { SyncCredentialStore } from "../credentials/credentialStore";
+import {
+  CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
+  type SyncCredentialStore,
+} from "../credentials/credentialStore";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
+  ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
+  DEFAULT_REFRESH_ROTATION_WAIT_MS,
+  accountTokenGeneration,
   createAccountActionDomainService,
   createAccountAuthService,
   derivePkceChallenge,
@@ -554,6 +560,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       name: null,
       expiresAt: null,
       source: null,
+      sessionState: "signed_out",
     });
     expect(service.getSessionReadState?.()).toBe("missing");
     const start = await service.startLogin();
@@ -610,6 +617,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
         imageUrl: "https://images.example/person.png",
         expiresAt: "2026-07-14T13:00:00.000Z",
         source: "loopback",
+        sessionState: "active",
       },
     });
   });
@@ -783,6 +791,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       name: null,
       expiresAt: null,
       source: null,
+      sessionState: "signed_out",
     });
 
     // The pending session is gone; polling reports it was not found rather than
@@ -920,6 +929,7 @@ describe("AccountAuthService device authorization", () => {
         name: null,
         expiresAt: "2026-07-14T13:00:00.000Z",
         source: "device",
+        sessionState: "active",
       },
     });
     expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
@@ -1590,6 +1600,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
       name: null,
       expiresAt: "2026-07-14T13:00:00.000Z",
       source: "env-token",
+      sessionState: "active",
     });
     await expect(service.getAccessToken()).resolves.toBe(accessToken);
     await expect(service.startLogin()).rejects.toThrow(/no interactive sign-in is required/);
@@ -1935,7 +1946,12 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
 });
 
 describe("AccountAuthService refresh and sign-out", () => {
-  it("removes the exact rejected session after a definitive invalid_grant", async () => {
+  // Regression (2026-08-05 "randomly signed out"): a definitive invalid_grant
+  // used to DELETE the shared credential, so one process losing a rotating
+  // grant signed the desktop, the brain and the CLI out at once and took the
+  // host's relay tunnel and directory row with it. The record must survive,
+  // marked needs-re-auth, and report `expired`.
+  it("marks the exact rejected session dead in place after a definitive invalid_grant instead of deleting it", async () => {
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
@@ -1954,12 +1970,289 @@ describe("AccountAuthService refresh and sign-out", () => {
     activeServices.push(service);
 
     await expect(service.getAccessToken()).rejects.toThrow(/already consumed/i);
-    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+    const stored = store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored!)).toMatchObject({
+      userId: "user_old",
+      refreshToken: "refresh-old",
+      needsReauth: true,
+      rejectedAt: "2026-07-14T12:00:00.000Z",
+      rejectedReason: "invalid_grant",
+    });
     expect(service.getStatus()).toMatchObject({
       signedIn: false,
       userId: null,
       source: null,
+      sessionState: "expired",
     });
+    expect(service.getSessionState?.()).toBe("expired");
+    // The dead grant is never served again, and the words say "expired", not
+    // "never signed in".
+    await expect(service.getAccessToken()).rejects.toThrow(/session expired/i);
+    // The rotation journal is settled, not left behind to soften the next one.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
+  });
+
+  it("lets a later successful sign-in overwrite a session marked needs-re-auth", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+      rejectedAt: "2026-07-14T11:59:00.000Z",
+      needsReauth: true,
+    })));
+    const accessToken = jwt({
+      sub: "device-user",
+      email: "device@example.com",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      fetchImpl: vi.fn(async (input: string) => (
+        input.endsWith("/device/code")
+          ? jsonResponse({
+            device_code: "device-code",
+            user_code: "USER-CODE",
+            verification_uri: "https://directory.example.test/device",
+            expires_in: 600,
+          })
+          : jsonResponse({ access_token: accessToken, refresh_token: "fresh", expires_in: 3_600 })
+      )),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({ signedIn: false, sessionState: "expired" });
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+    });
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "device-user",
+      sessionState: "active",
+    });
+    const stored = JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!);
+    expect(stored.needsReauth).toBeUndefined();
+    expect(stored.rejectedAt).toBeUndefined();
+  });
+
+  // Regression: a crash between the provider consuming the old refresh token
+  // and the replacement being persisted burns the token family with nothing on
+  // disk to say so. The journal left behind by the interrupted run makes the
+  // next invalid_grant non-definitive, so it must NOT condemn the session.
+  it("does not mark the session dead on the first invalid_grant after an interrupted rotation journal", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    const session = storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    });
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(session));
+    // A previous process died mid-rotation against exactly this grant.
+    store.setSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY, JSON.stringify({
+      version: 1,
+      oldRefreshTokenHash: accountTokenGeneration("refresh-old"),
+      startedAt: "2026-07-14T11:59:59.000Z",
+      pid: 4242,
+      source: "desktop",
+      userId: "user_old",
+    }));
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      error: "invalid_grant",
+      error_description: "refresh token was already consumed",
+    }, 400));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      refreshRotationWaitMs: 0,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow(/already consumed/i);
+    const afterFirst = JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!);
+    expect(afterFirst.needsReauth).toBeUndefined();
+    expect(afterFirst.rejectedAt).toBeUndefined();
+    expect(afterFirst.refreshToken).toBe("refresh-old");
+    // The account is still the machine's account: nothing was signed out.
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "user_old",
+      sessionState: "active",
+    });
+    // The ambiguity is spent: the journal is cleared so a genuinely dead grant
+    // still reaches needs-re-auth on the next attempt.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
+
+    await expect(service.getAccessToken()).rejects.toThrow(/already consumed/i);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      needsReauth: true,
+      rejectedReason: "invalid_grant",
+    });
+  });
+
+  it("journals the rotation before the exchange and clears it once the new pair is durable", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const journalDuringExchange: Array<string | null> = [];
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        journalDuringExchange.push(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY));
+        return jsonResponse({
+          access_token: refreshedAccessToken,
+          refresh_token: "refresh-rotated",
+          expires_in: 3_600,
+        });
+      }),
+      now: () => nowMs,
+      pid: 777,
+      sessionMutationSource: "brain",
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    // The intent was durable BEFORE the provider could consume the old token.
+    expect(JSON.parse(journalDuringExchange[0]!)).toMatchObject({
+      version: 1,
+      oldRefreshTokenHash: accountTokenGeneration("refresh-old"),
+      pid: 777,
+      source: "brain",
+      userId: "user_old",
+    });
+    // And it is gone once the replacement is durable.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
+  });
+
+  it("clears the journal on a store without atomic writes, whoever won the rotation", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const peerAccessToken = jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) });
+    const peerSession = storedSession({
+      accessToken: peerAccessToken,
+      refreshToken: "refresh-peer",
+    });
+    const store = new MemoryCredentialStore();
+    // No compare-and-swap: this is the fallback persist path.
+    (store as { updateSync?: unknown }).updateSync = undefined;
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        // A peer lands its own rotation while ours is in flight.
+        store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(peerSession));
+        return jsonResponse({
+          access_token: jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) }),
+          refresh_token: "refresh-rotated",
+          expires_in: 3_600,
+        });
+      }),
+      now: () => nowMs,
+      pid: 778,
+      sessionMutationSource: "brain",
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(peerAccessToken);
+    // Our exchange is over either way — a journal left behind would make the
+    // next refresh wait on a rotation nobody is running.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
+  });
+
+  it("waits at least the credential-store lock timeout for a peer rotation by default", () => {
+    // A wait shorter than the store's lock timeout lets an impatient loser
+    // condemn a winner that is still queued behind the file lock.
+    expect(DEFAULT_REFRESH_ROTATION_WAIT_MS).toBeGreaterThan(CREDENTIAL_STORE_LOCK_TIMEOUT_MS);
+  });
+
+  it("emits an attributed account.session_mutation event for every stored-session mutation", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    let rejectRefresh = false;
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        return rejectRefresh
+          ? jsonResponse({ error: "invalid_grant" }, 400)
+          : jsonResponse({
+            access_token: refreshedAccessToken,
+            refresh_token: "refresh-rotated",
+            expires_in: 3_600,
+          });
+      }),
+      refreshRotationWaitMs: 0,
+      now: () => nowMs,
+      pid: 4242,
+      sessionMutationSource: "cli",
+      logger,
+    });
+    activeServices.push(service);
+
+    const mutations = (): Array<Record<string, unknown>> => [
+      ...logger.info.mock.calls,
+      ...logger.warn.mock.calls,
+    ]
+      .filter(([event]) => event === "account.session_mutation")
+      .map(([, meta]) => meta as Record<string, unknown>);
+    const actionsSoFar = (): string[] => mutations().map((meta) => String(meta.action));
+
+    await service.getAccessToken();
+    expect(actionsSoFar()).toEqual(expect.arrayContaining([
+      "rotation_journal_begin",
+      "rotate",
+      "rotation_journal_clear",
+    ]));
+    // Every line is attributed and carries a non-reversible token generation.
+    for (const meta of mutations()) {
+      expect(meta).toMatchObject({ pid: 4242, source: "cli" });
+      expect(typeof meta.reason).toBe("string");
+    }
+    expect(mutations().find((meta) => meta.action === "rotate")).toMatchObject({
+      tokenGeneration: accountTokenGeneration("refresh-rotated"),
+      outcome: "persisted",
+    });
+
+    rejectRefresh = true;
+    await expect(service.getAccessToken({ forceRefresh: true })).rejects.toThrow();
+    const markDead = logger.warn.mock.calls
+      .filter(([event]) => event === "account.session_mutation")
+      .map(([, meta]) => meta as Record<string, unknown>)
+      .find((meta) => meta.action === "mark_dead");
+    expect(markDead).toMatchObject({
+      reason: "refresh_grant_rejected",
+      oauthErrorCode: "invalid_grant",
+      pid: 4242,
+      source: "cli",
+      outcome: "marked_needs_reauth",
+    });
+
+    service.signOut();
+    expect(actionsSoFar()).toContain("sign_out");
   });
 
   it("polls for a delayed cross-process refresh rotation before invalidating", async () => {
@@ -2607,6 +2900,7 @@ describe("AccountAuthService refresh and sign-out", () => {
       name: null,
       expiresAt: null,
       source: null,
+      sessionState: "signed_out",
     });
     resolveRefresh!(jsonResponse({
       access_token: jwt({ sub: "user_new" }),

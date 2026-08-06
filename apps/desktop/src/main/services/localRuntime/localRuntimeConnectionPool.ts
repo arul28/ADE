@@ -2134,6 +2134,41 @@ export class LocalRuntimeConnectionPool {
     return null;
   }
 
+  /**
+   * Side-effect-free health probe of the machine's background service: does it
+   * answer on the machine endpoint, and is it running code this app can talk
+   * to? The same compatibility rules the pool connects by decide the answer, so
+   * a service still running the pre-update build reads unhealthy here.
+   *
+   * Platform-agnostic: the endpoint is whatever `resolveMachineAdeLayout`
+   * reports, which is a unix socket on macOS/Linux and a named pipe on Windows.
+   */
+  async probeMachineRuntimeHealth(): Promise<{
+    ok: boolean;
+    version: string | null;
+    detail: string;
+  }> {
+    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim()
+      || resolveMachineAdeLayout().socketPath;
+    const probe = await this.probeRuntimeCompatibility(socketPath);
+    if (!probe) {
+      return {
+        ok: false,
+        version: null,
+        detail: `No answer from the background service at ${socketPath}.`,
+      };
+    }
+    const version = probe.runtimeInfo.version;
+    if (probe.error) {
+      return { ok: false, version, detail: probe.error.message };
+    }
+    return {
+      ok: true,
+      version,
+      detail: version ? `Background service is running ${version}.` : "",
+    };
+  }
+
   private async probeRuntimeCompatibility(socketPath: string): Promise<{
     error: LocalRuntimeCompatibilityError | null;
     runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>;

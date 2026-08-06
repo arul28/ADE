@@ -106,6 +106,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "brain_repair",
   "machine_reconnect",
   "mention_expanded",
+  "transaction_failed",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -164,6 +165,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
     "partial", "failed", "idle_only", "immediate",
+    // Which half of a post-update transaction did not land. `swap` is
+    // deliberately absent: the app half is already reported by
+    // `ade_update_install_did_not_land`, so only the brain half is new signal.
+    "service", "restart", "health",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "gemini", "local", "other"]),
   model_family: new Set([

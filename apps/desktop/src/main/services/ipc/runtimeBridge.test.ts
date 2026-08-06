@@ -1447,6 +1447,60 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("forwards Update & restart to the machine with the client's target version", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    const machineResult = {
+      ok: true,
+      updateApplied: true,
+      currentVersion: "1.1.9",
+      targetVersion: "1.2.0",
+      steps: [{ id: "restart", status: "ok", detail: "restarted" }],
+      message: "Remote updated to 1.2.0 — restarting.",
+    };
+    remoteCallMachineForTargetMock.mockResolvedValue(machineResult);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeUpdateAndRestart)?.(eventForSender(), {
+        id: "target-1",
+        targetVersion: "1.2.0",
+      }),
+    ).resolves.toEqual(machineResult);
+
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "machine.updateAndRestart",
+      { targetVersion: "1.2.0" },
+      // An update downloads a build and then drops the connection to restart,
+      // so it gets a long deadline and must never be silently retried.
+      expect.objectContaining({
+        retryOnConnectionError: false,
+        timeoutMs: expect.any(Number),
+      }),
+    );
+    const [, , , options] = remoteCallMachineForTargetMock.mock.calls[0];
+    expect(options.timeoutMs).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  it("rejects Update & restart for an unknown machine before reaching the network", async () => {
+    remoteRegistryGetMock.mockReturnValue(undefined);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeUpdateAndRestart)?.(eventForSender(), {
+        id: "  ",
+        targetVersion: "1.2.0",
+      }),
+    ).rejects.toThrow(/not found/i);
+    expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
+  });
+
   it("opens a remote project after refreshing a stale connect project list", async () => {
     const project = {
       projectId: "project-1",
@@ -1904,6 +1958,74 @@ describe("registerIpc sync bridge", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("sets the pairing code through the brain when no project sync service exists", async () => {
+    const snapshot = { role: "host" } as any;
+    const callSync = vi.fn()
+      // The window has no project binding, so the first machine-level attempt
+      // is the one inside tryRuntimeSync; a brain without a project-scoped
+      // sync service rejects it.
+      .mockRejectedValueOnce(new Error("Sync service is not available. Register a project first."))
+      .mockResolvedValue(snapshot);
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => null,
+      localRuntimeConnectionPool: { callSync } as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncSetPin)?.(eventForSender(), "123456"),
+    ).resolves.toBe(snapshot);
+    expect(callSync).toHaveBeenLastCalledWith("sync.setPin", { pin: "123456" });
+  });
+
+  it("keeps using the project sync service for the pairing code when one exists", async () => {
+    const snapshot = { role: "host" } as any;
+    const setPin = vi.fn(async () => snapshot);
+    const callSync = vi.fn();
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => ({ setPin }) as any,
+      localRuntimeConnectionPool: null,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncSetPin)?.(eventForSender(), "123456"),
+    ).resolves.toBe(snapshot);
+    expect(setPin).toHaveBeenCalledWith("123456");
+    expect(callSync).not.toHaveBeenCalled();
+  });
+
+  it("still reports the sync service as unavailable with no service and no runtime", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => null,
+      localRuntimeConnectionPool: null,
+      projectRecoveryConnectionPool: null,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncSetPin)?.(eventForSender(), "123456"),
+    ).rejects.toThrow("Sync service is not available.");
   });
 
   it("coalesces concurrent Linear OAuth starts within one project credential context", async () => {

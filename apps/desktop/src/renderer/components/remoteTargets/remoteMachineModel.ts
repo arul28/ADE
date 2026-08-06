@@ -2,6 +2,7 @@ import { extractError } from "../../lib/format";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
+  RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
@@ -10,6 +11,7 @@ import type {
   RemoteRuntimeTargetRouteSource,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
+import { compareUpdateVersions } from "../../../shared/updateVersions";
 import {
   accountMachineConnectionState,
   accountMachineEndpointHost,
@@ -368,6 +370,11 @@ export type MachineErrorCard = {
   detail: string | null;
   /** True when the message came straight from a structured `lastErrorInfo`. */
   structured: boolean;
+  /**
+   * What the connection actually failed on, straight from the main process.
+   * Recovery actions key off this — the message is prose and is never parsed.
+   */
+  failure: RemoteRuntimeConnectionAttemptFailure | null;
 };
 
 /**
@@ -389,13 +396,14 @@ export function selectMachineErrorCard(args: {
       message: errorInfo.message,
       detail: errorInfo.detail?.trim() ? errorInfo.detail : null,
       structured: true,
+      failure: errorInfo.failure ?? null,
     };
   }
   const fallback =
     overrideMessage?.trim() ||
     (rawError ? formatRemoteTargetError(rawError) : null);
   if (!fallback) return null;
-  return { message: fallback, detail: null, structured: false };
+  return { message: fallback, detail: null, structured: false, failure: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,9 +418,47 @@ export type SavedMachineRow = {
   target: RemoteRuntimeTarget;
   status: RemoteRuntimeConnectionStatus | null;
   connected: boolean;
+  /** ADE version running on that machine, live when connected. */
+  version: string | null;
   /** Set only for the unavailable section (offline / unsupported). */
   unavailableReason: string | null;
 };
+
+/**
+ * Parseability guard, not a comparator: the ordering itself is
+ * `compareUpdateVersions`. Anything without a numeric dotted core (or missing)
+ * answers "not outdated" so an odd version string can never conjure an update
+ * prompt, and the prerelease/build suffix is dropped because "behind this
+ * computer" is a release-line question.
+ */
+function comparableVersionCore(version: string | null | undefined): string | null {
+  const core = version?.trim().replace(/^v/i, "").split(/[-+]/)[0] ?? "";
+  if (!core) return null;
+  return core.split(".").every((part) => Number.isFinite(Number(part))) ? core : null;
+}
+
+/** True when `version` is strictly older than `newestVersion`. */
+export function isMachineVersionOutdated(
+  version: string | null | undefined,
+  newestVersion: string | null | undefined,
+): boolean {
+  const left = comparableVersionCore(version);
+  const right = comparableVersionCore(newestVersion);
+  if (!left || !right) return false;
+  return compareUpdateVersions(left, right) < 0;
+}
+
+/** The newest ADE version this computer knows about — running or staged. */
+export function newestKnownAdeVersion(args: {
+  currentVersion?: string | null;
+  latestKnownVersion?: string | null;
+}): string | null {
+  const current = args.currentVersion?.trim() || null;
+  const latest = args.latestKnownVersion?.trim() || null;
+  if (!current) return latest;
+  if (!latest) return current;
+  return isMachineVersionOutdated(current, latest) ? latest : current;
+}
 
 export type DiscoveredMachineRow = {
   kind: "discovered";
@@ -554,6 +600,7 @@ export function assignMachineSections(args: {
         target,
         status,
         connected: true,
+        version: status?.version ?? target.runtimeBinaryVersion ?? null,
         unavailableReason: null,
       });
       continue;
@@ -566,6 +613,7 @@ export function assignMachineSections(args: {
         target,
         status,
         connected: false,
+        version: status?.version ?? target.runtimeBinaryVersion ?? null,
         unavailableReason: match.unsupportedReason ?? "Offline",
       });
       continue;
@@ -577,6 +625,7 @@ export function assignMachineSections(args: {
       target,
       status,
       connected: false,
+      version: status?.version ?? target.runtimeBinaryVersion ?? null,
       unavailableReason: null,
     });
   }

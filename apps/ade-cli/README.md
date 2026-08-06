@@ -174,6 +174,7 @@ ade runtime install-service
 ade runtime uninstall-service
 ade runtime service-status --text
 ade runtime status --text
+ade runtime watchdog-check --text  # external liveness check: read the heartbeat, stop a wedged brain
 
 # Phone pairing:
 ade brain pin generate
@@ -243,7 +244,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
-runtime/info     machineInfo.get
+runtime/info     machineInfo.get   machine.updateAndRestart
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
@@ -257,7 +258,8 @@ sync.listDevices          sync.updateLocalDevice
 sync.connectToBrain       sync.disconnectFromBrain
 sync.forgetDevice
 sync.getTransferReadiness sync.transferBrainToLocal
-sync.getPin   sync.setPin   sync.clearPin
+sync.getPin   sync.setPin   sync.generatePin   sync.clearPin
+sync.getRuntimeName       sync.setRuntimeName       sync.clearRuntimeName
 sync.setActiveLanePresence
 sync.getCloudRelayStatus
 sync.getRequireDpop       sync.setRequireDpop
@@ -273,6 +275,21 @@ commands; they select the CTO role where credential-bearing operations require
 it and keep account-machine pairing on the DPoP-bound runtime path. Every
 machine-directory action is CTO-only, including `renameMachine` and
 `repairMachinePairing`, which the shared ADE action registry does not list.
+
+`machine.updateAndRestart` is the host half of "Update & restart": it checks for
+a newer build for this machine's channel, applies it, and asks the login service
+to restart the brain, reporting one step at a time. It is CTO-gated and always
+user-initiated. On the machine itself, `ade brain update` is the typed
+equivalent and does not need a running brain; the RPC exists for a client that
+is not on the machine (the desktop's remote-machine card), which the CLI has no
+transport for today.
+
+The pairing and PIN methods above answer on a machine with no registered
+project. A brain that has never opened one still hosts phone sync, so
+`ade sync status`, `ade sync pin generate|set|clear`, `ade sync devices`,
+`ade sync refresh`, and `ade sync security …` all work there and report the
+machine's own state; `sync.listDevices` returns an empty list and the runtime
+name is null, because both are per-project settings.
 
 `attention.call` is the CTO-gated account-wide Activity surface backing `ade
 code`'s `/activity` pane (`getSnapshot`, `getMachineSnapshot`, `acknowledge`,
@@ -413,6 +430,10 @@ ade brain status --text
 ade brain start
 ade brain stop
 ade brain restart
+ade brain update --text                   # update this machine's brain and restart it (same action as the desktop "Update & restart")
+ade runtime watchdog-check --text         # what the watchdog agent runs on a timer: stop a brain that stopped responding
+ade sync status --text                    # works with no registered project: this machine's own pairing and route state
+ade sync pin generate --text              # pair a phone with a machine that has never opened a project
 ade connect                               # account + login service + account-directory row, idempotent
 ade connect --status --text               # report the three steps without changing anything
 ade connect --headless                    # force the copy-paste device flow
@@ -682,7 +703,7 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 
 - **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest known version. Latest-known comes from the on-disk `update-status.json` by default; pass `--online` to also fetch the latest release from GitHub (short timeout, best-effort). `warn` when the install is behind or missing.
 - **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role.
-- **Wedge history** — the last brain-loop watchdog wedge that was recovered (blocking command and how long it blocked), read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h.
+- **Wedge history** — the last wedge that was recovered, read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h. Two things write that record: the in-process loop watchdog (reported as the blocking command and how long it blocked) and the external watchdog (`ade runtime watchdog-check`), which stops a brain whose heartbeat has gone stale and is reported as how long the brain went without a beat. A brain that is wedged right now shows up as a failing **Brain** row; the heartbeat itself has no separate row because a stale heartbeat plus a live brain is exactly what the watchdog converts into a restart within a minute.
 - **Sync port** — the sync host port the brain bound. `ok` on the default port, `warn` when bound elsewhere (with the base-port holders it found), `fail` when the brain is up but reported no port.
 - **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated.
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.

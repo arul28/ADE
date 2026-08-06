@@ -4,7 +4,12 @@ import type {
   RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeRouteKind,
 } from "../../../shared/types/remoteRuntime";
+import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
 import { isTailnetHostname } from "../../../shared/tailnet";
+import {
+  PairedRuntimeHelloRejectedError,
+  PairedRuntimeRelayAuthRequiredError,
+} from "./pairedRuntimeErrors";
 import { normalizeSyncEndpoint } from "./syncRuntimeTransport";
 
 export type PairedRuntimeEndpointCandidate = {
@@ -213,9 +218,47 @@ export function pairedRuntimeRouteHost(
   }
 }
 
+/**
+ * `hello_error.code` → attempt failure. This is the whole point of the code:
+ * a host rejection is classified from what the host said it was, never from the
+ * prose it wrote for the user. Regex classification below applies only to
+ * transport-level failures, which carry no structured code.
+ */
+const HELLO_CODE_FAILURES: Record<
+  SyncHelloErrorPayload["code"],
+  RemoteRuntimeConnectionAttemptFailure
+> = {
+  repair_required: "pairing",
+  // Desktop→desktop dials with `auth.kind: "paired"`, so the host's generic
+  // `auth_failed` here is always a pairing-record rejection — including from
+  // hosts too old to send `repair_required`. Account problems arrive as
+  // `relay_account_required`, which has its own row.
+  auth_failed: "pairing",
+  relay_account_required: "authentication",
+  // The host is fine and the pairing is fine — it just cannot verify ADE
+  // accounts yet. "Pair it again" would send the user in circles; the update
+  // headline is the one that resolves it.
+  host_update_required: "protocol",
+  // The account session moved under the handshake. Retry after signing in —
+  // never a reason to drop a saved pairing.
+  account_session_changed: "authentication",
+  connection_attempt_superseded: "superseded",
+  invalid_hello: "protocol",
+  protocol_version_mismatch: "protocol",
+};
+
 export function classifyPairedRuntimeFailure(
   error: unknown,
 ): RemoteRuntimeConnectionAttemptFailure {
+  if (error instanceof PairedRuntimeRelayAuthRequiredError) return "authentication";
+  if (error instanceof PairedRuntimeHelloRejectedError) {
+    const mapped = error.helloCode
+      ? HELLO_CODE_FAILURES[error.helloCode]
+      : undefined;
+    // An unknown code is still a host rejection, not a dead route. Older or
+    // newer hosts land here; "pairing" points at the only action that helps.
+    return mapped ?? "pairing";
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/timed? out|timeout/i.test(message)) return "timeout";
   if (/ECONN|EHOST|ENET|\bunreach|\boffline\b|\bsocket (?:error|failed)|failed to connect/i.test(message)) {
@@ -235,4 +278,57 @@ export function classifyPairedRuntimeFailure(
   }
   if (/closed|socket|websocket/i.test(message)) return "unreachable";
   return "unknown";
+}
+
+/**
+ * Precedence, not a tally. A single "your pairing is stale" rejection tells the
+ * user exactly what to do, and it stays true no matter how many other routes
+ * were simply dead — so it outranks a pile of unreachable addresses.
+ */
+const FAILURE_PRECEDENCE: readonly RemoteRuntimeConnectionAttemptFailure[] = [
+  "pairing",
+  "authentication",
+  "identity",
+  "capability",
+  "protocol",
+  "superseded",
+  "timeout",
+  "unreachable",
+  "unknown",
+];
+
+export function dominantPairedRuntimeFailure(
+  attempts: readonly RemoteRuntimeConnectionAttempt[],
+): RemoteRuntimeConnectionAttemptFailure {
+  const seen = new Set(
+    attempts.flatMap((attempt) => (attempt.failure ? [attempt.failure] : [])),
+  );
+  return FAILURE_PRECEDENCE.find((failure) => seen.has(failure)) ?? "unknown";
+}
+
+/**
+ * The headline a person reads. One sentence, one next step, no hostnames,
+ * ports, or route lists — every one of those lives in the attempts array behind
+ * the UI's route details.
+ */
+export function pairedRuntimeFailureMessage(
+  failure: RemoteRuntimeConnectionAttemptFailure,
+  machineNameValue: string | null | undefined,
+): string {
+  const machine = machineNameValue?.trim() || "that computer";
+  switch (failure) {
+    case "pairing":
+      return `${machine} says this device's pairing is out of date — pair it again.`;
+    case "authentication":
+      return "Sign in to ADE to connect through the relay.";
+    case "identity":
+      return `A different computer answered at ${machine}'s saved address — try again.`;
+    case "capability":
+    case "protocol":
+      return `${machine} is running an older ADE — update it there, then try again.`;
+    case "superseded":
+      return `Another connection to ${machine} took over — try again.`;
+    default:
+      return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
+  }
 }

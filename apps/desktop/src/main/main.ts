@@ -282,6 +282,8 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { runUpdateTransaction } from "./services/updates/updateTransaction";
+import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
 import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
@@ -2376,21 +2378,90 @@ app.whenReady().then(async () => {
     });
   }
 
+  // The one recovery service for this machine. It owns `restartServiceAndWait`,
+  // the verified restart sequence behind the Repair button, and the post-update
+  // transaction below reuses it rather than growing a second restart path.
+  // Sharing the instance also keeps its repair/restart mutual exclusion real.
+  const machineRecoveryService = createProjectRecoveryService({
+    adeHome: machineAdeLayout.adeDir,
+    logger: localRuntimeLogger,
+    connectionPool: localRuntimePool,
+  });
+
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
     && autoUpdateService.getSnapshot().recentlyInstalled != null;
-  if (shouldRefreshRuntimeServiceAfterUpdate && !shouldAttemptRuntimeServiceInstall) {
-    void localRuntimePool.installServiceBestEffort()
-      .then(() => {
+  if (shouldRefreshRuntimeServiceAfterUpdate) {
+    // Applying an update is ONE transaction — app swap, background service
+    // reinstalled, service restarted, service answering. Replacing
+    // /Applications/ADE.app leaves the old service still running the old code,
+    // so this relaunch finishes the job once and says which step failed if one
+    // did. Platform-agnostic: both the install and the restart dispatch through
+    // the ade-cli service manager, which picks launchd or the Windows
+    // per-user service itself.
+    const recentlyInstalledVersion =
+      autoUpdateService.getSnapshot().recentlyInstalled?.version ?? null;
+    void runUpdateTransaction({
+      installedVersion: app.getVersion(),
+      expectedVersion: recentlyInstalledVersion,
+      reinstallService: async () => {
+        await localRuntimePool.installServiceBestEffort();
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
           markMachineStateMigrationComplete({ layout: machineAdeLayout });
         }
+        // "skipped" is a legitimate no-op (a protocol-compatible newer brain is
+        // already running); only a real failure is a failed step.
+        return {
+          ok: status.state !== "failed",
+          detail: status.message?.trim() ?? "",
+        };
+      },
+      restartService: async () => {
+        // The app and the brain move together on an update, so restarting is
+        // the default — but a relaunch where the service is ALREADY answering
+        // on the new build has nothing to restart, and bouncing it there kills
+        // live work for no gain. Same side-effect-free probe the health step
+        // uses, so this is a skip in front of the one restart path, not a
+        // second one.
+        const alreadyCurrent = await localRuntimePool
+          .probeMachineRuntimeHealth()
+          .catch(() => null);
+        if (alreadyCurrent?.ok) {
+          return {
+            ok: true,
+            detail: alreadyCurrent.version
+              ? `Background service already running ${alreadyCurrent.version} — restart not needed.`
+              : "Background service already on the new build — restart not needed.",
+          };
+        }
+        await machineRecoveryService.restartBrain();
+        return { ok: true };
+      },
+      checkHealth: () => localRuntimePool.probeMachineRuntimeHealth(),
+    })
+      .then((result) => {
+        autoUpdateService.setUpdateTransaction(result);
+        if (result.ok) {
+          updateLogger.info("autoUpdate.transaction_completed", {
+            version: result.version,
+            steps: result.steps,
+          });
+          return;
+        }
+        updateLogger.error("autoUpdate.transaction_failed", {
+          version: result.version,
+          failedStep: result.steps.find((step) => step.status === "failed")?.id ?? null,
+          failureMessage: result.failureMessage,
+          steps: result.steps,
+        });
       })
       .catch((error) => {
-        localRuntimeLogger.warn("local_runtime.service_update_refresh_failed", {
+        // runUpdateTransaction never rejects; this only guards a broken
+        // listener so a bad update notice can never take down startup.
+        updateLogger.warn("autoUpdate.transaction_publish_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -7255,6 +7326,7 @@ app.whenReady().then(async () => {
       ? null
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
+    injectedProjectRecoveryService: machineRecoveryService,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,

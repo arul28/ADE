@@ -222,3 +222,55 @@ describe("AutoUpdateBanner", () => {
     resolveCancel(true);
   });
 });
+
+describe("AutoUpdateBanner update transaction notice", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "ade");
+  });
+
+  it("renders the failed step's plain line with a Repair affordance", async () => {
+    const restartBackgroundService = vi.fn(async () => {});
+    installAdeMock(snapshot({
+      updateTransaction: {
+        ok: false,
+        version: "1.2.35",
+        steps: [
+          { id: "swap", status: "ok", detail: "Running 1.2.35." },
+          { id: "service", status: "ok", detail: "" },
+          { id: "restart", status: "failed", detail: "endpoint never rebound" },
+          { id: "health", status: "skipped", detail: "Skipped after an earlier step failed." },
+        ],
+        failureMessage:
+          "Updated the app, but the background service didn't restart — click Repair.",
+      },
+    }));
+    (window as unknown as { ade: Record<string, unknown> }).ade.app = { restartBackgroundService };
+
+    render(<AutoUpdateBanner />);
+
+    await screen.findByText(
+      "Updated the app, but the background service didn't restart — click Repair.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    await waitFor(() => expect(restartBackgroundService).toHaveBeenCalledTimes(1));
+  });
+
+  it("stays quiet when the transaction succeeded", async () => {
+    installAdeMock(snapshot({
+      updateTransaction: {
+        ok: true,
+        version: "1.2.35",
+        steps: [],
+        failureMessage: null,
+      },
+    }));
+
+    render(<AutoUpdateBanner />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/background service/)).toBeNull();
+    });
+  });
+});

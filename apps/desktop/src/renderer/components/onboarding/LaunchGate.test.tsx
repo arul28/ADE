@@ -9,21 +9,25 @@ const accountState = vi.hoisted(() => ({
   loading: false,
 }));
 
-vi.mock("../../lib/account", () => ({
-  useAccountStatus: () => ({
-    status: {
-      signedIn: accountState.signedIn,
-      configured: true,
-      userId: null,
-      email: null,
-      name: null,
-      expiresAt: null,
-      provider: null,
-      imageUrl: null,
-    },
-    loading: accountState.loading,
-  }),
-}));
+vi.mock("../../lib/account", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/account")>("../../lib/account");
+  return {
+    ...actual,
+    useAccountStatus: () => ({
+      status: {
+        signedIn: accountState.signedIn,
+        configured: true,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+        provider: null,
+        imageUrl: null,
+      },
+      loading: accountState.loading,
+    }),
+  };
+});
 
 vi.mock("../account/AccountPage", () => ({
   SignInCard: ({ onSignedIn }: { onSignedIn: () => void }) => (

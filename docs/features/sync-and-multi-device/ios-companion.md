@@ -708,7 +708,7 @@ the Tailscale app (`tailscale://`), falling back to the App Store page.
 - Connected, normal load → "Live · ready to sync".
 - Connected, strained load → "Live · machine responding slowly".
 - `connecting` → "Connecting to saved machine".
-- `unreachable` → "Unable to reach your machine" plus the
+- `unreachable` → "Can't reach your machine" plus the
   `lastFailureMessage` banner.
 - `disconnected` → reconnect / pair-different-machine CTA depending on
   whether a saved Tailscale address candidate is present.
@@ -905,11 +905,17 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    the second dial is turned away instead of being recorded as an endpoint
    failure. Foregrounding with a relay-capable machine and no live connection
    warms the Clerk session ahead of the imminent dial.
-   An `auth_failed` hello rejection drops the saved pairing **only**
+   A pairing-rejection hello error drops the saved pairing **only**
    when the rejecting machine attributed itself (`hello_error.host`)
    and its identity matches the paired machine; unattributed or
    mismatched rejections are marked ambiguous, keep the pairing, and
-   let the reconnect loop try other routes.
+   let the reconnect loop try other routes. "Pairing rejection" is
+   `syncCodeIsPairingRejection` — `repair_required` (what current hosts send)
+   or the generic `auth_failed` (what older hosts send for the same cause).
+   Both mean the saved pairing is no longer usable, so every pairing decision
+   asks that one function instead of comparing against a single code string.
+   The newer `host_update_required` and `account_session_changed` codes are
+   deliberately *not* in that set: neither is a reason to destroy a pairing.
 3. Send local `db_version` plus the per-host-DB cursor map
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the
@@ -1023,7 +1029,13 @@ attempt target wins, and while `connected` or `disconnected` the attached host
 does. The attempt name is resolved through the account directory like any other,
 so a renamed machine reads the same while you are reaching for it as it does
 once you are on it. The Hub pill, the Hub "Cannot reach ⟨machine⟩" capsule, and
-the Settings connection header all read from that one helper.
+the Settings connection header all read from that one helper. Settings resolves
+the subject **once** per snapshot and passes it as the card's single
+`hostDisplayName`, so the header, its caption, and its pending line cannot name
+two different machines in the same card. Restoring a saved machine re-points the
+attempt target at that profile's identity before reconnecting: a tapped row can
+carry only an mDNS short name (`arul`) with no identity, which is what left the
+connecting copy naming a machine nobody chose.
 
 Choosing a machine that does not answer must not cost the user the machine they
 were already on. The old socket is still surrendered before the race — holding

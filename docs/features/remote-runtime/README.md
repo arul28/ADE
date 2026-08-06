@@ -23,8 +23,18 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 - `apps/desktop/src/main/services/remoteRuntime/` — paired transport
   (`syncRuntimeTransport.ts`), loopback preview forwarding
   (`syncPortForwardClient.ts`), paired credential and endpoint history
-  (`syncPairedMachineStore.ts`), LAN → tailnet → relay ordering
-  (`pairedRuntimeRoutes.ts`), paired bootstrap and connection diagnostics;
+  (`syncPairedMachineStore.ts`, whose endpoint list is append-only except for
+  `forgetEndpoint`: an address that provably answered as a *different* host is
+  dropped rather than demoted, because `markEndpointFailed` re-adds whatever it
+  records a failure for and the recently-failing demotion expires after two
+  minutes — a neighbour's tailnet name that once landed in the record would
+  otherwise be retried forever. The record's own endpoint always survives, so a
+  machine can never be left with nothing to dial), LAN → tailnet → relay ordering
+  (`pairedRuntimeRoutes.ts`), typed handshake rejections
+  (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
+  host's structured `hello_error.code` and the rejecting host's identity, so
+  classification never pattern-matches the host's prose), paired bootstrap and
+  connection diagnostics;
   plus the Advanced SSH transport (multi-route fallback, bounded connect/exec
   timeouts, strict host-key verification, normalized handshake errors) and
   runtime upload/bootstrap. The folder also owns the target registry, runtime
@@ -50,7 +60,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   per-window remote-open generation guards so a slow earlier remote-project
   open cannot overwrite the latest window binding. It also registers
   `ade.runtime.events.release`, the renderer's explicit teardown for a
-  subscription it has stopped reading.
+  subscription it has stopped reading, and `ade.remoteRuntime.updateAndRestart`,
+  the desktop half of the host's `machine.updateAndRestart` runtime method (see
+  [`machine.updateAndRestart`](#machineupdateandrestart)).
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
   the store behind those streams. Subscriptions are keyed by
   `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
@@ -186,6 +198,30 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`codedRecoveryError`) — refuses to start an app-owned brain on a primary
   service socket and carries the recorded `AdeRecoveryErrorCode` to IPC and the
   renderer recovery surface.
+- `apps/desktop/src/renderer/components/remoteTargets/ConnectionRouteDetails.tsx`
+  — the collapsed **Details** list under a connection failure. The headline is
+  one sentence; this is where every attempted route, its host/port, its duration
+  and the diagnostic id live. Failure reasons render as plain words
+  (`no answer`, `timed out`, `not signed in`, `pairing rejected`,
+  `wrong machine answered`, `another route won`, `unsupported`,
+  `version mismatch`, `failed`) mapped from
+  `RemoteRuntimeConnectionAttempt.failure`, never re-derived from message text.
+- `apps/desktop/src/renderer/components/remoteTargets/RemoteErrorCard.tsx` —
+  the error card. Beyond **Try again** it accepts one optional `action`: a
+  single explicit recovery step for failures retrying cannot fix. Today that is
+  **Pair again**, offered by `RemoteTargetList` only when the rejecting machine
+  is also a row in this ADE account's directory (there is otherwise nothing to
+  re-adopt); pressing it re-runs `account.pairMachine`. Nothing re-pairs on its
+  own.
+- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx` and
+  `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
+  `isMachineVersionOutdated`, `newestKnownAdeVersion`) — the **Update &
+  restart** button on a connected machine that is behind. "Behind" is measured
+  against the newest ADE *this* computer knows about — what it runs, or a newer
+  build it has already seen published — using the shared
+  `compareUpdateVersions`; a machine level with us gets no button. The click
+  calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
+  renders the host's step-attributed message in the row.
 - `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
@@ -411,7 +447,32 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `dataUrl`, `sourcePath`, and `mimeType` fields, under a 24-icon / 750 ms
   connect-path budget with 128 KiB per-icon and 512 KiB aggregate wire caps,
   so a connected desktop can render real project logos without letting an
-  oversized registry stall connection setup.
+  oversized registry stall connection setup. It also serves
+  `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
+  `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
+  see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
+- `apps/ade-cli/src/services/runtime/brainHeartbeat.ts` — the brain's
+  externally-readable liveness beat: `<ADE home>/runtime/heartbeat.json`
+  (`{pid, ts, seq, startedAt}`) rewritten every 15 s from a timer that ticks
+  while the brain is completely idle, which is exactly the state a wedge hides
+  in.
+- `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` — `runBrainWatchdogCheck`,
+  behind `ade runtime watchdog-check`. Reads the heartbeat and, at most, kills
+  one pid. It deliberately never opens the runtime socket: a wedged brain is
+  precisely the case where connecting hangs, and a watchdog that blocks on its
+  patient is not a watchdog.
+- `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — install/uninstall
+  of the `com.ade.watchdog` launch agent (`.beta` / `.alpha` per channel,
+  `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
+  machine that cannot install the watchdog still gets a brain.
+- `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts` —
+  `createMachineUpdateControls` / `runMachineUpdateAndRestart`, the host side of
+  `machine.updateAndRestart`. Absent for embedded and test runtimes, which have
+  no installed service to update; the method then refuses rather than pretending
+  to have restarted something.
+- `apps/ade-cli/src/services/runtime/atomicJson.ts` — the shared
+  write-temp-then-rename JSON helper these runtime state files use, so a reader
+  outside the process never sees a half-written record.
 - `apps/ade-cli/src/services/projects/` — machine project registry,
   lazy per-project service scope cache, and `projectIconResolver.ts`. Brain
   startup boots only the authoritative sync-host project; other recent
@@ -648,6 +709,41 @@ runtime whose initialization and machine-project capabilities are compatible;
 the selected home is then used consistently for follow-up commands such as the
 SSH-to-paired upgrade.
 
+### When the connect fails, the user reads one sentence
+
+A failed connect used to hand the user a list of routes. Four lines of
+`lan 192.168.1.24:8787: timeout` say nothing about what to do, and three of them
+are usually irrelevant noise around the one route that actually reached the
+machine and was rejected.
+
+The main process now classifies the attempts and picks the dominant cause,
+carried as `RemoteRuntimeConnectErrorInfo.failure` alongside the existing
+`attempts` array. The UI keys its headline **and its recovery action** off that
+field, never off the message text. Every host, port, duration and the
+correlation id stay in a collapsed **Details** list
+(`ConnectionRouteDetails.tsx`), which is where support questions get answered.
+
+Classification is structural. `classifyPairedRuntimeFailure`
+(`pairedRuntimeRoutes.ts`) reads the host's `hello_error.code`, carried up by
+`PairedRuntimeHelloRejectedError`:
+
+| `hello_error.code` | Attempt failure |
+| --- | --- |
+| `repair_required`, and `auth_failed` from an older host | `pairing` |
+| `relay_account_required` | `authentication` |
+| `connection_attempt_superseded` | `superseded` |
+| `invalid_hello`, `protocol_version_mismatch` | `protocol` |
+
+The message-regex classifier is reserved for transport errors, which carry no
+code at all. Account-machine *adoption* keeps its own prose classifier
+(`classifyAccountMachineAdoptionFailure` in `syncPairedMachineStore.ts`): that
+flow has no hello code to read and deliberately orders its rules differently —
+"pair it again" is a first-class outcome because adoption *is* the repair, a
+credential word outranks a transport word, and `cipher` reads as identity.
+
+`superseded` exists so a losing route stops reading as a fault. Another route
+won the same connection attempt; nothing is wrong.
+
 ## Compatibility warnings
 
 Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
@@ -841,7 +937,10 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - "Tailscale discovery timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; unblock `tailscale` to add tailnet peers. "Tailscale not installed — LAN discovery only." is the `info` variant of the same diagnostic and renders as a muted note rather than a warning: Tailscale is optional, so a plain Mac without it is not in a degraded state.
 - "Repair" next to the This Mac / route-publish failure — this Mac's brain cannot read the stored account session, so it never publishes to the account directory even though the app is signed in. The button restarts `com.ade.runtime` and waits for the replacement to answer; the new process re-reads the keychain from scratch. If it reports "Repair failed — quit and reopen ADE", a newer runtime is usually already running and must not be forced down.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
-- `lan <host>:<port>: authentication` in the route list — the host was reached and it *rejected* this desktop, so the other routes' `timeout`/`unreachable` entries are noise. The host's `hello_error` message names which of three causes it was: the pairing was removed on that machine, the saved secret no longer matches, or the two machines are signed in to different ADE accounts. The first two are reported identically (an unauthenticated caller must not be told whether a device id exists on that host) and both need a re-pair; only the account mismatch is fixed by signing in.
+- "<Machine> says this device's pairing is out of date — pair it again." — the host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. When the machine is also on this ADE account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.
+- The headline never lists routes. It is one sentence derived from the dominant attempt failure; every host, port, duration and the diagnostic ID stay in the collapsed **Details** list built from `RemoteRuntimeConnectErrorInfo.attempts`.
+- Attempt failures are classified from the host's structured `hello_error.code`, never from its message text — see [When the connect fails, the user reads one sentence](#when-the-connect-fails-the-user-reads-one-sentence) for the code table. Both `repair_required` and `auth_failed` mean the same thing to a paired client, so iOS treats them identically when deciding whether a saved pairing may be dropped — and only ever when the rejecting host's identity matches the saved pairing.
+- `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and the recently-failing demotion expires after two minutes), so a neighbour's tailnet name that once landed in the record would be retried forever.
 
 ## Pairing identity and paired-secret lifetime
 
@@ -937,6 +1036,85 @@ because reclaiming frees exactly the low ports a restarting host prefers.
 Diagnosing this needs `netstat -an -p tcp` or `tailscale serve status`, **not**
 `lsof`: tailscaled runs as root, so a user-level probe reports the ports as
 having no holder, which reads as "free" and is the opposite of the truth.
+
+## Wedge supervision and remote repair
+
+A brain can fail in a way no supervisor notices: the event loop dies while the
+process stays alive. launchd's `KeepAlive` and the Windows supervisor loop both
+react only to an **exit**, so a hung brain keeps its socket, keeps its sync
+lease, and answers nothing — observed once for 2h14m with zero log output and
+every remote route dead until someone walked to the machine.
+
+Three layers now cover that, and they are deliberately different in kind:
+
+- **In-process** — `brainLoopWatchdog` runs a worker thread that SIGKILLs the
+  brain when the event loop stalls past its threshold. It cannot help when the
+  worker itself never starts or dies with the process.
+- **External** — the brain writes `<ADE home>/runtime/heartbeat.json`
+  (`{pid, ts, seq, startedAt}`) every 15 s from a timer that ticks while idle
+  (`services/runtime/brainHeartbeat.ts`). Something outside the process reads it
+  and kills a brain whose beat is older than 90 s **and** whose pid is still
+  alive. Both conditions are required: an absent or unreadable heartbeat means
+  "no judgement available", never "wedged", and a stale beat with a dead writer
+  is left to the supervisor that already owns the restart.
+  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.beta`/`.alpha` per
+    channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
+    the same binary the brain was installed from. It is installed and removed
+    alongside the brain's own launch agent, best effort — a machine that cannot
+    install the watchdog still gets a brain.
+  - *Windows*: the PowerShell supervisor already runs a restart loop, so the
+    check folds into it. It waits in 15 s slices instead of one unbounded
+    `WaitForExit()` and stops a child that stopped beating. No Scheduled Task.
+- **Desktop, when running** — `projectRecoveryService.restartBrain` already
+  probes and repairs. The watchdog exists for the headless case, and does not
+  duplicate it.
+
+A kill writes the same `event-loop-wedge.json` breadcrumb the in-process
+watchdog writes, so the next start promotes it to `last-wedge.json`, logs
+`brain.recovered_from_wedge`, and it surfaces through the existing `lastWedge`
+field on `runtime/info` with no second reporting path.
+
+The brain's launch agent also pins `ThrottleInterval` to 10 s. While
+`/Applications/ADE.app` is being replaced the brain can be restarted onto
+half-written files and die instantly (`Cannot find module '/serve'`); the floor
+turns that into a slow, self-healing retry instead of a hot spin.
+
+`brainFreshnessMonitor` handles the other half of a swap: it re-hashes the
+installed runtime every ~5 minutes and restarts into new code when the hash
+moves. A file that is missing, unreadable, or still changing is treated as a
+swap **in progress** — it must hold still across a settle pause before it is
+hashed at all — so a mid-copy binary can never trigger a restart into a
+truncated file.
+
+### `machine.updateAndRestart`
+
+A machine that is stuck, or quietly running old code because no local desktop
+ever connected to notice, has to be fixable from wherever the user is. The
+projectless runtime method `machine.updateAndRestart` does that. It requires the
+`cto` role and only exists on the authenticated runtime RPC endpoint, so it
+inherits the paired/authenticated channel; it is never automatic and never
+silent.
+
+The client names the version it believes is newest (`targetVersion`); the host
+refuses to "update" to the version it is already running and just restarts,
+which is still the useful action for a wedge-adjacent machine. The reply is
+step-attributed — `check`, `apply`, `restart` — so a failure names the step
+instead of saying "something went wrong". The `restart` step comes back
+`pending` on purpose: it tears down the process answering the call, so the
+client confirms by reconnecting and reading the version. A brain cannot report
+on its own replacement.
+
+### Account state and reachability
+
+Relay gating asks "is this machine still theirs", not "can I call the API".
+`accountAuthService.getStatus()` reports a `sessionState`, and `expired` (a
+rejected refresh grant) and `unreadable` (a credential store that could not be
+read) are accidents, not decisions: the relay tunnel stays up and the machine
+keeps its published directory row, so already-paired devices keep connecting
+while the user signs in again. Only a deliberate `signed_out` drops the tunnel.
+The relay control socket authenticates with machine credentials rather than the
+account token, so this costs nothing in reachability terms. Direct LAN and
+tailnet routes to a paired device never consulted account state at all.
 
 ## Related docs
 

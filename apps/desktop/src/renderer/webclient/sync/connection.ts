@@ -1334,6 +1334,21 @@ export class SyncConnection {
       this.setStatus({ state: "error", error: payload.message });
       return new SyncConnectionError(payload.message, "relay_account_required", payload);
     }
+    // Neither of these is a reason to destroy a saved pairing, so they must not
+    // reach the `auth_failed` status that WebMachineSessionManager treats as a
+    // signal to invalidate the environment. The account session moving under a
+    // handshake is transient — keep reconnecting. A host too old to verify
+    // accounts is not: stop dialing, but keep the pairing and show the host's
+    // own message so the fix ("update ADE over there") is the one displayed.
+    if (payload.code === "account_session_changed") {
+      this.setStatus({ state: "error", error: payload.message });
+      return new SyncConnectionError(payload.message, "account_session_changed", payload);
+    }
+    if (payload.code === "host_update_required") {
+      this.shouldReconnect = false;
+      this.setStatus({ state: "error", error: payload.message });
+      return new SyncConnectionError(payload.message, "host_update_required", payload);
+    }
     const attributedToPairing = payload.host?.deviceId === environment.hostDeviceId;
     this.consecutiveAuthFailures += 1;
     this.emit("authFailed", { payload, attributedToPairing });

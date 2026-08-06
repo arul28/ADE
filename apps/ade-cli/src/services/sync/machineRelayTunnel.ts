@@ -54,22 +54,61 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
     import("./relayTunnelAuthorityGate"),
     import("./syncHostSingleton"),
   ]);
+  // The last account that owned this machine, remembered for exactly as long as
+  // the process runs.
+  //
+  // A rejected refresh grant (`expired`) or an unreadable credential store
+  // (`unreadable`) blanks `userId` in `getStatus()`, and the relay lease used to
+  // read that as "nobody owns this machine" and tear the tunnel down. That is
+  // the 2026-08-05 shape of the incident: a token accident silently removed
+  // every remote route to a machine the user still owns and still has paired
+  // devices for, and the only fix was to walk over to it. The relay control
+  // socket authenticates with machine credentials, not the account token, so the
+  // tunnel keeps working while the account is repaired. Only a deliberate
+  // `signed_out` -- the user signing out, or a different user signing in --
+  // drops it.
+  let retainedAccountOwnerId: string | null = null;
+  const accountOwnership = (): { userId: string | null; retained: boolean } => {
+    const status = args.accountAuthService.getStatus();
+    const userId = status.signedIn ? status.userId?.trim() || null : null;
+    if (userId) {
+      retainedAccountOwnerId = userId;
+      return { userId, retained: false };
+    }
+    const sessionState = status.sessionState;
+    if (sessionState === "expired" || sessionState === "unreadable") {
+      return { userId: retainedAccountOwnerId, retained: true };
+    }
+    retainedAccountOwnerId = null;
+    return { userId: null, retained: false };
+  };
+
   const tunnel = getSharedSyncTunnelClientService(args.configPath, () =>
     createSyncTunnelClientService({
       logger: args.logger,
       configStore: args.configStore,
-      isAccountSignedIn: () => {
-        const status = args.accountAuthService.getStatus();
-        return status.signedIn && Boolean(status.userId?.trim());
-      },
+      isAccountSignedIn: () => Boolean(accountOwnership().userId),
       getAccountLease: async () => {
-        const status = args.accountAuthService.getStatus();
-        const userId = status.signedIn ? status.userId?.trim() || null : null;
-        if (!userId) return null;
+        const ownership = accountOwnership();
+        if (!ownership.userId) return null;
+        if (ownership.retained) {
+          // No live token to prove with, and asking for one would only churn a
+          // grant we already know is dead. The identity is unchanged, so the
+          // lease is unchanged; `expiresAt: null` keeps the tunnel from
+          // treating this as a fresh, long-lived grant.
+          return { userId: ownership.userId, expiresAt: null };
+        }
+        const userId = ownership.userId;
         const token = (await args.accountAuthService.getAccessToken()).trim();
         const refreshed = args.accountAuthService.getStatus();
-        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
-          ? { userId, expiresAt: refreshed.expiresAt }
+        if (token && refreshed.signedIn && refreshed.userId?.trim() === userId) {
+          return { userId, expiresAt: refreshed.expiresAt };
+        }
+        // The token round trip can itself be what marks the session expired.
+        // Re-read ownership so that lands as "retained", not as a lost lease.
+        const after = accountOwnership();
+        return after.userId && after.retained
+          ? { userId: after.userId, expiresAt: null }
           : null;
       },
       onPublicationStateChanged: args.onPublicationStateChanged,

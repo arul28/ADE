@@ -18,7 +18,7 @@ import type {
   SyncApplicationCompressionCodec,
   SyncRemoteCommandDescriptor,
   SyncEnvelope,
-  SyncHelloPayload,
+  SyncHelloErrorPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
   SyncPairingResultPayload,
@@ -40,8 +40,14 @@ import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
-import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
-import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import { isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
+import { resolveBrainMachineSyncStores } from "./brainMachineSyncStores";
+import { createSyncDpopNonceCache, evaluatePairedHelloDpop, syncDpopFailureMessage } from "./syncDpop";
+import {
+  authenticateSyncAccountHello,
+  SYNC_REPAIR_REQUIRED_MESSAGE,
+  type SyncAccountHelloAuth,
+} from "./syncAccountHelloAuth";
 import {
   createPairFailureTracker,
   type PairFailureSubject,
@@ -55,19 +61,24 @@ import {
   createSyncPairedChannelService,
   isPairedRuntimeEnvelopeType,
 } from "./syncPairedChannelService";
-import { createSyncPinStore } from "./syncPinStore";
-import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
   DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
   encodeSyncEnvelope,
   mapPlatform,
   negotiateSyncApplicationCompression,
-  normalizeSyncApplicationCompressionOffer,
   parseSyncEnvelope,
   sendSyncProtocolVersionMismatchAndClose,
   SyncProtocolVersionMismatchError,
   wsDataToText,
 } from "./syncProtocol";
+// The SAME parser the project sync host uses. This handler used to carry a
+// narrower private copy that only understood `bootstrap` and `paired` auth, so
+// a signed-in web client's `account` hello was rejected as "Invalid hello
+// payload." on exactly the machines this handler exists to serve.
+import {
+  parseHelloPayload,
+  parsePairingRequestPayload,
+} from "./syncHelloProtocol";
 import {
   ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
   buildSyncHostHelloOkPayload,
@@ -93,8 +104,13 @@ type BrainProjectActionsSyncHandlerArgs = {
   bootstrapCredentialStore: SyncCredentialStore;
   bootstrapTokenKey?: string;
   legacyBootstrapTokenPath?: string | null;
-  pairingSecretsPath: string;
-  pinPath: string;
+  /**
+   * Machine-level `~/.ade/secrets`. The pairing, PIN, and security stores are
+   * resolved from it through `resolveBrainMachineSyncStores`, so this ingress
+   * path and the brain's RPC surface mutate the SAME instances — a private
+   * second set would write the right files and still be invisible here.
+   */
+  secretsDir: string;
   localDeviceIdPath: string;
   localSiteIdPath: string;
   heartbeatIntervalMs?: number;
@@ -103,7 +119,8 @@ type BrainProjectActionsSyncHandlerArgs = {
   /** Mirrors SyncHostServiceArgs.getCloudRelayWssUrl for the fallback hello_ok. */
   getCloudRelayWssUrl?: () => string | null;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
-  getAccountAttestationConfig?: () => AccountAttestationConfig;
+  /** `null` when this build cannot verify accounts at all — a distinct rejection. */
+  getAccountAttestationConfig?: () => AccountAttestationConfig | null;
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
   personalChatScope?: PersonalChatScopeContract;
 };
@@ -231,109 +248,6 @@ function normalizeChatHistoryPage(
   };
 }
 
-function normalizePeerMetadata(value: unknown): SyncPeerMetadata | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const deviceId = optionalString(record.deviceId);
-  const deviceName = optionalString(record.deviceName);
-  const siteId = optionalString(record.siteId);
-  if (!deviceId || !deviceName || !siteId) return null;
-  const capabilities = Array.isArray(record.capabilities)
-    ? record.capabilities
-      .filter((capability): capability is string => typeof capability === "string")
-      .map((capability) => capability.trim())
-      .filter(Boolean)
-    : [];
-  const appVersion = optionalString(record.appVersion);
-  const appBuild = optionalString(record.appBuild);
-  const bundleIdentifier = optionalString(record.bundleIdentifier);
-  const dbVersionBySite: Record<string, number> = {};
-  if (record.dbVersionBySite && typeof record.dbVersionBySite === "object" && !Array.isArray(record.dbVersionBySite)) {
-    for (const [site, version] of Object.entries(record.dbVersionBySite as Record<string, unknown>)) {
-      const normalizedSite = site.trim();
-      const normalizedVersion = Number(version);
-      if (normalizedSite && Number.isFinite(normalizedVersion) && normalizedVersion >= 0) {
-        dbVersionBySite[normalizedSite] = Math.floor(normalizedVersion);
-      }
-    }
-  }
-  return {
-    deviceId,
-    deviceName,
-    platform: record.platform === "iOS" || record.platform === "macOS" || record.platform === "linux" || record.platform === "windows"
-      ? record.platform
-      : "unknown",
-    deviceType: record.deviceType === "phone" || record.deviceType === "desktop" || record.deviceType === "vps" || record.deviceType === "browser"
-      ? record.deviceType
-      : "unknown",
-    siteId,
-    dbVersion: Math.max(0, Math.floor(Number(record.dbVersion ?? 0) || 0)),
-    ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
-    capabilities,
-    ...(appVersion ? { appVersion } : {}),
-    ...(appBuild ? { appBuild } : {}),
-    ...(bundleIdentifier ? { bundleIdentifier } : {}),
-  };
-}
-
-function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const record = payload as Record<string, unknown>;
-  const peer = normalizePeerMetadata(record.peer);
-  if (!peer) return null;
-  const compression = normalizeSyncApplicationCompressionOffer(record.compression);
-  const auth = record.auth as SyncHelloPayload["auth"] | undefined;
-  if (auth?.kind === "bootstrap" && optionalString(auth.token)) {
-    return { peer, auth: { kind: "bootstrap", token: auth.token }, compression };
-  }
-  if (
-    auth?.kind === "paired"
-    && optionalString(auth.deviceId)
-    && optionalString(auth.secret)
-    && (
-      auth.relayAccountToken == null
-      || Boolean(optionalString(auth.relayAccountToken)?.length && auth.relayAccountToken.length <= 16_384)
-    )
-  ) {
-    return {
-      peer,
-      auth: {
-        kind: "paired",
-        deviceId: auth.deviceId,
-        secret: auth.secret,
-        ...(auth.dpop ? { dpop: auth.dpop } : {}),
-        ...(optionalString(auth.relayAccountToken)
-          ? { relayAccountToken: optionalString(auth.relayAccountToken)! }
-          : {}),
-      },
-      compression,
-    };
-  }
-  const token = optionalString(record.token);
-  if (token) return { peer, auth: { kind: "bootstrap", token }, compression };
-  return null;
-}
-
-function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const record = payload as Record<string, unknown>;
-  const code = optionalString(record.code);
-  const peer = normalizePeerMetadata(record.peer);
-  const dpopPublicKey = optionalString(record.dpopPublicKey);
-  const runtimeHostGrant = optionalString(record.runtimeHostGrant);
-  const relayAccountToken = optionalString(record.relayAccountToken);
-  if (record.relayAccountToken != null && (!relayAccountToken || relayAccountToken.length > 16_384)) {
-    return null;
-  }
-  return code && peer ? {
-    code,
-    peer,
-    ...(dpopPublicKey ? { dpopPublicKey } : {}),
-    ...(relayAccountToken ? { relayAccountToken } : {}),
-    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
-  } : null;
-}
-
 function send(
   ws: WebSocket,
   type: SyncEnvelope["type"],
@@ -449,13 +363,35 @@ export function createBrainProjectActionsSyncHandler(
     24,
     args.legacyBootstrapTokenPath,
   );
-  const pinStore = createSyncPinStore({ filePath: args.pinPath });
-  const pairingStore = createSyncPairingStore({
-    filePath: args.pairingSecretsPath,
-    pinStore,
-  });
+  // Shared with the brain's RPC surface, so `ade sync pin generate` and the
+  // desktop's `ade.sync.setPin` mutate the SAME store this ingress path
+  // verifies against — `createSyncPinStore` only shows a plaintext code the
+  // instance itself set.
+  const { pinStore, pairingStore, securityStore } =
+    resolveBrainMachineSyncStores(args.secretsDir);
   const dpopNonceCache = createSyncDpopNonceCache();
-  const accountSecretsDir = path.dirname(args.pinPath);
+  // One in-flight account-hello commit per device, so two routes arriving
+  // together cannot both write a pairing record for it.
+  const accountHelloCommitLocks = new Map<string, Promise<unknown>>();
+  const withAccountHelloCommitLock = async <T>(
+    deviceId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = accountHelloCommitLocks.get(deviceId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(run);
+    // Stored settled-only so one rejected commit cannot reject every later
+    // waiter chained behind it.
+    const guarded = next.catch(() => {});
+    accountHelloCommitLocks.set(deviceId, guarded);
+    try {
+      return await next;
+    } finally {
+      if (accountHelloCommitLocks.get(deviceId) === guarded) {
+        accountHelloCommitLocks.delete(deviceId);
+      }
+    }
+  };
+  const accountSecretsDir = args.secretsDir;
   const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
     secretsDir: accountSecretsDir,
     projectRoots: () => [],
@@ -470,11 +406,53 @@ export function createBrainProjectActionsSyncHandler(
   let accountAuthorizationInitialized = false;
   let accountAuthorizationContinuityUserId: string | null = null;
   let accountAuthorizationContinuityUntilMs = 0;
-  const readExplicitAccountStatus = (): { userId: string | null; expiresAtMs: number | null } => {
+  let accountAuthorizationRetainedOwnerId: string | null = null;
+  /**
+   * Ownership, not usability. `signedIn` answers "can this machine call the
+   * account API right now"; this answers "is this still the same person's
+   * machine". They differ for everything except a deliberate sign-out: an
+   * expired grant or an unreadable credential store is an accident, and
+   * reading one as a sign-out is what made `applyExplicitAccountUserId(null)`
+   * delete every account-owned pairing on the box over a token problem. Only a
+   * genuine `signed_out` — or a different user signing in — drops ownership.
+   * Anything that needs a live token still gates on `signedIn` via
+   * `getAccountLeaseUserId`'s token round trip.
+   *
+   * `ownerUnknown` covers the case retention alone cannot: a brain that BOOTS
+   * with a locked keychain has never seen an owner to retain, so it knows
+   * nothing rather than knowing the machine is signed out. Applying null there
+   * would delete every account-owned pairing on the box because a credential
+   * store was briefly unreadable.
+   */
+  const readExplicitAccountStatus = (): {
+    userId: string | null;
+    expiresAtMs: number | null;
+    retained: boolean;
+    ownerUnknown: boolean;
+  } => {
     const status = accountAuthService.getStatus();
     const userId = status.signedIn ? status.userId?.trim() || null : null;
     const expiresAtMs = status.expiresAt ? Date.parse(status.expiresAt) : Number.NaN;
-    return { userId, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null };
+    if (userId) {
+      accountAuthorizationRetainedOwnerId = userId;
+      return {
+        userId,
+        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
+        retained: false,
+        ownerUnknown: false,
+      };
+    }
+    const sessionState = status.sessionState;
+    if (sessionState === "expired" || sessionState === "unreadable") {
+      return {
+        userId: accountAuthorizationRetainedOwnerId,
+        expiresAtMs: null,
+        retained: accountAuthorizationRetainedOwnerId != null,
+        ownerUnknown: accountAuthorizationRetainedOwnerId == null,
+      };
+    }
+    accountAuthorizationRetainedOwnerId = null;
+    return { userId: null, expiresAtMs: null, retained: false, ownerUnknown: false };
   };
   const applyExplicitAccountUserId = (userId: string | null): void => {
     if (accountAuthorizationInitialized && accountAuthorizationUserId === userId) return;
@@ -484,6 +462,16 @@ export function createBrainProjectActionsSyncHandler(
     accountAuthorizationContinuityUserId = null;
     accountAuthorizationContinuityUntilMs = 0;
     pairingStore.revokeAccountOwnedExcept(userId);
+  };
+  /**
+   * Apply a lease read, unless the read said nothing. No information is not a
+   * sign-out — only a real `signed_out` state revokes account-owned trust.
+   */
+  const applyExplicitAccountUserIdFromStatus = (
+    status: { userId: string | null; ownerUnknown: boolean },
+  ): void => {
+    if (status.ownerUnknown) return;
+    applyExplicitAccountUserId(status.userId);
   };
   const seedAccountContinuity = (userId: string, expiresAtMs: number | null): void => {
     const nowMs = Date.now();
@@ -496,11 +484,27 @@ export function createBrainProjectActionsSyncHandler(
       nowMs + ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
     );
   };
-  const getAccountLeaseUserId = async (): Promise<string | null> => {
+  /**
+   * The verdict travels WITH the answer rather than in a shared flag: two
+   * concurrent callers each await inside this function, and a module-level
+   * "ownership is unknown" bit would be read by one caller after the other
+   * caller's read overwrote it. `ownerUnknown` here is the verdict of the last
+   * status read this call made, and nobody else's.
+   */
+  const getAccountLeaseUserId = async (): Promise<{
+    userId: string | null;
+    ownerUnknown: boolean;
+  }> => {
     const initialStatus = readExplicitAccountStatus();
     const ownerUserId = initialStatus.userId;
-    applyExplicitAccountUserId(ownerUserId);
-    if (!ownerUserId) return null;
+    applyExplicitAccountUserIdFromStatus(initialStatus);
+    if (!ownerUserId) return { userId: null, ownerUnknown: initialStatus.ownerUnknown };
+    // Retained ownership has no live token to prove with, and asking for one
+    // would only churn a grant this machine already knows is dead. The identity
+    // is unchanged, so already-paired devices keep connecting.
+    if (initialStatus.retained) {
+      return { userId: ownerUserId, ownerUnknown: initialStatus.ownerUnknown };
+    }
     if (accountAuthorizationContinuityUserId !== ownerUserId) {
       seedAccountContinuity(ownerUserId, initialStatus.expiresAtMs);
     }
@@ -508,25 +512,36 @@ export function createBrainProjectActionsSyncHandler(
       const hostToken = (await accountAuthService.getAccessToken()).trim();
       const refreshedStatus = readExplicitAccountStatus();
       const refreshedUserId = refreshedStatus.userId;
-      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserId(refreshedUserId);
-      if (!hostToken || refreshedUserId !== ownerUserId) return null;
+      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserIdFromStatus(refreshedStatus);
+      const ownerUnknown = refreshedStatus.ownerUnknown;
+      // The token round trip can itself be what marks the session expired.
+      // Re-read ownership so that lands as retained, not as a lost lease.
+      if (refreshedStatus.retained && refreshedUserId === ownerUserId) {
+        return { userId: ownerUserId, ownerUnknown };
+      }
+      if (!hostToken || refreshedUserId !== ownerUserId) return { userId: null, ownerUnknown };
       seedAccountContinuity(ownerUserId, refreshedStatus.expiresAtMs);
-      return ownerUserId;
+      return { userId: ownerUserId, ownerUnknown };
     } catch {
-      const refreshedUserId = readExplicitAccountStatus().userId;
-      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserId(refreshedUserId);
+      const refreshedStatus = readExplicitAccountStatus();
+      const refreshedUserId = refreshedStatus.userId;
+      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserIdFromStatus(refreshedStatus);
+      const ownerUnknown = refreshedStatus.ownerUnknown;
+      if (refreshedStatus.retained && refreshedUserId === ownerUserId) {
+        return { userId: ownerUserId, ownerUnknown };
+      }
       return refreshedUserId === ownerUserId
         && accountAuthorizationContinuityUserId === ownerUserId
         && Date.now() <= accountAuthorizationContinuityUntilMs
-        ? ownerUserId
-        : null;
+        ? { userId: ownerUserId, ownerUnknown }
+        : { userId: null, ownerUnknown };
     }
   };
   const captureAccountAuthorization = async (): Promise<{
     userId: string;
     generation: number;
   } | null> => {
-    const userId = await getAccountLeaseUserId();
+    const { userId } = await getAccountLeaseUserId();
     return userId ? { userId, generation: accountAuthorizationGeneration } : null;
   };
   const verifyRelayAccountProof = async (
@@ -535,11 +550,16 @@ export function createBrainProjectActionsSyncHandler(
     const before = await captureAccountAuthorization();
     const relayAccountToken = token?.trim() ?? "";
     if (!before || !relayAccountToken) return null;
+    // A build that cannot verify accounts at all cannot verify a relay proof
+    // either. Same answer this used to reach by way of a thrown
+    // `configuration_error`, without pretending the config exists.
+    const config = getAccountAttestationConfig();
+    if (!config) return null;
     try {
       const attestation = await verifyAccountAttestation({
         token: relayAccountToken,
         expectedUserId: before.userId,
-        config: getAccountAttestationConfig(),
+        config,
       });
       const after = await captureAccountAuthorization();
       if (
@@ -553,12 +573,6 @@ export function createBrainProjectActionsSyncHandler(
       return null;
     }
   };
-  // Same machine-level security posture file the project sync host reads, so
-  // `requireDpop` binds on this ingress path too — the brain is the default
-  // sync host and must not be a softer entry point than the project host.
-  const securityStore = createSyncSecurityStore({
-    filePath: path.join(path.dirname(args.pinPath), "sync-security.json"),
-  });
   const localDeviceId = ensureSecretFile(args.localDeviceIdPath, 16);
   const localSiteId = ensureSecretFile(args.localSiteIdPath, 16);
   // This fallback has no host-side heartbeat timeout; the value is advertised
@@ -996,11 +1010,13 @@ export function createBrainProjectActionsSyncHandler(
         deviceId: () => peer.metadata?.deviceId ?? null,
         pinnedPublicKey: () => peer.pairingRecord?.dpopPublicKey ?? null,
         captureHostAuthorization: captureAccountAuthorization,
-        verifyAccountToken: (token, expectedUserId) => verifyAccountAttestation({
-          token,
-          expectedUserId,
-          config: getAccountAttestationConfig(),
-        }),
+        verifyAccountToken: async (token, expectedUserId) => {
+          const config = getAccountAttestationConfig();
+          if (!config) {
+            throw new Error("This machine cannot verify ADE accounts.");
+          }
+          return await verifyAccountAttestation({ token, expectedUserId, config });
+        },
         sendResult: (payload, requestId) => {
           send(peer.ws, "relay_reauthorize_result", payload, requestId);
         },
@@ -1034,9 +1050,11 @@ export function createBrainProjectActionsSyncHandler(
           ?? peer.relayAuthorization?.snapshot()?.ownerUserId
           ?? null;
         if (expectedOwner) {
-          const currentOwner = await getAccountLeaseUserId();
+          const { userId: currentOwner, ownerUnknown } = await getAccountLeaseUserId();
           if (!isPeerCurrent(lifecycleGeneration)) return;
-          if (currentOwner !== expectedOwner) {
+          // Unknown ownership is not a mismatch — `null` there means "no
+          // answer", not "nobody".
+          if (currentOwner !== expectedOwner && !ownerUnknown) {
             pairingStore.revokeAccountOwnedExcept(currentOwner);
             peer.authenticated = false;
             peer.metadata = null;
@@ -1263,8 +1281,67 @@ export function createBrainProjectActionsSyncHandler(
           let authenticatedPairingRecord: SyncPairingRecord | null = null;
           let relayAccountOwnerUserId: string | null = null;
           let relayAccountExpiresAtMs: number | null = null;
+          // Fresh secret handed back only on first-time verified account
+          // adoption, exactly as the project host does it.
+          let accountPairing: { deviceId: string; secret: string } | null = null;
           const authFailure = {
-            code: "auth_failed" as "auth_failed" | "relay_account_required",
+            code: "auth_failed" as SyncHelloErrorPayload["code"],
+            // A bare "Sync authentication failed." leaves the user with no idea
+            // whether to re-pair, sign in, or update. Each branch that can fail
+            // for a nameable reason overwrites this.
+            message: null as string | null,
+          };
+          const authFail = (message: string, code?: SyncHelloErrorPayload["code"]): true => {
+            authFailure.message = message;
+            if (code) authFailure.code = code;
+            return true;
+          };
+          /**
+           * Account hellos on a machine with no project scope.
+           *
+           * These used to be refused here on the theory that only the project
+           * sync host owns the account session and attestation config. It does
+           * not: this handler already resolves both (see `accountAuthService`
+           * and `getAccountAttestationConfig` above), and refusing them is what
+           * made ADE's headline promise — install, sign in, connect from
+           * anywhere — impossible until the user opened a project. The web
+           * client authenticates this way and nothing else.
+           *
+           * The gates are the project host's, literally: `syncAccountHelloAuth`
+           * is the one implementation both ingresses run. This side passes no
+           * arbitration and no sealed adoption, because the brain serves
+           * neither.
+           */
+          const authenticateAccountHello = async (
+            accountAuth: SyncAccountHelloAuth,
+          ): Promise<boolean> => {
+            const result = await authenticateSyncAccountHello({
+              auth: accountAuth,
+              peer: hello.peer,
+              transportOrigin,
+              logger: args.logger,
+              logPrefix: "sync_ingress",
+              pairingStore,
+              dpopNonceCache,
+              captureAccountAuthorization,
+              getAccountAttestationConfig,
+              verifyAccountAttestation,
+              withCommitLock: withAccountHelloCommitLock,
+              isPeerCurrent: () => isPeerCurrent(lifecycleGeneration),
+              pairingCodeNoun: "code",
+              // The brain's only account route is Relay, so a machine with no
+              // session is a relay-account problem, not a pairing one.
+              notSignedInCode: "relay_account_required",
+            });
+            // `superseded` cannot occur here: arbitration is host-only and this
+            // side passes no arbiter. Treated as a non-committing failure.
+            if (result.kind === "stale" || result.kind === "superseded") return true;
+            if (result.kind === "rejected") return authFail(result.message, result.code);
+            authenticatedPairingRecord = result.pairingRecord;
+            accountPairing = result.accountPairing;
+            relayAccountOwnerUserId = result.attestation.userId;
+            relayAccountExpiresAtMs = result.attestation.expiresAtMs;
+            return false;
           };
           const authFailed = await (async () => {
             if (auth?.kind === "paired") {
@@ -1279,16 +1356,41 @@ export function createBrainProjectActionsSyncHandler(
                 relayAccountOwnerUserId = attestation.userId;
                 relayAccountExpiresAtMs = attestation.expiresAtMs;
               }
-              if (!pairingStore.authenticate(auth.deviceId, auth.secret)) return true;
+              const knownRecord = pairingStore.getPairingRecord(auth.deviceId);
+              if (!pairingStore.authenticate(auth.deviceId, auth.secret)) {
+                // Deliberately identical for both cases. This machine knows
+                // which it is and logs it, but telling an UNAUTHENTICATED
+                // caller whether a device id exists here turns the handshake
+                // into an existence oracle — and the user's next step is the
+                // same either way.
+                args.logger.warn("sync_ingress.paired_device_rejected", {
+                  deviceId: auth.deviceId,
+                  reason: knownRecord ? "secret_mismatch" : "unknown_device",
+                });
+                return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
+              }
               authenticatedPairingRecord = pairingStore.getPairingRecord(auth.deviceId);
-              if (!authenticatedPairingRecord) return true;
+              if (!authenticatedPairingRecord) {
+                return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
+              }
               const pairingOwner = optionalString(authenticatedPairingRecord.accountOwnerUserId);
               if (pairingOwner) {
-                const currentOwner = await getAccountLeaseUserId();
+                const { userId: currentOwner, ownerUnknown } = await getAccountLeaseUserId();
                 if (!isPeerCurrent(lifecycleGeneration)) return true;
-                if (currentOwner !== pairingOwner) {
+                // Unknown ownership is not a mismatch — `null` there means
+                // "no answer", not "nobody".
+                if (currentOwner !== pairingOwner && !ownerUnknown) {
+                  // Reached only for a real owner change — an expired or
+                  // unreadable session retains the last known owner, or reports
+                  // no answer at all, and lands above still paired.
                   pairingStore.revokeAccountOwnedExcept(currentOwner);
-                  return true;
+                  args.logger.warn("sync_ingress.paired_account_owner_mismatch", {
+                    deviceId: auth.deviceId,
+                    hasCurrentOwner: Boolean(currentOwner),
+                  });
+                  return authFail(
+                    "This machine is signed in to a different ADE account than the one that paired this device.",
+                  );
                 }
               }
               const dpopFailure = evaluatePairedHelloDpop({
@@ -1308,10 +1410,19 @@ export function createBrainProjectActionsSyncHandler(
               }
               return false;
             }
-            // Account hellos are authenticated only by the project sync host,
-            // which owns the account session/config dependencies. The fallback
-            // brain handler must reject them rather than treating them as a
-            // bootstrap-shaped hello.
+            if (auth?.kind === "account") {
+              return await authenticateAccountHello(auth);
+            }
+            if (auth?.kind === "account_sealed") {
+              // Sealed adoption rides an `account_challenge` round trip this
+              // handler does not serve. Say so plainly instead of failing as an
+              // unreadable payload — the device's next move is a PIN pair. Not
+              // `auth_failed`: the saved pairing, if any, is untouched by this.
+              return authFail(
+                "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.",
+                "account_session_changed",
+              );
+            }
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             if (transportOrigin === "relay-bridge") {
               authFailure.code = "relay_account_required";
@@ -1338,9 +1449,12 @@ export function createBrainProjectActionsSyncHandler(
             const rejectingHost = brainMetadata();
             send(ws, "hello_error", {
               code: authFailure.code,
-              message: authFailure.code === "relay_account_required"
-                ? "Sign in with the same ADE account on both machines."
-                : "Sync authentication failed.",
+              // A named cause when a branch supplied one; the generic wording
+              // survives only for the checks that genuinely cannot say more.
+              message: authFailure.message
+                ?? (authFailure.code === "relay_account_required"
+                  ? "Sign in with the same ADE account on both machines."
+                  : "Sync authentication failed."),
               host: {
                 deviceId: rejectingHost.deviceId,
                 name: rejectingHost.deviceName,
@@ -1354,12 +1468,16 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
-          peer.authKind = auth?.kind === "bootstrap" || auth?.kind === "paired"
-            ? auth.kind
+          // `account` is record-backed exactly like `paired` once it commits:
+          // the device now holds a real pairing record and must be treated as
+          // paired for channel access and cleanup.
+          const recordBackedAuth = auth?.kind === "paired" || auth?.kind === "account";
+          peer.authKind = auth?.kind === "bootstrap" || recordBackedAuth
+            ? (auth.kind === "account" ? "paired" : auth.kind)
             : null;
           clearAuthTimeout();
           peer.metadata = hello.peer;
-          peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;
+          peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
           installRelayAuthorization(
             transportOrigin === "relay-bridge"
               && relayAccountOwnerUserId
@@ -1396,10 +1514,14 @@ export function createBrainProjectActionsSyncHandler(
               : null,
             relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
             terminalInputAckEnabled: false,
+            // Handed back only on first-time account adoption, so the device
+            // can reconnect directly later with a real paired secret instead of
+            // depending on the relay every time.
+            accountPairing,
             // Advertise the runtime RPC channel + port-forward only to paired
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
-              auth?.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
+              recordBackedAuth && isRuntimeHostPairingRecord(authenticatedPairingRecord),
           });
           // The selection frame itself must retain the legacy wire encoding.
           // Apply the selected codec only after it has been queued successfully.
