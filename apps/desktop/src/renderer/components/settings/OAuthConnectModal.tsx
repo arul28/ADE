@@ -26,10 +26,14 @@ const OPEN_TARGET_OPTIONS: Array<{ id: OAuthOpenTarget; label: string }> = [
   { id: "view", label: "View full link" },
 ];
 
+function isOAuthOpenTarget(value: string | null): value is OAuthOpenTarget {
+  return OPEN_TARGET_OPTIONS.some((option) => option.id === value);
+}
+
 function readStoredOpenTarget(): OAuthOpenTarget {
   try {
     const raw = localStorage.getItem(OPEN_TARGET_STORAGE_KEY);
-    if (raw === "ade-browser" || raw === "system" || raw === "copy" || raw === "view") return raw;
+    if (isOAuthOpenTarget(raw)) return raw;
   } catch {
     // ignore
   }
@@ -202,6 +206,40 @@ export function OAuthConnectModal({
     return () => {
       previous?.focus?.();
     };
+  }, []);
+
+  // Keep keyboard focus inside the top-most dialog while OAuth is open. The
+  // provider detail dialog remains mounted behind this portal.
+  useEffect(() => {
+    const node = dialogRef.current;
+    if (!node) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === node || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === node || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const startFlow = async () => {
@@ -520,7 +558,7 @@ export function OAuthConnectModal({
                       {showFullUrl ? "Hide" : "View full link"}
                     </button>
                   </div>
-                  {showFullUrl || openTarget === "view" ? (
+                  {showFullUrl ? (
                     <code
                       style={{
                         display: "block",

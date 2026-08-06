@@ -197,8 +197,7 @@ export function ProviderLogo({
     case "gitlab-duo":
       return <FallbackInitialLogo family="gitlab" size={size} className={className} />;
     default: {
-      const lobeKey = raw === "togetherai" ? "together" : raw;
-      const lobeSrc = lobeProviderIconSrc(lobeKey);
+      const lobeSrc = lobeProviderIconSrc(raw);
       if (lobeSrc) {
         return <LobeStaticMark src={lobeSrc} size={size} className={className} />;
       }

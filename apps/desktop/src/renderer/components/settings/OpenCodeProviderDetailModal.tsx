@@ -230,7 +230,7 @@ export function OpenCodeProviderDetailModal({
                 >
                   <span>
                     Could not load OpenCode sign-in methods
-                    {authMethodsError ? ` (${authMethodsError})` : ""}. SuperGrok, ChatGPT, and Copilot OAuth may be unavailable until this succeeds.
+                    ({authMethodsError}). SuperGrok, ChatGPT, and Copilot OAuth may be unavailable until this succeeds.
                   </span>
                   {onRetryAuthMethods ? (
                     <button

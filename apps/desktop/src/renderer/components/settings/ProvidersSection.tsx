@@ -56,6 +56,7 @@ import {
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
+const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio"]);
 
 /**
  * OpenCode's own documented install methods, per platform. Windows has neither
@@ -709,6 +710,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     const apiById = new Map(API_KEY_PROVIDERS.map((p) => [p.provider, p] as const));
 
     const upsert = (id: string, patch: Partial<OpenCodeProviderDetail> = {}) => {
+      if (OPENCODE_CATALOG_EXCLUDED_IDS.has(id)) return;
       const apiSpec = apiById.get(id);
       const inventory = inventoryById.get(id);
       const prev = byId.get(id);
@@ -726,7 +728,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     };
 
     for (const p of opencodeProviders) {
-      if (p.id === "cursor" || p.id === "ollama" || p.id === "lmstudio") continue;
       upsert(p.id, { name: p.name, modelCount: p.modelCount, connected: p.connected });
     }
     for (const [id, methods] of Object.entries(authMethods ?? {})) {

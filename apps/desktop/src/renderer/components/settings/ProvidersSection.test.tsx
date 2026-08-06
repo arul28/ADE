@@ -553,6 +553,36 @@ describe("ProvidersSection", () => {
     expect(await screen.findByLabelText("Connect Fireworks")).toBeTruthy();
   });
 
+  it("keeps local providers out of the OpenCode catalog merge", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [
+        { id: "cursor", name: "Cursor", connected: false, modelCount: 3 },
+        { id: "ollama", name: "Ollama", connected: false, modelCount: 4 },
+        { id: "lmstudio", name: "LM Studio", connected: false, modelCount: 5 },
+        { id: "openai", name: "OpenAI", connected: false, modelCount: 12 },
+      ],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({
+      methods: {
+        cursor: [{ type: "oauth", label: "Sign in with Cursor" }],
+        ollama: [{ type: "api", label: "Ollama API" }],
+        lmstudio: [{ type: "api", label: "LM Studio API" }],
+        openai: [{ type: "oauth", label: "Sign in with ChatGPT" }],
+      },
+    });
+
+    renderProvidersSection();
+
+    expect(await screen.findByLabelText("Connect OpenAI")).toBeTruthy();
+    expect(screen.queryByLabelText("Connect Cursor")).toBeNull();
+    expect(screen.queryByLabelText("Connect Ollama")).toBeNull();
+    expect(screen.queryByLabelText("Connect LM Studio")).toBeNull();
+  });
+
   it("offers a retry when the initial OpenCode status probe fails", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -563,7 +593,7 @@ describe("ProvidersSection", () => {
     expect(await screen.findByText("Could not load OpenCode status.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Re-check OpenCode" })).toBeTruthy();
     expect(screen.getAllByText("status probe unavailable").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Binary Missing")).toBeNull();
+    expect(screen.queryByText("Not found")).toBeNull();
   });
 
   it("keeps an auth-method outage out of an API-key-only provider", async () => {
@@ -639,10 +669,7 @@ describe("ProvidersSection", () => {
     await waitFor(() => {
       expect(window.ade.ai.listApiKeys).toHaveBeenCalled();
     });
-    const openCard =
-      screen.queryByLabelText("Open OpenAI")
-      ?? screen.queryByLabelText("Connect OpenAI");
-    expect(openCard).toBeTruthy();
+    const openCard = await screen.findByLabelText("Open OpenAI");
     await act(async () => {
       openCard!.click();
     });

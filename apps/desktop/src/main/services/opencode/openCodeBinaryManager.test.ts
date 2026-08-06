@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const childProcessMockState = vi.hoisted(() => ({
   execFileSync: vi.fn(),
 }));
+const cacheLookupMockState = vi.hoisted(() => ({
+  cachedToolEntryPath: vi.fn(),
+}));
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof ChildProcess>("node:child_process");
@@ -15,6 +18,10 @@ vi.mock("node:child_process", async () => {
     execFileSync: (...args: unknown[]) => childProcessMockState.execFileSync(...args),
   };
 });
+
+vi.mock("../../../../../ade-cli/src/services/tools/cacheLookup", () => ({
+  cachedToolEntryPath: (..._args: unknown[]) => cacheLookupMockState.cachedToolEntryPath(),
+}));
 
 import {
   clearOpenCodeBinaryCache,
@@ -74,6 +81,8 @@ describe("openCodeBinaryManager", () => {
 
   beforeEach(() => {
     childProcessMockState.execFileSync.mockReset();
+    cacheLookupMockState.cachedToolEntryPath.mockReset();
+    cacheLookupMockState.cachedToolEntryPath.mockReturnValue(null);
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-bin-"));
     homeDir = path.join(tempRoot, "home");
     fs.mkdirSync(homeDir, { recursive: true });
@@ -149,6 +158,26 @@ describe("openCodeBinaryManager", () => {
       path: bundledPath,
       source: "bundled",
     });
+  });
+
+  it("keeps an explicit bundle root ahead of the tools cache and user install", () => {
+    process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
+    const bundledPath = path.join(tempRoot, "node_modules", "opencode-ai", "bin", "opencode");
+    const cachedPath = path.join(tempRoot, "cache", "opencode");
+    const userPath = path.join(homeDir, ".npm-global", "bin", "opencode");
+    makeExecutable(bundledPath);
+    makeExecutable(cachedPath);
+    makeExecutable(userPath);
+    cacheLookupMockState.cachedToolEntryPath.mockReturnValue(cachedPath);
+
+    expect(resolveOpenCodeBinary()).toEqual({
+      path: bundledPath,
+      source: "bundled",
+    });
+
+    fs.rmSync(bundledPath);
+    clearOpenCodeBinaryCache();
+    expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
   });
 
   it("resolves the packaged Windows x64 layout to the baseline package", () => {

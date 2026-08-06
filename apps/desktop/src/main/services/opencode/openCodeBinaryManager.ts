@@ -146,6 +146,7 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
     return cachedInfo;
   }
   cachedInfo = null;
+  const explicitBundleRoot = process.env.ADE_OPENCODE_BUNDLE_ROOT?.trim();
 
   // Ensure PATH includes shell paths and known CLI dirs before searching.
   // On Windows, `process.env.PATH = …` can create a duplicate `PATH` key
@@ -160,10 +161,12 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
     // is fetched there rather than bundled. The manifest already encodes the
     // win32-x64 -> opencode-windows-x64-baseline substitution, so the AVX2
     // avoidance documented on OPENCODE_PLATFORM_PACKAGES holds here too.
-    const cachedPath = cachedToolEntryPath("opencode");
-    if (cachedPath && canRunBinaryCandidate(cachedPath)) {
-      cachedInfo = { path: cachedPath, source: "tools-cache" };
-      return cachedInfo;
+    if (!explicitBundleRoot) {
+      const cachedPath = cachedToolEntryPath("opencode");
+      if (cachedPath && canRunBinaryCandidate(cachedPath)) {
+        cachedInfo = { path: cachedPath, source: "tools-cache" };
+        return cachedInfo;
+      }
     }
 
     const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBinaryCandidate(candidate));
@@ -174,10 +177,14 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   }
 
   // 2. Fall back to user-installed binary (PATH, ~/.opencode/bin, etc.)
-  const userInstalled = resolveExecutableFromKnownLocations("opencode");
-  if (userInstalled?.path) {
-    cachedInfo = { path: userInstalled.path, source: "user-installed" };
-    return cachedInfo;
+  // An explicit bundle root is a hermetic override: never silently select a
+  // cache or user installation from a different runtime when it is incomplete.
+  if (!explicitBundleRoot) {
+    const userInstalled = resolveExecutableFromKnownLocations("opencode");
+    if (userInstalled?.path) {
+      cachedInfo = { path: userInstalled.path, source: "user-installed" };
+      return cachedInfo;
+    }
   }
 
   // Do not cache misses. Users can install OpenCode or fix PATH while ADE is

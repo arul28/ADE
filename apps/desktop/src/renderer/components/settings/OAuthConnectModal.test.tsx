@@ -7,6 +7,7 @@ import { OAuthConnectModal } from "./OAuthConnectModal";
 
 describe("OAuthConnectModal", () => {
   const originalAde = globalThis.window.ade;
+  const originalClipboard = navigator.clipboard;
 
   beforeEach(() => {
     localStorage.clear();
@@ -31,6 +32,10 @@ describe("OAuthConnectModal", () => {
 
   afterEach(() => {
     cleanup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
     globalThis.window.ade = originalAde;
   });
 
@@ -76,6 +81,79 @@ describe("OAuthConnectModal", () => {
       url: "https://example.com/oauth",
       newTab: true,
     });
+  });
+
+  it("persists the selected open target for the next sign-in", async () => {
+    const props = {
+      providerId: "openai",
+      providerName: "OpenAI",
+      methods: [{ type: "oauth" as const, label: "Sign in with ChatGPT" }],
+      onClose: vi.fn(),
+      onConnected: vi.fn(),
+    };
+    const { unmount } = render(<OAuthConnectModal {...props} />);
+
+    fireEvent.change(screen.getByLabelText("Open sign-in link in"), {
+      target: { value: "ade-browser" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+    expect(localStorage.getItem("ade.opencode.oauthOpenTarget")).toBe("ade-browser");
+
+    unmount();
+    render(<OAuthConnectModal {...props} />);
+    expect((screen.getByLabelText("Open sign-in link in") as HTMLSelectElement).value).toBe("ade-browser");
+  });
+
+  it("copies the OAuth URL when copy is selected", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <OAuthConnectModal
+        providerId="openai"
+        providerName="OpenAI"
+        methods={[{ type: "oauth", label: "Sign in with ChatGPT" }]}
+        onClose={vi.fn()}
+        onConnected={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Open sign-in link in"), {
+      target: { value: "copy" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+
+    expect(writeText).toHaveBeenCalledWith("https://example.com/oauth");
+    expect(window.ade.app.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("lets a full OAuth link be hidden after starting in view mode", async () => {
+    render(
+      <OAuthConnectModal
+        providerId="openai"
+        providerName="OpenAI"
+        methods={[{ type: "oauth", label: "Sign in with ChatGPT" }]}
+        onClose={vi.fn()}
+        onConnected={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Open sign-in link in"), {
+      target: { value: "view" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+
+    expect(screen.getByText("https://example.com/oauth")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(screen.queryByText("https://example.com/oauth")).toBeNull();
   });
 
   it("rejects an unsafe OAuth URL before opening it", async () => {
