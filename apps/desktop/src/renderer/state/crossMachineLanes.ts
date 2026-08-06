@@ -18,11 +18,12 @@
  *   leave the sidebar for two reasons only: the machine is gone from the
  *   registry, or it has been unreachable for a full day.
  *
- * Performance shape: active-binding refreshes are event-driven. Other machines
- * do not have a renderer change feed, so one shared, ref-counted fallback
- * refresh keeps them current while the window is visible, and stops entirely
- * while it is not. Foreign reads are bounded, timed out,
- * generation-cancellable, and never gate the local list.
+ * Performance shape: the active binding has its own event-driven refresh. Other
+ * machines do not have a renderer change feed, so one shared, ref-counted
+ * fallback refresh keeps them current while the window is visible. Change
+ * events can request that refresh, but never pull a foreign read ahead of its
+ * bounded cadence. Reads are timed out, generation-cancellable, and never gate
+ * the local list.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -53,6 +54,11 @@ import {
   deriveLaneMachineOptions,
   type LaneMachineOption,
 } from "../components/lanes/laneMachines";
+import {
+  compareWorkLanes,
+  type WorkLaneOrderInput,
+  type WorkLaneSortMode,
+} from "../components/terminals/workLaneOrder";
 import {
   rootAppStoreApi,
   selectActiveProjectStateKey,
@@ -95,6 +101,7 @@ const FOREIGN_LANE_REFRESH_MS = 30_000;
  * actually looked at, which is when a stale badge would be visible.
  */
 type LaneReadDepth = "identity" | "status";
+const EMPTY_WORK_LANE_ORDER: readonly string[] = [];
 const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
 /**
  * Floor on how long a drop must persist before Work shows a machine as offline.
@@ -364,13 +371,31 @@ function normalizeBranchRef(branchRef: string | null | undefined): string {
   return trimmed.replace(/^refs\/heads\//, "");
 }
 
-function laneActivityRank(row: CrossMachineLaneRow): number {
-  let latest = Date.parse(row.lane.createdAt ?? "");
+function laneLastActivityMs(row: CrossMachineLaneRow): number | null {
+  let latest: number | null = null;
   for (const session of row.sessions) {
     const at = Date.parse(session.lastActivityAt ?? session.startedAt ?? "");
-    if (Number.isFinite(at) && at > (Number.isFinite(latest) ? latest : -Infinity)) latest = at;
+    if (!Number.isNaN(at) && (latest === null || at > latest)) latest = at;
   }
-  return Number.isFinite(latest) ? latest : 0;
+  return latest;
+}
+
+function crossMachineLaneId(row: CrossMachineLaneRow): string {
+  return `${row.machineId}:${row.lane.id}`;
+}
+
+function crossMachineLaneOrderInput(row: CrossMachineLaneRow): WorkLaneOrderInput {
+  return {
+    id: crossMachineLaneId(row),
+    name: row.lane.name,
+    laneType: row.lane.laneType,
+    createdAt: row.lane.createdAt,
+    lastActivityMs: laneLastActivityMs(row),
+    // Foreign pin/shelving state is renderer-local and is applied after this
+    // sync-layer order. Keeping these false preserves that layer boundary.
+    quiet: false,
+    pinned: false,
+  };
 }
 
 /**
@@ -478,18 +503,33 @@ export function buildCrossMachineLaneRows(input: {
 }
 
 /**
- * Sidebar order for foreign rows: reachable machines first, each group by most
- * recent activity. A dropped machine's lanes are still worth seeing — that is
- * the point of dimming rather than hiding — but they are not what you are about
- * to act on, so they sink below the live ones instead of interleaving with them.
+ * Sidebar order for foreign rows: reachable machines first, then the same raw
+ * Work sort mode used by the local lane list. Foreign shelving and pin state
+ * are applied later by SessionListPane, so this comparator deliberately keeps
+ * those presentation-only concerns out of the sync layer.
+ *
+ * Activity is therefore opt-in. The default is creation order, which prevents
+ * terminal output (`lastActivityAt`) from moving a shell between two renders.
+ * The final machine/lane key makes equal sort values total across refreshes.
  */
 export function orderCrossMachineRows(
   rows: readonly CrossMachineLaneRow[],
+  mode: WorkLaneSortMode = "created",
+  manualOrder: readonly string[] = EMPTY_WORK_LANE_ORDER,
 ): CrossMachineLaneRow[] {
-  return [...rows].sort((left, right) => {
-    if (left.online !== right.online) return left.online ? -1 : 1;
-    return laneActivityRank(right) - laneActivityRank(left);
+  const manualIndex = new Map<string, number>();
+  manualOrder.forEach((id, index) => {
+    if (!manualIndex.has(id)) manualIndex.set(id, index);
   });
+  return rows
+    .map((row) => ({ row, input: crossMachineLaneOrderInput(row) }))
+    .sort((left, right) => {
+      if (left.row.online !== right.row.online) return left.row.online ? -1 : 1;
+      const modeDelta = compareWorkLanes(left.input, right.input, mode, manualIndex);
+      if (modeDelta !== 0) return modeDelta;
+      return crossMachineLaneId(left.row).localeCompare(crossMachineLaneId(right.row));
+    })
+    .map(({ row }) => row);
 }
 
 /**
@@ -734,6 +774,9 @@ type SyncRuntime = {
   refreshTimer: ReturnType<typeof setTimeout> | null;
   refreshInFlight: boolean;
   refreshQueued: boolean;
+  refreshQueuedStatus: boolean;
+  /** Start time of the most recent foreign refresh, used to rate-limit events. */
+  lastRefreshStartedAtMs: number | null;
   /** Open drop record per machine that is currently not connected. */
   dropsByMachineId: Map<string, MachineDrop>;
   /** Re-evaluates reachability when the next drop deadline lapses. */
@@ -792,6 +835,8 @@ const runtime: SyncRuntime = {
   refreshTimer: null,
   refreshInFlight: false,
   refreshQueued: false,
+  refreshQueuedStatus: false,
+  lastRefreshStartedAtMs: null,
   dropsByMachineId: new Map(),
   graceTimer: null,
   laneReadAtMsByMachineId: new Map(),
@@ -1311,23 +1356,42 @@ async function runRefresh(): Promise<void> {
  * @param depth `status` for the triggers that justify paying for git status —
  * the surface being mounted, retargeted, or looked at again, a machine
  * appearing, and the poll timer coming round. Change feeds leave it at
- * `identity`; see {@link LaneReadDepth}.
+ * `identity`; see {@link LaneReadDepth}. Identity events coalesce onto the
+ * existing foreign cadence instead of restarting it.
  */
 function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
-  if (depth === "status") runtime.pendingLaneReadDepth = "status";
+  const force = depth === "status";
+  if (force) runtime.pendingLaneReadDepth = "status";
+  // Hidden windows read nothing at all. The visibility listener in `attach`
+  // calls straight back here on the way in, so the list is refreshed once,
+  // immediately, when it can actually be seen again.
+  if (!isDocumentVisible()) {
+    if (force && runtime.refreshTimer) {
+      clearTimeout(runtime.refreshTimer);
+      runtime.refreshTimer = null;
+    }
+    return;
+  }
+  // A change feed is not a reason to pull the foreign poll forward. The active
+  // machine still updates through its own event path; the union's foreign reads
+  // stay bounded even when shell output produces frequent session events.
+  if (runtime.refreshTimer && !force) return;
   if (runtime.refreshTimer) {
     clearTimeout(runtime.refreshTimer);
     runtime.refreshTimer = null;
   }
-  // Hidden windows read nothing at all. The visibility listener in `attach`
-  // calls straight back here on the way in, so the list is refreshed once,
-  // immediately, when it can actually be seen again.
-  if (!isDocumentVisible()) return;
   if (runtime.refreshInFlight) {
     runtime.refreshQueued = true;
+    runtime.refreshQueuedStatus ||= force;
     return;
   }
   if (runtime.timer) return;
+  const elapsedSinceLastRefresh = runtime.lastRefreshStartedAtMs == null
+    ? null
+    : Date.now() - runtime.lastRefreshStartedAtMs;
+  const delay = force || elapsedSinceLastRefresh == null
+    ? REFRESH_COALESCE_MS
+    : Math.max(REFRESH_COALESCE_MS, FOREIGN_MACHINE_REFRESH_MS - elapsedSinceLastRefresh);
   runtime.timer = setTimeout(() => {
     runtime.timer = null;
     // A refresh outlives its own runtime: reads are bounded but slow, and
@@ -1337,6 +1401,7 @@ function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
     // schedules anything at all.
     const lifecycle = runtime.lifecycle;
     runtime.refreshInFlight = true;
+    runtime.lastRefreshStartedAtMs = Date.now();
     void runRefresh()
       .catch(() => {})
       .finally(() => {
@@ -1344,8 +1409,10 @@ function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
         runtime.refreshInFlight = false;
         if (runtime.refCount === 0) return;
         if (runtime.refreshQueued) {
+          const queuedDepth: LaneReadDepth = runtime.refreshQueuedStatus ? "status" : "identity";
           runtime.refreshQueued = false;
-          scheduleRefresh();
+          runtime.refreshQueuedStatus = false;
+          scheduleRefresh(queuedDepth);
           return;
         }
         if (!isDocumentVisible()) return;
@@ -1357,7 +1424,7 @@ function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
           scheduleRefresh("status");
         }, FOREIGN_MACHINE_REFRESH_MS);
       });
-  }, REFRESH_COALESCE_MS);
+  }, delay);
 }
 
 /**
@@ -1634,10 +1701,11 @@ function attach(): void {
   // shared bounded refresh below because preload exposes no per-target push
   // subscription.
   //
-  // Both are change feeds, so both refresh at `identity` depth. On the web
+  // Both are change feeds, so both request `identity` depth. On the web
   // transport a lifecycle event is synthesized from a coarse table invalidation,
   // and reading status here would write the rows that produce the next
-  // invalidation — the loop this depth split exists to cut.
+  // invalidation — the loop this depth split exists to cut. The scheduler also
+  // keeps these events from restarting the foreign poll on every shell tick.
   const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh());
   if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
   const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
@@ -1692,7 +1760,9 @@ function detach(): void {
   }
   resetMachineTracking();
   runtime.refreshQueued = false;
+  runtime.refreshQueuedStatus = false;
   runtime.refreshInFlight = false;
+  runtime.lastRefreshStartedAtMs = null;
   runtime.pendingLaneReadDepth = "identity";
   for (const dispose of runtime.disposers.splice(0)) {
     try {
@@ -1769,6 +1839,8 @@ export function resetCrossMachineLaneSyncForTest(): void {
 export function useCrossMachineLaneUnion(
   active = true,
   localSessions?: readonly TerminalSessionSummary[],
+  workLaneSortMode: WorkLaneSortMode = "created",
+  workLaneOrder: readonly string[] = EMPTY_WORK_LANE_ORDER,
 ): CrossMachineUnion {
   // Stabilized by CONTENT, not by the array's identity. The caller's roster is
   // replaced wholesale by every session poll (~5s while anything is running),
@@ -1915,6 +1987,8 @@ export function useCrossMachineLaneUnion(
     // computed correctly and then thrown away one line later.
     const foreignRows = orderCrossMachineRows(
       rows.filter((row) => !row.isActiveBinding),
+      workLaneSortMode,
+      workLaneOrder,
     );
     // Single-machine setups take this branch forever: no marker map is built and
     // the lane header renders exactly as it did before this feature existed.
@@ -1927,5 +2001,5 @@ export function useCrossMachineLaneUnion(
       foreignRows,
       markersByLaneId: resolveCrossMachineLaneMarkers(rows),
     };
-  }, [rows]);
+  }, [rows, workLaneOrder, workLaneSortMode]);
 }

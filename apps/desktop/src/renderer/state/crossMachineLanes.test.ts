@@ -174,6 +174,88 @@ describe("offline machines stay in the sidebar, dimmed", () => {
       .toEqual(["lane-online", "lane-offline"]);
   });
 
+  it("uses stable Work ordering unless activity mode is selected", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          online: true,
+          lanes: [
+            makeLane({ id: "lane-old", name: "Old", createdAt: "2026-07-20T10:00:00.000Z" }),
+            makeLane({ id: "lane-new", name: "New", createdAt: "2026-07-21T10:00:00.000Z" }),
+          ],
+          sessions: [
+            makeSession({
+              id: "session-old",
+              laneId: "lane-old",
+              lastActivityAt: "2026-07-30T10:00:00.000Z",
+            }),
+            makeSession({
+              id: "session-new",
+              laneId: "lane-new",
+              lastActivityAt: "2026-07-29T10:00:00.000Z",
+            }),
+          ],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+
+    expect(orderCrossMachineRows(rows).map((row) => row.lane.id))
+      .toEqual(["lane-new", "lane-old"]);
+    expect(orderCrossMachineRows(rows, "activity").map((row) => row.lane.id))
+      .toEqual(["lane-old", "lane-new"]);
+    expect(orderCrossMachineRows([...rows].reverse()).map((row) => row.lane.id))
+      .toEqual(["lane-new", "lane-old"]);
+  });
+
+  it("uses composite machine/lane keys for shared foreign manual order", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "shared-lane", name: "Studio Shared" })],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        "target-laptop": {
+          machineId: "target-laptop",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-laptop",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "shared-lane", name: "Laptop Shared" })],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    const manualOrder = ["target-laptop:shared-lane", "target-studio:shared-lane"];
+    const toCompositeIds = (ordered: readonly typeof rows[number][]) =>
+      ordered.map((row) => `${row.machineId}:${row.lane.id}`);
+
+    expect(toCompositeIds(orderCrossMachineRows(rows, "manual", manualOrder)))
+      .toEqual(manualOrder);
+    expect(toCompositeIds(orderCrossMachineRows([...rows].reverse(), "manual", manualOrder)))
+      .toEqual(manualOrder);
+    expect(new Set(toCompositeIds(rows))).toEqual(new Set(manualOrder));
+  });
+
   it("forgets a machine outright only when asked to", () => {
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",
@@ -1197,6 +1279,79 @@ describe("cross-machine refresh scheduling", () => {
       "project-a",
       expect.objectContaining({ domain: "session", action: "list" }),
     );
+
+    stop();
+  });
+
+  it("does not restart the foreign poll for every active session event", async () => {
+    vi.useFakeTimers();
+    const emitters: {
+      session: (() => void) | null;
+      lane: (() => void) | null;
+    } = { session: null, lane: null };
+    const callAction = vi.fn(async (
+      _targetId: string,
+      _projectId: string,
+      request: { domain: string; action: string },
+    ) => ({
+      result: request.domain === "lane"
+        ? { lanes: [] }
+        : request.domain === "pr"
+          ? { prs: [] }
+          : { sessions: [] },
+    }));
+    window.ade = {
+      sessions: {
+        onChanged: vi.fn((listener: () => void) => {
+          emitters.session = listener;
+          return () => { emitters.session = null; };
+        }),
+      },
+      lanes: {
+        onLifecycleEvent: vi.fn((listener: () => void) => {
+          emitters.lane = listener;
+          return () => { emitters.lane = null; };
+        }),
+      },
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    const initialCallCount = callAction.mock.calls.length;
+    expect(initialCallCount).toBe(3);
+
+    emitters.session?.();
+    emitters.lane?.();
+    emitters.session?.();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(callAction).toHaveBeenCalledTimes(initialCallCount);
+
+    await vi.advanceTimersByTimeAsync(8_500);
+    expect(callAction.mock.calls.length).toBeGreaterThan(initialCallCount);
 
     stop();
   });

@@ -1009,6 +1009,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(
     crossMachineSyncActive,
     allSessionsUnfiltered,
+    workLaneSortMode,
+    workLaneOrder,
   );
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
