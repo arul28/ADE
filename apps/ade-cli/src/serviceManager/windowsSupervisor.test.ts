@@ -218,9 +218,15 @@ describe("windows supervisor wedge guard", () => {
     // Bounded, and never a bare WaitForExit(): if taskkill was unresolvable and
     // Kill() threw, an unbounded wait parks the supervisor on the wedge forever.
     expect(script).not.toContain("$process.WaitForExit()");
-    const waitAt = script.indexOf("if (-not $process.WaitForExit(30000))", killAt);
+    const waitAt = script.indexOf("if ($process.WaitForExit(30000)) { break }", killAt);
     expect(waitAt).toBeGreaterThan(killAt);
     expect(script).toContain("did not exit after the kill");
+    // Leaving the wait loop is conditional on the process being GONE. An
+    // unconditional break after a timed-out kill would start a second brain
+    // beside an unkillable one, both wanting the same ports and worktrees.
+    expect(script).not.toMatch(/WaitForExit\(30000\)[^\r\n]*[\r\n]+\s*break/);
+    const wedgeRetryAt = script.indexOf("retrying on the next heartbeat check", waitAt);
+    expect(wedgeRetryAt).toBeGreaterThan(waitAt);
     // The bounded wait can fall through with the process still alive, and
     // `.ExitCode` throws on a live process -- which would surface the wedge as
     // a launch failure. Read it only once the process has actually exited.

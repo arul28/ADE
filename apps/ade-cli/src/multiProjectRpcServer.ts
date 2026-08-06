@@ -411,6 +411,17 @@ const LIST_ICON_COUNT_BUDGET = 24;
 const LIST_ICON_BYTE_BUDGET = 512 * 1024;
 const LIST_ICON_RESOLVE_BUDGET_MS = 750;
 
+/**
+ * The one "Update & restart" run this process will do at a time.
+ *
+ * Module-scoped on purpose: overlapping callers are not one impatient client
+ * but several — a desktop, a phone, and a reconnect that retried — each on its
+ * own connection and its own handler. Two runs would download and swap the same
+ * runtime concurrently and then both ask the service to restart, mid-swap.
+ * Whoever asks while a run is in flight joins that run and gets its result.
+ */
+let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
+
 type ProjectIconResolver = (
   rootPath: string,
   timeoutMs: number,
@@ -1496,14 +1507,23 @@ export function createMultiProjectRpcRequestHandler(
           "This ADE runtime cannot update itself.",
         );
       }
-      const { runMachineUpdateAndRestart } = await import(
-        "./services/runtime/machineUpdateAndRestart"
-      );
       const targetVersion = typeof params.targetVersion === "string"
         && params.targetVersion.trim()
         ? params.targetVersion.trim()
         : null;
-      return await runMachineUpdateAndRestart(controls, targetVersion);
+      if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
+      const run = (async () => {
+        const { runMachineUpdateAndRestart } = await import(
+          "./services/runtime/machineUpdateAndRestart"
+        );
+        return await runMachineUpdateAndRestart(controls, targetVersion);
+      })();
+      machineUpdateAndRestartInFlight = run;
+      try {
+        return await run;
+      } finally {
+        if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
+      }
     }
 
     if (method === "attention.call") {

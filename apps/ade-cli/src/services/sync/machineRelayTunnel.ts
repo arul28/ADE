@@ -41,19 +41,17 @@ export type MachineRelayTunnelArgs = {
   captureAnalytics: NonNullable<SyncTunnelClientArgs["captureAnalytics"]>;
 };
 
-export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Promise<{
-  tunnel: SyncTunnelClientService;
-  gate: RelayTunnelAuthorityGate;
-}> {
-  const [
-    { createSyncTunnelClientService, getSharedSyncTunnelClientService },
-    { createRelayTunnelAuthorityGate },
-    { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged },
-  ] = await Promise.all([
-    import("./syncTunnelClientService"),
-    import("./relayTunnelAuthorityGate"),
-    import("./syncHostSingleton"),
-  ]);
+/**
+ * The relay lease half of the machine tunnel, split out so it can be exercised
+ * on its own — the tunnel itself is a machine-wide singleton built behind
+ * dynamic imports.
+ */
+export function createMachineRelayAccountLease(
+  accountAuthService: MachineRelayTunnelArgs["accountAuthService"],
+): {
+  isAccountSignedIn: () => boolean;
+  getAccountLease: () => Promise<{ userId: string; expiresAt: string | null } | null>;
+} {
   // The last account that owned this machine, remembered for exactly as long as
   // the process runs.
   //
@@ -69,7 +67,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // drops it.
   let retainedAccountOwnerId: string | null = null;
   const accountOwnership = (): { userId: string | null; retained: boolean } => {
-    const status = args.accountAuthService.getStatus();
+    const status = accountAuthService.getStatus();
     const userId = status.signedIn ? status.userId?.trim() || null : null;
     if (userId) {
       retainedAccountOwnerId = userId;
@@ -83,34 +81,64 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
     return { userId: null, retained: false };
   };
 
+  return {
+    isAccountSignedIn: () => Boolean(accountOwnership().userId),
+    getAccountLease: async () => {
+      const ownership = accountOwnership();
+      if (!ownership.userId) return null;
+      if (ownership.retained) {
+        // No live token to prove with, and asking for one would only churn a
+        // grant we already know is dead. The identity is unchanged, so the
+        // lease is unchanged; `expiresAt: null` keeps the tunnel from
+        // treating this as a fresh, long-lived grant.
+        return { userId: ownership.userId, expiresAt: null };
+      }
+      const userId = ownership.userId;
+      // A dead grant does not always come back as a blank status: refreshing it
+      // can THROW. If that rejection escaped, the lease would reject too and
+      // the tunnel would tear down — the exact failure this retention exists to
+      // prevent. Swallow it and fall through to the ownership re-read below.
+      let token = "";
+      try {
+        token = (await accountAuthService.getAccessToken()).trim();
+      } catch {
+        token = "";
+      }
+      const refreshed = accountAuthService.getStatus();
+      if (token && refreshed.signedIn && refreshed.userId?.trim() === userId) {
+        return { userId, expiresAt: refreshed.expiresAt };
+      }
+      // The token round trip can itself be what marks the session expired.
+      // Re-read ownership so that lands as "retained", not as a lost lease.
+      const after = accountOwnership();
+      return after.userId && after.retained
+        ? { userId: after.userId, expiresAt: null }
+        : null;
+    },
+  };
+}
+
+export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Promise<{
+  tunnel: SyncTunnelClientService;
+  gate: RelayTunnelAuthorityGate;
+}> {
+  const [
+    { createSyncTunnelClientService, getSharedSyncTunnelClientService },
+    { createRelayTunnelAuthorityGate },
+    { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged },
+  ] = await Promise.all([
+    import("./syncTunnelClientService"),
+    import("./relayTunnelAuthorityGate"),
+    import("./syncHostSingleton"),
+  ]);
+  const lease = createMachineRelayAccountLease(args.accountAuthService);
+
   const tunnel = getSharedSyncTunnelClientService(args.configPath, () =>
     createSyncTunnelClientService({
       logger: args.logger,
       configStore: args.configStore,
-      isAccountSignedIn: () => Boolean(accountOwnership().userId),
-      getAccountLease: async () => {
-        const ownership = accountOwnership();
-        if (!ownership.userId) return null;
-        if (ownership.retained) {
-          // No live token to prove with, and asking for one would only churn a
-          // grant we already know is dead. The identity is unchanged, so the
-          // lease is unchanged; `expiresAt: null` keeps the tunnel from
-          // treating this as a fresh, long-lived grant.
-          return { userId: ownership.userId, expiresAt: null };
-        }
-        const userId = ownership.userId;
-        const token = (await args.accountAuthService.getAccessToken()).trim();
-        const refreshed = args.accountAuthService.getStatus();
-        if (token && refreshed.signedIn && refreshed.userId?.trim() === userId) {
-          return { userId, expiresAt: refreshed.expiresAt };
-        }
-        // The token round trip can itself be what marks the session expired.
-        // Re-read ownership so that lands as "retained", not as a lost lease.
-        const after = accountOwnership();
-        return after.userId && after.retained
-          ? { userId: after.userId, expiresAt: null }
-          : null;
-      },
+      isAccountSignedIn: lease.isAccountSignedIn,
+      getAccountLease: lease.getAccountLease,
       onPublicationStateChanged: args.onPublicationStateChanged,
       // The analytics sink is machine-scoped and shared, so capturing it in this
       // one-per-machine factory closure is safe — unlike listener accessors,

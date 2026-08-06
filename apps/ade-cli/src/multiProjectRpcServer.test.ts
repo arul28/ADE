@@ -2685,6 +2685,57 @@ describe("machine.updateAndRestart", () => {
     }
   });
 
+  it("runs once when two callers overlap, and hands both the same result", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      let releaseApply: () => void = () => {};
+      const applyStarted = new Promise<void>((resolve) => {
+        releaseApply = resolve;
+      });
+      let unblock: () => void = () => {};
+      const applyGate = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      const controls = makeControls({
+        applyUpdate: vi.fn(async () => {
+          releaseApply();
+          await applyGate;
+          return { ok: true, version: "1.2.56", detail: "installed" };
+        }),
+      });
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "cto");
+
+      const first = handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      });
+      await applyStarted;
+      const second = handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      });
+      unblock();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(controls.applyUpdate).toHaveBeenCalledTimes(1);
+      expect(controls.requestRestart).toHaveBeenCalledTimes(1);
+      expect(secondResult).toBe(firstResult);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("returns step results for an applied update", async () => {
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";

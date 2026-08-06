@@ -329,14 +329,20 @@ export function renderWindowsServiceLauncher(
     // Bounded. If taskkill was unresolvable and Kill() threw, the process is
     // still there and a bare WaitForExit() would park the supervisor on it
     // forever -- no restart, no log, the exact wedge this block exists to end.
-    "          if (-not $process.WaitForExit(30000)) { Write-SupervisorLog \"wedged brain pid=$($process.Id) did not exit after the kill; continuing\" }",
-    "          break",
+    //
+    // Leaving the wait loop is conditional on the process ACTUALLY being gone.
+    // Breaking out while it is still alive would start a second brain beside an
+    // unkillable one: two processes fighting over the same ports, worktrees and
+    // sync host lease, which is strictly worse than the wedge. So when the
+    // bounded wait expires with the process still up, stay in the loop -- the
+    // next heartbeat slice re-reads the wedge and runs the kill sequence again.
+    "          if ($process.WaitForExit(30000)) { break }",
+    "          Write-SupervisorLog \"wedged brain pid=$($process.Id) did not exit after the kill; retrying on the next heartbeat check\"",
     "        }",
     "      }",
-    // The wedge path above can `break` with the process STILL ALIVE (taskkill
-    // missing, Kill() refused, 30s elapsed). `.ExitCode` throws on a live
-    // process, and that throw lands in the launch-failure catch below -- which
-    // would log the wedge as "brain launch failed" and never restart cleanly.
+    // Belt and braces: `.ExitCode` throws on a live process, and that throw
+    // would land in the launch-failure catch below -- logging a wedge as "brain
+    // launch failed" and never restarting cleanly.
     "      if ($process.HasExited) { $lastExitCode = $process.ExitCode } else { $lastExitCode = $null }",
     "      $lastExitAt = [DateTimeOffset]::UtcNow.ToString('o')",
     "      $runtimeLifetimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $runtimeStartedAt.ToUnixTimeMilliseconds()",

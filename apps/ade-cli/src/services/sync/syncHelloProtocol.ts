@@ -29,6 +29,16 @@ export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
 /** Bearer-ish credentials carried in a hello; bounded so a socket cannot mint work. */
 const MAX_RELAY_ACCOUNT_TOKEN_CHARS = 16_384;
 
+/**
+ * A peer's claimed database version, held to the same rule as the per-site map
+ * below: a NaN, negative, or infinite claim must never reach version
+ * arithmetic, so anything that fails the rule reads as "start from zero".
+ */
+function normalizeDbVersion(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
 export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   const value = payload as SyncHelloPayload | null;
   const peer = value?.peer;
@@ -105,7 +115,7 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       platform: peer.platform ?? "unknown",
       deviceType: peer.deviceType ?? "unknown",
       siteId: String(peer.siteId).trim(),
-      dbVersion: Number(peer.dbVersion ?? 0),
+      dbVersion: normalizeDbVersion(peer.dbVersion),
       ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
       ...(connectionAttempt ? { connectionAttempt } : {}),
       capabilities: Array.isArray(peer.capabilities)
@@ -149,7 +159,7 @@ export function parsePairingRequestPayload(payload: unknown): SyncPairingRequest
       platform: peer.platform ?? "unknown",
       deviceType: peer.deviceType ?? "unknown",
       siteId: String(peer.siteId).trim(),
-      dbVersion: Number(peer.dbVersion ?? 0),
+      dbVersion: normalizeDbVersion(peer.dbVersion),
     },
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
     ...(relayAccountToken ? { relayAccountToken } : {}),

@@ -114,15 +114,42 @@ export function createMachineUpdateControls(
       // `check` is the dry run: it resolves the release assets without touching
       // the installation, so a target that does not exist fails here rather
       // than halfway through a swap.
-      await runBrainUpdateCommand(
+      const result = await runBrainUpdateCommand(
         normalizedTarget ? ["check", "--version", normalizedTarget] : ["check"],
         { currentVersion: args.version },
       );
+      // The check does not only throw on failure — it can hand back `ok: false`.
+      // Reporting that as "update available" sends the caller into a swap the
+      // check just said it could not stand behind, so surface it as a failed
+      // CHECK step rather than a silent "already newest".
+      if (result.ok === false) {
+        const detail = typeof result.message === "string" && result.message
+          ? result.message
+          : "The update check did not pass.";
+        throw new Error(detail);
+      }
+      // The check resolves whatever the caller asked for, including "latest".
+      // If that resolves to the version already installed, there is nothing to
+      // apply, and saying otherwise makes the client show an update that never
+      // lands.
+      const resolvedRaw = typeof result.requestedVersion === "string"
+        ? result.requestedVersion.trim()
+        : "";
+      const resolved = resolvedRaw && resolvedRaw.toLowerCase() !== "latest" ? resolvedRaw : null;
+      const effectiveTarget = normalizedTarget ?? resolved;
+      if (effectiveTarget && sameVersion(effectiveTarget, args.version)) {
+        return {
+          available: false,
+          currentVersion: args.version,
+          targetVersion: effectiveTarget,
+          detail: "Already on the newest version.",
+        };
+      }
       return {
         available: true,
         currentVersion: args.version,
-        targetVersion: normalizedTarget,
-        detail: `Update available — ${normalizedTarget ?? "newest version"}.`,
+        targetVersion: effectiveTarget,
+        detail: `Update available — ${effectiveTarget ?? "newest version"}.`,
       };
     },
     applyUpdate: async (targetVersion) => {

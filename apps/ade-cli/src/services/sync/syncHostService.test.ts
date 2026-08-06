@@ -4061,18 +4061,22 @@ describe("sync host account authentication", () => {
       });
       pairingStore.pairPeerViaAccount(peer, attestation);
       const baseArgs = createHostArgs(projectRoot, []);
+      // Deterministic synchronization: the lease refresh is what this test is
+      // about, so wait for the host to actually READ the account status rather
+      // than for a sleep long enough to hide a regression.
+      const getStatus = vi.fn(() => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+        sessionState,
+      }));
       const host = createSyncHostService({
         ...baseArgs,
         ...accountDependencies(),
         accountAuthService: {
-          getStatus: () => ({
-            signedIn: false,
-            userId: null,
-            email: null,
-            name: null,
-            expiresAt: null,
-            sessionState,
-          }),
+          getStatus,
           getAccessToken: async () => {
             throw new Error("Credential store is unreadable");
           },
@@ -4088,8 +4092,11 @@ describe("sync host account authentication", () => {
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       try {
         await host.waitUntilListening();
-        // The lease refresh runs on start and on a timer; give it both.
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        const deadline = Date.now() + 5_000;
+        while (getStatus.mock.calls.length === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(getStatus.mock.calls.length).toBeGreaterThan(0);
         expect(pairingStore.getPairingRecord(peer.deviceId)).not.toBeNull();
       } finally {
         await host.dispose();
@@ -4338,6 +4345,10 @@ describe("sync host account authentication", () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
+    // The machine stores are cached per secretsDir for the life of the process,
+    // so drop the cache before the handler resolves them against this fixture's
+    // fresh temp directory.
+    resetBrainMachineSyncStoresForTests();
     const deviceKey = makeDpopKeyPair();
     const accountToken = await mintAccountToken();
     const handler = createBrainProjectActionsSyncHandler({
@@ -4628,7 +4639,11 @@ describe("sync host account authentication", () => {
           type: "hello",
           requestId,
           payload: {
-            peer,
+            // A real client's peer identity and paired auth identity are the
+            // same device. Overriding only the auth id would send a MALFORMED
+            // hello (identity disagreement), which is a different rejection
+            // than "this machine has never seen you".
+            peer: overrides.deviceId ? { ...peer, deviceId: overrides.deviceId } : peer,
             auth: {
               kind: "paired",
               deviceId: overrides.deviceId ?? peer.deviceId,
@@ -4759,8 +4774,10 @@ describe("sync host account authentication", () => {
         const stale = await harness.pairedHello("stale-secret-hello", { secret: "not-the-secret" });
         expect(stale.type).toBe("hello_error");
         expect(stale.payload).toMatchObject({ code: "repair_required" });
+        // A device id this machine has never paired — NOT harness.peer's, which
+        // would only re-test the stale-secret path above.
         const unknown = await harness.pairedHello("unknown-device-hello", {
-          deviceId: harness.peer.deviceId,
+          deviceId: "device-this-machine-never-paired",
           secret: "still-not-the-secret",
         });
         expect(unknown.payload).toMatchObject({
@@ -4782,6 +4799,10 @@ describe("sync host account authentication", () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
+    // The machine stores are cached per secretsDir for the life of the process,
+    // so drop the cache before the handler resolves them against this fixture's
+    // fresh temp directory.
+    resetBrainMachineSyncStoresForTests();
     const deviceKey = makeDpopKeyPair();
     const accountToken = await mintAccountToken();
     const handler = createBrainProjectActionsSyncHandler({

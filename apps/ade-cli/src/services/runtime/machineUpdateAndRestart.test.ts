@@ -174,6 +174,40 @@ describe("createMachineUpdateControls", () => {
     expect(runBrainUpdateCommand).not.toHaveBeenCalled();
   });
 
+  it("reports no update when a null target resolves to the version already installed", async () => {
+    // The client can ask without naming a version. The check then resolves one,
+    // and if that is the version already running, saying "update available"
+    // would send the machine into a swap that installs nothing.
+    runBrainUpdateCommand.mockResolvedValue({
+      ok: true,
+      action: "update-check",
+      requestedVersion: "v1.2.55",
+      currentVersion: "1.2.55",
+    });
+
+    const check = await controls().checkForUpdate(null);
+
+    expect(check.available).toBe(false);
+    expect(check.detail).toBe("Already on the newest version.");
+
+    const applyUpdate = vi.fn();
+    const requestRestart = vi.fn(() => ({ ok: true, detail: "Restarting the background service." }));
+    const result = await runMachineUpdateAndRestart(
+      { checkForUpdate: async () => check, applyUpdate, requestRestart },
+      null,
+    );
+
+    expect(applyUpdate).not.toHaveBeenCalled();
+    expect(result.updateApplied).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+
+  it("fails the check step when the update check comes back not ok", async () => {
+    runBrainUpdateCommand.mockResolvedValue({ ok: false, message: "Release assets are missing." });
+
+    await expect(controls().checkForUpdate("1.2.56")).rejects.toThrow("Release assets are missing.");
+  });
+
   it("flags the detached staged-apply helper as owning the restart", async () => {
     runBrainUpdateCommand.mockResolvedValue({
       ok: true,
