@@ -380,9 +380,13 @@ function laneLastActivityMs(row: CrossMachineLaneRow): number | null {
   return latest;
 }
 
+function crossMachineLaneId(row: CrossMachineLaneRow): string {
+  return `${row.machineId}:${row.lane.id}`;
+}
+
 function crossMachineLaneOrderInput(row: CrossMachineLaneRow): WorkLaneOrderInput {
   return {
-    id: row.lane.id,
+    id: crossMachineLaneId(row),
     name: row.lane.name,
     laneType: row.lane.laneType,
     createdAt: row.lane.createdAt,
@@ -523,9 +527,7 @@ export function orderCrossMachineRows(
       if (left.row.online !== right.row.online) return left.row.online ? -1 : 1;
       const modeDelta = compareWorkLanes(left.input, right.input, mode, manualIndex);
       if (modeDelta !== 0) return modeDelta;
-      return `${left.row.machineId}:${left.row.lane.id}`.localeCompare(
-        `${right.row.machineId}:${right.row.lane.id}`,
-      );
+      return crossMachineLaneId(left.row).localeCompare(crossMachineLaneId(right.row));
     })
     .map(({ row }) => row);
 }

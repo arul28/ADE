@@ -215,6 +215,47 @@ describe("offline machines stay in the sidebar, dimmed", () => {
       .toEqual(["lane-new", "lane-old"]);
   });
 
+  it("uses composite machine/lane keys for shared foreign manual order", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "shared-lane", name: "Studio Shared" })],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        "target-laptop": {
+          machineId: "target-laptop",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-laptop",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "shared-lane", name: "Laptop Shared" })],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    const manualOrder = ["target-laptop:shared-lane", "target-studio:shared-lane"];
+    const toCompositeIds = (ordered: readonly typeof rows[number][]) =>
+      ordered.map((row) => `${row.machineId}:${row.lane.id}`);
+
+    expect(toCompositeIds(orderCrossMachineRows(rows, "manual", manualOrder)))
+      .toEqual(manualOrder);
+    expect(toCompositeIds(orderCrossMachineRows([...rows].reverse(), "manual", manualOrder)))
+      .toEqual(manualOrder);
+    expect(new Set(toCompositeIds(rows))).toEqual(new Set(manualOrder));
+  });
+
   it("forgets a machine outright only when asked to", () => {
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",
@@ -1244,8 +1285,10 @@ describe("cross-machine refresh scheduling", () => {
 
   it("does not restart the foreign poll for every active session event", async () => {
     vi.useFakeTimers();
-    let emitSessionChange: (() => void) | null = null;
-    let emitLaneChange: (() => void) | null = null;
+    const emitters: {
+      session: (() => void) | null;
+      lane: (() => void) | null;
+    } = { session: null, lane: null };
     const callAction = vi.fn(async (
       _targetId: string,
       _projectId: string,
@@ -1260,14 +1303,14 @@ describe("cross-machine refresh scheduling", () => {
     window.ade = {
       sessions: {
         onChanged: vi.fn((listener: () => void) => {
-          emitSessionChange = listener;
-          return () => { emitSessionChange = null; };
+          emitters.session = listener;
+          return () => { emitters.session = null; };
         }),
       },
       lanes: {
         onLifecycleEvent: vi.fn((listener: () => void) => {
-          emitLaneChange = listener;
-          return () => { emitLaneChange = null; };
+          emitters.lane = listener;
+          return () => { emitters.lane = null; };
         }),
       },
       remoteRuntime: {
@@ -1301,9 +1344,9 @@ describe("cross-machine refresh scheduling", () => {
     const initialCallCount = callAction.mock.calls.length;
     expect(initialCallCount).toBe(3);
 
-    emitSessionChange?.();
-    emitLaneChange?.();
-    emitSessionChange?.();
+    emitters.session?.();
+    emitters.lane?.();
+    emitters.session?.();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(callAction).toHaveBeenCalledTimes(initialCallCount);
 
