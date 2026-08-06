@@ -63,6 +63,7 @@ import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 const execFileAsync = promisify(execFile);
 
 type CronTask = {
+  cronExpression: string;
   stop: () => void;
 };
 
@@ -3482,22 +3483,42 @@ export function createAutomationService({
         }
         const key = `${rule.id}:${index}`;
         desired.add(key);
-        if (scheduleTasks.has(key)) return;
+        const existingTask = scheduleTasks.get(key);
+        if (existingTask?.cronExpression === cronExpr) return;
+        if (existingTask) {
+          try {
+            existingTask.stop();
+          } catch {
+            // ignore
+          }
+          scheduleTasks.delete(key);
+        }
+        const automationId = rule.id;
         const task = cronScheduler.schedule(cronExpr, (scheduledAt) => {
+          const currentRule = findRule(automationId);
+          const currentTrigger = currentRule?.triggers[index];
+          if (
+            !currentRule
+            || !currentRule.enabled
+            || currentTrigger?.type !== "schedule"
+            || (currentTrigger.cron ?? "").trim() !== cronExpr
+          ) {
+            return;
+          }
           const firedAt = scheduledAt instanceof Date && Number.isFinite(scheduledAt.getTime())
             ? scheduledAt
             : new Date();
           let claim: ReturnType<typeof claimScheduledOccurrence>;
           try {
             claim = claimScheduledOccurrence({
-              rule,
+              rule: currentRule,
               triggerIndex: index,
               cronExpression: cronExpr,
               firedAt,
             });
           } catch (error) {
             logger.warn("automations.schedule.claim_failed", {
-              automationId: rule.id,
+              automationId,
               triggerIndex: index,
               cron: cronExpr,
               error: error instanceof Error ? error.message : String(error),
@@ -3506,17 +3527,17 @@ export function createAutomationService({
           }
           if (!claim) {
             logger.info("automations.schedule.duplicate_suppressed", {
-              automationId: rule.id,
+              automationId,
               triggerIndex: index,
               cron: cronExpr,
               scheduledSlot: scheduledMinuteSlot(firedAt),
             });
             return;
           }
-          void runRule(rule, {
+          void runRule(currentRule, {
             triggerType: "schedule",
             scheduledAt: claim.scheduledSlot,
-            reason: rule.id,
+            reason: automationId,
           }).then((run) => {
             db.run(
               "update automation_schedule_occurrences set run_id = ? where occurrence_key = ?",
@@ -3524,7 +3545,7 @@ export function createAutomationService({
             );
           }).catch(() => {});
         });
-        scheduleTasks.set(key, { stop: () => task.stop() });
+        scheduleTasks.set(key, { cronExpression: cronExpr, stop: () => task.stop() });
       });
     }
     for (const [key, task] of scheduleTasks.entries()) {

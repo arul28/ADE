@@ -770,6 +770,119 @@ describe("automationService integration", () => {
     }
   });
 
+  it("uses the current rule config when a schedule callback fires after a config reload", async () => {
+    const { db } = createInMemoryAdeDb();
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    const stops: Array<ReturnType<typeof vi.fn>> = [];
+    let rule = normalizeRuntimeRule({
+      id: "release-ade",
+      name: "Release ADE",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Run the release.",
+      modelConfig: { modelId: "anthropic/claude-opus-5" },
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:release-ade",
+      actions: [],
+    });
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: vi.fn(async () => [{
+        id: "lane-primary",
+        name: "Main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      }]),
+      getLaneWorktreePath: vi.fn(() => "/tmp"),
+      getLaneBaseAndBranch: vi.fn(() => ({
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      })),
+    } as any;
+    const agentChatService = {
+      createSession: vi.fn(async (args: any) => ({
+        id: "release-chat",
+        laneId: args.laneId,
+      })),
+      runSessionTurn: vi.fn(async () => ({ outputText: "Release complete." })),
+    } as any;
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService,
+      projectConfigService,
+      agentChatService,
+      cronScheduler: {
+        validate: vi.fn(() => true),
+        schedule: vi.fn((_expression: string, callback: (scheduledAt?: Date | string) => void) => {
+          callbacks.push(callback);
+          const stop = vi.fn();
+          stops.push(stop);
+          return { stop };
+        }),
+      },
+    });
+
+    try {
+      rule = normalizeRuntimeRule({
+        ...rule,
+        modelConfig: { modelId: "openai/gpt-5.6-luna", thinkingLevel: "xhigh" },
+      });
+      service.reloadFromConfig();
+      callbacks[0]!(new Date("2026-07-30T13:00:00.000Z"));
+
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      });
+      expect(agentChatService.createSession).toHaveBeenCalledWith(expect.objectContaining({
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        modelId: "openai/gpt-5.6-luna",
+        reasoningEffort: "xhigh",
+      }));
+      expect(agentChatService.runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "release-chat",
+      }));
+
+      rule = normalizeRuntimeRule({
+        ...rule,
+        triggers: [{ type: "schedule", cron: "0 10 * * 1-5" }],
+        trigger: { type: "schedule", cron: "0 10 * * 1-5" },
+      });
+      service.reloadFromConfig();
+      expect(stops[0]).toHaveBeenCalledTimes(1);
+      expect(callbacks).toHaveLength(2);
+
+      callbacks[0]!(new Date("2026-07-30T13:01:00.000Z"));
+      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      callbacks[1]!(new Date("2026-07-30T13:01:00.000Z"));
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("preserves cancellation when a deleted automation chat rejects its active turn", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
