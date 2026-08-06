@@ -739,7 +739,13 @@ Renderer surfaces:
   the session names. The hook stabilizes that id set by content rather than by
   the roster array's identity, because the roster is replaced wholesale by every
   session poll and keying on it would rebuild every foreign row, marker, and
-  ordering on a timer.
+  ordering on a timer. Foreign rows stay grouped by reachability, then use the
+  same selected raw Work sort mode as local lanes; Created is the default, so
+  live PTY output does not reshuffle shell rows, while Activity remains an
+  explicit choice. Equal sort values fall back to the owning machine/lane key.
+  Session and lane change feeds request an identity refresh but coalesce onto
+  the shared visible-window cadence instead of restarting a remote read for
+  every output tick.
   Its marker resolver separately distinguishes `isActiveBinding` (where a lane
   renders) from `isThisMachine` (whether it is marked): a remote-bound tab still
   marks all lanes that are elsewhere, even when it has no foreign union rows.
