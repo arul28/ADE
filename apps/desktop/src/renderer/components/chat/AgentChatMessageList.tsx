@@ -96,6 +96,7 @@ import {
   shouldCollapseUserMessageText,
   summarizeDiffStats,
   summarizeInlineText,
+  type BackgroundJobGroupRenderEvent,
   type BackgroundJobLineRenderEvent,
   type ChatActivityBundleEvent,
   type ChatActivityBundleItem,
@@ -958,6 +959,7 @@ type RenderEnvelope = {
   | SubagentResultCardRenderEvent
   | SubagentStoppedGroupEvent
   | BackgroundJobLineRenderEvent
+  | BackgroundJobGroupRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent;
 };
@@ -3141,8 +3143,9 @@ function renderEvent(
     );
   }
 
-  /* ── Background command one-liner (live from spawn through finish) ── */
-  if (event.type === "background_job_line") {
+  /* ── Background command one-liner (live from spawn through finish), and the
+        folded run of identical jobs — same line, same `open` target ── */
+  if (event.type === "background_job_line" || event.type === "background_job_group") {
     return (
       <BackgroundJobLine
         event={event}

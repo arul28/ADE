@@ -27,6 +27,7 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
+import { orchestrationLeadOpenCodeToolSelection } from "../../../shared/orchestrationRuntimePolicy";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
@@ -143,6 +144,8 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   ownerId?: string | null;
   ownerKey?: string | null;
   leaseKind?: "shared" | "dedicated";
+  /** Isolate user/project config for an orchestrator lead only. */
+  isolatedConfig?: boolean;
   logger?: Logger | null;
 };
 
@@ -634,6 +637,7 @@ async function startOpenCodeSessionInternal(
         key: buildSharedOpenCodeServerKey(config),
         ownerKind,
         ownerId: args.ownerId,
+        isolatedConfig: args.isolatedConfig,
         logger: args.logger,
       })
     : await acquireDedicatedOpenCodeServer({
@@ -641,6 +645,7 @@ async function startOpenCodeSessionInternal(
         config,
         ownerKind,
         ownerId: args.ownerId,
+        isolatedConfig: args.isolatedConfig,
         logger: args.logger,
       });
   const client = createOpencodeClient({
@@ -725,11 +730,22 @@ export async function openCodeEventStream(args: {
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
 
+/**
+ * Resolves the `tools` map ADE sends with every OpenCode prompt.
+ *
+ * OpenCode has no server-side role model: whatever it exposes, the model may
+ * call. `session.prompt`'s `tools` map is the only lever, so an orchestrator
+ * lead gets every write/shell tool explicitly switched off here. Every other
+ * session keeps OpenCode's defaults (`null` — field omitted entirely).
+ */
 export async function refreshOpenCodeSessionToolSelection(
   handle: OpenCodeSessionHandle,
+  options?: { orchestrationLead?: boolean },
 ): Promise<Record<string, boolean> | null> {
-  handle.toolSelection = null;
-  return null;
+  handle.toolSelection = options?.orchestrationLead
+    ? orchestrationLeadOpenCodeToolSelection()
+    : null;
+  return handle.toolSelection;
 }
 
 export async function runOpenCodeTextPrompt(

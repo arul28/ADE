@@ -116,6 +116,7 @@ import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
   buildOpenCodeConfig,
   getOpenCodeRuntimeSnapshot,
+  refreshOpenCodeSessionToolSelection,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
 } from "./openCodeRuntime";
@@ -161,6 +162,24 @@ describe("openCodeRuntime", () => {
 
     await handle.close("handle_close");
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
+  });
+
+  it("passes lead isolation through to a dedicated OpenCode server", async () => {
+    await startOpenCodeSession({
+      directory: "/repo",
+      title: "Lead chat",
+      leaseKind: "dedicated",
+      isolatedConfig: true,
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "lead-1",
+      ownerKey: "chat:lead-1",
+    });
+
+    expect(acquireDedicatedOpenCodeServer).toHaveBeenCalledWith(expect.objectContaining({
+      isolatedConfig: true,
+      ownerKey: "chat:lead-1",
+    }));
   });
 
   it("omits the session title when ADE wants OpenCode to auto-name", async () => {
@@ -304,5 +323,40 @@ describe("buildOpenCodeConfig provider injection", () => {
     const provider = providerOf({ customModelSlugs: ["noslash", "mysteryco/model"] });
     expect(provider.noslash).toBeUndefined();
     expect(provider.mysteryco).toBeUndefined();
+  });
+});
+
+describe("refreshOpenCodeSessionToolSelection", () => {
+  const handleOf = () => ({ toolSelection: null } as { toolSelection: Record<string, boolean> | null });
+
+  it("withholds OpenCode's native write and shell tools from an orchestrator lead", async () => {
+    const handle = handleOf();
+    const selection = await refreshOpenCodeSessionToolSelection(
+      handle as never,
+      { orchestrationLead: true },
+    );
+    // These are OpenCode's own built-ins, not ADE's toolset — they are what a
+    // lead could otherwise use to edit code or run shell directly.
+    expect(selection).toMatchObject({
+      bash: false,
+      edit: false,
+      write: false,
+      patch: false,
+      task: false,
+    });
+    // Reads stay available so the lead can still plan.
+    expect(selection).not.toHaveProperty("read");
+    expect(selection).not.toHaveProperty("grep");
+    expect(selection).not.toHaveProperty("glob");
+    // The handle carries the same map, so a resumed prompt cannot drop it.
+    expect(handle.toolSelection).toEqual(selection);
+  });
+
+  it("leaves workers and validators on OpenCode's default toolset", async () => {
+    for (const options of [undefined, { orchestrationLead: false }]) {
+      const handle = handleOf();
+      await expect(refreshOpenCodeSessionToolSelection(handle as never, options)).resolves.toBeNull();
+      expect(handle.toolSelection).toBeNull();
+    }
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: ade-mosaic
-description: Use this skill when you want to ask the user for structured input (choices, toggles, numbers, short text, approvals) inside an ADE chat. Emit a fenced mosaic code block and ADE renders it as a native interactive card; the user's answers come back as your next user message. Prefer a mosaic card over prose bullet-lists of options whenever the answer is a selection or a small form.
+description: Use this skill when you want to ask the user for structured input (choices, toggles, numbers, short text, approvals) inside an ADE chat. Emit a fenced mosaic code block and ADE renders it as a native interactive card; the user's answers come back as your next user message.
 ---
 
 # ADE Mosaic cards
@@ -60,9 +60,8 @@ Limits: 40 options per select, 50 table rows, labels ≤ 200 chars, values
 
 ## Guidance
 
-- One card per decision. Don't stack multiple cards in one reply.
-- Keep it small: a card is for a decision, not a settings page.
-- Always include at least one interactive element; use `text`/`table` rows
-  for the context the user needs to decide.
+- `text` and `table` are display-only, so a card needs at least one
+  interactive element to be submittable; use the display rows for the context
+  the user needs to decide.
 - Do NOT use a mosaic card for plan approval or permission prompts — ADE has
   dedicated native surfaces for those.

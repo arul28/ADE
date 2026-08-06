@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES,
   ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+  ORCHESTRATION_LEAD_MCP_ISOLATION,
   applyOrchestrationPermissionProfile,
+  codexConfiguredMcpServerNames,
+  orchestrationLeadCodexMcpOverrides,
+  orchestrationLeadMcpIsolation,
   effectiveOrchestrationPermissionMode,
   isOrchestrationInteractionMode,
   isOrchestrationLeadSession,
@@ -57,6 +62,84 @@ describe("orchestrationRuntimePolicy", () => {
     for (const [provider, expected] of Object.entries(PROVIDER_PROFILE_EXPECTATIONS)) {
       expect(applyOrchestrationPermissionProfile(provider)).toEqual(expected);
     }
+  });
+
+  it("registers an MCP isolation mechanism for every provider that receives MCP", () => {
+    // A provider added to ADE without an entry here is a compile error; this
+    // asserts the runtime shape so a provider cannot quietly lose its gate
+    // without someone editing a test.
+    for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
+      const isolation = orchestrationLeadMcpIsolation(provider);
+      expect(isolation?.mechanism).toBeTruthy();
+      expect(isolation?.note.length).toBeGreaterThan(0);
+    }
+    for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
+      expect(ORCHESTRATION_LEAD_MCP_ISOLATION[provider].gated).toBe(true);
+    }
+    expect(orchestrationLeadMcpIsolation("gemini")).toBeNull();
+    expect(orchestrationLeadMcpIsolation("toString")).toBeNull();
+    expect(orchestrationLeadMcpIsolation("__proto__")).toBeNull();
+  });
+
+  it("drops Cursor's MCP-carrying setting layers for a lead but keeps the ADE hook layer", () => {
+    // `user` carries ADE's own preToolUse tool-gate hook (~/.cursor/hooks.json);
+    // dropping it would disable every Cursor lead denial.
+    expect(ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES).toContain("user");
+    expect(ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES).not.toContain("project");
+    expect(ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES).not.toContain("plugins");
+    expect(ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES).not.toContain("all");
+  });
+
+  it("reads Codex's configured MCP server names from every config.toml shape", () => {
+    expect(codexConfiguredMcpServerNames([
+      "model = \"gpt-5.4\"",
+      "",
+      "[mcp_servers.filesystem] # trailing comment",
+      "command = \"npx\"",
+      "args = [\"-y\", \"@modelcontextprotocol/server-filesystem\"]",
+      "",
+      "[mcp_servers.filesystem.env]",
+      "TOKEN = \"x\"",
+      "",
+      "[mcp_servers.\"my shell\"]",
+      "command = \"sh\"",
+      "",
+      "mcp_servers.git.command = \"git-mcp\"",
+      "# mcp_servers.commented.command = \"nope\"",
+    ].join("\n"))).toEqual(["filesystem", "my shell", "git"]);
+
+    expect(codexConfiguredMcpServerNames([
+      "[mcp_servers] # bare table",
+      "filesystem = { command = \"npx\" } # trailing comment",
+      "\"my shell\" = { command = \"sh\" } # trailing comment",
+      "",
+      "[other]",
+      "ignored = true",
+    ].join("\n"))).toEqual(["filesystem", "my shell"]);
+
+    expect(codexConfiguredMcpServerNames(
+      "mcp_servers = { linear = { command = \"linear\", args = [\"mcp\"] }, \"pg\" = { url = \"http://x\" } }",
+    )).toEqual(["linear", "pg"]);
+
+    expect(codexConfiguredMcpServerNames([
+      "mcp_servers = {",
+      "  filesystem = { command = \"npx\", args = [\"-y\", \"filesystem\"] }, # inline comment",
+      "  \"my shell\" = { command = \"sh -c '{ echo ok; }'\" },",
+      "}",
+    ].join("\n"))).toEqual(["filesystem", "my shell"]);
+
+    expect(codexConfiguredMcpServerNames("model = \"gpt-5.4\"")).toEqual([]);
+  });
+
+  it("turns Codex's configured servers into an explicit per-server disable overlay", () => {
+    // Codex merges the thread config overlay into config.toml rather than
+    // replacing it, so `mcp_servers = {}` would be a no-op — the only honest
+    // isolation is naming each server with `enabled = false`.
+    expect(orchestrationLeadCodexMcpOverrides(["filesystem", "git", " "])).toEqual({
+      filesystem: { enabled: false },
+      git: { enabled: false },
+    });
+    expect(orchestrationLeadCodexMcpOverrides([])).toEqual({});
   });
 
   it("denies Claude-native direct-work tools for orchestrator leads", () => {

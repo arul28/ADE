@@ -198,17 +198,21 @@ ade link linear-issue ADE-123 --no-clipboard
 ade linear comment ADE-123 "Created via ADE. Open in ADE: <paste link>"
 ```
 
-Agents should still include a user-facing ADE PR link when handing off a newly
-created or adopted PR. Use the GitHub PR URL for the browser link and the
-`adeUrl` printed by `ade prs create`. If the PR came from another path, mint
-the ADE link with:
+### PR closeout links
+
+When handing off a newly created or adopted PR, include both links: the GitHub
+PR URL (`githubUrl` / `html_url`) and the ADE PR link. `ade prs create` prints
+the ADE link as `adeUrl`; for a PR that came from another path, mint it:
 
 ```bash
 ade link pr <owner/repo> <number> --no-clipboard
 ```
 
-Use that output for the ADE link. Prefer the default HTTPS form in chat and terminal output
-because it is clickable, shareable, and upgrades into the ADE PRs tab.
+Prefer the default HTTPS form in chat, PR comments, and terminal output: it is
+clickable and shareable, and on a machine with ADE installed it upgrades into
+`ade://pr/<owner>/<repo>/<number>` and lands in the PRs tab. The PR body also
+gets the automatic "Open in ADE" footer, but that footer is not a substitute for
+the links in your final message.
 
 When you copy a deeplink from the desktop UI, the lane right-click menu offers
 Copy lane link, Copy branch link (cross-machine), Copy PR link, and Copy

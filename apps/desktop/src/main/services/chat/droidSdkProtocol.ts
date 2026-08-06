@@ -1,3 +1,7 @@
+import type { DroidToolCategory } from "../../../shared/orchestrationRuntimePolicy";
+
+export type { DroidToolCategory };
+
 export type DroidSdkAutonomyLevel = "off" | "low" | "medium" | "high";
 // `agi` puts Droid in orchestrator mode: it decomposes a mission into features
 // and spawns worker sub-sessions (surfaced to ADE as subagents) while keeping
@@ -21,7 +25,58 @@ export type DroidSdkSessionSettings = {
   reasoningEffort?: DroidSdkReasoningEffort | null;
   specModeModelId?: string | null;
   specModeReasoningEffort?: DroidSdkReasoningEffort | null;
+  /**
+   * Droid tool categories to withhold from the model, resolved to concrete
+   * `disabledToolIds` in the worker (tool ids are build-specific, categories
+   * are not). Set for orchestrator-lead sessions so Droid's own editor and
+   * terminal tools are dropped alongside ADE's.
+   */
+  disabledToolCategories?: readonly DroidToolCategory[] | null;
 };
+
+/**
+ * Reduces a `session.listTools()` result to the ids ADE must disable.
+ *
+ * Droid's built-in tool ids vary by build and model (`edit_file`,
+ * `apply-patch-cli`, `create-cli`, …), so ADE selects by the category Droid
+ * itself reports rather than pinning a brittle id list.
+ */
+export function droidDisabledToolIdsForCategories(
+  tools: ReadonlyArray<{ id?: unknown; category?: unknown }>,
+  categories: readonly DroidToolCategory[],
+): string[] {
+  const denied = new Set<string>(categories);
+  const ids: string[] = [];
+  for (const tool of tools) {
+    const id = typeof tool?.id === "string" ? tool.id.trim() : "";
+    const category = typeof tool?.category === "string" ? tool.category : "";
+    if (!id || !denied.has(category as DroidToolCategory)) continue;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Selects the live Droid MCP tools a lead must disable. MCP tools are not part
+ * of `listTools()`'s native exec catalog; Droid exposes their per-session
+ * enable switch through the low-level `toggleMcpTool` RPC instead.
+ */
+export function droidMcpToolsToDisable(
+  tools: ReadonlyArray<{ serverName?: unknown; name?: unknown; isEnabled?: unknown }>,
+  allowedServerNames: readonly string[],
+): Array<{ serverName: string; toolName: string }> {
+  const allowed = new Set(allowedServerNames.map((name) => name.trim()).filter(Boolean));
+  const disabled: Array<{ serverName: string; toolName: string }> = [];
+  for (const tool of tools) {
+    const serverName = typeof tool?.serverName === "string" ? tool.serverName.trim() : "";
+    const toolName = typeof tool?.name === "string" ? tool.name.trim() : "";
+    // Unknown state is unsafe for a lead: disable anything that is not
+    // explicitly reported as already disabled.
+    if (!serverName || !toolName || allowed.has(serverName) || tool.isEnabled === false) continue;
+    disabled.push({ serverName, toolName });
+  }
+  return disabled;
+}
 
 export type DroidSdkWorkerInit = {
   sessionId: string;
@@ -30,6 +85,8 @@ export type DroidSdkWorkerInit = {
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
   mcpServers?: unknown[];
+  /** MCP server names ADE owns and a lead may retain; all other tools are disabled per session. */
+  allowedMcpServerNames?: string[];
 };
 
 export type DroidSdkUserImage = {

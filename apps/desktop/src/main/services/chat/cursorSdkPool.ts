@@ -920,6 +920,7 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
       sandbox: "off",
       force: true,
       hardGuards: false,
+      orchestrationLead: false,
     },
     logger: args.logger,
   });
@@ -970,6 +971,7 @@ export async function runCursorSdkCloudRequest<T = unknown>(
       sandbox: "off",
       force: true,
       hardGuards: false,
+      orchestrationLead: false,
     },
     logger: args.logger,
   });

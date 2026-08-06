@@ -19,9 +19,11 @@ class FakeSdkChild extends EventEmitter {
   exitCode: number | null = null;
   killed = false;
   disposeCount = 0;
+  initPayloads: unknown[] = [];
 
-  send(message: { type?: string; requestId?: string }): boolean {
+  send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
     if (message.type === "init" && message.requestId) {
+      this.initPayloads.push(message.payload);
       queueMicrotask(() => {
         this.emit("message", {
           type: "response",
@@ -101,6 +103,7 @@ describe("Droid SDK pool", () => {
         ADE_CHAT_SESSION_ID: "session-1",
         ADE_DEFAULT_ROLE: "agent",
       },
+      allowedMcpServerNames: [],
     };
 
     const [first, second] = await Promise.all([
@@ -122,6 +125,7 @@ describe("Droid SDK pool", () => {
     );
     expect(second.pooled).toBe(first.pooled);
     expect(second.generation).toBe(first.generation);
+    expect((child.initPayloads[0] as { allowedMcpServerNames?: string[] }).allowedMcpServerNames).toEqual([]);
 
     releaseDroidSdkConnection(poolKey, first.generation);
     expect(child.disposeCount).toBe(0);

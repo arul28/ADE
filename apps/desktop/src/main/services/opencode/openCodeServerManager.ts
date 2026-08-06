@@ -53,6 +53,8 @@ type OpenCodeServerInstance = {
 type OpenCodeServerLaunchArgs = {
   port: number;
   config: OpenCodeConfig;
+  /** Keep user/project OpenCode config available when the caller is not a lead. */
+  isolatedConfig?: boolean;
 };
 
 type OpenCodeIsolationPaths = {
@@ -107,6 +109,7 @@ type OpenCodeServerEntry = {
   ownerKind: OpenCodeServerOwnerKind;
   ownerId: string | null;
   configFingerprint: string;
+  isolatedConfig: boolean;
   server: OpenCodeServerInstance;
   idleTtlMs: number | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -775,6 +778,57 @@ function buildIsolatedOpenCodeEnv(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeOpenCodeConfig(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    const existing = merged[key];
+    merged[key] = isRecord(existing) && isRecord(value)
+      ? mergeOpenCodeConfig(existing, value)
+      : value;
+  }
+  return merged;
+}
+
+function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const inheritedContent = env.OPENCODE_CONFIG_CONTENT?.trim();
+  if (inheritedContent) {
+    try {
+      const parsed = JSON.parse(inheritedContent);
+      if (!isRecord(parsed)) return addUserOpenCodeOwnershipMarkers(env);
+      env.OPENCODE_CONFIG_CONTENT = JSON.stringify(
+        mergeOpenCodeConfig(parsed, config as Record<string, unknown>),
+      );
+      return addUserOpenCodeOwnershipMarkers(env);
+    } catch {
+      // Preserve malformed user content rather than silently replacing a user
+      // setting. OpenCode will report the parse error to the user, and ADE must
+      // not turn an invalid setting into a different, valid configuration.
+      return addUserOpenCodeOwnershipMarkers(env);
+    }
+  }
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(
+    config as Record<string, unknown>,
+  );
+  return addUserOpenCodeOwnershipMarkers(env);
+}
+
+function addUserOpenCodeOwnershipMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  // Preserve every user-provided OpenCode setting, including XDG paths, API
+  // keys, config-dir overrides, and an intentional disable-project-config flag.
+  // Only ADE's ownership markers are added for orphan recovery.
+  env[ADE_OPENCODE_MANAGED_ENV] = "1";
+  env[ADE_OPENCODE_OWNER_PID_ENV] = String(process.pid);
+  return env;
+}
+
 function buildManagedConfigMarkers(): string[] {
   const markers = new Set<string>();
   for (const root of resolveKnownAdeManagedOpenCodeRoots()) {
@@ -793,12 +847,13 @@ function isManagedOpenCodeServeCommand(command: string, configMarkers: string[])
     && /\bopencode(?:\.cmd|\.bat|\.exe)?\b/i.test(command)
     && /\bserve\b/i.test(command)
   ) {
-    return command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1");
+    return true;
   }
   if (!/\bopencode(?:\.cmd|\.bat|\.exe)?\b\s+serve\b/i.test(command)) return false;
-  if (!command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1")) return false;
   if (command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)) return true;
-  return configMarkers.some((marker) => command.includes(marker));
+  // Keep recognizing older isolated servers that predate the ownership marker.
+  return command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1")
+    && configMarkers.some((marker) => command.includes(marker));
 }
 
 /**
@@ -1084,8 +1139,11 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
     throw new Error("OpenCode executable is not available.");
   }
   const xdgPaths = resolveOpenCodeIsolationPaths();
-  ensureOpenCodeIsolationDirs(xdgPaths);
-  const env = buildIsolatedOpenCodeEnv(args.config, xdgPaths);
+  const isolatedConfig = args.isolatedConfig === true;
+  if (isolatedConfig) ensureOpenCodeIsolationDirs(xdgPaths);
+  const env = isolatedConfig
+    ? buildIsolatedOpenCodeEnv(args.config, xdgPaths)
+    : buildUserOpenCodeEnv(args.config);
   // Only shim through cmd.exe when the resolved target actually needs it (a
   // `.cmd`/`.bat` shim, or an extensionless file), matching
   // {@link shouldUseWindowsCmdWrapper} — the policy every other ADE CLI launch
@@ -1102,11 +1160,12 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
       "--hostname=127.0.0.1",
       `--port=${args.port}`,
     ].map(quoteWindowsCmdArg).join(" ");
-    const cmdLine =
-      `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`
-      + `&&set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`
-      + `&&set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`
-      + `&&${serveCmdLine}`;
+    const assignments = [
+      `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`,
+      ...(isolatedConfig ? [`set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`] : []),
+      `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`,
+    ];
+    const cmdLine = `${assignments.join("&&")}&&${serveCmdLine}`;
     const invocation = resolveWindowsCmdLineInvocation(cmdLine, env);
     return {
       executable: invocation.command,
@@ -1234,6 +1293,7 @@ function parseOpenCodeServerListenUrl(line: string): string | null {
 
 async function createOpencodeServerWithRetry(
   config: OpenCodeConfig,
+  options: { isolatedConfig: boolean },
 ): Promise<OpenCodeServerInstance> {
   const binaryPath = resolveOpenCodeBinaryPath();
   let lastError: unknown;
@@ -1243,7 +1303,11 @@ async function createOpencodeServerWithRetry(
     lastPort = port;
     protectedLaunchPorts.add(port);
     try {
-      return await openCodeServerLauncher({ port, config });
+      return await openCodeServerLauncher({
+        port,
+        config,
+        isolatedConfig: options.isolatedConfig,
+      });
     } catch (error) {
       protectedLaunchPorts.delete(port);
       lastError = error;
@@ -1401,16 +1465,19 @@ async function createEntry(args: {
   ownerId?: string | null;
   config: OpenCodeConfig;
   configFingerprint: string;
+  isolatedConfig: boolean;
   idleTtlMs?: number | null;
   logger?: Logger | null;
 }): Promise<OpenCodeServerEntry> {
-  const inflightKey = `${args.leaseKind}:${args.key}:${args.configFingerprint}`;
+  const inflightKey = `${args.leaseKind}:${args.key}:${args.configFingerprint}:${args.isolatedConfig ? "isolated" : "user"}`;
   const existingPromise = inFlightEntries.get(inflightKey);
   if (existingPromise) return await existingPromise;
 
   const createPromise = (async () => {
     await recoverManagedOpenCodeOrphans({ logger: args.logger });
-    const server = await createOpencodeServerWithRetry(args.config);
+    const server = await createOpencodeServerWithRetry(args.config, {
+      isolatedConfig: args.isolatedConfig,
+    });
     const entry: OpenCodeServerEntry = {
       id: randomUUID(),
       key: args.key,
@@ -1418,6 +1485,7 @@ async function createEntry(args: {
       ownerKind: args.ownerKind,
       ownerId: args.ownerId?.trim() || null,
       configFingerprint: args.configFingerprint,
+      isolatedConfig: args.isolatedConfig,
       server,
       idleTtlMs: args.leaseKind === "shared" ? args.idleTtlMs ?? DEFAULT_SHARED_IDLE_TTL_MS : null,
       idleTimer: null,
@@ -1443,14 +1511,16 @@ export async function acquireSharedOpenCodeServer(args: {
   ownerKind?: OpenCodeServerOwnerKind;
   ownerId?: string | null;
   idleTtlMs?: number | null;
+  isolatedConfig?: boolean;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
   const configFingerprint = serializeConfigFingerprint(args.config);
+  const isolatedConfig = args.isolatedConfig === true;
   const key = args.key?.trim() || configFingerprint;
   return await withAcquireLock(`shared:${key}`, async () => {
     while (true) {
       const existing = sharedEntries.get(key);
-      if (existing && existing.configFingerprint === configFingerprint) {
+      if (existing && existing.configFingerprint === configFingerprint && existing.isolatedConfig === isolatedConfig) {
         clearIdleTimer(existing);
         existing.refCount += 1;
         existing.lastUsedAt = Date.now();
@@ -1477,10 +1547,11 @@ export async function acquireSharedOpenCodeServer(args: {
         ownerId: args.ownerId,
         config: args.config,
         configFingerprint,
+        isolatedConfig,
         idleTtlMs: args.idleTtlMs,
         logger: args.logger,
       });
-      if (entry.configFingerprint !== configFingerprint) {
+      if (entry.configFingerprint !== configFingerprint || entry.isolatedConfig !== isolatedConfig) {
         unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;
@@ -1499,6 +1570,7 @@ export async function acquireDedicatedOpenCodeServer(args: {
   config: OpenCodeConfig;
   ownerKind: OpenCodeServerOwnerKind;
   ownerId?: string | null;
+  isolatedConfig?: boolean;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
   const ownerKey = args.ownerKey.trim();
@@ -1506,10 +1578,11 @@ export async function acquireDedicatedOpenCodeServer(args: {
     throw new Error("ownerKey is required for dedicated OpenCode servers.");
   }
   const configFingerprint = serializeConfigFingerprint(args.config);
+  const isolatedConfig = args.isolatedConfig === true;
   return await withAcquireLock(`dedicated:${ownerKey}`, async () => {
     while (true) {
       const existing = dedicatedEntries.get(ownerKey);
-      if (existing && existing.configFingerprint === configFingerprint) {
+      if (existing && existing.configFingerprint === configFingerprint && existing.isolatedConfig === isolatedConfig) {
         existing.refCount += 1;
         existing.lastUsedAt = Date.now();
         logRuntimeEvent(args.logger, "opencode.server_reused", existing, { refCount: existing.refCount });
@@ -1535,9 +1608,10 @@ export async function acquireDedicatedOpenCodeServer(args: {
         ownerId: args.ownerId,
         config: args.config,
         configFingerprint,
+        isolatedConfig,
         logger: args.logger,
       });
-      if (entry.configFingerprint !== configFingerprint) {
+      if (entry.configFingerprint !== configFingerprint || entry.isolatedConfig !== isolatedConfig) {
         unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;
@@ -1630,10 +1704,12 @@ export function __setOpenCodeProcessControllerForTests(
 export function __buildOpenCodeServeLaunchSpecForTests(args: {
   config: OpenCodeConfig;
   port?: number;
+  isolatedConfig?: boolean;
 }): OpenCodeServeLaunchSpec {
   return buildOpenCodeServeLaunchSpec({
     port: args.port ?? 4096,
     config: args.config,
+    isolatedConfig: args.isolatedConfig,
   });
 }
 

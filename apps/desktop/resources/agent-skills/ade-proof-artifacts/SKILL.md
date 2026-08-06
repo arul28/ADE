@@ -30,6 +30,5 @@ ade help proof
 ## Gotchas
 
 - Do not leave proof as an unregistered local file when the user expects ADE to show it.
-- ADE browser observations are scratch state under `.ade/cache/browser-observations/`; promote only reviewer-facing checkpoints with `ade --socket browser proof ...` or `ade proof attach`.
+- Browser observations are scratch state, not proof; promote only reviewer-facing checkpoints with `ade --socket browser proof ...` or `ade proof attach`. The **ade-browser** skill documents where those scratch files live and how aggressively they prune.
 - Include enough context in the artifact name/description to understand what was verified.
-- Clean up stale processes you started before declaring proof complete.

@@ -188,6 +188,7 @@ describe("openCodeServerManager", () => {
   const originalEnv = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     ADE_OPENCODE_XDG_ROOT: process.env.ADE_OPENCODE_XDG_ROOT,
     OPENCODE_API_KEY: process.env.OPENCODE_API_KEY,
     OPENCODE_BIN_PATH: process.env.OPENCODE_BIN_PATH,
@@ -243,6 +244,7 @@ describe("openCodeServerManager", () => {
     vi.useRealTimers();
     restoreEnv("PATH");
     restoreEnv("HOME");
+    restoreEnv("XDG_CONFIG_HOME");
     restoreEnv("ADE_OPENCODE_XDG_ROOT");
     restoreEnv("OPENCODE_API_KEY");
     restoreEnv("OPENCODE_BIN_PATH");
@@ -559,6 +561,7 @@ describe("openCodeServerManager", () => {
     const spec = __buildOpenCodeServeLaunchSpecForTests({
       config,
       port: 4310,
+      isolatedConfig: true,
     });
 
     expect(spec.executable).toBe("/Users/admin/.opencode/bin/opencode");
@@ -582,6 +585,49 @@ describe("openCodeServerManager", () => {
     expect(spec.env.ADE_OPENCODE_OWNER_PID).toBe(String(process.pid));
     expect(spec.env.OPENCODE_API_KEY).toBeUndefined();
     expect(spec.env.OPENCODE_BIN_PATH).toBeUndefined();
+  });
+
+  it("keeps the user's OpenCode config layers for ordinary chat servers", () => {
+    process.env.ADE_OPENCODE_XDG_ROOT = "/tmp/ade-opencode-test-home";
+    process.env.XDG_CONFIG_HOME = "/Users/tester/.config";
+    process.env.OPENCODE_API_KEY = "ambient-api-key";
+    process.env.OPENCODE_CONFIG_DIR = "/Users/tester/.config/opencode";
+    process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+      mcp: { filesystem: { type: "local", command: ["filesystem"] } },
+      theme: "user-theme",
+    });
+
+    const spec = __buildOpenCodeServeLaunchSpecForTests({
+      config: {
+        mcp: { "ade-orchestration": { type: "remote", url: "http://ade/mcp" } },
+      } as const,
+      port: 4311,
+    });
+
+    expect(spec.env.XDG_CONFIG_HOME).toBe("/Users/tester/.config");
+    expect(spec.env.OPENCODE_CONFIG_DIR).toBe("/Users/tester/.config/opencode");
+    expect(spec.env.OPENCODE_API_KEY).toBe("ambient-api-key");
+    expect(spec.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBeUndefined();
+    expect(JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
+      mcp: {
+        filesystem: { type: "local", command: ["filesystem"] },
+        "ade-orchestration": { type: "remote", url: "http://ade/mcp" },
+      },
+      theme: "user-theme",
+    });
+    expect(spec.env.ADE_OPENCODE_MANAGED).toBe("1");
+  });
+
+  it("does not replace malformed user OpenCode config content", () => {
+    process.env.OPENCODE_CONFIG_CONTENT = "{not valid json";
+
+    const spec = __buildOpenCodeServeLaunchSpecForTests({
+      config: { mcp: { "ade-orchestration": { type: "remote", url: "http://ade/mcp" } } } as const,
+      port: 4312,
+    });
+
+    expect(spec.env.OPENCODE_CONFIG_CONTENT).toBe("{not valid json");
+    expect(spec.env.ADE_OPENCODE_MANAGED).toBe("1");
   });
 
   it("quotes the OpenCode executable in Windows cmd launch specs", () => {

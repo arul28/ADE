@@ -43,7 +43,6 @@ export const BUNDLED_AGENT_SKILLS = Object.freeze([
   "ade-linear",
   "ade-proof-artifacts",
   "ade-deeplinks",
-  "ade-orchestrator",
 ]);
 
 /** The JS entry points that must survive the runtime-fetched exclusions. */

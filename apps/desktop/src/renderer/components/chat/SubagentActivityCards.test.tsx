@@ -2,8 +2,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { SubagentSpawnCard } from "./SubagentActivityCards";
-import type { SubagentSpawnAnchorRenderEvent } from "./chatTranscriptRows";
+import { BackgroundJobLine, SubagentSpawnCard } from "./SubagentActivityCards";
+import type {
+  BackgroundJobGroupRenderEvent,
+  SubagentSpawnAnchorRenderEvent,
+} from "./chatTranscriptRows";
 
 function spawnEvent(overrides: Partial<SubagentSpawnAnchorRenderEvent> = {}): SubagentSpawnAnchorRenderEvent {
   return {
@@ -70,5 +73,48 @@ describe("SubagentSpawnCard", () => {
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
     expect(navEvent).toBeUndefined();
     expect(screen.queryByText("SUBAGENT")).toBeNull();
+  });
+});
+
+describe("BackgroundJobLine", () => {
+  const group = (
+    overrides: Partial<BackgroundJobGroupRenderEvent> = {},
+  ): BackgroundJobGroupRenderEvent => ({
+    type: "background_job_group",
+    count: 8,
+    label: "wait for desktop agents",
+    agentKeys: Array.from({ length: 8 }, (_, index) => `bg-${index + 1}`),
+    startedAt: "2026-08-06T10:00:00.000Z",
+    status: "running",
+    ...overrides,
+  } as BackgroundJobGroupRenderEvent);
+
+  it("renders a folded run as one line with a multiplier", () => {
+    render(<BackgroundJobLine event={group()} sessionEnded />);
+    expect(screen.getByText(/wait for desktop agents ×8/)).toBeTruthy();
+  });
+
+  it("keeps the same working open affordance on a group", () => {
+    const onOpen = vi.fn();
+    render(<BackgroundJobLine event={group()} sessionEnded onOpenBackgroundJobs={onOpen} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open/i }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no multiplier for a single job", () => {
+    render(
+      <BackgroundJobLine
+        event={{
+          type: "background_job_line",
+          agentKey: "bg-1",
+          label: "npm install",
+          startedAt: "2026-08-06T10:00:00.000Z",
+          status: "running",
+        }}
+        sessionEnded
+      />,
+    );
+    expect(screen.getByText(/npm install/).textContent).not.toContain("×");
   });
 });

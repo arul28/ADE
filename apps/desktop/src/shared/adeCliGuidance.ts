@@ -9,7 +9,6 @@ export const adeBundledAgentSkills = [
   "ade-pr-workflows",
   "ade-lanes-git",
   "ade-linear",
-  "ade-orchestrator",
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",

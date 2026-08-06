@@ -607,8 +607,12 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import {
+  ORCHESTRATION_LEAD_CODEX_POLICY,
   ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+  ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES,
   applyOrchestrationPermissionProfile,
+  codexConfiguredMcpServerNames,
+  orchestrationLeadCodexMcpOverrides,
   isOrchestrationInteractionMode,
   isOrchestrationLeadSession,
   lockedOrchestrationPermissionMode,
@@ -1471,6 +1475,9 @@ type ClaudeRuntime = {
   /** True after this CLI process has emitted its first authoritative level. */
   backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
+  /** Background tasks for which ADE requested a terminal stop. The emitted
+   * bit prevents a provider terminal edge from duplicating the local stop row. */
+  stoppingBackgroundTaskIds: Map<string, { emitted: boolean; requestedAt: number }>;
   /**
    * Sticky per-background-task title, keyed by taskId. The first meaningful
    * title (the spawn description) is recorded here and reused for every later
@@ -3220,17 +3227,27 @@ function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexSe
 function codexThreadConfigArgs(
   reasoningEffort: string | null | undefined,
   computerUse: CodexComputerUseMcpConfig | null = null,
+  /**
+   * Orchestrator leads plan and delegate — they get no MCP at all. Codex merges
+   * this overlay into the user's config.toml instead of replacing it, so the
+   * isolation is an explicit `enabled = false` per configured server (see
+   * ORCHESTRATION_LEAD_MCP_ISOLATION.codex). Computer Use is an MCP server too,
+   * so a lead does not receive it either.
+   */
+  leadConfiguredMcpServerNames: readonly string[] | null = null,
 ): { config?: Record<string, unknown> } {
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
-  if (!effort && !computerUse) return {};
+  const leadMcpOverrides = leadConfiguredMcpServerNames
+    ? orchestrationLeadCodexMcpOverrides(leadConfiguredMcpServerNames)
+    : null;
+  const mcpServers = leadMcpOverrides
+    ? (Object.keys(leadMcpOverrides).length ? leadMcpOverrides : null)
+    : (computerUse ? { computer_use: computerUse } : null);
+  if (!effort && !mcpServers) return {};
   return {
     config: {
       ...(effort ? { model_reasoning_effort: effort } : {}),
-      ...(computerUse ? {
-        mcp_servers: {
-          computer_use: computerUse,
-        },
-      } : {}),
+      ...(mcpServers ? { mcp_servers: mcpServers } : {}),
     },
   };
 }
@@ -5949,8 +5966,15 @@ function enforceOrchestrationLockedPermissionMode(
     : null;
   // Use the per-provider profile directly — each provider has its own
   // "most permissive" mode name (bypassPermissions, danger-full-access,
-  // full-auto, auto-high, etc.). The lead's security comes from the tool-set
-  // restriction, not the permission mode.
+  // full-auto, auto-high, etc.).
+  //
+  // This profile is intentionally permissive for EVERY orchestration role,
+  // leads included. A lead's protection is a per-provider tool deny applied at
+  // the runtime boundary — Claude `canUseTool`/`disallowedTools`, OpenCode's
+  // prompt `tools` map, Droid's `disabledToolIds`, Cursor's hook risk gate, and
+  // (Codex having no tool knob) a read-only thread sandbox. Narrowing this
+  // profile instead was considered and rejected; see
+  // shared/orchestrationRuntimePolicy.ts for the per-provider deny sets.
   const profile = applyOrchestrationPermissionProfile(session.provider);
   Object.assign(session, profile);
   session.permissionMode = lockedMode;
@@ -6075,16 +6099,21 @@ function buildSpawnSelfReportGuidance(
   return "This legacy child session has parent lineage but no supported spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`, and use `--type subagent|peer` for any new child session.";
 }
 
+function buildAdeSessionLineageGuidance(
+  session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
+): string | null {
+  if (!session) return null;
+  const sessionBinding = `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
+  const spawnGuidance = buildSpawnSelfReportGuidance(session);
+  return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
+}
+
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
 ): string {
   const base = buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
-  const spawnGuidance = session ? buildSpawnSelfReportGuidance(session) : null;
-  const sessionBinding = session
-    ? `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`
-    : null;
-  return [base, sessionBinding, spawnGuidance].filter(Boolean).join("\n");
+  return [base, buildAdeSessionLineageGuidance(session)].filter(Boolean).join("\n");
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -6126,6 +6155,46 @@ function buildCodexDeveloperInstructions(args: {
   });
   const spawnGuidance = buildSpawnSelfReportGuidance(args.session);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
+}
+
+function buildOpenCodeSystemPrompt(args: {
+  laneWorktreePath: string;
+  session: Pick<
+    AgentChatSession,
+    | "id"
+    | "permissionMode"
+    | "interactionMode"
+    | "surface"
+    | "orchestrationRole"
+    | "orchestrationRunId"
+    | "orchestrationBundlePath"
+    | "orchestrationTag"
+    | "orchestrationParentSessionId"
+    | "orchestrationStepId"
+    | "spawnKind"
+  >;
+}): string {
+  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
+  const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
+    ? "planning"
+    : "coding";
+  const base = buildCodingAgentSystemPrompt({
+    cwd: args.laneWorktreePath,
+    mode,
+    permissionMode: toHarnessPermissionMode(args.session.permissionMode),
+    interactive: true,
+    runtime: "opencode",
+    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    orchestrationRole: args.session.orchestrationRole,
+    orchestrationRunId: args.session.orchestrationRunId,
+    orchestrationBundlePath: args.session.orchestrationBundlePath,
+    orchestrationTag: args.session.orchestrationTag,
+    orchestrationParentSessionId: args.session.orchestrationParentSessionId,
+    orchestrationStepId: args.session.orchestrationStepId,
+  });
+  return [base, buildAdeSessionLineageGuidance(args.session)]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function resolveCodexInstructionCollaborationMode(
@@ -6723,6 +6792,12 @@ export function createAgentChatService(args: {
     | CodexComputerUseMcpConfig
     | null
     | Promise<CodexComputerUseMcpConfig | null>;
+  /**
+   * Names of the MCP servers the user configured in Codex's `config.toml`.
+   * Orchestrator leads carry an explicit `enabled = false` for each of them
+   * (see ORCHESTRATION_LEAD_MCP_ISOLATION.codex).
+   */
+  resolveCodexConfiguredMcpServerNames?: () => readonly string[] | Promise<readonly string[]>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
@@ -6771,6 +6846,7 @@ export function createAgentChatService(args: {
     getAdeCliAgentEnv,
     getLocalGitHubToken,
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
+    resolveCodexConfiguredMcpServerNames: resolveCodexConfiguredMcpServerNamesOverride,
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
@@ -6782,6 +6858,30 @@ export function createAgentChatService(args: {
   } = args;
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
+  const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
+    ?? ((): string[] => {
+      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+      try {
+        return codexConfiguredMcpServerNames(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"));
+      } catch {
+        return [];
+      }
+    });
+
+  /**
+   * Thread-level Codex config for one session. Orchestrator leads never get MCP
+   * (user servers are switched off one by one and Computer Use is skipped);
+   * every other session keeps the user's Codex config untouched.
+   */
+  const codexThreadConfigArgsFor = async (
+    managed: ManagedChatSession,
+    reasoningEffort: string | null | undefined,
+  ): Promise<{ config?: Record<string, unknown> }> => {
+    if (isOrchestrationLeadSession(managed.session)) {
+      return codexThreadConfigArgs(reasoningEffort, null, await resolveCodexConfiguredMcpServerNames());
+    }
+    return codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp());
+  };
   const notifiedSettledTurns = new Set<string>();
   const cancelledQueueRecoveries = new Map<string, {
     sessionId: string;
@@ -10966,7 +11066,12 @@ export function createAgentChatService(args: {
         // Non-fatal — provider may be offline
       }
     }
+    const openCodeOrchestrationLead = isOrchestrationLeadSession(managed.session);
     const opencodeMcpLeases = await ensureHttpMcpLeases(managed);
+    // Ordinary chats and orchestrator workers inherit the user's OpenCode
+    // config and MCP servers. A lead gets a dedicated server with ADE-owned
+    // config only, because a user MCP server can reintroduce edit/shell access
+    // through a different door (see ORCHESTRATION_LEAD_MCP_ISOLATION.opencode).
     const opencodeOrchestrationMcp = opencodeMcpLeases.length
       ? Object.fromEntries(opencodeMcpLeases.map((lease) => [
           lease.serverName,
@@ -10985,7 +11090,8 @@ export function createAgentChatService(args: {
         ownerKind: "chat",
         ownerId: managed.session.id,
         ownerKey: `chat:${managed.session.id}`,
-        leaseKind: "shared",
+        leaseKind: openCodeOrchestrationLead ? "dedicated" : "shared",
+        isolatedConfig: openCodeOrchestrationLead,
         logger,
       });
     } catch (error) {
@@ -14025,6 +14131,7 @@ export function createAgentChatService(args: {
     });
     if (terminal) {
       runtime.seenBackgroundTaskIds.delete(args.taskId);
+      runtime.liveBackgroundTaskIds.delete(args.taskId);
       runtime.backgroundTaskTitleById.delete(args.taskId);
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
@@ -14120,27 +14227,116 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
   };
 
-  const closeOpenClaudeBackgroundTasks = (
+  const pruneClaudeStoppingBackgroundTasks = (runtime: ClaudeRuntime): void => {
+    const cutoff = Date.now() - 60_000;
+    for (const [taskId, state] of runtime.stoppingBackgroundTaskIds) {
+      if (state.requestedAt < cutoff) runtime.stoppingBackgroundTaskIds.delete(taskId);
+    }
+  };
+
+  const consumeClaudeStoppingBackgroundTask = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    args: {
+      taskId: string;
+      status: ScheduledWorkEvent["status"];
+      title?: string;
+      summary?: string;
+      command?: string;
+      durationMs?: unknown;
+      turnId?: string;
+      parentToolUseId?: string | null;
+    },
+  ): boolean => {
+    pruneClaudeStoppingBackgroundTasks(runtime);
+    const state = runtime.stoppingBackgroundTaskIds.get(args.taskId);
+    if (!state) return false;
+    if (!state.emitted) {
+      state.emitted = true;
+      emitClaudeBackgroundTaskUpdate(managed, runtime, args);
+    }
+    runtime.activeSubagents.delete(args.taskId);
+    if (args.parentToolUseId) runtime.taskToolInputByToolUseId.delete(args.parentToolUseId);
+    return true;
+  };
+
+  const closeOpenClaudeBackgroundTasks = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     status: "completed" | "stopped",
     turnId?: string,
-  ): void => {
-    for (const taskId of [...runtime.seenBackgroundTaskIds]) {
+    parentAgentId?: string,
+  ): Promise<void> => {
+    pruneClaudeStoppingBackgroundTasks(runtime);
+    const candidateTaskIds = new Set([
+      ...runtime.seenBackgroundTaskIds,
+      ...runtime.liveBackgroundTaskIds,
+      ...runtime.activeSubagents.keys(),
+    ]);
+    const taskIds = [...candidateTaskIds].filter((taskId) => {
       const existing = runtime.activeSubagents.get(taskId);
-      emitClaudeBackgroundTaskUpdate(managed, runtime, {
-        taskId,
-        status,
-        title: existing?.description,
-        command: existing?.command,
-        ...(turnId ? { turnId } : {}),
-      });
+      if (!existing || !isBackgroundShellCommand({
+        taskType: existing.taskType,
+        agentType: existing.agentType,
+        command: existing.command,
+        description: existing.description,
+      })) return false;
+      return parentAgentId === undefined || existing.parentAgentId === parentAgentId;
+    });
+    const control = getClaudeQueryControl(runtime.query);
+    await Promise.all(taskIds.map(async (taskId) => {
+      const existing = runtime.activeSubagents.get(taskId);
+      if (!existing) return;
+
+      let terminalStatus: ScheduledWorkEvent["status"] = status;
+      let terminalSummary: string | undefined;
+      const canStopProviderTask = status === "stopped" && runtime.query != null;
+      const stopState = canStopProviderTask
+        ? { emitted: false, requestedAt: Date.now() }
+        : null;
+      if (stopState) runtime.stoppingBackgroundTaskIds.set(taskId, stopState);
+      if (canStopProviderTask) {
+        if (typeof control.stopTask !== "function") {
+          terminalStatus = "failed";
+          terminalSummary = "The Claude query did not expose a task stop control.";
+        } else {
+          try {
+            await awaitClaudeControlCall(
+              `Stopping Claude background task '${taskId}'`,
+              CLAUDE_STOP_TASK_TIMEOUT_MS,
+              () => control.stopTask!(taskId),
+            );
+          } catch (error) {
+            terminalStatus = "failed";
+            terminalSummary = `Failed to stop background task: ${error instanceof Error ? error.message : String(error)}`;
+            logger.warn("agent_chat.claude_background_stop_task_failed", {
+              sessionId: managed.session.id,
+              taskId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+      const emittedByProvider = stopState?.emitted === true;
+      if (stopState && !emittedByProvider) {
+        stopState.emitted = true;
+      }
+      if (!emittedByProvider) {
+        emitClaudeBackgroundTaskUpdate(managed, runtime, {
+          taskId,
+          status: terminalStatus,
+          title: existing.description,
+          summary: terminalSummary,
+          command: existing.command,
+          ...(turnId ? { turnId } : {}),
+        });
+      }
       runtime.activeSubagents.delete(taskId);
       if (existing?.parentToolUseId) {
         runtime.taskToolInputByToolUseId.delete(existing.parentToolUseId);
       }
-    }
-    runtime.seenBackgroundTaskIds.clear();
+    }));
+    for (const taskId of taskIds) runtime.seenBackgroundTaskIds.delete(taskId);
   };
 
   const emitClaudeTranscriptRetraction = (
@@ -17494,6 +17690,7 @@ export function createAgentChatService(args: {
     }
     const taskId = compactString(msg.task_id);
     if (!taskId) return true;
+    pruneClaudeStoppingBackgroundTasks(runtime);
     const notificationAgentId = compactString(msg.agent_id);
     const taskPatch = subtype === "task_updated" ? asRecord(msg.patch) ?? {} : {};
     let existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
@@ -17514,6 +17711,25 @@ export function createAgentChatService(args: {
         }
       }
       return true;
+    }
+    if (subtype === "task_notification") {
+      const finalStatus = msg.status === "completed"
+        ? "completed"
+        : msg.status === "stopped"
+          ? "stopped"
+          : "failed";
+      if (consumeClaudeStoppingBackgroundTask(managed, runtime, {
+        taskId,
+        status: finalStatus,
+        title: existing?.description,
+        summary: compactString(msg.summary),
+        command: existing?.command,
+        durationMs: typeof (msg.usage as Record<string, unknown> | undefined)?.duration_ms === "number"
+          ? (msg.usage as Record<string, unknown>).duration_ms
+          : undefined,
+        ...(state.turnId ? { turnId: state.turnId } : {}),
+        parentToolUseId: existing?.parentToolUseId,
+      })) return true;
     }
     if (subtype === "task_started" && msg.skip_transcript === true) {
       runtime.activeSubagents.set(taskId, {
@@ -17606,6 +17822,15 @@ export function createAgentChatService(args: {
         return true;
       }
       if (status === "completed" || status === "failed" || status === "killed") {
+        if (consumeClaudeStoppingBackgroundTask(managed, runtime, {
+          taskId,
+          status: status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed",
+          title: existing?.description ?? description,
+          summary: compactString(patch.error),
+          command,
+          ...(turnId ? { turnId } : {}),
+          parentToolUseId: existing?.parentToolUseId,
+        })) return true;
         runtime.activeSubagents.delete(taskId);
         if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
         if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
@@ -18043,6 +18268,11 @@ export function createAgentChatService(args: {
       const info = asRecord(record.rate_limit_info) ?? {};
       const rawStatus = compactString(info.status) ?? "updated";
       if (rawStatus === "allowed") return;
+      if (rawStatus === "allowed_warning") {
+        if (managed.claudeRateLimitWarningEmitted) return;
+        managed.claudeRateLimitWarningEmitted = true;
+        runtime.rateLimitWarningEmitted = true;
+      }
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "rate_limit",
@@ -19674,6 +19904,17 @@ export function createAgentChatService(args: {
           const taskType = existing?.taskType;
           const workflowName = existing?.workflowName;
           const background = patch.is_backgrounded === true || existing?.background === true;
+          if (status === "completed" || status === "failed" || status === "killed") {
+            if (consumeClaudeStoppingBackgroundTask(managed, runtime, {
+              taskId,
+              status: status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed",
+              title: existing?.description ?? description,
+              summary: compactString(patch.error),
+              command: existing?.command,
+              ...(turnId ? { turnId } : {}),
+              parentToolUseId,
+            })) continue;
+          }
           const classification = classifyClaudeTaskMessage(
             runtime,
             taskMsg as Record<string, unknown>,
@@ -19962,6 +20203,21 @@ export function createAgentChatService(args: {
             if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
             continue;
           }
+          const stoppingStatus = taskMsg.status === "completed"
+            ? "completed"
+            : taskMsg.status === "stopped"
+              ? "stopped"
+              : "failed";
+          if (consumeClaudeStoppingBackgroundTask(managed, runtime, {
+            taskId,
+            status: stoppingStatus,
+            title: existing?.description,
+            summary: compactString(taskMsg.summary),
+            command: existing?.command,
+            durationMs: typeof taskMsg.usage?.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
+            ...(turnId ? { turnId } : {}),
+            parentToolUseId: existing?.parentToolUseId,
+          })) continue;
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const gatedFinalSummary = resolveClaudeNotificationFinalSummary(existing, {
             taskId,
@@ -21029,19 +21285,33 @@ export function createAgentChatService(args: {
         ]
       : [];
 
+    const harnessPrompt = buildCodingAgentSystemPrompt({
+      cwd: managed.laneWorktreePath,
+      mode: "coding",
+      permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+      interactive: true,
+      runtime: "claude-code-cli",
+      adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+      orchestrationRole: managed.session.orchestrationRole,
+      orchestrationRunId: managed.session.orchestrationRunId,
+      orchestrationBundlePath: managed.session.orchestrationBundlePath,
+      orchestrationTag: managed.session.orchestrationTag,
+      orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+      orchestrationStepId: managed.session.orchestrationStepId,
+    });
     return [
-      "## Runtime Environment",
-      "**Runtime:** ADE Work chat is hosting you through the Claude Code CLI background-session supervisor. The user sees an ADE lane chat, not your terminal.",
-      "**Lifecycle:** Keep working in the background when useful. ADE will keep the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming your saved conversation.",
+      harnessPrompt,
+      "",
+      "**Lifecycle:** Keep working in the background when useful. ADE keeps the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming the saved conversation.",
       "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. ADE owns those mechanics.",
       "",
       "## ADE Workspace",
       `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
       "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
       "",
-      ...slashCommandsSection,
+      buildAdeSessionLineageGuidance(managed.session) ?? "",
       "",
-      buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session),
+      ...slashCommandsSection,
     ].join("\n");
   };
 
@@ -21548,7 +21818,9 @@ export function createAgentChatService(args: {
           filename: path.basename(attachment._resolvedPath),
         }))
         .filter((entry) => fs.existsSync(entry.path));
-      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle);
+      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle, {
+        orchestrationLead: isOrchestrationLeadSession(managed.session),
+      });
       const openCodeReasoningVariant =
         managed.session.reasoningEffort
         && runtime.modelDescriptor.reasoningTiers?.includes(managed.session.reasoningEffort)
@@ -21561,10 +21833,14 @@ export function createAgentChatService(args: {
       const openCodeAgent = runtime.permissionMode === "config-toml"
         ? null
         : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
+      const openCodeSystemPrompt = buildOpenCodeSystemPrompt({
+        laneWorktreePath: managed.laneWorktreePath,
+        session: managed.session,
+      });
       const openCodePromptBody = {
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
-        ...(isPersonalSession(managed.session) ? { system: PERSONAL_CHAT_SYSTEM_PROMPT } : {}),
+        ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
         ...(toolSelection ? { tools: toolSelection } : {}),
         ...(openCodeVariant ? { variant: openCodeVariant } : {}),
         parts: buildOpenCodePromptParts({
@@ -23302,7 +23578,7 @@ export function createAgentChatService(args: {
     // Close still-open background shell commands as stopped (terminal
     // background_task rows) — they live in activeSubagents too but must never
     // surface as subagent_result rows.
-    closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
+    await closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
 
     const activeSubagents = [...runtime.activeSubagents.values()];
     if (activeSubagents.length === 0) return;
@@ -26868,8 +27144,13 @@ export function createAgentChatService(args: {
     const config = resolveChatConfig();
     const lockedMode = lockedOrchestrationPermissionMode(managed.session);
     if (lockedMode) {
-      const codexPolicy: CodexPolicy = lockedMode === "plan"
-        ? { approvalPolicy: "on-request", sandbox: "read-only" }
+      // Codex exposes no tool allow/deny list (see ORCHESTRATION_LEAD_CODEX_POLICY),
+      // so the lead's "never edits code, never runs shell" invariant is enforced
+      // by running its thread read-only with approvals off. Workers and
+      // validators keep full access. This covers `turn/start` too — the turn
+      // path resolves its policy through this same function.
+      const codexPolicy: CodexPolicy = isOrchestrationLeadSession(managed.session)
+        ? { ...ORCHESTRATION_LEAD_CODEX_POLICY }
         : { approvalPolicy: "never", sandbox: "danger-full-access" };
       managed.session.codexConfigSource = "flags";
       managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
@@ -26939,7 +27220,7 @@ export function createAgentChatService(args: {
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
-      ...codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp()),
+      ...(await codexThreadConfigArgsFor(managed, reasoningEffort)),
       developerInstructions: buildCodexDeveloperInstructions({
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
@@ -27081,6 +27362,16 @@ export function createAgentChatService(args: {
                     runtime.activeSubagents.set(key, { ...entry, finalSummary });
                   }
                 }
+                // A native subagent can leave a background shell behind when
+                // it exits. Reap only shells that carry this subagent's parent
+                // id; sibling work must continue untouched.
+                await closeOpenClaudeBackgroundTasks(
+                  managed,
+                  runtime,
+                  "stopped",
+                  runtime.activeTurnId ?? undefined,
+                  agentId,
+                );
                 await emitClaudeHookScheduledWorkSnapshots(managed, runtime, input);
               }
               return { continue: true };
@@ -27362,14 +27653,25 @@ export function createAgentChatService(args: {
         ]
         : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
+      const claudeHarnessPrompt = buildCodingAgentSystemPrompt({
+        cwd: managed.laneWorktreePath,
+        mode: managed.session.interactionMode === "plan" ? "planning" : "coding",
+        permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+        interactive: true,
+        runtime: "claude-agent-sdk-query",
+        adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+        orchestrationRole: managed.session.orchestrationRole,
+        orchestrationRunId: managed.session.orchestrationRunId,
+        orchestrationBundlePath: managed.session.orchestrationBundlePath,
+        orchestrationTag: managed.session.orchestrationTag,
+        orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+        orchestrationStepId: managed.session.orchestrationStepId,
+      });
       opts.systemPrompt = {
         type: "preset",
         preset: "claude_code",
         append: [
-          "## Runtime Environment",
-          "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-            "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
-            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
+          claudeHarnessPrompt,
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
@@ -27378,7 +27680,7 @@ export function createAgentChatService(args: {
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session),
+          buildAdeSessionLineageGuidance(managed.session) ?? "",
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -27493,6 +27795,7 @@ export function createAgentChatService(args: {
     runtime.emittedSubagentStartIds.clear();
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
+    runtime.stoppingBackgroundTaskIds.clear();
     runtime.backgroundTaskTitleById.clear();
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
@@ -28438,6 +28741,7 @@ export function createAgentChatService(args: {
       liveBackgroundTaskIds: new Set(),
       backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
+      stoppingBackgroundTaskIds: new Map(),
       backgroundTaskTitleById: new Map(),
       scheduledWorkKindById: new Map(),
       scheduledWorkIdByTaskId: new Map(),
@@ -31857,7 +32161,8 @@ export function createAgentChatService(args: {
     // trusted instruction channel still need the guidance in the user prompt,
     // including on resumed sessions where `shouldInjectLaneDirective` is false.
     const providerHasPersistentGuidance = managed.session.provider === "claude"
-      || managed.session.provider === "codex";
+      || managed.session.provider === "codex"
+      || managed.session.provider === "opencode";
     const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
@@ -32180,6 +32485,7 @@ export function createAgentChatService(args: {
     stableStringify((modelParams ?? []).map((entry) => [entry.id, entry.value])),
     policy.chatMode,
     policy.approvalPolicy,
+    policy.orchestrationLead ? "lead-gated" : "unrestricted",
     policy.force ? "force" : "guarded",
     buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
@@ -32827,6 +33133,11 @@ export function createAgentChatService(args: {
       modelId,
       autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
       interactionMode,
+      // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
+      // has to have them withheld natively as well.
+      ...(isOrchestrationLeadSession(managed.session)
+        ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
+        : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(interactionMode === "spec"
         ? {
@@ -33295,6 +33606,10 @@ export function createAgentChatService(args: {
     }
 
     const cursorMcpLeases = await ensureHttpMcpLeases(managed);
+    // These inline servers are additive. A lead's isolation from the user's own
+    // MCP servers rides on `policy.orchestrationLead`, which the worker turns
+    // into a trimmed `local.settingSources` (cursorSdkSettingSources) — see
+    // ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
     const cursorOrchestrationMcpServers = cursorMcpLeases.length
       ? Object.fromEntries(cursorMcpLeases.map((lease) => [
           lease.serverName,
@@ -34561,6 +34876,10 @@ export function createAgentChatService(args: {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
       const droidMcpLeases = await ensureHttpMcpLeases(managed);
+      // Droid's native MCP config is user/project scoped. The worker keeps
+      // ADE's inline lease and disables every other live MCP tool through the
+      // session-scoped toggleMcpTool RPC before each lead turn (see
+      // ORCHESTRATION_LEAD_MCP_ISOLATION.droid).
       const droidOrchestrationMcpServers = droidMcpLeases.length
         ? droidMcpLeases.map((lease) => lease.config)
         : undefined;
@@ -34573,6 +34892,9 @@ export function createAgentChatService(args: {
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
         ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
+        ...(isOrchestrationLeadSession(managed.session)
+          ? { allowedMcpServerNames: droidMcpLeases.map((lease) => lease.serverName) }
+          : {}),
         baseEnv: buildAgentRuntimeEnv(managed),
         logger,
       });
@@ -35102,7 +35424,7 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
+              ...(await codexThreadConfigArgsFor(managed, resumeReasoningEffort)),
               developerInstructions: buildCodexDeveloperInstructions({
                 laneWorktreePath: managed.laneWorktreePath,
                 session: managed.session,
@@ -36853,7 +37175,7 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            ...(await codexThreadConfigArgsFor(managed, managed.session.reasoningEffort)),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
             excludeTurns: true,
@@ -37166,7 +37488,7 @@ export function createAgentChatService(args: {
             threadId: originalThreadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            ...(await codexThreadConfigArgsFor(managed, managed.session.reasoningEffort)),
             developerInstructions: buildCodexDeveloperInstructions({
               laneWorktreePath: managed.laneWorktreePath,
               session: managed.session,
@@ -42874,7 +43196,7 @@ export function createAgentChatService(args: {
           threadId,
           model: managed.session.model,
           cwd: managed.laneWorktreePath,
-          ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
+          ...(await codexThreadConfigArgsFor(managed, resumeReasoningEffort)),
           developerInstructions: buildCodexDeveloperInstructions({
             laneWorktreePath: managed.laneWorktreePath,
             session: managed.session,

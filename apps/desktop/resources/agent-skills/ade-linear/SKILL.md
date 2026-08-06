@@ -101,29 +101,16 @@ Notes:
 
 ## ADE deeplinks in Linear comments
 
-ADE posts deterministic Linear attachments/cards for these flows when the
-runtime owns the Linear connection:
+ADE posts its own Linear attachments/cards for lane, chat, and PR flows. The
+**ade-deeplinks** skill holds the matrix of which flow ADE covers automatically
+and which one leaves the link to you, plus the `ade link ...` commands and the
+HTTPS-vs-`ade://` guidance.
 
-| Flow | ADE handles it |
-| --- | --- |
-| Create a lane from a Linear issue | Lane attachment + one-time ADE branch comment |
-| Attach a Linear issue to an existing lane | Lane attachment + one-time ADE branch comment |
-| Create or attach a chat/CLI session with a Linear issue | ADE chat attachment |
-| Open/create a PR from a linked lane | ADE PR attachment/footer |
-
-For direct issue actions (`comment`, `set-state`, `assign`, `label`, `graphql`)
-include the relevant ADE link in any user-facing Linear comment you write,
-especially when the action creates new Linear state or hands work to a human.
-Use the **ade-deeplinks** skill to mint links:
-
-```bash
-ade link linear-issue ENG-431 --no-clipboard
-ade link branch <owner/repo> <branch> --no-clipboard
-ade link session "$ADE_CHAT_SESSION_ID" --lane <lane-id> --no-clipboard
-ade link pr <owner/repo> <number> --no-clipboard
-```
-
-Example when creating a new Linear issue via GraphQL:
+The short version for this skill's commands: the direct issue actions
+(`comment`, `set-state`, `assign`, `label`, `graphql`) are the ones ADE does
+*not* link for you, so include the relevant ADE link yourself in any user-facing
+Linear comment — especially when the action creates new Linear state or hands
+work to a human.
 
 ```bash
 ade linear graphql --query-file create-issue.graphql --variables-file vars.json
@@ -138,19 +125,21 @@ ade linear detach --this-session --issue-id ENG-431   # detach one issue
 ade linear detach --this-session                      # detach every issue from your session
 ```
 
-## Recommended workflow
+Two commands outside the `ade linear` surface also attach an issue:
+`ade chat attach-linear-issue <session> --issue-id <id>` and
+`ade lanes link-linear-issue <lane> --linear-issue-json '{...}'`.
 
-1. When you start real work on the issue, move it to **In Progress**
-   (`ade linear set-state <state-id>`), so watchers see it's being worked.
-2. As you make progress, **comment** what you did and link the PR
-   (`ade linear comment "..."`). Include ADE branch/session/PR links when a card
-   was not already posted automatically. That comment is how reviewers and the
-   issue's watchers see status — report what you actually did, not what you
-   intend to do.
-3. When you finish, set the **appropriate final state** (e.g. Done / In Review).
-   Defer the exact final-state policy to the user's workflow — if you're unsure
-   whether to mark Done vs. In Review, comment your result and ask rather than
-   guessing.
+## What lands where
+
+An `ade linear comment` is the issue's status channel — it is what reviewers and
+the issue's watchers see, and it is visible to people who never open ADE. The
+workflow state you set with `set-state` is what shows in the team's board.
+Neither is inferred from your ADE activity; if you do not write them, the issue
+does not move.
+
+`set-state` takes a workflow state id, and the valid states are per-team, so
+resolve the id with `ade linear picker-data --text` rather than assuming a
+Done/In Review convention.
 
 ## Discovery
 

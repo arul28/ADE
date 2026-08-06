@@ -31,6 +31,55 @@ describe("Cursor SDK policy", () => {
     });
   });
 
+  it("denies Cursor's own edit/shell/subagent tools for an orchestrator lead", () => {
+    const laneRoot = "/tmp/ade-lane";
+    // Leads run under the same permissive full-auto profile as workers; only
+    // the lead gate distinguishes them.
+    const leadPolicy = resolveCursorSdkPolicy({
+      cursorModeId: "full-auto",
+      interactionMode: "orchestrator-lead",
+      orchestrationRole: "lead",
+    });
+    const workerPolicy = resolveCursorSdkPolicy({
+      cursorModeId: "full-auto",
+      interactionMode: "orchestrator-worker",
+      orchestrationRole: "worker",
+    });
+    expect(leadPolicy).toMatchObject({ approvalPolicy: "never", orchestrationLead: true });
+    expect(workerPolicy).toMatchObject({ approvalPolicy: "never", orchestrationLead: false });
+
+    const nativeWriteTools = [
+      { toolName: "write", toolInput: { path: "README.md", contents: "x" } },
+      { toolName: "edit", toolInput: { path: "README.md" } },
+      { toolName: "apply_patch", toolInput: { path: "README.md" } },
+      { toolName: "delete", toolInput: { path: "README.md" } },
+    ];
+    const nativeShellTools = [
+      { toolName: "shell", toolInput: { command: "echo hi > README.md" } },
+      { toolName: "run_command", toolInput: { command: "npm test" } },
+    ];
+    const nativeTaskTools = [{ toolName: "task", toolInput: { prompt: "edit README" } }];
+
+    for (const raw of [...nativeWriteTools, ...nativeShellTools, ...nativeTaskTools]) {
+      const request = summarizeCursorHook(raw, laneRoot);
+      expect(evaluateCursorSdkHook({ request, policy: leadPolicy, laneRoot })).toBe("deny");
+      // Same tool, same permissive profile, worker role: still allowed.
+      const workerRequest = summarizeCursorHook(raw, laneRoot);
+      expect(evaluateCursorSdkHook({ request: workerRequest, policy: workerPolicy, laneRoot })).toBe("allow");
+    }
+
+    // Reads stay available so the lead can still plan.
+    const read = summarizeCursorHook({ toolName: "read", toolInput: { path: "src/app.ts" } }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: read, policy: leadPolicy, laneRoot })).toBe("allow");
+
+    // Unrecognised tool names classify as risk "unknown" and must fail closed
+    // for a lead even though `approvalPolicy: never` would wave them through.
+    const unknown = summarizeCursorHook({ toolName: "some_future_write_tool", toolInput: {} }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: unknown, policy: leadPolicy, laneRoot })).toBe("deny");
+    const unknownForWorker = summarizeCursorHook({ toolName: "some_future_write_tool", toolInput: {} }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: unknownForWorker, policy: workerPolicy, laneRoot })).toBe("allow");
+  });
+
   it("allows reads, asks for risky tools, and denies protected paths", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "agent" });
     const laneRoot = "/tmp/ade-lane";

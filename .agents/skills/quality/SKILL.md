@@ -230,6 +230,11 @@ are handled by the synthesis step below, not a separate phase.
    anything. Reject unrealistic edge cases, speculative risks, and fixes that
    over-complicate. A finding you can't confirm in the code is dropped, not
    applied.
+   **Capability-claim check.** Treat prose about permissions, timing, provider
+   support, lifecycle, or automatic notifications as a claim to verify, not as
+   evidence. Find the implementation path and its regression test; if the
+   behavior is load-bearing and no test pins it, add a named test or record the
+   exact alternate verification in the review.
 5. **Sweep the bug class.** When an accepted finding is a repeated pattern, scan
    the diff scope for sibling instances and fix them together — stop at touched
    surfaces and owner boundaries; no refactor beyond the class.

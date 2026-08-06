@@ -11,6 +11,7 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
  */
 export type AdeRuntimeKind =
   | "claude-agent-sdk-query"
+  | "claude-code-cli"
   | "codex-app-server"
   | "codex-cli"
   | "cursor-sdk"
@@ -27,6 +28,11 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         adeScheduledWorkGuidance,
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
+      ];
+    case "claude-code-cli":
+      return [
+        "**Runtime:** ADE Work chat wrapping Claude Code CLI as a background subprocess. ADE owns the lane, transcript, lifecycle, and follow-up delivery.",
+        adeScheduledWorkGuidance,
       ];
     case "codex-cli":
       return [
@@ -80,17 +86,6 @@ function describeMode(mode: HarnessMode): string {
 
 export type OrchestratorRoleKind = "lead" | "worker" | "validator";
 
-function describeAdeOrchestratorSkill(adeSkillRoots: readonly string[] | undefined): string[] {
-  const roots = (adeSkillRoots ?? []).filter((entry) => entry.trim().length > 0);
-  return [
-    "**Read the bundled ADE orchestrator skill before substantive orchestration work.**",
-    roots.length
-      ? `- ADE skill roots in this prompt: ${roots.join(", ")}. ADE also exposes these through \`ADE_AGENT_SKILLS_DIRS\`. Read \`<root>/ade-orchestrator/SKILL.md\` from the bundled ADE \`agent-skills\` resources.`
-      : "- ADE exposes the bundled skill roots through `ADE_AGENT_SKILLS_DIRS`. Read `<root>/ade-orchestrator/SKILL.md` from ADE's bundled `agent-skills` resources.",
-    "- That skill is the shared protocol for lead, worker, and validator behavior. Treat this prompt as a role-specific overlay on top of it.",
-  ];
-}
-
 export function buildOrchestratorRoleDirective(args: {
   role: OrchestratorRoleKind;
   runId: string;
@@ -98,7 +93,6 @@ export function buildOrchestratorRoleDirective(args: {
   tag?: string;
   parentSessionId?: string;
   stepId?: string;
-  adeSkillRoots?: readonly string[];
 }): string {
   const lines: string[] = [];
   lines.push("");
@@ -118,25 +112,28 @@ export function buildOrchestratorRoleDirective(args: {
   lines.push("- Write through orchestration tools only — never invent state.");
   lines.push("- `etag` is an optimistic concurrency token; on `etag_conflict`, re-read and retry.");
   lines.push("");
-  lines.push(...describeAdeOrchestratorSkill(args.adeSkillRoots));
+  lines.push("**Mode boundary.** This protocol is active only because this prompt declares an orchestration role. Ordinary ADE chats do not follow it, and provider-native child agents do not inherit it automatically.");
+  lines.push("**Context boundary.** A parent must pass the lane, task, constraints, relevant files, validation gates, and reporting route in every native child-agent brief; never assume the child can see ADE's system context.");
+  lines.push("**Permissions are enforced.** Leads never mutate the worktree or system. ADE and each provider's native policy gate deny mutating file/edit/execute capabilities to leads. Read-only inspection may remain available so a lead can plan; workers own edits and validation.");
+  lines.push("**Do not use the provider's built-in task list.** ADE's manifest and plan are the task view; use orchestration tools instead of `TodoWrite`/`TodoRead`.");
   lines.push("");
   if (args.role === "lead") {
     lines.push(
-      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). `spawnAgent` is blocked until the plan is approved.",
+      "**Lead-specific.** You plan and dispatch; you do not edit files or run mutating shell commands. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). `spawnAgent` is blocked until the plan is approved.",
     );
     lines.push("");
     lines.push("**Planning is a deterministic, server-enforced sequence — you cannot skip it.** It mirrors the dev loop: context intake → three deliberation rounds → validation derivation → model picks → approval. Follow it in order:");
     lines.push("1. **Codebase intake (required first).** Inspect the repo (`CLAUDE.md`/`README`, package manifests, CI config, `git log`/`git diff main`), `planAppend` a \"Codebase intake\" section, then call `recordCodebaseIntake`. Pass `touchesUiSurface: false` when there is no user-facing UI (the UI round is then auto-skipped as N/A — no empty round), and pass `goalSource` when you derived the goal from an attached Linear issue / PR / goal.md. Until you record intake, the round and model-selection tools stay locked.");
-    lines.push("1a. **Optional lighter path.** If the goal looks small / low-risk / single-worker, you MAY call `offerLightPlan` — it asks the user, in plain words, whether to do a simpler plan or continue with the full one. On acceptance the three rounds collapse into one condensed plan (goal · steps · agent plan · validation) with the same approval gate; `expandToFullPlan` reverts before approval. Only offer it before any deliberation round is recorded.");
-    lines.push("2. **Three deliberation rounds** via `askPlanningRound`, in order: `functional` → `ui` → `extras` (the UI round is skipped automatically when intake set `touchesUiSurface: false`). Offer concrete `options` with tradeoffs; for the UI round put an ASCII wireframe in each option's `preview`; the extras round is usually `multiSelect`. Pass your one-line `lockedSummary` each time. If the user adds new scope mid-plan, run a focused mini-round with `cascadedFrom` and merge it (the cascade rule). On the lighter path, skip this and go straight to a short plan.md.");
-    lines.push("3. **Derive validation steps** into `validationStrategy.steps` (see the orchestrator skill §6 — the `/quality` dual-review + `/test` stewardship concerns). At least one is required before approval.");
+    lines.push("1a. **Optional lighter path.** After intake, if the goal is genuinely small, low-risk, and single-worker, you MAY call `offerLightPlan`. It asks in plain words whether to do a simpler plan or continue with the full one. On acceptance, write one condensed plan (goal · implementation order · agent plan · validation), keep the same model and approval gates, and use `expandToFullPlan` before approval if the scope grows. Only offer this before any deliberation round is recorded.");
+    lines.push("2. **Three deliberation rounds** via `askPlanningRound`, in order: `functional` → `ui` → `extras` (the UI round is skipped automatically when intake set `touchesUiSurface: false`). Offer concrete `options` with tradeoffs; for the UI round put an ASCII wireframe in each option's `preview`; the extras round is usually `multiSelect`. Pass your one-line `lockedSummary` each time. If the user adds new scope mid-plan, run a focused mini-round with `cascadedFrom` and merge it. On the lighter path, skip these rounds and go straight to the condensed plan.");
+    lines.push("3. **Derive validation steps** into `validationStrategy.steps`. Include the codebase's correctness/security review, test stewardship, parity, and pre-completion concerns when they apply. At least one validation step is required before approval.");
     lines.push("4. **Model picks** (now unlocked): call `askUserForModelSelection` per `(role, tag)` with a one-sentence `workDescription` plus `filesHint` and `dependsOn` when known — the picker renders these as an agent briefing so the user picks a fitting model.");
-    lines.push("4a. **Finishing choice:** call `chooseFinishingMode` — ask whether, when the run finishes, to stop at validated code in the worktree, or push the branch + open a PR (syncing Linear too when this run is linked to an issue). It records `manifest.finishing`. If the user picks `pr`, after validation passes you spawn a finishing worker to push, open the PR, and register the pr_link (plus an optional deeplink) evidence; only when the run is linked to a Linear issue (`goalSource.kind === \"linear\"` or an attached issue) does it also update Linear and register the linear_issue evidence (skill §5.5).");
+    lines.push("4a. **Finishing choice:** call `chooseFinishingMode` and ask whether to stop at validated worktree code or push the branch and open a PR. It records `manifest.finishing`; if `pr` is chosen, a finishing worker handles the push, PR, and linked Linear update only when a Linear issue is actually attached.");
     lines.push("5. **Approval:** call `requestPlanApproval` (no summary argument — it reads the live `plan.md`). It surfaces the Implement button on the plan narrative and advances the run to developing on approval.");
     lines.push("");
     lines.push("**plan.md is the single source of truth — author it incrementally.** As each round locks, `planAppend` the relevant section so the user watches the plan grow live on the sidebar. There is NO separate approval summary; the user approves the live plan. Before approval, plan.md must cover (checked structurally): on the full path — Goal · In scope · Out of scope · Alternatives · Implementation order · Agent plan · Validation plan · UI decisions (or N/A) · Coordination; on the lighter path (`offerLightPlan`) — only Goal · Implementation order · Agent plan · Validation plan. Use GFM tables, mermaid fences, and links to `artifacts/ui/*.html` for design specs (rendered as sandboxed previews). The gate also cross-checks real state — it will not pass without derived validation steps and at least one model pick.");
     lines.push("");
-    lines.push("**User override (skill §1).** If the user explicitly waives a round (\"no UI, skip it\") or validation, call `recordPlanningOverride` with the literal user instruction as `skipReason`. The service logs the matching `UserOverrideEntry`; do not skip on your own initiative.");
+    lines.push("**User override.** If the user explicitly waives a round (\"no UI, skip it\") or validation, call `recordPlanningOverride` with the literal user instruction as `skipReason`. The service logs the matching override; do not skip on your own initiative.");
     lines.push("");
     lines.push("**Lead live coordination.** Treat `plan.md` as the shared operations log. Use `planWrite` for major replans and `planAppend` for decisions, worker starts, failures, scope changes, validation evidence, and final handoff notes. Re-read the manifest and plan before dispatching or redirecting workers.");
     lines.push("");
@@ -154,6 +151,14 @@ export function buildOrchestratorRoleDirective(args: {
     lines.push("");
     lines.push("**Validator coordination.** Read `manifest.json` and `plan.md` before validating. Append evidence to `plan.md`, update checklist state through `recordValidationRun`, and message the lead with pass/fail details, blocking ambiguity, and any recommended fix-task split. Stay inside the assigned validation scope.");
   }
+  lines.push("");
+  lines.push("**Inter-agent communication.** Every state mutation that affects another agent gets a ping. Workers and validators report through the lead; never message peers directly. Use `queue` for ordinary progress, `interrupt-replace` for cancellation or urgent redirection, and `wake` only for a dormant target.");
+  lines.push("**Waiting and liveness.** A lead uses `awaitAgent` to wait for worker or validator completion, not a polling loop. `recoverStaleTasks` is a lead-invoked liveness sweep, not a passive timer: no stalled-worker note arrives while the lead waits unless the lead calls the recovery tool. When it reports a stall, choose whether to nudge, wait, or reassign; the service does not kill or reassign the worker automatically.");
+  lines.push("**Reading other chats.** Workers and validators may use read-only `ade chat show`, `ade chat read`, and `ade chat wait` when they need peer context. Do not use CLI send/steer/message to push another orchestration chat; routing belongs to the lead's `messageAgent` tool.");
+  lines.push("**Cancellation.** The lead uses `messageAgent({ kind: \"interrupt-replace\", intent: \"cancellation\", cancellation: { revert, reason } })`. Workers stop promptly, then keep, revert, or ask about their changes according to the cancellation choice and record the decision in the manifest.");
+  lines.push("**Spawn brief.** Every brief must contain `## TASK`, `## FILES`, `## DEPENDENCIES`, `## GATES`, `## PEERS`, and `## SUCCESS`, and must tell the child to read `manifest.json`, `plan.md`, and the relevant plan section before touching files, stay in the assigned lane, report stuck/done status through `messageAgent`, and append progress through `planAppend`.");
+  lines.push("**ADE capabilities and evidence.** Workers use the relevant ADE skill/CLI for proof, computer use, browser, iOS, Linear, PR, search, or deeplink work. Register externally visible results in the bundle with `registerAsset`; chat prose alone is not evidence. Leads may record required/allowed capabilities in manifest metadata, but the worker brief must state the expected evidence.");
+  lines.push("**Plain-language reporting.** User-facing plan notes and status messages describe the work, not internal stage names, concern ids, or protocol jargon. Use human tags for agents and say what is waiting, blocked, validated, or changing.");
   lines.push("");
   lines.push(
     "Messages whose metadata includes `orchestrationOrigin` are from another orchestration agent (lead/worker/validator), not the user.",
@@ -217,7 +222,6 @@ export function buildCodingAgentSystemPrompt(args: {
           tag: args.orchestrationTag,
           parentSessionId: args.orchestrationParentSessionId,
           stepId: args.orchestrationStepId,
-          adeSkillRoots,
         })
       : "";
 
