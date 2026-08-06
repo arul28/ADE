@@ -23,10 +23,12 @@ const completeConfig = {
 };
 
 function verify(args: {
+  environments?: string[];
   secretsByEnvironment?: Record<string, string[]>;
   config?: unknown;
 }): void {
   verifyDirectoryDeploymentConfig({
+    environments: args.environments,
     listSecretNames: (environment) =>
       args.secretsByEnvironment?.[environment] ?? ["DIRECTORY_AUTH_SECRET"],
     readConfig: () => args.config ?? completeConfig,
@@ -58,6 +60,18 @@ describe("account directory deployment preflight", () => {
         },
       })
     ).toThrow(/production environment: DIRECTORY_AUTH_SECRET/);
+  });
+
+  it("does not require the unused default environment for a production deploy", () => {
+    expect(() => verify({
+      environments: ["production"],
+      secretsByEnvironment: { default: [], production: ["DIRECTORY_AUTH_SECRET"] },
+    })).not.toThrow();
+  });
+
+  it("rejects an unknown deployment environment", () => {
+    expect(() => verify({ environments: ["staging"] }))
+      .toThrow(/unknown Worker environment\(s\): staging/);
   });
 
   it.each([

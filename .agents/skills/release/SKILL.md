@@ -661,25 +661,45 @@ done
 git log $LAST_TAG..origin/main --oneline -- apps/desktop/src/renderer/webclient
 ```
 
-Deploy each changed surface from the release commit on main (never a lane):
+Deploy each changed surface from the release commit on main (never a lane).
+Use the package-owned deployment entry point for every Worker, after installing
+that app's locked dependencies. These entry points are the release guardrails:
+each owns the applicable D1/Durable Object migrations, required
+bindings/secrets, and post-deploy health/auth checks for that Worker. If one
+stops on a preflight, missing migration, or missing smoke credential, repair
+that blocker and rerun the entry point; do not bypass it with `npx wrangler deploy`.
 
 ```bash
 # Hosted web client (Cloudflare Pages project ade-web-client)
 npm --prefix apps/desktop run build:webclient
 npx wrangler pages deploy apps/desktop/dist/web-client --project-name ade-web-client
 
-# Workers (npm install first if node_modules is stale in the checkout)
-(cd apps/account-directory && npx wrangler deploy --env production)
-(cd apps/webhook-relay && npx wrangler deploy)
-(cd apps/tunnel-relay && npx wrangler deploy)      # only when changed
-(cd apps/push-relay && npx wrangler deploy)        # only when changed
+# Workers (npm ci first if node_modules is stale in the checkout)
+(cd apps/account-directory && npm ci && npm run deploy:production)
+(cd apps/webhook-relay && npm ci && npm run deploy)
+(cd apps/tunnel-relay && npm ci && npm run deploy)      # only when changed
+(cd apps/push-relay && npm ci && npm run deploy)        # only when changed
 ```
+
+One-time gotcha: on 2026-08-06, a direct Wrangler deployment published new
+account-directory code while production D1 migrations `0004` and `0005` were
+still pending and `DIRECTORY_AUTH_SECRET` was not bound. Authenticated machine
+list/register requests then returned HTTP 500 across devices even though the
+Worker `/health` endpoint was green. The recovery was to restore the shared
+secret, apply the pending migrations, and rerun the guarded production deploy.
+Treat a guarded-deploy failure as a release blocker, not as a reason to fall
+back to raw Wrangler commands.
 
 Verify after deploying:
 
 - `curl https://ade-account-directory-production.arulsharma1028.workers.dev/health` → `{"ok":true}`
 - `curl -s https://app.ade-app.dev | grep -oE 'index-[A-Za-z0-9]+\.js'` matches the
   freshly built bundle hash in `apps/desktop/dist/web-client/assets/`.
+- For every D1-backed Worker, confirm the deploy output reports the expected
+  migrations applied and no pending migrations remain; `/health` alone is not
+  sufficient because it can stay green while authenticated routes are broken.
+- For authenticated Workers, verify both the required secret bindings and one
+  authenticated endpoint after deployment. Do not print token or secret values.
 - Workers with Durable Object migrations (e.g. webhook-relay REPO_EVENTS) apply
   them on deploy — read the wrangler output for migration errors.
 

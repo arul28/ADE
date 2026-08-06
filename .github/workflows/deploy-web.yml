@@ -111,7 +111,7 @@ jobs:
           node-version: 22
       - run: cd apps/webhook-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/webhook-relay && npx wrangler deploy
+        run: cd apps/webhook-relay && npm run deploy
 
   tunnel-relay:
     needs: changes
@@ -124,7 +124,7 @@ jobs:
           node-version: 22
       - run: cd apps/tunnel-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/tunnel-relay && npx wrangler deploy --tag "$GITHUB_SHA" --message "main $GITHUB_SHA"
+        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA"
       - name: Verify deployed protocol and Worker version
         run: |
           for attempt in {1..18}; do

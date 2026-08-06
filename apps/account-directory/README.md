@@ -116,11 +116,12 @@ deployment:
    both fail loudly without it.
 3. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
-   production environment. Both deploy scripts run
-   `npm run verify:deploy-config` first, which refuses to deploy unless
-   `DIRECTORY_AUTH_SECRET` and `PUSH_RELAY_URL` are configured for the default
-   AND production environments — without either one, every machine removal
-   answers 502 and every re-pair 503. Release builds use the production origin; local
+   production environment. Each deploy script validates only the environment it
+   is about to publish, so an unconfigured development Worker cannot block a
+   production deploy. The check refuses to deploy unless
+   `DIRECTORY_AUTH_SECRET` and `PUSH_RELAY_URL` are configured for that
+   environment — without either one, every machine removal answers 502 and every
+   re-pair 503. Release builds use the production origin; local
    development uses the development origin. Set the machine-level
    `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
    self-hosted override.
