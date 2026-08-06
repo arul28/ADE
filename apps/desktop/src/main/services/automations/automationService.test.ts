@@ -883,6 +883,101 @@ describe("automationService integration", () => {
     }
   });
 
+  it("skips a queued scheduled occurrence after config reload", async () => {
+    const { db } = createInMemoryAdeDb();
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    let releaseFirstRun!: (result: { outputText: string }) => void;
+    const firstRun = new Promise<{ outputText: string }>((resolve) => {
+      releaseFirstRun = resolve;
+    });
+    let rule = normalizeRuntimeRule({
+      id: "queued-reload",
+      name: "Queued reload",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Run the queued job.",
+      modelConfig: { modelId: "openai/gpt-5.6-luna" },
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:queued-reload",
+      actions: [],
+    });
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: vi.fn(async () => [{
+        id: "lane-primary",
+        name: "Main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      }]),
+      getLaneWorktreePath: vi.fn(() => "/tmp"),
+      getLaneBaseAndBranch: vi.fn(() => ({
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      })),
+    } as any;
+    const agentChatService = {
+      createSession: vi.fn(async () => ({ id: "queued-chat", laneId: "lane-primary" })),
+      runSessionTurn: vi.fn(() => firstRun),
+    } as any;
+    const logger = createLogger();
+    logger.info = vi.fn();
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService,
+      projectConfigService,
+      agentChatService,
+      cronScheduler: {
+        validate: vi.fn(() => true),
+        schedule: vi.fn((_expression: string, callback: (scheduledAt?: Date | string) => void) => {
+          callbacks.push(callback);
+          return { stop: vi.fn() };
+        }),
+      },
+    });
+
+    try {
+      callbacks[0]!(new Date("2026-07-30T13:00:00.000Z"));
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      });
+
+      callbacks[0]!(new Date("2026-07-30T13:01:00.000Z"));
+      rule = normalizeRuntimeRule({ ...rule, enabled: false });
+      service.reloadFromConfig();
+      releaseFirstRun({ outputText: "First run complete." });
+
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          "automations.schedule.stale_occurrence_suppressed",
+          expect.objectContaining({ automationId: "queued-reload", reason: "disabled" }),
+        );
+      });
+      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("preserves cancellation when a deleted automation chat rejects its active turn", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const callbacks: Array<(scheduledAt?: Date | string) => void> = [];

@@ -264,6 +264,9 @@ export type TriggerContext = {
   commitSha?: string;
   reason?: string;
   scheduledAt?: string;
+  /** Internal schedule identity used to validate queued callbacks after reload. */
+  scheduleTriggerIndex?: number;
+  scheduleCronExpression?: string;
   reviewProfileOverride?: AutomationRule["reviewProfile"] | null;
   verboseTrace?: boolean;
   ingressEventId?: string;
@@ -1135,7 +1138,7 @@ export function createAutomationService({
     catch { return undefined; }
   };
 
-  const runQueuesByAutomationId = new Map<string, Promise<unknown>>();
+  const runQueuesByAutomationId = new Map<string, Promise<AutomationRun | null>>();
   const scheduleTasks = new Map<string, CronTask>();
   const fileWatchers = new Map<string, FSWatcher>();
   const fileChangeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3241,11 +3244,33 @@ export function createAutomationService({
     rule: AutomationRule,
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
-  ): Promise<AutomationRun> => {
+  ): Promise<AutomationRun | null> => {
     const previous = runQueuesByAutomationId.get(rule.id) ?? Promise.resolve();
     const queued = previous
       .catch(() => undefined)
-      .then(() => runRuleNow(rule, trigger, options));
+      .then(() => {
+        const currentRule = findRule(rule.id);
+        const currentTrigger = typeof trigger.scheduleTriggerIndex === "number"
+          ? currentRule?.triggers[trigger.scheduleTriggerIndex]
+          : undefined;
+        const staleSchedule = trigger.triggerType === "schedule" && (
+          !currentTrigger
+          || currentTrigger.type !== "schedule"
+          || (currentTrigger.cron ?? "").trim() !== (trigger.scheduleCronExpression ?? "").trim()
+        );
+        if (!currentRule || !currentRule.enabled || staleSchedule) {
+          if (trigger.triggerType === "schedule") {
+            logger.info("automations.schedule.stale_occurrence_suppressed", {
+              automationId: rule.id,
+              triggerIndex: trigger.scheduleTriggerIndex ?? null,
+              cron: trigger.scheduleCronExpression ?? null,
+              reason: !currentRule ? "missing" : !currentRule.enabled ? "disabled" : "trigger-changed",
+            });
+          }
+          return null;
+        }
+        return runRuleNow(currentRule, trigger, options);
+      });
     runQueuesByAutomationId.set(rule.id, queued);
     try {
       return await queued;
@@ -3538,7 +3563,10 @@ export function createAutomationService({
             triggerType: "schedule",
             scheduledAt: claim.scheduledSlot,
             reason: automationId,
+            scheduleTriggerIndex: index,
+            scheduleCronExpression: cronExpr,
           }).then((run) => {
+            if (!run) return;
             db.run(
               "update automation_schedule_occurrences set run_id = ? where occurrence_key = ?",
               [run.id, claim.occurrenceKey],
@@ -3910,7 +3938,7 @@ export function createAutomationService({
       if (requiresTriggerLane(rule) && !laneId) {
         throw new Error(missingTriggerLaneMessage({ triggerType: "manual" }));
       }
-      return await runRule(rule, {
+      const run = await runRule(rule, {
         triggerType: "manual",
         laneId,
         reason: id,
@@ -3918,6 +3946,8 @@ export function createAutomationService({
         reviewProfileOverride: args.reviewProfileOverride ?? null,
         verboseTrace: Boolean(args.verboseTrace),
       }, { dryRun: Boolean(args.dryRun) });
+      if (!run) throw new Error(`Automation '${id}' changed before it could run.`);
+      return run;
     },
 
     getHistory(args: { id: string; limit?: number }): AutomationRun[] {
