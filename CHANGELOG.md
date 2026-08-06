@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.56] - 2026-08-06
+
+### Connections
+
+- A machine with no project open is a full remote host: PIN, phone, web, and desktop pairing all run through the real hello/auth stack, and desktop `sync.*` calls fall through to the machine brain.
+- Signing out keeps account-owned pairings and the relay tunnel; `invalid_grant` marks a session dead instead of deleting it; grant rotation is journaled.
+- Brain heartbeat plus an identity-checked watchdog kills a wedged brain within ~90 seconds.
+- Updates run as one ask-first transaction (app swap, service reinstall, brain restart, health check) with a per-step result and a remote Update & restart action.
+- `hello_error` codes are the contract; connect errors are one diagnosed sentence with a one-tap Pair again.
+
+### Activity
+
+- A turn with live background subagents stays "working" instead of publishing as done.
+- Items carry a machine-independent id, so cross-machine open works.
+- Bulk acknowledgement chunks, aborts on first failure, and reports acknowledged / stale / unreached separately.
+- Removing a machine purges its Activity, revokes it, and removes its push and Live Activity targets.
+
+### Pull requests
+
+- Lanes support multiple PRs, linked per chat session, with counts and CI/review state on lane badges.
+- Previous-branch PRs remain as lane history; merge actions affect only explicitly linked sessions.
+
+### Providers
+
+- Grok support, plus branding for Gemini, Google Vertex, GitHub, GitLab, and TogetherAI.
+- Provider settings rebuilt as a searchable catalog with per-provider connection status and auth management.
+
 ## [1.2.55] - 2026-08-05
 
 ### Added
@@ -1449,6 +1476,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.56]: https://github.com/arul28/ADE/compare/v1.2.55...v1.2.56
 [1.2.55]: https://github.com/arul28/ADE/compare/v1.2.54...v1.2.55
 [1.2.54]: https://github.com/arul28/ADE/compare/v1.2.53...v1.2.54
 [1.2.53]: https://github.com/arul28/ADE/compare/v1.2.52...v1.2.53

@@ -1,0 +1,33 @@
+---
+title: "v1.2.56"
+description: "Release notes for ADE v1.2.56 - August 6, 2026"
+---
+
+Connections stop lying. A machine with no project open is now a real host you can pair with, a wedged brain gets killed and restarted instead of sitting there, and updates run as one transaction you approve rather than a swap that half-lands. The Activity Center got the same treatment: the feed now reports what agents are actually doing, and removing a machine actually removes it.
+
+---
+
+## Connections
+
+- **A fresh machine with no project open is a full host.** PIN, phone, web, and desktop pairing all run through the one real hello/auth stack instead of a projectless shadow handler that had drifted away from it. Desktop `sync.*` calls fall through to the machine brain rather than failing with "Sync service is not available."
+- **Signing out no longer costs you your pairings.** An expired or unreadable session keeps account-owned pairings and the relay tunnel; `invalid_grant` marks the session dead instead of deleting it; grant rotation is journaled so a crash mid-rotation is recoverable.
+- **A wedged brain is killed within ~90 seconds.** A 15-second heartbeat plus an identity-checked watchdog — a launchd agent on macOS, supervisor slices on Windows. The brain also self-exits when its own code changes on disk.
+- **Updates ask first, then run as one transaction:** app swap, service reinstall, brain restart, health check, with a typed result per step. Machine rows get an **Update & restart** button, and it works remotely.
+- **Connection errors say what is wrong.** One diagnosed sentence with the routes tried behind Details, a one-tap **Pair again**, and stale wrong-host endpoints forgotten once something better answers.
+
+## Activity Center
+
+- **The feed is truthful.** A turn with live background subagents stays "working" rather than publishing as done — that is what produced "Working 0" above obviously-busy agents. Child shells fold into their parent, identity chats are excluded, and deleting a chat publishes a tombstone immediately instead of waiting for a reconcile.
+- **Cross-machine open works.** Items carry a machine-independent id; the previous per-machine UUID resolved nowhere else, so every cross-machine click failed.
+- **"Clear all" clears.** The old revision fence rejected acknowledgements for anything actively running. Bulk acks now chunk, stop at the first failure, and report acknowledged / stale / unreached separately.
+- **Removing a machine removes it** — Activity purged, tombstones emitted, machine revoked, push and Live Activity targets taken with it.
+
+## Pull requests
+
+- **A lane can carry more than one PR.** PRs link to specific chat sessions, chats show only their own, and lane badges roll up counts, CI, review state, and attention.
+- PRs from a previous branch stay available as lane history instead of disappearing when the branch changes, and a merge action only touches the sessions explicitly linked to it.
+
+## Providers
+
+- **Grok support**, plus branding for Gemini, Google Vertex, GitHub, GitLab, and TogetherAI.
+- Provider settings are a searchable catalog: per-provider cards with model counts and connection status, OAuth or API key, and retry for an auth method that is not answering.
