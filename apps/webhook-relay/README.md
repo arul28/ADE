@@ -59,12 +59,13 @@ done.
 Create the D1 database, paste the returned database id into `wrangler.jsonc`,
 then apply D1 migrations. The repo-events Durable Object binding and its SQLite
 class migration live in `wrangler.jsonc` and are applied by the coordinator's
-normal Worker deployment:
+normal Worker deployment. The package-owned deploy command applies the remote
+D1 migrations before publishing the Worker, so use it for every deployment:
 
 ```sh
 cd apps/webhook-relay
 npx wrangler d1 create ade-github-relay
-npm run d1:migrate:remote
+npm run deploy
 ```
 
 Set Worker secrets. Do not commit these values:

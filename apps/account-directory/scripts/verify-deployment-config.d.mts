@@ -7,6 +7,7 @@ export declare class DeploymentConfigError extends Error {}
 export declare function parseJsonc(source: string): unknown;
 
 export declare function verifyDirectoryDeploymentConfig(args: {
+  environments?: readonly string[];
   listSecretNames: (environment: string) => Iterable<string>;
   readConfig: () => unknown;
 }): void;

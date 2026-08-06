@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run verify:deploy-config && npm run d1:migrate:remote && wrangler deploy",
-    "deploy:production": "npm run verify:deploy-config && npm run d1:migrate:production && wrangler deploy --env production",
+    "deploy": "npm run verify:deploy-config -- default && npm run d1:migrate:remote && wrangler deploy",
+    "deploy:production": "npm run verify:deploy-config -- production && npm run d1:migrate:production && wrangler deploy --env production",
     "verify:deploy-config": "node scripts/verify-deployment-config.mjs",
     "build": "wrangler deploy --dry-run --outdir dist",
     "build:production": "wrangler deploy --dry-run --env production --outdir dist-production",

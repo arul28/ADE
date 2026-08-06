@@ -17,9 +17,10 @@ import { dirname, resolve } from "node:path";
  *
  * `DIRECTORY_AUTH_SECRET` is a wrangler SECRET, so it is read from
  * `wrangler secret list`; `PUSH_RELAY_URL` is a plain var, so it is read from
- * the committed `wrangler.jsonc`. Both are checked for the default environment
- * AND for `--env production`: wrangler environments do not inherit secrets, and
- * a production deploy that inherits nothing is exactly the case that breaks.
+ * the committed `wrangler.jsonc`. The deploy entry point passes the exact
+ * environment it is about to publish: wrangler environments do not inherit
+ * secrets, and a production deploy must not be blocked by an unrelated local
+ * development environment that is intentionally unconfigured.
  */
 
 export const REQUIRED_SECRETS = ["DIRECTORY_AUTH_SECRET"];
@@ -84,7 +85,16 @@ function varsForEnvironment(config, environment) {
  * @param {() => object} args.readConfig
  */
 export function verifyDirectoryDeploymentConfig(args) {
-  for (const environment of ENVIRONMENTS) {
+  const environments = args.environments ?? ENVIRONMENTS;
+  const unknownEnvironments = environments.filter(
+    (environment) => !ENVIRONMENTS.includes(environment),
+  );
+  if (unknownEnvironments.length > 0) {
+    throw new DeploymentConfigError(
+      `unknown Worker environment(s): ${unknownEnvironments.join(", ")}`,
+    );
+  }
+  for (const environment of environments) {
     const secretNames = new Set(args.listSecretNames(environment));
     const missingSecrets = REQUIRED_SECRETS.filter((name) => !secretNames.has(name));
     if (missingSecrets.length > 0) {
@@ -94,7 +104,7 @@ export function verifyDirectoryDeploymentConfig(args) {
     }
   }
   const config = args.readConfig();
-  for (const environment of ENVIRONMENTS) {
+  for (const environment of environments) {
     const vars = varsForEnvironment(config, environment);
     const missingVars = REQUIRED_VARS.filter(
       (name) => typeof vars[name] !== "string" || !vars[name].trim(),
@@ -175,6 +185,8 @@ export function wranglerSecretNames(environment, overrides = {}) {
 }
 
 function main() {
+  const requestedEnvironment = process.argv[2];
+  const environments = requestedEnvironment ? [requestedEnvironment] : ENVIRONMENTS;
   const configPath = resolve(
     dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -182,6 +194,7 @@ function main() {
   );
   try {
     verifyDirectoryDeploymentConfig({
+      environments,
       listSecretNames: wranglerSecretNames,
       readConfig: () => parseJsonc(readFileSync(configPath, "utf8")),
     });
@@ -194,7 +207,7 @@ function main() {
     process.exit(1);
   }
   console.log(
-    "Account directory relay hand-off configuration is complete for the default and production environments.",
+    `Account directory relay hand-off configuration is complete for the ${environments.join(" and ")} environment${environments.length === 1 ? "" : "s"}.`,
   );
 }
 
