@@ -38,7 +38,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
 } from "../../shared/types";
-import { buildOptimisticChatSessionSummary } from "../lib/sessions";
+import { buildOptimisticChatSessionSummary, isChatToolType } from "../lib/sessions";
 import {
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
@@ -887,7 +887,27 @@ export function decodeForeignSessions(result: unknown): TerminalSessionSummary[]
     if (!isRecord(candidate)) continue;
     if (typeof candidate.id !== "string" || !candidate.id.trim()) continue;
     if (typeof candidate.laneId !== "string" || !candidate.laneId.trim()) continue;
-    sessions.push(candidate as unknown as TerminalSessionSummary);
+    const session = candidate as unknown as TerminalSessionSummary;
+    // Older/partial remote runtimes can omit the chat projection fields. A
+    // persisted chat remains `status: "running"` between turns, so an absent
+    // runtimeState must not turn a quiet remote chat into an apparently active
+    // row (which hides Settle from its context menu). Mirror the main-process
+    // projection fallback, but never override an explicit runtime state.
+    if (
+      candidate.status === "running"
+      && typeof candidate.toolType === "string"
+      && isChatToolType(candidate.toolType)
+      && candidate.runtimeState == null
+    ) {
+      sessions.push({
+        ...session,
+        runtimeState: session.pendingInputItemId ? "waiting-input" : "idle",
+        currentTurnStartedAt: null,
+        chatIdleSinceAt: session.chatIdleSinceAt ?? null,
+      });
+    } else {
+      sessions.push(session);
+    }
   }
   return sessions;
 }
