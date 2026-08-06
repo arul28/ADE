@@ -333,8 +333,10 @@ export function OAuthConnectModal({
         ? host
           ? `We opened ${host} in your system browser.`
           : "We opened your system browser."
-        : openTarget === "copy"
-          ? "Sign-in link copied — paste it where you can complete login."
+      : openTarget === "copy"
+          ? isCopied("url")
+            ? "Sign-in link copied — paste it where you can complete login."
+            : "Use the full link below to finish signing in."
           : "Use the full link below to finish signing in.";
 
   return createPortal(

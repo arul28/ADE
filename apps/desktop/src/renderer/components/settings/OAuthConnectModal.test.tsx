@@ -130,7 +130,35 @@ describe("OAuthConnectModal", () => {
     });
 
     expect(writeText).toHaveBeenCalledWith("https://example.com/oauth");
+    expect(await screen.findByText("Sign-in link copied — paste it where you can complete login.")).toBeTruthy();
     expect(window.ade.app.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a copy succeeded when the clipboard write fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <OAuthConnectModal
+        providerId="openai"
+        providerName="OpenAI"
+        methods={[{ type: "oauth", label: "Sign in with ChatGPT" }]}
+        onClose={vi.fn()}
+        onConnected={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Open sign-in link in"), {
+      target: { value: "copy" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+
+    expect(await screen.findByText("Use the full link below to finish signing in.")).toBeTruthy();
+    expect(screen.queryByText("Sign-in link copied — paste it where you can complete login.")).toBeNull();
   });
 
   it("lets a full OAuth link be hidden after starting in view mode", async () => {

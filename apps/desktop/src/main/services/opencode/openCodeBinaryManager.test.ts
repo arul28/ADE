@@ -180,6 +180,18 @@ describe("openCodeBinaryManager", () => {
     expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
   });
 
+  it("accepts an explicit node_modules root with a trailing separator", () => {
+    const nodeModulesRoot = path.join(tempRoot, "node_modules");
+    process.env.ADE_OPENCODE_BUNDLE_ROOT = `${nodeModulesRoot}${path.sep}`;
+    const bundledPath = path.join(nodeModulesRoot, "opencode-ai", "bin", "opencode");
+    makeExecutable(bundledPath);
+
+    expect(resolveOpenCodeBinary()).toEqual({
+      path: bundledPath,
+      source: "bundled",
+    });
+  });
+
   it("resolves the packaged Windows x64 layout to the baseline package", () => {
     // Mirrors what afterPack materializes for win32: the `-baseline` native
     // package plus an `opencode-ai` shell whose bin/ has been pruned. The AVX2

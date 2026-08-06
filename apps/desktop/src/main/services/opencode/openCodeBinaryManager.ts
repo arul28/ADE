@@ -64,7 +64,10 @@ function collectBundledNodeModulesRoots(env: NodeJS.ProcessEnv): string[] {
     // Treat the explicit root as an override. This keeps development/test
     // runtimes hermetic and prevents a stale checkout-local package from
     // winning over the requested bundle.
-    return [explicitRoot.endsWith("node_modules") ? explicitRoot : join(explicitRoot, "node_modules")];
+    const rootWithoutTrailingSeparators = explicitRoot.replace(/[\\/]+$/, "") || explicitRoot;
+    return [rootWithoutTrailingSeparators.endsWith("node_modules")
+      ? rootWithoutTrailingSeparators
+      : join(rootWithoutTrailingSeparators, "node_modules")];
   }
 
   const processWithResources = process as NodeJS.Process & { resourcesPath?: string };
