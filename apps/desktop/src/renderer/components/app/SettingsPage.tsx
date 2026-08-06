@@ -20,12 +20,10 @@ import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
-import { AutoUpdatesSection } from "../settings/AutoUpdatesSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
-import { LaunchPromptSection } from "../settings/LaunchPromptSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
 import { NotificationsSection } from "../settings/NotificationsSection";
 import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
@@ -135,6 +133,11 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
     case "general":
       return (
         <>
+          <WebSettingsSection entryIds={["general.about", "general.auto-updates"]}>
+            <div id="about" data-settings-anchor="about">
+              <AboutSection />
+            </div>
+          </WebSettingsSection>
           <WebSettingsSection entryIds={["general.project"]}>
             <ProjectSection />
           </WebSettingsSection>
@@ -143,19 +146,8 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
               <AdeCliSection />
             </div>
           </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.launch-prompt"]}>
-            <LaunchPromptSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.auto-updates"]}>
-            <AutoUpdatesSection />
-          </WebSettingsSection>
           <WebSettingsSection entryIds={["general.analytics"]}>
             <ProductAnalyticsSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.about"]}>
-            <div id="about">
-              <AboutSection />
-            </div>
           </WebSettingsSection>
         </>
       );
@@ -466,6 +458,16 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     const visible = new Set((matchesThisTab ?? []).map((entry) => entry.anchor));
     cards.forEach((card) => {
       card.style.display = visible.has(card.dataset.settingsAnchor ?? "") ? "" : "none";
+    });
+    // Some settings are intentionally nested inside a larger card (for
+    // example, update preferences inside the ADE status card). Keep that
+    // parent mounted when a child is the search result; otherwise the child
+    // would be marked visible inside an ancestor that remains display:none.
+    cards.forEach((card) => {
+      if (card.style.display !== "none") return;
+      const hasVisibleChild = [...card.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
+        .some((child) => child !== card && visible.has(child.dataset.settingsAnchor ?? ""));
+      if (hasVisibleChild) card.style.display = "";
     });
     // A group whose cards all filtered out would otherwise leave a heading
     // hanging over nothing.

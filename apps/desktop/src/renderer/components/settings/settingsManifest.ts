@@ -62,12 +62,12 @@ export type SettingsTab = {
 };
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  { id: "general", label: "General", description: "Project identity, the ade command, launch behavior, updates, and privacy." },
+  { id: "general", label: "General", description: "ADE runtime status, project health, CLI access, and privacy." },
   { id: "appearance", label: "Appearance", description: "How ADE looks and how the chat transcript reads." },
   { id: "agents", label: "Agents & Models", description: "Provider connections, model routing, and background helpers." },
-  { id: "lanes-git", label: "Lanes & Git", description: "How lanes start, stay current, and tell you they fell behind." },
+  { id: "lanes-git", label: "Lanes", description: "How lanes start, stay current, and tell you they fell behind." },
   { id: "integrations", label: "Integrations", description: "GitHub and Linear." },
-  { id: "notifications", label: "Notifications & Sound", description: "What ADE interrupts you for, and how." },
+  { id: "notifications", label: "Notifications", description: "What ADE interrupts you for, and how." },
   { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it." },
   // Named "Secrets & Environment" while planning, on the assumption that
   // `EnvironmentSection` held environment-variable mappings. It doesn't — it
@@ -75,8 +75,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // and ADE has no env-mapping UI. Secrets *are* the env-style values here
   // (they import straight from `.env`), so the tab is named for what it holds.
   { id: "secrets", label: "Secrets", description: "Encrypted key/value pairs for ADE agents, desktop, and the CLI." },
-  { id: "storage", label: "Storage & Diagnostics", description: "What ADE keeps on disk, and what you can clear." },
-  { id: "stats", label: "Stats", description: "Usage, spend, and pacing across your providers." },
+  { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear." },
+  { id: "stats", label: "ADE Stats", description: "Usage, spend, and pacing across your providers." },
 ] as const;
 
 export type SettingEntry = {
@@ -128,16 +128,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "hidden",
     group: "Command line",
-  },
-  {
-    id: "general.launch-prompt",
-    label: "Paste clipboard into new chats",
-    keywords: ["clipboard", "launch", "prompt", "new chat"],
-    tab: "general",
-    anchor: "chat-launch-clipboard",
-    scope: "app",
-    web: "browser",
-    group: "Starting work",
   },
   {
     id: "general.auto-updates",
@@ -252,6 +242,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Chat details",
   },
   {
+    id: "appearance.launch-prompt",
+    label: "Paste clipboard into new chats",
+    keywords: ["clipboard", "launch", "prompt", "new chat"],
+    tab: "appearance",
+    anchor: "chat-launch-clipboard",
+    scope: "app",
+    web: "browser",
+    group: "Chat details",
+  },
+  {
     id: "appearance.preview",
     label: "Live preview",
     keywords: ["preview", "sample", "example", "what it looks like"],
@@ -327,7 +327,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Input",
   },
 
-  // ── Lanes & Git ──────────────────────────────────────────────────────────
+  // ── Lanes ────────────────────────────────────────────────────────────────
   {
     id: "lanes-git.new-lane-base",
     label: "New lane base",
@@ -414,7 +414,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     showScopeChip: true,
     group: "Linear",
   },
-  // ── Notifications & Sound ────────────────────────────────────────────────
+  // ── Notifications ───────────────────────────────────────────────────────
   {
     id: "notifications.events",
     label: "Notify me about",
@@ -600,7 +600,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Secrets",
   },
 
-  // ── Storage & Diagnostics ────────────────────────────────────────────────
+  // ── Diagnostics ──────────────────────────────────────────────────────────
   {
     id: "storage.usage",
     label: "Disk usage",
@@ -702,7 +702,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   diagnostics: "storage.diagnostics",
   "agent-completion-sound": "notifications.completion-sound",
   "voice-input": "agents.dictation",
-  "chat-launch-clipboard": "general.launch-prompt",
+  "chat-launch-clipboard": "appearance.launch-prompt",
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",

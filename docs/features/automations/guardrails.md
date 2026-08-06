@@ -137,7 +137,7 @@ Agent-session rules run inside the ADE chat service's permission model (per-sess
 
 ## Budget caps
 
-Shared via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageQuotaPanel`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings > Stats is a separate retrospective cross-client ADE activity dashboard; the Automations page continues to focus on rules, history, and ingress.
+Shared via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageQuotaPanel`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings > ADE Stats is a separate retrospective cross-client ADE activity dashboard; the Automations page continues to focus on rules, history, and ingress.
 
 Automations also support rule-level caps:
 

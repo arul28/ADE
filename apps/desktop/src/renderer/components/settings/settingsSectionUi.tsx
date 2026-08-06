@@ -42,7 +42,7 @@ export function SettingsSectionShell({
     // in settings search and Cmd-K landing like `SettingsCard` does. Without
     // it they stay visible through every filter and can't be deep-linked to.
     <section id={id} data-settings-anchor={id}>
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 24 }}>
         <div
           style={{
             width: 42,

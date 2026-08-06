@@ -190,7 +190,7 @@ type LaneCleanupConfig = {
 ```
 
 Policy enforced by the lane cleanup service. UI lives in
-`StorageSection.tsx` (Settings > Storage & Diagnostics), not
+`StorageSection.tsx` (Settings > Diagnostics), not
 `LaneBehaviorSection.tsx` — that section owns lane *behavior*
 (base source, auto-rebase, rebase noise), not storage rules.
 

@@ -29,10 +29,14 @@ function stubSection(anchors: string[]) {
 }
 
 vi.mock("../settings/ProjectSection", () => ({ ProjectSection: stubSection(["project"]) }));
-vi.mock("../settings/LaunchPromptSection", () => ({ LaunchPromptSection: stubSection(["chat-launch-clipboard"]) }));
-vi.mock("../settings/AutoUpdatesSection", () => ({ AutoUpdatesSection: stubSection(["auto-updates"]) }));
 vi.mock("../settings/ProductAnalyticsSection", () => ({ ProductAnalyticsSection: stubSection(["product-analytics"]) }));
-vi.mock("../settings/AboutSection", () => ({ AboutSection: stubSection([]) }));
+vi.mock("../settings/AboutSection", () => ({
+  AboutSection: () => (
+    <section data-settings-anchor="about">
+      <section data-settings-anchor="auto-updates">auto-updates</section>
+    </section>
+  ),
+}));
 vi.mock("../settings/AppearanceSection", () => ({ AppearanceSection: stubSection(["theme", "chat-font-size"]) }));
 vi.mock("../settings/ProvidersSection", () => ({ ProvidersSection: stubSection(["ai-providers"]) }));
 vi.mock("../settings/AiFeaturesSection", () => ({ AiFeaturesSection: stubSection(["background-jobs"]) }));
@@ -77,7 +81,7 @@ afterEach(() => cleanup());
 describe("SettingsPage", () => {
   it("opens the tab named in the URL", async () => {
     renderSettings("/settings?tab=notifications");
-    expect(await screen.findByRole("heading", { name: "Notifications & Sound" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Notifications" })).toBeTruthy();
   });
 
   it("resolves a legacy tab id and rewrites the URL to the canonical one", async () => {
@@ -86,7 +90,7 @@ describe("SettingsPage", () => {
     // review and very visible to whoever saved the URL.
     renderSettings("/settings?tab=lane-templates");
 
-    expect(await screen.findByRole("heading", { name: "Lanes & Git" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Lanes" })).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("?tab=lanes-git");
     });
@@ -117,7 +121,7 @@ describe("SettingsPage", () => {
 
   it("hides cards that do not match the search, and restores them when cleared", async () => {
     const { container } = renderSettings("/settings?tab=lanes-git");
-    await screen.findByRole("heading", { name: "Lanes & Git" });
+    await screen.findByRole("heading", { name: "Lanes" });
 
     expect(visibleAnchors(container)).toContain("lane-templates");
 
@@ -133,9 +137,21 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("keeps a parent card visible when a nested setting matches", async () => {
+    const { container } = renderSettings("/settings?tab=general");
+    await screen.findByRole("heading", { name: "General" });
+
+    fireEvent.change(searchBox(), { target: { value: "updates" } });
+
+    await waitFor(() => {
+      expect(visibleAnchors(container)).toContain("auto-updates");
+      expect(visibleAnchors(container)).toContain("about");
+    });
+  });
+
   it("offers matches from other tabs and navigates to the one you pick", async () => {
     renderSettings("/settings?tab=lanes-git");
-    await screen.findByRole("heading", { name: "Lanes & Git" });
+    await screen.findByRole("heading", { name: "Lanes" });
 
     fireEvent.change(searchBox(), { target: { value: "theme" } });
 

@@ -61,7 +61,7 @@ describe("settings manifest", () => {
       "agents.providers",
       "agents.background-jobs",
       "agents.dictation",
-      "general.launch-prompt",
+      "appearance.launch-prompt",
       "lanes-git.lane-templates",
       "storage.usage",
       "storage.diagnostics",
@@ -70,6 +70,8 @@ describe("settings manifest", () => {
       expect(settingsRouteFor(id), `${id} has no manifest entry`).not.toBe("/settings");
     }
     expect(settingsRouteFor("integrations.github")).toBe("/settings?tab=integrations#github-connection");
+    expect(settingsRouteFor("appearance.launch-prompt")).toBe("/settings?tab=appearance#chat-launch-clipboard");
+    expect(resolveSettingsHash("chat-launch-clipboard")?.tab).toBe("appearance");
     expect(settingsRouteFor("nope.missing")).toBe("/settings");
   });
 
@@ -230,7 +232,7 @@ describe("settings command palette entries", () => {
     const autoRebase = results.find((command) => command.id === "setting-lanes-git.auto-rebase");
     expect(autoRebase).toBeDefined();
     expect(autoRebase!.title).toBe("Auto-rebase child lanes");
-    expect(autoRebase!.hint).toContain("Lanes & Git");
+    expect(autoRebase!.hint).toContain("Lanes");
     expect(autoRebase!.path).toBe("/settings?tab=lanes-git#auto-rebase");
   });
 

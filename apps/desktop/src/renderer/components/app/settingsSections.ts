@@ -16,7 +16,7 @@ export const SETTINGS_SECTIONS = [
   { id: "secrets", label: "Secrets", icon: Key },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "storage", label: "Storage", icon: HardDrives },
-  { id: "ade-usage", label: "Stats", icon: ChartLineUp },
+  { id: "ade-usage", label: "ADE Stats", icon: ChartLineUp },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
