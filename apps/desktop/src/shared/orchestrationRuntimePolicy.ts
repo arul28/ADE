@@ -180,8 +180,8 @@ export const ORCHESTRATION_LEAD_MCP_ISOLATION = {
 export function orchestrationLeadMcpIsolation(
   provider: AgentChatProvider | string,
 ): OrchestrationLeadMcpIsolation | null {
-  return (ORCHESTRATION_LEAD_MCP_ISOLATION as Record<string, OrchestrationLeadMcpIsolation>)[provider]
-    ?? null;
+  if (!Object.prototype.hasOwnProperty.call(ORCHESTRATION_LEAD_MCP_ISOLATION, provider)) return null;
+  return ORCHESTRATION_LEAD_MCP_ISOLATION[provider as McpCapableProvider];
 }
 
 /**
@@ -221,6 +221,7 @@ export function codexConfiguredMcpServerNames(configText: string): string[] {
 
   const normalizedConfig = configText.replace(/\r\n?/g, "\n");
   const inlineAssignment = /^\s*mcp_servers\s*=\s*\{/gm;
+  let inBareMcpServersTable = false;
   let inlineMatch: RegExpExecArray | null;
   while ((inlineMatch = inlineAssignment.exec(normalizedConfig)) !== null) {
     const openBrace = normalizedConfig.indexOf("{", inlineMatch.index);
@@ -233,14 +234,37 @@ export function codexConfiguredMcpServerNames(configText: string): string[] {
   }
 
   for (const line of normalizedConfig.split("\n")) {
-    const withoutComment = line.replace(/^\s*#.*$/, "").trim();
+    const withoutComment = stripTomlComments(line).trim();
     if (!withoutComment.length) continue;
 
-    const header = withoutComment.match(/^\[\[?\s*mcp_servers\s*\.\s*(.+?)\s*\]\]?$/)?.[1];
-    if (header) {
-      const segment = firstSegment(header);
-      if (segment) add(segment);
+    const tableHeader = withoutComment.match(/^\[\[?\s*(.*?)\s*\]\]?$/)?.[1]?.trim();
+    if (tableHeader !== undefined) {
+      if (tableHeader === "mcp_servers") {
+        inBareMcpServersTable = true;
+        continue;
+      }
+
+      const header = tableHeader.match(/^mcp_servers\s*\.\s*(.+)$/)?.[1];
+      if (header) {
+        const segment = firstSegment(header);
+        if (segment) add(segment);
+        inBareMcpServersTable = false;
+        continue;
+      }
+
+      inBareMcpServersTable = false;
       continue;
+    }
+
+    if (inBareMcpServersTable) {
+      const bareAssignment = withoutComment.match(
+        /^((?:"[^"]+"|'[^']+'|[A-Za-z0-9_-]+)(?:\s*\.\s*(?:"[^"]+"|'[^']+'|[A-Za-z0-9_-]+))*)\s*=/,
+      )?.[1];
+      if (bareAssignment) {
+        const segment = firstSegment(bareAssignment);
+        if (segment) add(segment);
+        continue;
+      }
     }
 
     const dotted = withoutComment.match(/^mcp_servers\s*\.\s*(.+?)\s*=/)?.[1];

@@ -77,6 +77,8 @@ describe("orchestrationRuntimePolicy", () => {
       expect(ORCHESTRATION_LEAD_MCP_ISOLATION[provider].gated).toBe(true);
     }
     expect(orchestrationLeadMcpIsolation("gemini")).toBeNull();
+    expect(orchestrationLeadMcpIsolation("toString")).toBeNull();
+    expect(orchestrationLeadMcpIsolation("__proto__")).toBeNull();
   });
 
   it("drops Cursor's MCP-carrying setting layers for a lead but keeps the ADE hook layer", () => {
@@ -92,7 +94,7 @@ describe("orchestrationRuntimePolicy", () => {
     expect(codexConfiguredMcpServerNames([
       "model = \"gpt-5.4\"",
       "",
-      "[mcp_servers.filesystem]",
+      "[mcp_servers.filesystem] # trailing comment",
       "command = \"npx\"",
       "args = [\"-y\", \"@modelcontextprotocol/server-filesystem\"]",
       "",
@@ -105,6 +107,15 @@ describe("orchestrationRuntimePolicy", () => {
       "mcp_servers.git.command = \"git-mcp\"",
       "# mcp_servers.commented.command = \"nope\"",
     ].join("\n"))).toEqual(["filesystem", "my shell", "git"]);
+
+    expect(codexConfiguredMcpServerNames([
+      "[mcp_servers] # bare table",
+      "filesystem = { command = \"npx\" } # trailing comment",
+      "\"my shell\" = { command = \"sh\" } # trailing comment",
+      "",
+      "[other]",
+      "ignored = true",
+    ].join("\n"))).toEqual(["filesystem", "my shell"]);
 
     expect(codexConfiguredMcpServerNames(
       "mcp_servers = { linear = { command = \"linear\", args = [\"mcp\"] }, \"pg\" = { url = \"http://x\" } }",
