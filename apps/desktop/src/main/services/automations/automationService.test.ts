@@ -250,6 +250,37 @@ describe("automation ingress enable gating", () => {
     return { service, projectConfig };
   }
 
+  it("allows manually running a disabled automation", async () => {
+    const rule = normalizeRuntimeRule({
+      id: "manual-disabled",
+      name: "Manual disabled",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: [],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:manual-disabled",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule);
+
+    try {
+      await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({
+        automationId: rule.id,
+        status: "succeeded",
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("blocks Linear rules without event ingress and allows them once the capability is connected", () => {
     const rule = normalizeRuntimeRule({
       id: "linear-label",
@@ -968,8 +999,8 @@ describe("automationService integration", () => {
 
       await vi.waitFor(() => {
         expect(logger.info).toHaveBeenCalledWith(
-          "automations.schedule.stale_occurrence_suppressed",
-          expect.objectContaining({ automationId: "queued-reload", reason: "disabled" }),
+          "automations.trigger.suppressed",
+          expect.objectContaining({ automationId: "queued-reload", triggerType: "schedule", reason: "disabled" }),
         );
       });
       expect(agentChatService.createSession).toHaveBeenCalledTimes(1);

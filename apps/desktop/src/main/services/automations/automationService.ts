@@ -3249,27 +3249,27 @@ export function createAutomationService({
     const queued = previous
       .catch(() => undefined)
       .then(() => {
-        const currentRule = findRule(rule.id);
+        const isManualTrigger = trigger.triggerType === "manual";
+        const currentRule = isManualTrigger ? rule : findRule(rule.id);
         const currentTrigger = typeof trigger.scheduleTriggerIndex === "number"
           ? currentRule?.triggers[trigger.scheduleTriggerIndex]
           : undefined;
-        const staleSchedule = trigger.triggerType === "schedule" && (
+        const staleSchedule = !isManualTrigger && trigger.triggerType === "schedule" && (
           !currentTrigger
           || currentTrigger.type !== "schedule"
           || (currentTrigger.cron ?? "").trim() !== (trigger.scheduleCronExpression ?? "").trim()
         );
-        if (!currentRule || !currentRule.enabled || staleSchedule) {
-          if (trigger.triggerType === "schedule") {
-            logger.info("automations.schedule.stale_occurrence_suppressed", {
-              automationId: rule.id,
-              triggerIndex: trigger.scheduleTriggerIndex ?? null,
-              cron: trigger.scheduleCronExpression ?? null,
-              reason: !currentRule ? "missing" : !currentRule.enabled ? "disabled" : "trigger-changed",
-            });
-          }
+        if (!isManualTrigger && (!currentRule || !currentRule.enabled || staleSchedule)) {
+          logger.info("automations.trigger.suppressed", {
+            automationId: rule.id,
+            triggerType: trigger.triggerType,
+            triggerIndex: trigger.scheduleTriggerIndex ?? null,
+            cron: trigger.scheduleCronExpression ?? null,
+            reason: !currentRule ? "missing" : !currentRule.enabled ? "disabled" : "trigger-changed",
+          });
           return null;
         }
-        return runRuleNow(currentRule, trigger, options);
+        return runRuleNow(currentRule ?? rule, trigger, options);
       });
     runQueuesByAutomationId.set(rule.id, queued);
     try {
