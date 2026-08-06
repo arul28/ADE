@@ -110,7 +110,7 @@ on a usage error such as an unknown `--kind`.
   `ade search "Z" --lane <lane> --text` across files, commits, and chats.
 - **Index looks stale or empty** → `ade search --status --text` to see
   `docCount`, per-kind counts, and `backfillComplete`; rebuild with
-  `ade search --rebuild` (CTO-only) only if backfill is genuinely broken.
+  `ade search --rebuild` only if backfill is genuinely broken.
 
 Reach for `ade search` before grepping `.ade/` internals or asking the user to
 locate something. Remember the boundary: chats span registered projects;

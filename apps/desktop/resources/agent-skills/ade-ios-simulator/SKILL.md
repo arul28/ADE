@@ -1,13 +1,13 @@
 ---
 name: ade-ios-simulator
-description: Use this skill when working with ADE iOS Simulator, Preview Lab, SwiftUI preview rendering, simulator screenshots, taps, streams, or iOS drawer context via `ade ios-sim`.
+description: Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator — launching the app, tapping/dragging/typing in it, screenshotting or streaming the screen, inspecting on-screen elements, or rendering a SwiftUI preview through Preview Lab — via `ade ios-sim`.
 ---
 
 # ADE iOS Simulator and Preview Lab
 
 ## Start here
 
-Use socket mode so CLI actions and the desktop drawer share one simulator session:
+Use `--socket` so CLI actions and the desktop drawer share one simulator session (the general rule is in the **ade-cli-control-plane** skill):
 
 ```bash
 ade --socket ios-sim status --text
@@ -23,7 +23,7 @@ Launch with a target from `apps`:
 ade --socket ios-sim launch --target <id> --text
 ```
 
-ADE-launched agents pass `ADE_LANE_ID` / `ADE_CHAT_SESSION_ID` through `launch` and `claim`; use `claim` when taking over an already-running simulator drawer so Work shows the lane that actually owns the visible simulator content.
+`launch` and `claim` carry lane/session ownership; see "Owning a drawer surface" in the **ade-cli-control-plane** skill for when `claim` is required.
 
 ## Inspect and interact
 
@@ -73,11 +73,10 @@ To bridge the current simulator screen into Preview Lab, first select a source-b
 
 Use `preview-match` when you only need the target decision without rendering. The selected simulator element's `sourceFile` and optional `sourceLine` bias matching; `--label` / `--component-id` are only hints for naming a missing-preview suggestion. Use `preview-ensure` when Xcode Preview Lab is not ready; it opens this lane's iOS project in Xcode and waits for MCP readiness.
 
-Add or refine a preview only when no useful nearby preview exists or the match is too far from the selected element. Preview fixtures must not require live sync, keychain, network, push, sockets, or production databases.
+Preview Lab fixtures must not require live sync, keychain, network, push, sockets, or production databases — add or refine a preview only when no useful nearby preview exists.
 
 ## Gotchas
 
-- Do not create symlink projects, fake schemes, or repo-layout shims as the first fix for app detection. Re-run `ade --socket ios-sim apps --text` and report the selected project, scheme, and build output.
-- If `preview-current` or `preview-match` returns `no-context`, do not guess the screen from stale code. Run `ade --socket ios-sim snapshot --text`, select a source-backed element, or pass an explicit source file/line.
-- If no simulator/session/snapshot exists, report the exact blocker instead of guessing the screen.
+- `apps` drives project/scheme detection. If it does not find your app, re-run `ade --socket ios-sim apps --text` and report the selected project, scheme, and build output rather than working around it with symlink projects, fake schemes, or repo-layout shims.
+- `preview-current` / `preview-match` returning `no-context` means nothing on screen is source-backed. Run `ade --socket ios-sim snapshot --text` and select a source-backed element, or pass an explicit `--source` / `--line`.
 - When you own the simulator session and the task no longer needs it, run `ade --socket ios-sim shutdown --text`.

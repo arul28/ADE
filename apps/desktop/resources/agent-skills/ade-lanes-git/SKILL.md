@@ -28,6 +28,10 @@ ade lanes child --lane <parent> --name <name> --text
 ade lanes archive <lane> --text
 ```
 
+`archive` is destructive to a user's workspace: it retires the lane and its
+worktree, taking any uncommitted work in it with them. Archive a lane only when
+the user asked for cleanup, or a workflow that owns lane lifecycle requires it.
+
 ## ADE-aware Git
 
 Use ADE git commands when the operation should update ADE operation state and refresh lane status:
@@ -50,10 +54,10 @@ ade git conflict show --lane <lane> --text
 ade git rebase continue --lane <lane> --text
 ```
 
-For conflicts, inspect both sides and preserve intent from both branches. Do not blindly accept ours/theirs.
+`--ai` runs the rebase with ADE's AI-assisted conflict support;
+`ade git conflict show` prints ADE's view of the conflicted files.
 
 ## Gotchas
 
 - Use `--lane` for anything other than the active workspace.
 - Use `ade diff changes --lane <lane> --text` when you need ADE's view of file changes.
-- Do not archive or delete lanes unless the user asked for cleanup or the release workflow explicitly requires it.

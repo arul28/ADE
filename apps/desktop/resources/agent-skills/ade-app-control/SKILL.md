@@ -1,13 +1,13 @@
 ---
 name: ade-app-control
-description: Use this skill when inspecting, launching, logging, clicking, typing, or selecting context from Electron apps through ADE App Control and the `ade app-control` CLI.
+description: Use this skill when you need to run or drive a local Electron/desktop app and capture what it does — launch it or attach to a running renderer, read its logs or answer its terminal prompts, click and type in it, or pull screenshot-backed DOM/source context into the chat — through `ade app-control`.
 ---
 
 # ADE App Control
 
 ## Use socket mode
 
-App Control is a live desktop drawer service. Prefer socket-backed commands:
+App Control is a live desktop drawer service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):
 
 ```bash
 ade help app-control
@@ -18,7 +18,7 @@ ade --socket app-control connect --cdp-port <port> --text
 ```
 
 ADE sets `ADE_APP_CONTROL_CDP_PORT` and `ADE_APP_CONTROL_DEBUG_FLAGS` for launches. Custom Electron launchers should forward one of those values to `--remote-debugging-port`.
-ADE-launched agents pass `ADE_LANE_ID` / `ADE_CHAT_SESSION_ID` through `launch`, `connect`, and `claim`; use `claim` when attaching to a renderer that is already running so the Work tools pane attributes it to the agent's lane instead of the visible chat.
+`launch`, `connect`, and `claim` all carry lane/session ownership; see "Owning a drawer surface" in the **ade-cli-control-plane** skill for when `claim` is required.
 
 ## Inspect
 

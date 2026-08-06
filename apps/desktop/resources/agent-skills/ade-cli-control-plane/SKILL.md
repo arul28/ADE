@@ -1,6 +1,6 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when an agent needs to inspect or operate ADE itself through the `ade` CLI, including lanes, chats, actions, proof, runtime/socket state, or help/flag discovery.
+description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, or spawn a child lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
 ---
 
 # ADE CLI control plane
@@ -44,38 +44,23 @@ ade actions list --domain project_secret --text
 
 ## Socket mode
 
-Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, iOS Simulator, Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates.
+Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, iOS Simulator, Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-ios-simulator**, and **ade-browser** skills all assume it.
+
+### Owning a drawer surface
+
+ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches, and the drawer services (App Control, iOS Simulator, browser) carry them so the Work tools pane attributes what you drive to your lane rather than to the visible chat. When you *attach to something already running* instead of starting it yourself, run that surface's `claim` subcommand first — `ade --socket app-control claim`, `ade --socket ios-sim claim`, `ade --socket browser claim` — or Work will keep showing the previous owner.
 
 ## Runtime daemon vs. desktop bridge
 
 Most domains (`lane`, `git`, `chat`, `app_control`, `ios_simulator`, etc.) run **inside the runtime daemon** at `~/.ade/sock/ade.sock` and work whether or not the desktop is open.
 
-A small set of domains require the **desktop bridge** because the underlying service needs real Electron APIs. Today that is just `built_in_browser` (it owns a `WebContentsView`), but expect the list to grow if more Electron-only services get exposed to the CLI. The runtime forwards these calls over `<adeHome>/sock/desktop-bridge.sock` (override with `ADE_DESKTOP_BRIDGE_SOCKET_PATH`).
-
-When no desktop is running, calls into a bridge-backed domain surface as `Domain unavailable` or `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` — report the blocker and continue with the rest of the control plane, which is unaffected.
+A small set of domains require the **desktop bridge** because the underlying service needs real Electron APIs. Today that is just `built_in_browser`; the **ade-browser** skill documents that hop, its socket path, and the exact failure text when no desktop is running. A bridge-backed domain with no desktop also surfaces as `Domain unavailable` — report the blocker and continue with the rest of the control plane, which is unaffected.
 
 ## Linear issues attached to your session
 
-See the **ade-linear** skill for the full read/write workflow on an attached issue; the essentials:
-
-When ADE launches you with an attached Linear issue, it injects two env vars into your session: `ADE_CHAT_SESSION_ID` (your session) and `ADE_LINEAR_ISSUE_IDS` (comma-separated attached issue ids). You read and write that issue through the **daemon bridge** — `ade linear ...` routes over the daemon to the desktop runtime, which holds the Linear credentials. You never need a Linear token.
-
-Read/write your attached issue (id defaults to your session's first attached issue, so you can omit it):
+The **ade-linear** skill is the home for working an attached Linear issue: the env vars ADE injects, the read/write commands, and attach/detach. You never need a Linear token — `ade linear ...` routes over the daemon to the desktop runtime, which holds the credentials. Two attachment commands live outside that skill's `ade linear` surface:
 
 ```
-ade linear issues --this-session --text     # what is attached to me
-ade linear issue --text                      # read the attached issue
-ade linear comment "Pushed a fix; CI running"
-ade linear set-state ENG-431 <state-id>      # move workflow state
-ade linear assign ENG-431 <user-id|none>
-ade linear label ENG-431 needs-review
-```
-
-Manage attachments:
-
-```
-ade linear attach --this-session --issue-id ENG-431   # attach to my session
-ade linear detach --this-session [--issue-id ENG-431] # detach one or all
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
 ```
@@ -116,13 +101,9 @@ through `ADE_CHAT_SESSION_ID`. The type is required for every parented agent
 spawn; omitting it is a hard error whose message includes the decision rule.
 There is no silent `none` type.
 
-- Use `subagent` whenever the parent will need, join, read, or review the
-  result. Parallel fan-out that later joins is subagent work.
-- Use `peer` only for fire-and-forget work whose result the parent does not
-  expect to join, read, or review. Peer turns leave quiet completion notes and
-  do not wake the parent.
-- Use `--no-parent` only for a genuinely independent top-level session. Do not
-  use it to avoid choosing a type.
+The type controls what happens to the parent when the child finishes: a
+`subagent` turn wakes or steers the parent, a `peer` turn only leaves a quiet
+completion note. `--no-parent` creates an unparented top-level session.
 
 For persistent Work chats, every parent-dispatched subagent turn reports back
 with its child turn id and latest assistant summary. ADE steers an active parent
@@ -224,47 +205,24 @@ What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
 row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
 
-#### Work-row status protocol
+#### What `note` and `ask` do to the Work row
 
-Treat the status line and hand-raise as separate signals:
+They are two separate signals on the row the user is looking at:
 
-- **`ade chat note` explains the current state.** Write one concrete,
-  present-tense summary aiming for **6 words or fewer** — a guideline, not a
-  hard limit. ADE truncates past **72 characters**, so put the decisive state
-  first and never write a full sentence, but a long note still beats no note.
+- **`ade chat note` sets the row's status line.** It shows a durable one-line
+  summary of the current state; it does not change the row's phase. Length
+  guidance and the hard display bound live in
+  `apps/desktop/src/shared/sessionStatusNote.ts` (a note past that bound is
+  truncated with an ellipsis, so put the decisive state first).
   Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
-- **`ade chat ask` means work cannot continue without a user answer.** Ask the
-  exact question that unlocks the next action. Include the meaningful choices
-  and consequence when there is a tradeoff.
-- **When user input blocks progress, call `note` and then `ask`.** The note
-  preserves the operational context; the ask raises the Work row to **Needs
-  you**. A note alone never changes the canonical phase and an idle row can
-  otherwise appear **Done**.
-- **The next accepted user message clears the prior hand-raise.** While the
-  reply is being handled, the row should be **Working**, not **Needs you**. If
-  the reply resolves the blocker, continue normally. If it does not, leave an
-  updated note and call `ask` again with the exact information still missing
-  before ending the turn.
-- **Do not use `ask` for external waiting.** If CI, review, a build, or another
-  service is still running and no user action is required, leave a specific
-  note and either keep polling or snooze the session.
-- **Do not ask the user to classify a failure the agent can investigate.**
-  Diagnose and recover autonomously. Raise an ask only when recovery requires
-  new authority, unavailable credentials, or a product choice.
-
-| Situation | Required action | Example |
-|---|---|---|
-| Actively working | `note` when the phase materially changes | `Fixing live branch refresh` |
-| Waiting on external work | `note`, then poll or snooze | `PR #977 CI running` |
-| Blocked on user input | `note`, then `ask` | Note: `Waiting for migration choice` Ask: `Use the reversible in-place migration, or create a new store and copy records?` |
-| Recoverable error | `note`, investigate, continue | `Rerunning timed-out desktop shard` |
-| Unrecoverable error needing user action | `note`, then `ask` | Note: `Writable GitHub credential missing` Ask: `Authenticate gh, or should I use the stored PAT?` |
-| Delivered | final response plus `note` | `PR #977 merged; fixes shipped` |
-
-Before ending any non-delivered turn, ask: **Can useful work continue without
-the user?** If yes, continue or snooze—do not hand-raise. If no, ensure both a
-specific note and an exact ask were sent.
+- **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
+  a note alone never changes the phase, an idle row with only a note can read as
+  **Done** — when you are genuinely blocked on the user, call `note` for the
+  context and then `ask` for the exact question.
+- **The next accepted user message clears the hand-raise** and the row returns
+  to **Working** while the reply is handled. If the reply does not unblock you,
+  leave an updated note and `ask` again.
 
 Snooze is the lifecycle verb you *do* own. The typed family takes the session id
 as a positional, also accepts `--session`, and falls back to
@@ -365,8 +323,6 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `--reasoning-effort`; avoid it for new flows. Common reasoning tiers include
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
-
-Report what you actually did back to the issue with `ade linear comment` as you progress — that comment is how reviewers and the issue's watchers see status. Use `ade help linear` for the full flag set.
 
 ## Fallback path
 
