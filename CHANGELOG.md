@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.55] - 2026-08-05
+
+### Added
+
+- A signed-in machine with no project now publishes itself to your account and dials the relay. Previously the publisher's only snapshot source was a project-scoped sync host, so a headless box with an empty `~/.ade/projects.json` stayed invisible in the account. Cross-platform; a Mac that never opened a project was equally affected.
+- `ade setup` owns everything after the `ade` binary exists, as one implementation both installers hand off to: numbered steps with live progress, an honest summary, and a failed step that names the fixing command.
+- The download page states the two Windows prompts to expect — SmartScreen and the one-time firewall dialog — and why neither can be pre-authorized by a per-user install.
+
+### Changed
+
+- The this-computer card leads with identity: platform logo, inline rename that writes both the runtime and the account directory, no readiness verdict or route breakdown. Pairing moved behind a disclosure.
+- Settings routes derive from the settings manifest via `settingsRouteFor(entryId)` instead of hand-written literals, and a `#hash` now outranks a disagreeing `?tab=`.
+- The NSIS installer streams its PowerShell steps instead of buffering them, so the progress bar moves during the work.
+- The desktop artifact download resumes via Range across runs, verifies a streamed SHA-512 instead of reading ~1 GB into memory, and serializes concurrent runs behind the shared tools lock.
+
+### Fixed
+
+- `ade connect` failed on every clean install. Both installers registered the brain with `ade serve --install-service`, which inherited an unset `ADE_DEFAULT_ROLE` and came up at `agent`; `ade connect` runs at `cto`. Both now register through `ade brain start`, which pins `cto`.
+- `ade setup` verification no longer reports "ADE is ready" for a machine that is signed in but absent from the account.
+- The Connections pane and the CLI no longer render the publisher's raw internal skip reason at users; both read one shared state-to-copy table.
+- The chat turn timer froze at 0s because the ticker held a detached node after the status line remounted as an expander. Affected every platform and the web client.
+- A session with an ended turn but a live background job read as a bare "Working"; it now reports "Background work" with elapsed time. Background shell commands get an in-thread row from first sighting.
+- The welcome video's YouTube iframe was rejected at the packaged app's `file://` origin; it is a thumbnail link now, with the renderer CSP tightened to match.
+- The installer no longer exits non-zero when an optional post-install extra flakes, no longer emits `node:sqlite` experimental warnings, and launches the desktop app detached so a Windows GUI child does not inherit the console.
+
 ## [1.2.54] - 2026-08-05
 
 ### Added
@@ -1423,7 +1448,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.55]: https://github.com/arul28/ADE/compare/v1.2.54...v1.2.55
 [1.2.54]: https://github.com/arul28/ADE/compare/v1.2.53...v1.2.54
 [1.2.53]: https://github.com/arul28/ADE/compare/v1.2.52...v1.2.53
 [1.2.52]: https://github.com/arul28/ADE/compare/v1.2.51...v1.2.52
