@@ -53,6 +53,13 @@ export type DeeplinkEnvelope = {
 export type DeeplinkOwnership = {
   accountMachineKey: string;
   projectId: string;
+  /**
+   * The owning project's absolute root, as carried by links minted before ADE
+   * stopped stamping it (it leaked the publisher's username and directory
+   * layout into every pasted link). Still parsed, never minted: it is what
+   * rescues a legacy link whose `projectId` is the publisher's private uuid.
+   */
+  projectRoot?: string;
 };
 
 export type DeeplinkLaneTarget = { kind: "lane"; laneId: string; envelope?: DeeplinkEnvelope };
@@ -222,7 +229,13 @@ function appendOwnershipParams(
   if (!ownership) return;
   params.set("accountMachineKey", ownership.accountMachineKey);
   params.set("projectId", ownership.projectId);
+  // `projectRoot` is intentionally not re-emitted: it is a parse-only
+  // compatibility field, and minting it would put a local absolute path back
+  // into every shareable link.
 }
+
+/** Longest project root a deeplink may carry out of the URL. */
+const MAX_DEEPLINK_PROJECT_ROOT_LENGTH = 4_096;
 
 function readOwnershipParams(
   searchParams: URLSearchParams,
@@ -255,9 +268,19 @@ function readOwnershipParams(
       rawUrl,
     };
   }
+  // Legacy-only, and never required: a link that omits it (every link minted
+  // today) still resolves through the canonical project id, so an
+  // over-long value is dropped rather than failing the whole link.
+  const projectRoot = searchParams.get("projectRoot")?.trim() ?? "";
+  const carriesProjectRoot =
+    projectRoot.length > 0 && projectRoot.length <= MAX_DEEPLINK_PROJECT_ROOT_LENGTH;
   return {
     ok: true,
-    ownership: { accountMachineKey, projectId },
+    ownership: {
+      accountMachineKey,
+      projectId,
+      ...(carriesProjectRoot ? { projectRoot } : {}),
+    },
   };
 }
 

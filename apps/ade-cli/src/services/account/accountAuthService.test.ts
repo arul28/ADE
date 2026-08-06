@@ -929,6 +929,160 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
+  /**
+   * The directory can only bind a pairing grant to a machine it was told about
+   * before the human authenticated, and the machine can only spend it once. Both
+   * halves live here, because both are what stop a removed machine from
+   * obtaining or re-using proof it did not earn.
+   */
+  describe("pairing grants", () => {
+    function deviceLoginService(args: {
+      store: MemoryCredentialStore;
+      nowMs: () => number;
+      getMachineKey?: () => string | null;
+      grant?: string | null;
+      onDeviceCodeBody?: (body: Record<string, unknown>) => void;
+    }) {
+      const accessToken = jwt({ sub: "device-user", email: "device@example.com" });
+      const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+        if (input.endsWith("/device/code")) {
+          args.onDeviceCodeBody?.(JSON.parse(String(init?.body)));
+          return jsonResponse({
+            device_code: "grant-device-code",
+            user_code: "GRNT-CODE",
+            verification_uri: "https://directory.example.test/device",
+            expires_in: 600,
+            interval: 5,
+          });
+        }
+        return jsonResponse({
+          access_token: accessToken,
+          refresh_token: "device-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          ...(args.grant === undefined ? {} : { pairing_grant: args.grant }),
+        });
+      });
+      const service = createAccountAuthService({
+        credentialStore: args.store,
+        getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+        getDeviceBridgeUrl: () => "https://directory.example.test/",
+        getMachineKey: args.getMachineKey,
+        now: args.nowMs,
+        randomBytes: (size) => Buffer.alloc(size, 0x77),
+        randomUUID: () => "device-session",
+        fetchImpl,
+      });
+      activeServices.push(service);
+      return service;
+    }
+
+    it("declares the machine key so the grant can be bound to this machine", async () => {
+      let deviceCodeBody: Record<string, unknown> | null = null;
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => "machine-a",
+        onDeviceCodeBody: (body) => {
+          deviceCodeBody = body;
+        },
+      });
+
+      await service.startDeviceLogin();
+
+      expect(deviceCodeBody).toEqual({
+        device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+        machine_key: "machine-a",
+      });
+    });
+
+    it("omits the machine key rather than failing when the identity is unreadable", async () => {
+      let deviceCodeBody: Record<string, unknown> | null = null;
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => {
+          throw new Error("sync-cloud-relay.json is unreadable");
+        },
+        onDeviceCodeBody: (body) => {
+          deviceCodeBody = body;
+        },
+      });
+
+      // The sign-in is the product; the grant is a recovery aid for one flow.
+      await expect(service.startDeviceLogin()).resolves.toMatchObject({ userCode: "GRNT-CODE" });
+      expect(deviceCodeBody).toEqual({
+        device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+      });
+    });
+
+    it("hands the grant to exactly one caller and never to a second", async () => {
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => "machine-a",
+        grant: "grant-from-directory",
+      });
+
+      expect(service.consumePairingGrant()).toBeNull();
+      await service.startDeviceLogin();
+      await expect(service.pollDeviceLogin("device-session")).resolves.toMatchObject({
+        status: "signed_in",
+      });
+
+      expect(service.consumePairingGrant()).toBe("grant-from-directory");
+      // A grant is spendable once server-side, so a local second copy is only
+      // ever a stale secret waiting to be sent on a request that will be refused.
+      expect(service.consumePairingGrant()).toBeNull();
+    });
+
+    it("withholds a grant that has outlived the directory's window", async () => {
+      let nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => nowMs,
+        getMachineKey: () => "machine-a",
+        grant: "grant-from-directory",
+      });
+
+      await service.startDeviceLogin();
+      await service.pollDeviceLogin("device-session");
+      nowMs += 11 * 60_000;
+
+      expect(service.consumePairingGrant()).toBeNull();
+    });
+
+    it("drops the grant on sign-out", async () => {
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => "machine-a",
+        grant: "grant-from-directory",
+      });
+
+      await service.startDeviceLogin();
+      await service.pollDeviceLogin("device-session");
+      service.signOut();
+
+      expect(service.consumePairingGrant()).toBeNull();
+    });
+
+    it("holds no grant when the directory minted none", async () => {
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => "machine-a",
+      });
+
+      await service.startDeviceLogin();
+      await expect(service.pollDeviceLogin("device-session")).resolves.toMatchObject({
+        status: "signed_in",
+      });
+
+      expect(service.consumePairingGrant()).toBeNull();
+    });
+  });
+
   it("coalesces concurrent polls so a one-time device code is redeemed once", async () => {
     const store = new MemoryCredentialStore();
     const accessToken = jwt({ sub: "coalesced-device-user", email: "coalesced@example.com" });

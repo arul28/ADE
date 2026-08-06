@@ -330,6 +330,67 @@ describe("buildRosterSnapshot", () => {
     expect(project.runningCount).toBe(1);
   });
 
+  it("reports a chat with live background tasks as running, not idle", async () => {
+    // agentChatService reports `idle` for the whole life of a background
+    // subagent; the sidebar overrides that to Working and the roster must too,
+    // or Activity maps the row idle → stale → Done while the agent is working.
+    const scopeRegistry = bootedScopes([
+      { sessionId: "chat-run", status: "idle", activeBackgroundTaskCount: 2 },
+    ]);
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    expect(byId.get("chat-run")!.status).toBe("running");
+    expect(projects[0]!.runningCount).toBe(1);
+  });
+
+  it("leaves a live chat at rest when it has no background tasks", async () => {
+    const scopeRegistry = bootedScopes([
+      { sessionId: "chat-run", status: "idle", activeBackgroundTaskCount: 0 },
+    ]);
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    // chat-run is declared settled, so the settle projection wins — the point
+    // is that a zero background count never manufactures a running row.
+    expect(byId.get("chat-run")!.status).toBe("ended");
+    expect(projects[0]!.runningCount).toBe(0);
+  });
+
+  it("labels CTO/identity chats without dropping them from the roster", async () => {
+    // The mobile hub consumes this roster and renders identity chats, so the
+    // roster must keep the rows. It only labels them; excluding them is the
+    // Activity publisher's job (see pushPublisherService).
+    // Disk path: the persisted sidecar is the only identity signal available
+    // for an un-booted project.
+    fs.writeFileSync(
+      path.join(projectRoot, ".ade", "cache", "chat-sessions", "chat-run.json"),
+      JSON.stringify({ provider: "claude", identityKey: "cto" }),
+    );
+    const fromDisk = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const diskRow = fromDisk[0]!.chats.find((chat) => chat.id === "chat-run");
+    expect(diskRow).toBeDefined();
+    expect((diskRow as { identityKey?: string | null } | undefined)?.identityKey).toBe("cto");
+
+    // Booted path: the live summary carries identityKey directly.
+    const scopeRegistry = bootedScopes([
+      { sessionId: "chat-await", status: "active", identityKey: "cto" },
+    ]);
+    const fromLive = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const liveRow = fromLive[0]!.chats.find((chat) => chat.id === "chat-await");
+    expect(liveRow).toBeDefined();
+    expect((liveRow as { identityKey?: string | null } | undefined)?.identityKey).toBe("cto");
+    // Hub behaviour is unchanged: an awaiting identity chat still badges.
+    expect(fromLive[0]!.attentionCount).toBe(1);
+  });
+
+  it("leaves ordinary chats unlabelled", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    for (const chat of projects[0]!.chats) {
+      expect((chat as { identityKey?: string | null }).identityKey).toBeUndefined();
+    }
+  });
+
   it("marks a CLI session running via the booted scope's live PTY table", async () => {
     const scopeRegistry = bootedScopes([], ["cli-codex"]);
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });

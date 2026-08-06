@@ -95,6 +95,27 @@ export function targetToWebPath(target: DeeplinkTarget): string {
 }
 
 /**
+ * Absolute URL for a deeplink target on this deployment.
+ *
+ * `targetToWebPath` answers with a path the running App can push; opening a
+ * SECOND tab needs a whole URL. The new tab boots the shell fresh, which
+ * re-reads the route through `parseWebPath` and restores the machine/project
+ * the first tab just connected — so the target survives the hop.
+ */
+export function targetToWebUrl(
+  target: DeeplinkTarget,
+  origin: string | null = typeof window === "undefined" ? null : window.location.origin,
+): string {
+  const path = targetToWebPath(target);
+  if (!origin) return path;
+  try {
+    return new URL(path, origin).toString();
+  } catch {
+    return path;
+  }
+}
+
+/**
  * Map a live App route (path + query) back to a deeplink target, or null when
  * the route carries no addressable target. Distinguishing params keep the
  * mapping unambiguous and make it the inverse of `targetToWebPath`.

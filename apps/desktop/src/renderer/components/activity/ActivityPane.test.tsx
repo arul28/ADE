@@ -89,6 +89,7 @@ function installAde(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   publishAccountStatus(signedInAccount);
   installAde();
 });
@@ -104,36 +105,65 @@ afterEach(() => {
   });
 });
 
-/** Rows appear in both columns; the sessions card is the one under test. */
+function agentsColumn(): HTMLElement {
+  return screen.getByRole("region", { name: "Agents" });
+}
+
+function notificationsColumn(): HTMLElement {
+  return screen.getByRole("region", { name: "Notifications" });
+}
+
 function openDetail(title: string) {
-  const sessions = screen.getByRole("region", { name: "Sessions" });
-  fireEvent.click(within(sessions).getByTitle(new RegExp(`^${title} —`)));
+  fireEvent.click(within(agentsColumn()).getByTitle(new RegExp(`^${title} —`)));
 }
 
 function sessionRow(title: string) {
-  const sessions = screen.getByRole("region", { name: "Sessions" });
-  return within(sessions).queryByTitle(new RegExp(`^${title} —`));
+  return within(agentsColumn()).queryByTitle(new RegExp(`^${title} —`));
+}
+
+function prItem(id: string, patch: Partial<AttentionItem> = {}): AttentionItem {
+  return item(id, {
+    kind: "pull_request",
+    eventKind: "pr_checks_failing",
+    phase: "checks_failing",
+    provider: null,
+    model: null,
+    title: `PR ${id}`,
+    ...patch,
+  });
 }
 
 describe("ActivityPane", () => {
-  it("renders both columns at once so neither question hides the other", () => {
+  it("splits agents from notifications so one lane cannot render twice", () => {
     const needsYou = item("approval");
     const running = item("running", {
       phase: "running",
       eventKind: "agent_running",
       title: "Task running",
     });
-    activityStore.setState({ itemsById: { approval: needsYou, running } });
+    const pr = prItem("checks");
+    activityStore.setState({ itemsById: { approval: needsYou, running, checks: pr } });
 
     render(<ActivityPane open onClose={() => {}} />);
 
-    const sessions = screen.getByRole("region", { name: "Sessions" });
-    const inbox = screen.getByRole("region", { name: "Inbox" });
-    expect(within(sessions).getByTitle(/^Task approval —/)).toBeTruthy();
-    expect(within(sessions).getByTitle(/^Task running —/)).toBeTruthy();
-    // Running work is not an inbox item: nothing is waiting on the reader.
-    expect(within(inbox).queryByText("Task running")).toBeNull();
-    expect(within(inbox).getByText("Task approval")).toBeTruthy();
+    const agents = agentsColumn();
+    const notifications = notificationsColumn();
+    expect(within(agents).getByTitle(/^Task approval —/)).toBeTruthy();
+    expect(within(agents).getByTitle(/^Task running —/)).toBeTruthy();
+    // The pull request is a notification, not a session — and it appears once.
+    expect(within(agents).queryByTitle(/^PR checks —/)).toBeNull();
+    expect(within(notifications).getByText("PR checks")).toBeTruthy();
+    // A raised hand is a session, so it does not double as a notification row.
+    expect(within(notifications).queryByText("Task approval")).toBeNull();
+  });
+
+  it("counts sessions and notifications apart in the header", () => {
+    activityStore.setState({
+      itemsById: { approval: item("approval"), checks: prItem("checks") },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    expect(screen.getByText(/1 session · 1 notification · 1 machine online/)).toBeTruthy();
   });
 
   it("reveals long session lists one bounded page at a time", () => {
@@ -148,7 +178,7 @@ describe("ActivityPane", () => {
     activityStore.setState({ itemsById });
     render(<ActivityPane open onClose={() => {}} />);
 
-    const sessions = screen.getByRole("region", { name: "Sessions" });
+    const sessions = agentsColumn();
     expect(sessions.querySelectorAll("[data-activity-row]")).toHaveLength(60);
     fireEvent.click(within(sessions).getByRole("button", { name: "Show 1 more" }));
     expect(sessions.querySelectorAll("[data-activity-row]")).toHaveLength(61);
@@ -190,11 +220,17 @@ describe("ActivityPane", () => {
     openDetail("Task approval");
 
     const sheet = screen.getByRole("dialog", { name: "Task approval detail" });
+    // The state, in words, is the first thing the sheet says.
+    expect(within(sheet).getByText("Codex is asking a question")).toBeTruthy();
     expect(within(sheet).getByText("Waiting for a safe decision")).toBeTruthy();
     expect(within(sheet).getByText("GPT-5")).toBeTruthy();
     expect(within(sheet).getByText("Edited AuthService.ts")).toBeTruthy();
-    expect(within(sheet).getByRole("button", { name: /Approve/ })).toBeTruthy();
-    expect(within(sheet).getByRole("button", { name: /Deny/ })).toBeTruthy();
+    // One primary action. Approve/deny would only sometimes work — the machine
+    // is frequently not this one — and a button that sometimes lies is worse
+    // than a button that sends you where it always works.
+    expect(within(sheet).getByRole("button", { name: /Open chat/ })).toBeTruthy();
+    expect(within(sheet).queryByRole("button", { name: /Approve/ })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: /Deny/ })).toBeNull();
 
     const progress = within(sheet).getByRole("progressbar", { name: "Plan progress" });
     expect(progress.getAttribute("aria-valuenow")).toBe("2");
@@ -202,7 +238,7 @@ describe("ActivityPane", () => {
     expect(within(sheet).getByText(/2 of 4 · Verify the approval flow/)).toBeTruthy();
 
     // The columns are still mounted underneath — that is the point of a sheet.
-    expect(screen.getByRole("region", { name: "Sessions" })).toBeTruthy();
+    expect(agentsColumn()).toBeTruthy();
   });
 
   it("closes the detail before the pane, one layer per Escape", () => {
@@ -249,7 +285,7 @@ describe("ActivityPane", () => {
     render(<ActivityPane open onClose={() => {}} />);
 
     openDetail("Task approval");
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: /Open chat/ }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain("Studio Mac stopped responding.");
@@ -265,7 +301,7 @@ describe("ActivityPane", () => {
     render(<ActivityPane open onClose={onClose} />);
 
     openDetail("Task approval");
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: /Open chat/ }));
 
     await waitFor(() => {
       expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ id: "approval" }));
@@ -274,7 +310,7 @@ describe("ActivityPane", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("disables remote actions for last-known state from an offline machine", () => {
+  it("says a machine is offline without disabling the way in", () => {
     activityStore.setState({
       itemsById: {
         offline: item("offline", {
@@ -292,10 +328,11 @@ describe("ActivityPane", () => {
     openDetail("Task offline");
     const sheet = screen.getByRole("dialog", { name: "Task offline detail" });
     expect(within(sheet).getByText(/Cloud Mac is offline\./)).toBeTruthy();
+    // Opening reconnects, so it stays live; dismiss is local bookkeeping and
+    // never needed the machine at all.
     expect(
-      (within(sheet).getByRole("button", { name: /Approve/ }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    // Dismiss is local bookkeeping, so it stays live while the machine is away.
+      (within(sheet).getByRole("button", { name: /Open chat/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
     expect(
       (within(sheet).getByRole("button", { name: /Dismiss/ }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -328,15 +365,16 @@ describe("ActivityPane", () => {
     expect(group.querySelector('[data-activity-row="here"]')).toBeNull();
   });
 
-  it("dismisses one inbox row without touching the rest", async () => {
+  it("dismisses one notification row without touching the rest", async () => {
     const acknowledge = vi.fn(async () => {});
     installAde({ acknowledge });
     activityStore.setState({
-      itemsById: { first: item("first"), second: item("second") },
+      itemsById: { first: prItem("first"), second: prItem("second") },
     });
     render(<ActivityPane open onClose={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss Task first" }));
+    fireEvent.click(within(notificationsColumn())
+      .getByRole("button", { name: "Dismiss PR first" }));
 
     await waitFor(() => {
       expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
@@ -345,10 +383,16 @@ describe("ActivityPane", () => {
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
-  it("clears the whole inbox from its header", async () => {
-    installAde();
+  /**
+   * Clear all fired one acknowledge per row before this: N races against the
+   * revision fence, N rollbacks, and a bare `.catch(() => {})` swallowing every
+   * explanation — which is exactly what "the button does nothing" looked like.
+   */
+  it("clears the whole inbox in a single acknowledge", async () => {
+    const acknowledge = vi.fn(async () => {});
+    installAde({ acknowledge });
     activityStore.setState({
-      itemsById: { first: item("first"), second: item("second") },
+      itemsById: { first: prItem("first"), second: prItem("second") },
     });
     render(<ActivityPane open onClose={() => {}} />);
 
@@ -358,6 +402,146 @@ describe("ActivityPane", () => {
       expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
       expect(activityStore.getState().itemsById.second?.dismissedAt).not.toBeNull();
     });
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledWith(
+      expect.objectContaining({ itemIds: ["first", "second"] }),
+    );
+  });
+
+  it("says so, and puts the rows back, when clearing fails", async () => {
+    const acknowledge = vi.fn(async () => {
+      throw new Error("One or more Activity items changed after they loaded.");
+    });
+    installAde({ acknowledge });
+    activityStore.setState({
+      itemsById: { first: prItem("first"), second: prItem("second") },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("couldn’t clear 2 items");
+    });
+    expect(screen.getByRole("alert").textContent).toContain("changed after they loaded");
+    // Rolled back together: a half-cleared list is a state nobody believes.
+    expect(activityStore.getState().itemsById.first?.dismissedAt).toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A genuine per-item refusal: the row moved underneath the user, so refresh
+   * IS the right instruction and the copy has to say what changed.
+   */
+  it("names the rows that changed when the host refuses part of a clear", async () => {
+    const acknowledge = vi.fn(async () => ({
+      acknowledged: ["first"],
+      stale: ["second"],
+    }));
+    installAde({ acknowledge });
+    activityStore.setState({
+      itemsById: { first: prItem("first"), second: prItem("second") },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent)
+        .toContain("Cleared 1 of 2. 1 item changed while you were reading");
+    });
+    expect(screen.getByRole("alert").textContent).toContain("refresh Activity");
+    expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+  });
+
+  /**
+   * The same rollback, a different truth. A "Clear all" bigger than one relay
+   * batch aborts at the first chunk that fails, so the rest was never answered
+   * for — expired auth, a 5xx, a rejected preflight. Those rows did NOT change
+   * underneath anyone, and sending the user to refresh a list that is already
+   * correct is the lie this copy replaces.
+   */
+  it("says the request could not be reached rather than claiming rows changed", async () => {
+    const acknowledge = vi.fn(async () => ({
+      acknowledged: ["first"],
+      stale: [],
+      unreached: ["second"],
+      unreachedReason: "Failed to fetch",
+    }));
+    installAde({ acknowledge });
+    activityStore.setState({
+      itemsById: { first: prItem("first"), second: prItem("second") },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent)
+        .toContain("Cleared 1 of 2. ADE couldn’t reach 1 item");
+    });
+    const alert = screen.getByRole("alert").textContent!;
+    expect(alert).toContain("try again");
+    // The failure itself, so the user is not left guessing at the cause.
+    expect(alert).toContain("Failed to fetch");
+    // The stale sentence must not appear: nothing changed, and refreshing
+    // Activity would show exactly the same list back.
+    expect(alert).not.toContain("changed while you were reading");
+    expect(alert).not.toContain("refresh Activity");
+    // Rollback is unchanged: the unreached row comes back.
+    expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+  });
+
+  /**
+   * Idle roster rows never expire and were dismissable from nowhere: the rows
+   * that outlive everything were the only ones with no way out.
+   */
+  it("gives every session row a way out, including the idle tail", async () => {
+    const acknowledge = vi.fn(async () => {});
+    installAde({ acknowledge });
+    activityStore.setState({
+      itemsById: {
+        idle: item("idle", {
+          phase: "stale",
+          eventKind: "agent_running",
+          activityTier: "idle",
+          title: "Task idle",
+        }),
+      },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    fireEvent.click(within(agentsColumn())
+      .getByRole("button", { name: "Dismiss Task idle" }));
+
+    await waitFor(() => {
+      expect(activityStore.getState().itemsById.idle?.dismissedAt).not.toBeNull();
+    });
+  });
+
+  it("collapses a section and remembers it for the next open", () => {
+    activityStore.setState({ itemsById: { approval: item("approval") } });
+    const view = render(<ActivityPane open onClose={() => {}} />);
+
+    const header = () => document.body.querySelector<HTMLButtonElement>(
+      '[data-activity-section-toggle="needs-you"]',
+    )!;
+    expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(sessionRow("Task approval")).toBeTruthy();
+
+    fireEvent.click(header());
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(sessionRow("Task approval")).toBeNull();
+    // The region the header claims to control is the one that went away.
+    expect(document.getElementById(header().getAttribute("aria-controls")!)?.hidden).toBe(true);
+
+    view.unmount();
+    render(<ActivityPane open onClose={() => {}} />);
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(sessionRow("Task approval")).toBeNull();
   });
 
   it("filters both columns by machine and says so when nothing matches", async () => {
@@ -405,6 +589,61 @@ describe("ActivityPane", () => {
     expect(sessionRow("Task studio")).toBeTruthy();
   });
 
+  it("filters to one project and makes the counts follow", async () => {
+    activityStore.setState({
+      itemsById: {
+        here: item("here", { phase: "running", eventKind: "agent_running" }),
+        elsewhere: item("elsewhere", {
+          phase: "running",
+          eventKind: "agent_running",
+          project: { projectId: "notes", name: "Notes", rootPath: "/repo/notes" },
+        }),
+      },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    expect(screen.getByText(/2 sessions ·/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter by project" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Notes" }));
+
+    await waitFor(() => expect(sessionRow("Task here")).toBeNull());
+    expect(sessionRow("Task elsewhere")).toBeTruthy();
+    // The number the user reads has to describe the list they are looking at.
+    expect(screen.getByText(/1 session ·/)).toBeTruthy();
+  });
+
+  it("reads an over-filtered column as a filter result, not as all-clear", async () => {
+    activityStore.setState({
+      itemsById: {
+        here: item("here", { phase: "running", eventKind: "agent_running" }),
+        elsewhere: item("elsewhere", {
+          phase: "running",
+          eventKind: "agent_running",
+          machine: {
+            machineKey: "laptop",
+            name: "MacBook",
+            online: true,
+            lastSeenAt: null,
+          },
+          project: { projectId: "notes", name: "Notes", rootPath: "/repo/notes" },
+        }),
+      },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    // One machine, the other machine's project: an intersection with nothing
+    // in it, which is a filter result and must not read as "all agents idle".
+    fireEvent.click(screen.getByRole("button", { name: "Filter by machine" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Studio Mac" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter by project" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Notes" }));
+
+    await waitFor(() => expect(screen.getByText("No sessions match")).toBeTruthy());
+    expect(screen.queryByText("All agents idle")).toBeNull();
+    expect(screen.getByText("Nothing here matches")).toBeTruthy();
+  });
+
   it("counts machines and sessions in the header", () => {
     activityStore.setState({
       itemsById: {
@@ -421,7 +660,7 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
-    expect(screen.getByText(/1 of 2 machines online · 2 sessions/)).toBeTruthy();
+    expect(screen.getByText(/2 sessions · 1 of 2 machines online/)).toBeTruthy();
   });
 
   it("renders nothing at all when closed", () => {

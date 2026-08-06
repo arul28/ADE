@@ -2968,6 +2968,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           };
         },
         cancelLogin: async () => status(),
+        // Device sign-in runs inside a real ADE brain; the mock has none, so it
+        // reports the same refusal the hosted web adapter does.
+        startDeviceLogin: async () => {
+          throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+        },
+        pollDeviceLogin: async () => ({
+          status: "error" as const,
+          message: "Open ADE on the computer you want to reconnect, then try again there.",
+          intervalSec: null,
+          authStatus: status(),
+        }),
+        cancelDeviceLogin: async () => status(),
         signOut: async () => {
           setSignedOut(true);
           return signedOutStatus;

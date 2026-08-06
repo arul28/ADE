@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,9 +10,14 @@ import {
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { sessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import {
+  ACTIVITY_STATE_GLYPHS,
+  ACTIVITY_STATE_GROUPS,
   activityPhaseIsSessionDerived,
   activityPhasePresentation,
   activityItemPresentation,
+  activityStateElapsed,
+  activityStateGroup,
+  activityStateSentence,
   SESSION_DERIVED_ACTIVITY_PHASES,
   type AttentionTone,
 } from "./activityPresentation";
@@ -193,5 +200,172 @@ describe("Activity phase presentation", () => {
     expect(attentionPhasePriority("blocked")).toBeGreaterThan(
       attentionPhasePriority("needs_you"),
     );
+  });
+});
+
+/**
+ * The state glyph language. Other surfaces — the notch strip, the iOS widget
+ * rows, the Live Activity — mirror this table by hand, so the rules it encodes
+ * have to be asserted here or they drift into four different ambers.
+ */
+describe("Activity state glyphs", () => {
+  it("gives every state exactly one glyph and one hue", () => {
+    expect(ACTIVITY_STATE_GROUPS).toEqual([
+      "needs-you",
+      "failed",
+      "planning",
+      "working",
+      "done",
+    ]);
+    expect(ACTIVITY_STATE_GROUPS.map((group) => [
+      group,
+      ACTIVITY_STATE_GLYPHS[group].tone,
+      ACTIVITY_STATE_GLYPHS[group].glyph,
+    ])).toEqual([
+      ["needs-you", "amber", "needs-you"],
+      ["failed", "red", "failed"],
+      ["planning", "violet", "planning"],
+      ["working", "blue", "working"],
+      ["done", "emerald", "done"],
+    ]);
+  });
+
+  it("spends amber on the raised hand and nothing else", () => {
+    const amber = ACTIVITY_STATE_GROUPS.filter(
+      (group) => ACTIVITY_STATE_GLYPHS[group].tone === "amber",
+    );
+    expect(amber).toEqual(["needs-you"]);
+  });
+
+  /**
+   * `cyan` is the spare for a future pull-request distinction. Handing it to a
+   * session state would settle it by accident — those five hues are decided.
+   */
+  it("never hands cyan to a session state", () => {
+    const tones = ACTIVITY_STATE_GROUPS.map((group) => ACTIVITY_STATE_GLYPHS[group].tone);
+    expect(tones).not.toContain("cyan");
+    expect(new Set(tones).size).toBe(tones.length);
+  });
+
+  it("files every phase into a state group, and idle rows into done", () => {
+    const group = (phase: AttentionPhase, patch: Partial<AttentionItem> = {}) =>
+      activityStateGroup({ phase, kind: "agent", ...patch } as AttentionItem);
+
+    expect(group("needs_you")).toBe("needs-you");
+    expect(group("failed")).toBe("failed");
+    expect(group("checks_failing")).toBe("failed");
+    expect(group("running")).toBe("working");
+    expect(group("stale")).toBe("working");
+    expect(group("completed")).toBe("done");
+    expect(group("running", { chatActivityMode: "planning" })).toBe("planning");
+    // A preserved phase does not rescue a row from the quiet tail.
+    expect(group("running", { activityTier: "idle" })).toBe("done");
+    // Nobody else's move may borrow the amber heading.
+    expect(group("review_requested")).toBe("working");
+  });
+
+  /**
+   * The pin for the four mirrors.
+   *
+   * `activityStateGroup` is implemented once here and copied three more times —
+   * the native notch (Swift), the iOS app (Swift), and the push relay (a
+   * hermetic Worker that imports nothing from this repo). Prose in a doc
+   * comment did not hold them together: the iOS copy drifted three separate
+   * ways (`merge_ready`, idle-tier demotion, how `planning` is derived) in the
+   * commit that created it. Each implementation now runs the SAME fixture, so a
+   * change made here fails the other three until they follow.
+   *
+   * This suite is the canonical side: if a case here fails, the fixture is
+   * right and this function is wrong, or the rule genuinely changed and the
+   * fixture must be updated first.
+   */
+  it("matches the cross-language state-group fixture on every case", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("../../../shared/attention/activityStateGroup.cases.json", import.meta.url),
+      "utf8",
+    )) as {
+      cases: {
+        name: string;
+        phase: AttentionPhase;
+        tier: "signal" | "ambient" | "idle";
+        chatActivityMode: string | null;
+        expected: string;
+      }[];
+    };
+
+    expect(fixture.cases.length).toBeGreaterThan(0);
+    for (const testCase of fixture.cases) {
+      const actual = activityStateGroup({
+        kind: "agent",
+        phase: testCase.phase,
+        activityTier: testCase.tier,
+        chatActivityMode: testCase.chatActivityMode,
+      } as AttentionItem);
+      expect(`${testCase.name}: ${actual}`).toBe(`${testCase.name}: ${testCase.expected}`);
+    }
+
+    // Every group the fixture claims to produce is a group that exists, so a
+    // typo in `expected` fails here rather than quietly asserting nothing.
+    const expected = new Set(fixture.cases.map((testCase) => testCase.expected));
+    for (const group of expected) {
+      expect(ACTIVITY_STATE_GROUPS).toContain(group);
+    }
+  });
+
+  it("reads a planning turn with the sidebar's own words", () => {
+    const presentation = activityItemPresentation({
+      phase: "running",
+      kind: "agent",
+      chatActivityMode: "planning",
+    } as AttentionItem);
+    expect(presentation).toMatchObject({ label: "Planning", tone: "violet", glyph: "planning" });
+  });
+
+  it("says the state as a sentence about a named agent", () => {
+    const sentence = (phase: AttentionPhase, patch: Partial<AttentionItem> = {}) =>
+      activityStateSentence({
+        phase,
+        kind: "agent",
+        provider: "claude",
+        ...patch,
+      } as AttentionItem);
+
+    expect(sentence("needs_you")).toBe("Claude is asking a question");
+    expect(sentence("running")).toBe("Claude is working");
+    expect(sentence("running", { chatActivityMode: "planning" })).toBe("Claude is planning");
+    expect(sentence("failed")).toBe("Claude stopped on an error");
+    expect(sentence("stale")).toBe("Claude has gone quiet");
+    expect(sentence("completed")).toBe("Claude is done");
+    // A pull request has no agent to name, so it says what it is instead.
+    expect(activityStateSentence({
+      phase: "merge_ready",
+      kind: "pull_request",
+    } as AttentionItem)).toBe("Ready to merge");
+  });
+
+  /**
+   * `statusSince` is immutable for the life of a phase; `updatedAt` churns on
+   * every cosmetic republish. Reading elapsed off the wrong one is how a
+   * "needs you for 4m" ticker resets itself every poll.
+   */
+  it("measures elapsed from the phase, not from the last republish", () => {
+    const now = Date.parse("2026-08-01T12:00:00.000Z");
+    expect(activityStateElapsed({
+      statusSince: "2026-08-01T11:56:00.000Z",
+      occurredAt: "2026-08-01T09:00:00.000Z",
+      updatedAt: "2026-08-01T11:59:59.000Z",
+    } as AttentionItem, now)).toBe("4m");
+
+    // No `statusSince` from an older publisher: `occurredAt` is the honest
+    // approximation, and a future timestamp is no reading at all.
+    expect(activityStateElapsed({
+      occurredAt: "2026-08-01T11:00:00.000Z",
+      updatedAt: "2026-08-01T11:59:00.000Z",
+    } as AttentionItem, now)).toBe("1h");
+    expect(activityStateElapsed({
+      statusSince: "2026-08-01T12:30:00.000Z",
+      occurredAt: "2026-08-01T12:30:00.000Z",
+      updatedAt: "2026-08-01T12:30:00.000Z",
+    } as AttentionItem, now)).toBeNull();
   });
 });

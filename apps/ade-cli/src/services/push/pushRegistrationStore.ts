@@ -55,6 +55,27 @@ type PushRegistrationFile = {
   lastPublishedRevisionAccountOwnerId: string | null;
   /** Durable per-item revision floor so live-to-roster fallback survives restart. */
   lastPublishedRevisionById: Record<string, number>;
+  /**
+   * Machine keys this machine published under before the current one. The
+   * relay's epoch sweep is machine-scoped, so a rotated key's rows become
+   * unreachable garbage that permanently duplicates every session in the
+   * account feed. Recording the superseded key is what lets a sweep reach them.
+   * Bounded; the oldest entries are dropped first.
+   */
+  previousMachineKeys: string[];
+  /**
+   * Set when the registration file existed but could not be used as it stood.
+   * Durable so identity loss stays loud on every later status read, not just in
+   * the log line of whichever process happened to notice.
+   */
+  identityRecoveryError: string | null;
+  /**
+   * When the account owner removed this machine. The relay answers `403
+   * machine_revoked` from that moment on, so this is a TERMINAL state, not a
+   * transient error: publishing must stop until the user deliberately re-pairs.
+   * Durable so a brain restart doesn't resume hammering a revoked endpoint.
+   */
+  machineRevokedAt: string | null;
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
@@ -67,15 +88,33 @@ export type PushStoreStatusSnapshot = {
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
+  /** Non-null when this machine's push identity was lost or repaired. */
+  identityRecoveryError: string | null;
+  /** Superseded machine keys whose relay rows still need sweeping. */
+  previousMachineKeys: string[];
+  /** Set once the account owner removed this machine; terminal until re-paired. */
+  machineRevokedAt: string | null;
 };
 
 type PushRegistrationStoreArgs = {
   filePath: string;
+  /**
+   * Optional so existing callers keep working. Without it, a lost machine
+   * identity is still durable in the file and the status snapshot — it just
+   * isn't logged.
+   */
+  logger?: {
+    warn: (message: string, meta?: Record<string, unknown>) => void;
+    error: (message: string, meta?: Record<string, unknown>) => void;
+  } | null;
 };
 
 const MACHINE_KEY_BYTES = 16; // 32 hex chars — matches the relay's 32-64 hex key pattern.
 const MACHINE_SECRET_BYTES = 24; // 48 hex chars — inside the relay's 32-128 char secret bounds.
 const ATTENTION_ACK_MAX = 512;
+const MACHINE_KEY_PATTERN = /^[0-9a-f]{32,64}$/i;
+/** Enough history for repeated corruption without unbounded growth. */
+const PREVIOUS_MACHINE_KEY_MAX = 8;
 
 function attentionAcknowledgmentKey(
   accountOwnerId: string | null,
@@ -121,10 +160,31 @@ function createEmptyFile(): PushRegistrationFile {
     activityRosterEpoch: 0,
     lastPublishedRevisionAccountOwnerId: null,
     lastPublishedRevisionById: {},
+    previousMachineKeys: [],
+    identityRecoveryError: null,
+    machineRevokedAt: null,
     lastPublishAt: null,
     lastPublishError: null,
     lastRelayContactAt: null,
   };
+}
+
+/** Hex machine keys found anywhere in a damaged file, most-likely first. */
+function salvageMachineKeys(parsed: unknown): string[] {
+  const record = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  if (!record) return [];
+  const candidates: unknown[] = [
+    record.machineKey,
+    ...(Array.isArray(record.previousMachineKeys) ? record.previousMachineKeys : []),
+  ];
+  const keys: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (!MACHINE_KEY_PATTERN.test(trimmed)) continue;
+    if (!keys.includes(trimmed)) keys.push(trimmed);
+  }
+  return keys;
 }
 
 /**
@@ -141,7 +201,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     return Boolean(
       value
       && typeof value.machineKey === "string"
-      && /^[0-9a-f]{32,64}$/i.test(value.machineKey)
+      && MACHINE_KEY_PATTERN.test(value.machineKey)
       && typeof value.machineSecret === "string"
       && value.machineSecret.length >= 32
       && value.devices
@@ -160,9 +220,42 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     cache = value;
   };
 
+  /**
+   * Raw read result. `present` distinguishes "no identity yet" (mint freely)
+   * from "identity exists but is damaged" (never silently replace it).
+   */
+  type RawRead = {
+    present: boolean;
+    parsed: unknown;
+    readError: string | null;
+  };
+
+  const readRaw = (): RawRead => {
+    if (!fs.existsSync(args.filePath)) {
+      return { present: false, parsed: null, readError: null };
+    }
+    try {
+      const text = fs.readFileSync(args.filePath, "utf8");
+      return {
+        present: true,
+        parsed: safeJsonParse<unknown>(text, null),
+        readError: null,
+      };
+    } catch (error) {
+      // Unreadable is NOT absent: a permissions or I/O fault must not be
+      // answered by minting a replacement identity over the top of it.
+      return {
+        present: true,
+        parsed: null,
+        readError: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
   const readValidFile = (): PushRegistrationFile | null => {
-    if (!fs.existsSync(args.filePath)) return null;
-    const parsed = safeJsonParse<PushRegistrationFile | null>(fs.readFileSync(args.filePath, "utf8"), null);
+    const raw = readRaw();
+    if (!raw.present) return null;
+    const parsed = raw.parsed as PushRegistrationFile | null;
     if (!isValid(parsed)) return null;
     // Backfill defaults for fields added after the file was first written.
     return {
@@ -265,18 +358,111 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
             && Number(revision) >= 0)
           .map(([itemId, revision]) => [itemId, Number(revision)]),
       ),
+      previousMachineKeys: (Array.isArray(parsed.previousMachineKeys) ? parsed.previousMachineKeys : [])
+        .filter((key): key is string => typeof key === "string" && MACHINE_KEY_PATTERN.test(key.trim()))
+        .map((key) => key.trim())
+        .filter((key, index, all) => key !== parsed.machineKey && all.indexOf(key) === index)
+        .slice(-PREVIOUS_MACHINE_KEY_MAX),
+      identityRecoveryError: typeof parsed.identityRecoveryError === "string"
+        ? parsed.identityRecoveryError.trim() || null
+        : null,
+      machineRevokedAt: typeof parsed.machineRevokedAt === "string"
+        && !Number.isNaN(Date.parse(parsed.machineRevokedAt))
+        ? parsed.machineRevokedAt
+        : null,
       lastPublishAt: parsed.lastPublishAt ?? null,
       lastPublishError: parsed.lastPublishError ?? null,
       lastRelayContactAt: parsed.lastRelayContactAt ?? null,
     };
   };
 
+  /**
+   * Recover an identity from a file that exists but failed validation, rather
+   * than minting a fresh machineKey behind the user's back. A new key is
+   * PERMANENT duplication: the relay's epoch sweep is machine-scoped, so every
+   * row the old key published becomes unreachable and the account feed carries
+   * two of everything forever.
+   *
+   * Two outcomes, in order of preference:
+   *  1. Repair — the file still holds a well-formed machineKey/machineSecret
+   *     pair (typically a schema/device-map problem). Keep the identity and
+   *     rebuild the rest of the file around it. Nothing is orphaned.
+   *  2. Re-mint with provenance — nothing usable survives. Quarantine the
+   *     damaged file so it is never silently clobbered, carry every salvageable
+   *     old key forward in `previousMachineKeys` so a relay sweep can still
+   *     reach those rows, and record the error durably.
+   */
+  const recoverDamagedFile = (raw: RawRead): PushRegistrationFile => {
+    const detail = raw.readError ?? "registration file failed validation";
+    const parsedRecord = raw.parsed && typeof raw.parsed === "object"
+      ? raw.parsed as Record<string, unknown>
+      : null;
+    const machineKey = typeof parsedRecord?.machineKey === "string"
+      && MACHINE_KEY_PATTERN.test(parsedRecord.machineKey.trim())
+      ? parsedRecord.machineKey.trim()
+      : null;
+    const machineSecret = typeof parsedRecord?.machineSecret === "string"
+      && parsedRecord.machineSecret.trim().length >= 32
+      ? parsedRecord.machineSecret.trim()
+      : null;
+    const salvagedKeys = salvageMachineKeys(raw.parsed);
+
+    if (machineKey && machineSecret) {
+      args.logger?.warn?.("push.registration_file_repaired", {
+        filePath: args.filePath,
+        detail,
+      });
+      const repaired: PushRegistrationFile = {
+        ...createEmptyFile(),
+        machineKey,
+        machineSecret,
+        previousMachineKeys: salvagedKeys
+          .filter((key) => key !== machineKey)
+          .slice(-PREVIOUS_MACHINE_KEY_MAX),
+        identityRecoveryError: `Push registration file was repaired: ${detail}`,
+      };
+      write(repaired);
+      return repaired;
+    }
+
+    // Quarantine before overwriting: the damaged bytes are the only remaining
+    // evidence of what this machine used to be, and a support path (or a later
+    // salvage) needs them.
+    let quarantinePath: string | null = null;
+    try {
+      quarantinePath = `${args.filePath}.corrupt-${Date.now()}`;
+      fs.renameSync(args.filePath, quarantinePath);
+    } catch {
+      quarantinePath = null;
+    }
+    args.logger?.error?.("push.registration_identity_lost", {
+      filePath: args.filePath,
+      quarantinePath,
+      salvagedMachineKeyCount: salvagedKeys.length,
+      detail,
+    });
+    const replacement: PushRegistrationFile = {
+      ...createEmptyFile(),
+      previousMachineKeys: salvagedKeys.slice(-PREVIOUS_MACHINE_KEY_MAX),
+      identityRecoveryError:
+        `Push machine identity was lost and re-minted (${detail}).`
+        + ` Re-pair this machine's phones; ${salvagedKeys.length} superseded key(s) still need a relay sweep.`,
+    };
+    write(replacement);
+    return replacement;
+  };
+
   const load = (): PushRegistrationFile => {
     if (cache) return cache;
-    const existing = readValidFile();
-    if (existing) {
-      cache = existing;
-      return existing;
+    const raw = readRaw();
+    const parsed = raw.parsed as PushRegistrationFile | null;
+    if (raw.present) {
+      const existing = isValid(parsed) ? readValidFile() : null;
+      if (existing) {
+        cache = existing;
+        return existing;
+      }
+      return recoverDamagedFile(raw);
     }
     // Mint the identity once, exclusively (O_EXCL). If two `ade` processes race
     // on first run the loser gets EEXIST and adopts the winner's identity rather
@@ -293,6 +479,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
           cache = winner;
           return winner;
         }
+        // The race winner wrote something unusable — recover from THAT file
+        // rather than stamping a divergent identity over it.
+        return recoverDamagedFile(readRaw());
       }
       // No exclusive create and nothing valid to adopt — best-effort overwrite.
       write(created);
@@ -589,7 +778,69 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         lastPublishAt: file.lastPublishAt,
         lastPublishError: file.lastPublishError,
         lastRelayContactAt: file.lastRelayContactAt,
+        identityRecoveryError: file.identityRecoveryError,
+        previousMachineKeys: [...file.previousMachineKeys],
+        machineRevokedAt: file.machineRevokedAt,
       };
+    },
+
+    /** Has the account owner removed this machine? Terminal until re-paired. */
+    isMachineRevoked(): boolean {
+      return load().machineRevokedAt != null;
+    },
+
+    /**
+     * Record the relay's `403 machine_revoked`. First writer wins: the earliest
+     * observed revocation instant is the honest one, and a later 403 must not
+     * keep moving the timestamp forward on every retry.
+     */
+    recordMachineRevoked(revokedAt?: string | null): void {
+      const file = load();
+      if (file.machineRevokedAt) return;
+      const parsed = typeof revokedAt === "string" && !Number.isNaN(Date.parse(revokedAt))
+        ? revokedAt
+        : new Date().toISOString();
+      write({ ...file, machineRevokedAt: parsed });
+    },
+
+    /**
+     * Clear the revocation after a deliberate re-pair. Only a user-initiated
+     * link may call this — clearing it on a heartbeat is what let a removed
+     * machine resurrect itself.
+     */
+    clearMachineRevoked(): void {
+      const file = load();
+      if (!file.machineRevokedAt) return;
+      write({ ...file, machineRevokedAt: null });
+    },
+
+    /**
+     * Machine keys this machine has published under and abandoned. The relay
+     * sweep is machine-scoped, so their rows are only reachable by key —
+     * whoever performs the sweep reads them from here.
+     */
+    listPreviousMachineKeys(): string[] {
+      return [...load().previousMachineKeys];
+    },
+
+    /**
+     * Drop superseded keys once their relay rows have been swept, so the list
+     * does not keep asking for work that is already done.
+     */
+    clearPreviousMachineKeys(keys?: string[]): void {
+      const file = load();
+      if (file.previousMachineKeys.length === 0) return;
+      const swept = keys ? new Set(keys) : null;
+      const remaining = swept
+        ? file.previousMachineKeys.filter((key) => !swept.has(key))
+        : [];
+      if (remaining.length === file.previousMachineKeys.length) return;
+      write({
+        ...file,
+        previousMachineKeys: remaining,
+        // The recovery notice is only actionable while something is unswept.
+        identityRecoveryError: remaining.length > 0 ? file.identityRecoveryError : null,
+      });
     },
   };
 }

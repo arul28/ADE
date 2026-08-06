@@ -96,3 +96,11 @@ apps/desktop/resources/whisper/*
 .claude/scheduled_tasks.lock
 apps/web/public/images/updatedImages/
 .derivedData/
+
+# Test debris from suites that force win32 path semantics on a POSIX host:
+# `path.join` then yields CWD-relative names containing literal backslashes
+# (e.g. authDetector's Windows cursor-agent fixtures). They are invalid
+# filenames on Windows, so committing one makes `git checkout` fail on every
+# Windows CI runner — the checkout, not a test. Ignore them so a broad
+# `git add -A` cannot sweep them in when a test throws before its cleanup.
+*\\*

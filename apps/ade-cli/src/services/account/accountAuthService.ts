@@ -23,6 +23,12 @@ const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Local lifetime of a directory-minted pairing grant. Mirrors the directory's
+ * own `PAIRING_GRANT_TTL_MS`; if the two ever drift, the shorter one wins and
+ * the only cost is a grant the machine declines to send.
+ */
+const PAIRING_GRANT_TTL_MS = 10 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
 // The desktop and CLI brain can refresh the same rotating Clerk grant from
 // separate processes. Give the winning process enough time to receive and
@@ -216,6 +222,17 @@ export type AccountAuthService = {
   signOut(): AccountAuthStatus;
   /** Notification emitted after a local or externally persisted sign-in. */
   onSignedIn(listener: () => void): () => void;
+  /**
+   * Take the single-use pairing grant the directory minted when this machine
+   * last completed a `/device/*` sign-in, or `null` when there is none.
+   *
+   * Reading it consumes it: a grant is spendable exactly once server-side, so
+   * holding it locally past the attempt that spends it only creates a second
+   * copy of a dead secret. Deliberately NOT an `account.call` action — it is a
+   * seam between the auth service and this machine's own publisher, and nothing
+   * that crosses the RPC boundary should be able to ask for it.
+   */
+  consumePairingGrant(): string | null;
   dispose(): void;
 };
 
@@ -760,6 +777,13 @@ export function createAccountAuthService(args: {
   credentialStore: SyncCredentialStore;
   getOAuthConfig: () => AccountOAuthConfig | Promise<AccountOAuthConfig>;
   getDeviceBridgeUrl?: () => string | Promise<string>;
+  /**
+   * This machine's sync machine key — the same identity the account directory
+   * files it under. Sent when a device login starts so the grant minted at the
+   * end of that sign-in can be bound to this machine and no other. Optional:
+   * without it the login still works and the grant path is simply unavailable.
+   */
+  getMachineKey?: () => string | null;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   deviceBridgeRequestTimeoutMs?: number;
   userinfoRequestTimeoutMs?: number;
@@ -809,6 +833,13 @@ export function createAccountAuthService(args: {
   let envRefreshToken: string | null = null;
   let envCredentialEpoch = 0;
   let authEpoch = 0;
+  /**
+   * Single-use pairing grant from the last completed device sign-in, held only
+   * until this machine's publisher spends it (or it expires). The local expiry
+   * mirrors the directory's, so a grant the server would already refuse is
+   * never put on the wire.
+   */
+  let pairingGrant: { value: string; expiresAtMs: number } | null = null;
   let sessionReadState: AccountSessionReadState = "missing";
   let sessionReadFailureReason: AccountSessionReadFailureReason | null = null;
   const setSessionReadState = (
@@ -1486,12 +1517,22 @@ export function createAccountAuthService(args: {
     }
     const deviceSecret = randomBytes(32).toString("base64url");
     const bridgeUrl = await resolveDeviceBridgeUrl();
+    let machineKey: string | null = null;
+    try {
+      machineKey = args.getMachineKey?.()?.trim() || null;
+    } catch {
+      // An unreadable machine identity costs the grant, never the sign-in.
+      machineKey = null;
+    }
     let response: Response;
     try {
       response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
         method: "POST",
         headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({ device_secret: deviceSecret }),
+        body: JSON.stringify({
+          device_secret: deviceSecret,
+          ...(machineKey ? { machine_key: machineKey } : {}),
+        }),
       });
     } catch (error) {
       throw deviceBridgeStartError(error);
@@ -1700,6 +1741,14 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
+    // The directory's proof that a human just signed in on THIS machine, for
+    // the case where the access token carries no authentication-time claim the
+    // directory could check instead. Kept in memory only: it is a bearer secret
+    // with a minutes-long life whose one consumer — this machine's publisher —
+    // runs in this same process, so writing it to disk would widen its blast
+    // radius without extending its usefulness.
+    const grant = readNonEmptyString(payload.pairing_grant);
+    pairingGrant = grant ? { value: grant, expiresAtMs: now() + PAIRING_GRANT_TTL_MS } : null;
     const record: AccountSessionRecord = session.suppressEnvCredential
       ? { ...baseRecord, suppressEnvCredential: true }
       : baseRecord;
@@ -2108,6 +2157,12 @@ export function createAccountAuthService(args: {
   // that completes AFTER the CLI gave up can no longer exchange the code and
   // silently persist a session. Unlike signOut it MUST NOT bump authEpoch or wipe
   // the persisted account. Idempotent: a no-op if the session is unknown or done.
+  //
+  // Serves BOTH sign-in flows — it checks the loopback `pendingSessions` map and
+  // then the `pendingDeviceSessions` map — so there is no separate device-flow
+  // canceller. The desktop's `cancelDeviceLogin` bridge method routes here, to
+  // this same `"cancelLogin"` brain action; grepping the brain for
+  // `cancelDeviceLogin` finds nothing by design.
   const cancelLogin = (sessionId: string): void => {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) return;
@@ -2123,8 +2178,18 @@ export function createAccountAuthService(args: {
     }
   };
 
+  const consumePairingGrant = (): string | null => {
+    const held = pairingGrant;
+    pairingGrant = null;
+    return held && held.expiresAtMs > now() ? held.value : null;
+  };
+
   const signOut = (): AccountAuthStatus => {
     authEpoch += 1;
+    // A grant belongs to the session that earned it. Signing out ends that
+    // session, so anything still holding one is holding a stale claim about a
+    // user who is no longer here.
+    pairingGrant = null;
     persistSession(null);
     for (const session of pendingSessions.values()) {
       finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
@@ -2177,6 +2242,7 @@ export function createAccountAuthService(args: {
       signedInListeners.add(listener);
       return () => signedInListeners.delete(listener);
     },
+    consumePairingGrant,
     dispose,
   };
 }

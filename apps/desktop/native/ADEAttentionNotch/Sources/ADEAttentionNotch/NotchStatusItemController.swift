@@ -97,6 +97,8 @@ final class NotchStatusItemController {
         }
         let counts = model.counts
         if counts.needsYou > 0 { return .systemOrange }
+        if (counts.failed ?? 0) > 0 { return .systemRed }
+        if (counts.planning ?? 0) > 0 { return .systemPurple }
         if counts.working > 0 { return .systemBlue }
         if counts.done > 0 { return .systemGreen }
         return .systemGray
@@ -109,6 +111,8 @@ final class NotchStatusItemController {
         let counts = model.counts
         var parts: [String] = []
         if counts.needsYou > 0 { parts.append("\(counts.needsYou) need\(counts.needsYou == 1 ? "s" : "") you") }
+        if let failed = counts.failed, failed > 0 { parts.append("\(failed) failed") }
+        if let planning = counts.planning, planning > 0 { parts.append("\(planning) planning") }
         if counts.working > 0 { parts.append("\(counts.working) working") }
         if counts.done > 0 { parts.append("\(counts.done) done") }
         guard parts.isEmpty else { return parts.joined(separator: " · ") }

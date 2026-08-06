@@ -46,11 +46,14 @@ class FakeD1Statement {
   }
 }
 
+type RevokedMachineRow = { user_id: string; machine_key: string; revoked_at: string };
+
 class FakeD1Database {
   machines: MachineRow[] = [];
   devices: DeviceRow[] = [];
   activityTokens: ActivityTokenRow[] = [];
   suppressions: SuppressionRow[] = [];
+  revokedMachines: RevokedMachineRow[] = [];
   rateCounters = new Map<string, { window_start: number; count: number; updated_at: string }>();
   private nextBatchFailureIndex: number | null = null;
 
@@ -94,6 +97,15 @@ class FakeD1Database {
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
+    if (sql.includes("from attention_revoked_machines")) {
+      // Keyed by machine key alone: the legacy machine-signed routes have no
+      // account id, so revocation on ANY account blocks the key.
+      const [machineKey] = values;
+      const row = [...this.revokedMachines]
+        .filter((entry) => entry.machine_key === machineKey)
+        .sort((left, right) => right.revoked_at.localeCompare(left.revoked_at))[0];
+      return (row ? { revoked_at: row.revoked_at } : null) as T | null;
+    }
     if (sql.includes("from machines")) {
       const [machineKey] = values;
       return (this.machines.find((row) => row.machine_key === machineKey) ?? null) as T | null;
@@ -1318,5 +1330,155 @@ describe("push relay", () => {
     // /health always bypasses every gate so monitoring never trips the budget.
     const health = await handleRequest(new Request("https://push.example/health"), env);
     expect(health.status).toBe(200);
+  });
+
+  it("stops a removed machine delivering through the legacy signed routes", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    const register = async () => handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: `/machines/${MACHINE_KEY}/devices/phone-1`,
+        body: { apnsToken: "ab".repeat(32), bundleId: "com.ade.ios", apsEnvironment: "sandbox" },
+      }),
+      env,
+    );
+    expect((await register()).status).toBe(200);
+
+    const apnsCalls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("push.apple.com")) {
+        apnsCalls.push(url);
+        return new Response(null, { status: 200, headers: { "apns-id": "apns-1" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    const publish = async () => handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: { notifications: [{ title: "Claude needs input", phase: "waiting" }] },
+      }),
+      env,
+    );
+    const activityToken = async () => handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/live-activity-tokens`,
+        body: { deviceId: "phone-1", activityId: "agent-runs", token: "ef".repeat(32) },
+      }),
+      env,
+    );
+    expect((await publish()).status).toBe(200);
+    expect(apnsCalls).toHaveLength(1);
+
+    // The account route purges this machine's device_registrations /
+    // live_activity_tokens rows when it revokes, but nothing stops an older or
+    // modified binary from re-creating them with values it still holds locally,
+    // so every legacy write path is gated on the revocation too.
+    db.revokedMachines.push({
+      user_id: "account-a",
+      machine_key: MACHINE_KEY,
+      revoked_at: "2026-08-05T08:00:00.000Z",
+    });
+
+    const blockedPublish = await publish();
+    expect(blockedPublish.status).toBe(403);
+    expect(await blockedPublish.json()).toMatchObject({
+      code: "machine_revoked",
+      revokedAt: "2026-08-05T08:00:00.000Z",
+    });
+    // Terminal, and no push escaped: the alert must not reach the owner's phone.
+    expect(apnsCalls).toHaveLength(1);
+
+    const blockedToken = await activityToken();
+    expect(blockedToken.status).toBe(403);
+    expect(await blockedToken.json()).toMatchObject({ code: "machine_revoked" });
+    expect(db.activityTokens).toHaveLength(0);
+
+    // Registration is how a device becomes a delivery target at all. A revoked
+    // machine must not be able to stage one and wait for the revocation to be
+    // cleared — which an ownership transfer legitimately does.
+    const registeredDevices = db.devices.length;
+    const blockedRegistration = await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: `/machines/${MACHINE_KEY}/devices/phone-2`,
+        body: { bundleId: "com.ade.ios", apsEnvironment: "sandbox", apnsToken: "ab".repeat(32) },
+      }),
+      env,
+    );
+    expect(blockedRegistration.status).toBe(403);
+    expect(await blockedRegistration.json()).toMatchObject({ code: "machine_revoked" });
+    expect(db.devices).toHaveLength(registeredDevices);
+  });
+
+  it("blocks a machine key revoked on any account, not only the removing one", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    // A machine key is machine identity, not account identity. This is a
+    // de-authorization path, so "revoked somewhere" is the safe read: the cost
+    // of over-blocking is a re-pair, the cost of under-blocking is a stolen
+    // machine still pushing to its former owner's phone.
+    db.revokedMachines.push({
+      user_id: "some-other-account",
+      machine_key: MACHINE_KEY,
+      revoked_at: "2026-08-05T08:00:00.000Z",
+    });
+    const blocked = await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: { notifications: [{ title: "still here", phase: "waiting" }] },
+      }),
+      env,
+    );
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toMatchObject({ code: "machine_revoked" });
+  });
+
+  it("never runs the fan-out Attention sweeps from a user-facing request", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    // The sweeps issue per-account revision commits and outbound APNs pushes.
+    // They are cron-only; a device re-registration or publish must not pay for
+    // them. Both would touch `attention_items` — proving they never run means
+    // proving the request path never queries it.
+    const attentionReads: string[] = [];
+    const originalPrepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      if (/attention_items|attention_machine_links|attention_revisions/.test(sql)) {
+        attentionReads.push(sql.replace(/\s+/g, " ").trim().slice(0, 60));
+      }
+      return originalPrepare(sql);
+    }) as typeof db.prepare;
+    try {
+      expect((await handleRequest(
+        await signedRequest({
+          method: "PUT",
+          path: `/machines/${MACHINE_KEY}/devices/phone-1`,
+          body: { apnsToken: "ab".repeat(32), bundleId: "com.ade.ios", apsEnvironment: "sandbox" },
+        }),
+        env,
+      )).status).toBe(200);
+
+      vi.stubGlobal("fetch", vi.fn(async () =>
+        new Response(null, { status: 200, headers: { "apns-id": "apns-1" } })
+      ));
+      expect((await handleRequest(
+        await signedRequest({
+          method: "POST",
+          path: `/machines/${MACHINE_KEY}/publish`,
+          body: { notifications: [{ title: "hello", phase: "waiting" }] },
+        }),
+        env,
+      )).status).toBe(200);
+
+      expect(attentionReads).toEqual([]);
+    } finally {
+      db.prepare = originalPrepare;
+    }
   });
 });

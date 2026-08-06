@@ -59,7 +59,70 @@ export type AccountMachineRegistration = {
    * route kind.
    */
   retainRelayEndpoints?: true;
+  /**
+   * Marks a deliberate, user-initiated link of this machine to the account —
+   * the only thing the directory accepts as clearing a revocation.
+   *
+   * NEVER set on the 30-second heartbeat. A removed machine that keeps
+   * heartbeating is exactly how removal stopped being durable: the directory
+   * re-inserted the row it had just deleted. A heartbeat asserts "still here",
+   * which is only meaningful if the account already agrees this machine
+   * belongs; re-joining is a separate, explicit act.
+   */
+  pairing?: true;
+  /**
+   * Single-use proof, minted by the directory when this machine last completed
+   * an interactive sign-in it observed, that the `pairing` above is backed by a
+   * human who just authenticated here.
+   *
+   * Sent only alongside `pairing`, and only when one is held. It is the second
+   * of two independent proofs — the first being a freshly-authenticated claim
+   * on the access token itself — and it exists because that claim is not in the
+   * documented claim set for the OAuth access tokens ADE authenticates with.
+   * Without it, an account removal could be unrecoverable rather than durable.
+   */
+  pairingGrant?: string;
 };
+
+/**
+ * What the desktop and the CLI say when the directory refuses a re-pair for
+ * want of a fresh sign-in. It has to name the action, not the status code: a
+ * bare 403 tells the owner their machine is gone and nothing about the one
+ * thing that brings it back.
+ *
+ * Worded to survive being wrapped: the desktop's reconnect banner prefixes it
+ * with "Couldn't reconnect this computer:" and follows it with "It's still
+ * disconnected from your account.", and `ade doctor` prints it alone.
+ */
+export const PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE =
+  "Sign in to your ADE account again on this computer to reconnect it.";
+
+/**
+ * The directory's machine-readable answer for a refused pairing publish, taken
+ * verbatim from the 403 body's `code`.
+ *
+ * This is the discriminator callers branch on. Both refusals surface as
+ * `state: "http_error"` — they differ only in what the user can do about it —
+ * so before this existed the user-facing sentence was the only thing telling
+ * them apart, and a copy edit to `PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE`
+ * would have silently disabled the desktop's sign-in-and-retry recovery.
+ *
+ * Only codes ADE actually understands are surfaced. An unrecognised code stays
+ * an ordinary HTTP failure with no code rather than being guessed at, so a
+ * newer directory can add refusals without an older brain mis-acting on them.
+ */
+export type AccountMachinePairingRefusalCode =
+  | "machine_revoked"
+  | "pairing_authentication_required";
+
+/**
+ * The one refusal a caller can act on: the machine is revoked and the re-pair
+ * carried no fresh-authentication proof, so signing in again fixes it. Named
+ * here so callers branch on the code rather than on the user-facing sentence,
+ * which is copy and may be reworded.
+ */
+export const ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE: AccountMachinePairingRefusalCode =
+  "pairing_authentication_required";
 
 type AccountMachinePublisherLogger = {
   debug?(message: string, meta?: Record<string, unknown>): void;
@@ -77,6 +140,101 @@ type AccountMachinePublishLeg =
   | "token"
   | "token_refresh_401"
   | "http";
+
+/**
+ * Outcome of a deliberate re-pair. `published` is the only field a caller may
+ * treat as "the account took this machine back" — `revoked: false` alone just
+ * means the local latch was lifted for the attempt.
+ */
+export type AccountMachinePairingResult = {
+  published: boolean;
+  revoked: boolean;
+  state: SyncAccountDirectoryHealth["state"];
+  reason: string | null;
+  /**
+   * Why the directory refused, machine-readable. Present only when the refusal
+   * actually carried a code ADE understands; `reason` remains the sentence to
+   * show a human and must not be parsed to recover this.
+   */
+  reasonCode?: AccountMachinePairingRefusalCode;
+};
+
+/**
+ * Normalise the directory's `revokedAt` to an ISO string.
+ *
+ * It is a D1 integer (epoch milliseconds) on the wire, so a string-only read
+ * silently reported "removed at unknown time" for every real removal. Both
+ * shapes are accepted rather than only the current one: this field is purely
+ * explanatory, and a format change must never be able to look like a machine
+ * that was not removed.
+ */
+function readRevokedAt(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value).toISOString();
+  }
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+/**
+ * Run one bounded read over a response body.
+ *
+ * The request timer is cleared once headers arrive, so a stalled BODY would
+ * otherwise pin the inFlight promise forever and silently stop the heartbeat.
+ * Every body read goes through here: it races the caller's parse against a
+ * deadline, cancels the stream on expiry, and always clears its timer.
+ */
+async function boundedBodyRead<T>(
+  response: Response,
+  read: (response: Response) => Promise<T | null>,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expiry = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      void response.body?.cancel().catch(() => {});
+      resolve(null);
+    }, BODY_READ_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      read(response).catch(() => null),
+      expiry,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Recognise the directory's two revocation answers. Shape-checked, not
+ * status-only: a plain 403 from a proxy or WAF is not the account owner
+ * removing this machine, and mistaking one for the other would silently
+ * stop a healthy machine from ever publishing again.
+ *
+ * `machine_revoked` means "you were removed". `pairing_authentication_required`
+ * means "you were removed AND this re-pair attempt carried no proof of a
+ * fresh sign-in" — same terminal state, but a different sentence, because
+ * the second one has a specific thing the user can do about it.
+ */
+async function readMachineRevokedBounded(response: Response): Promise<{
+  code: AccountMachinePairingRefusalCode;
+  revokedAt: string | null;
+} | null> {
+  if (response.status !== 403) return null;
+  return boundedBodyRead(response, async (bounded) => {
+    const body: unknown = await bounded.clone().json();
+    if (!body || typeof body !== "object") return null;
+    const record = body as Record<string, unknown>;
+    if (
+      record.code !== "machine_revoked"
+      && record.code !== "pairing_authentication_required"
+    ) return null;
+    return { code: record.code, revokedAt: readRevokedAt(record.revokedAt) };
+  });
+}
+
+function readHttpReasonBounded(response: Response): Promise<string | null> {
+  return boundedBodyRead(response, readAccountDirectoryHttpReason);
+}
 
 function failureLegForState(
   state: SyncAccountDirectoryHealth["state"],
@@ -298,6 +456,13 @@ export function createAccountMachinePublisherService(options: {
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
   getMachineIdentitySigningPublicKey?: () => string;
+  /**
+   * Takes the pairing grant from the last interactive sign-in the directory
+   * observed, if any. Read ONLY on the deliberate pairing publish: a grant is
+   * single-use server-side, so letting a heartbeat touch it would burn the
+   * user's one proof on a request that has no use for it.
+   */
+  consumePairingGrant?: () => string | null;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -325,6 +490,28 @@ export function createAccountMachinePublisherService(options: {
   const activeControllers = new Set<AbortController>();
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
+  /**
+   * Consumed by the next publish attempt, which sends `pairing: true` exactly
+   * once. Held as a one-shot rather than a mode so a deliberate link can never
+   * leak into the heartbeats that follow it.
+   */
+  let pendingPairingPublish = false;
+  /**
+   * Terminal: the directory answered `403 machine_revoked`. The heartbeat loop
+   * stops here — the account removed this machine, and re-registering on a
+   * timer is precisely what made removal non-durable. Only an explicit
+   * `publishPairing()` can resume it.
+   */
+  let machineRevoked = false;
+  let machineRevokedAt: string | null = null;
+  /**
+   * The directory's `code` from the most recent publish attempt, or null when
+   * that attempt did not end in a recognised refusal. Reset at the top of every
+   * attempt so `publishPairing()` can only ever read the code belonging to the
+   * request it just made — a stale code from an earlier removal must not make a
+   * transport failure look like a re-authentication prompt.
+   */
+  let lastPairingRefusalCode: AccountMachinePairingRefusalCode | null = null;
   let lastRelayPublishStateSignature: string | null = null;
   let lastPublishedRelayState: {
     machineKey: string;
@@ -395,6 +582,19 @@ export function createAccountMachinePublisherService(options: {
 
   const clearRetainedRelayState = (): void => {
     lastPublishedRelayState = null;
+  };
+
+  /**
+   * Latch the terminal removal state and stop the heartbeat. Deliberately not
+   * `dispose()`: the service stays readable so callers can report the removal,
+   * and `publishPairing()` can bring it back after the user re-pairs.
+   */
+  const enterMachineRevoked = (revokedAt: string | null): void => {
+    machineRevoked = true;
+    machineRevokedAt = revokedAt;
+    pendingPairingPublish = false;
+    clearHeartbeatTimer();
+    options.logger?.warn("account.machine_revoked", { revokedAt });
   };
 
   const reconcileRetainedRelayOwner = (
@@ -497,6 +697,9 @@ export function createAccountMachinePublisherService(options: {
 
   const publish = async (): Promise<void> => {
     if (disposed) return;
+    // A revoked machine only publishes again as part of a deliberate re-pair.
+    if (machineRevoked && !pendingPairingPublish) return;
+    lastPairingRefusalCode = null;
     const attemptAt = now();
     const legDurations = emptyLegDurations();
     const addLegDuration = (
@@ -792,10 +995,32 @@ export function createAccountMachinePublisherService(options: {
     // restarts, where this process-local compatibility cache is necessarily
     // empty. Older directory deployments safely ignore the extra property and
     // still benefit from the process-local retained route above.
-    const registration: AccountMachineRegistration = relayTemporarilyUnavailable
+    const registrationWithRelayHint: AccountMachineRegistration = relayTemporarilyUnavailable
       && !relayVerificationFailed
       ? { ...registrationWithRetainedRelay, retainRelayEndpoints: true }
       : registrationWithRetainedRelay;
+    // Consume the one-shot here, not at send time: every path below this point
+    // either sends the request or abandons the attempt, and a pairing intent
+    // that survived a failed attempt would eventually ride a heartbeat. The
+    // early returns ABOVE never reach this line, which is why `publishPairing`
+    // also clears the flag once its own attempt settles.
+    const isPairingPublish = pendingPairingPublish;
+    pendingPairingPublish = false;
+    let pairingGrant: string | null = null;
+    if (isPairingPublish) {
+      try {
+        pairingGrant = options.consumePairingGrant?.()?.trim() || null;
+      } catch {
+        pairingGrant = null;
+      }
+    }
+    const registration: AccountMachineRegistration = isPairingPublish
+      ? {
+        ...registrationWithRelayHint,
+        pairing: true,
+        ...(pairingGrant ? { pairingGrant } : {}),
+      }
+      : registrationWithRelayHint;
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accessToken: string | null = null;
@@ -826,27 +1051,6 @@ export function createAccountMachinePublisherService(options: {
       });
       return;
     }
-
-    // The request timer is cleared once headers arrive, so a stalled BODY
-    // would otherwise pin the inFlight promise forever and silently stop the
-    // heartbeat. Bound every body read and cancel the stream on expiry.
-    const readHttpReasonBounded = async (response: Response): Promise<string | null> => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const expiry = new Promise<null>((resolve) => {
-        timer = setTimeout(() => {
-          void response.body?.cancel().catch(() => {});
-          resolve(null);
-        }, BODY_READ_TIMEOUT_MS);
-      });
-      try {
-        return await Promise.race([
-          readAccountDirectoryHttpReason(response).catch(() => null),
-          expiry,
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    };
 
     try {
       let response = await sendRegistration(accessToken, registration, baseUrl);
@@ -884,6 +1088,30 @@ export function createAccountMachinePublisherService(options: {
         }
       }
       if (!response.ok) {
+        // A removed machine is terminal, not transient: the directory will keep
+        // answering 403 and the heartbeat that retries is the very thing that
+        // used to resurrect the deleted roster row. Stop the loop and say so.
+        const revocation = await readMachineRevokedBounded(response);
+        if (revocation) {
+          // Both codes are terminal for the heartbeat: the account still does
+          // not include this machine, and retrying on a timer is what made a
+          // removal non-durable. Only the sentence differs.
+          enterMachineRevoked(revocation.revokedAt);
+          clearRetainedRelayState();
+          resetPublishCadence();
+          lastPairingRefusalCode = revocation.code;
+          outcome("http_error", {
+            attemptAt,
+            skipReason: revocation.code === "pairing_authentication_required"
+              ? PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE
+              : "This machine was removed from your ADE account. Pair it again to reconnect.",
+            directoryOrigin,
+            lastHttpStatus: response.status,
+            lastHttpReason: revocation.code,
+            reachableEndpointCount,
+          });
+          return;
+        }
         // Always drain the final response, even when the first 401 already
         // supplied the user-facing reason. Leaving a replacement 401 body
         // unread can prevent the HTTP connection from being reused.
@@ -989,7 +1217,9 @@ export function createAccountMachinePublisherService(options: {
   };
 
   const schedule = (): void => {
-    if (!started || disposed || heartbeatTimer) return;
+    // No heartbeat after revocation: re-registering on a timer is what made a
+    // removal non-durable in the first place.
+    if (!started || disposed || machineRevoked || heartbeatTimer) return;
     const retryDelay = transientFailureCount > 0
       ? ACCOUNT_MACHINE_RETRY_BACKOFF_MS[
           Math.min(transientFailureCount, ACCOUNT_MACHINE_RETRY_BACKOFF_MS.length) - 1
@@ -1095,6 +1325,76 @@ export function createAccountMachinePublisherService(options: {
 
     publishNow,
 
+    /**
+     * Register this machine as a deliberate, user-initiated link — the only
+     * request that carries `pairing: true` and therefore the only one the
+     * directory accepts as clearing a revocation. Call it from an explicit
+     * pairing action, never from a timer or a status change.
+     *
+     * Reports whether the directory actually accepted the re-pair, because the
+     * push half of the removal may only be lifted together with this one: a
+     * machine back on the roster but still push-gated is worse than one that is
+     * plainly gone.
+     */
+    async publishPairing(): Promise<AccountMachinePairingResult> {
+      if (disposed) {
+        return {
+          published: false,
+          revoked: machineRevoked,
+          state: health.state,
+          reason: "The account-directory publisher is no longer running.",
+        };
+      }
+      // The pairing request itself is what proves the machine may re-join, so
+      // lift the local stop before sending; a still-revoked machine will simply
+      // be told so again.
+      machineRevoked = false;
+      machineRevokedAt = null;
+      resetPublishCadence();
+      clearHeartbeatTimer();
+      // An in-flight heartbeat would consume the one-shot without the pairing
+      // intent (`publish` reads the flag mid-attempt, after its early returns),
+      // so wait it out and only then arm the flag — that way it can only ride
+      // the request this call is about to make.
+      if (inFlight) await inFlight.catch(() => {});
+      pendingPairingPublish = true;
+      const publishesBefore = successfulPublishCount;
+      await publishNow();
+      // Scope the one-shot to THIS call. `publish` consumes the flag only once
+      // it is past its early returns, so an attempt abandoned before that point
+      // (no sync scope, no machine key, signed out, …) would otherwise leave the
+      // intent armed for the very next 30-second heartbeat — which would then
+      // send `pairing: true` plus the single-use grant on a request the user
+      // never made, spending the grant and possibly clearing a revocation the
+      // owner applied in the meantime. Clearing it here is a no-op on the
+      // success path, where `publish` already consumed it.
+      pendingPairingPublish = false;
+      schedule();
+      // Counted, not inferred from health: only a 2xx registration increments
+      // it, so a pairing attempt that was skipped (no token, no snapshot) or
+      // rejected can never read as accepted.
+      const published = successfulPublishCount > publishesBefore;
+      return {
+        published,
+        revoked: machineRevoked,
+        state: health.state,
+        reason: published
+          ? null
+          : health.skipReason
+            ?? "The account directory did not accept this machine.",
+        // Omitted rather than nulled when there is no code, so the field is
+        // purely additive on the wire and an older reader sees nothing new.
+        ...(published || !lastPairingRefusalCode
+          ? {}
+          : { reasonCode: lastPairingRefusalCode }),
+      };
+    },
+
+    /** Terminal removal state, for callers that must explain the stop. */
+    getMachineRevocation(): { revoked: boolean; revokedAt: string | null } {
+      return { revoked: machineRevoked, revokedAt: machineRevokedAt };
+    },
+
     requestPublishAfterCurrentAttempt(): void {
       requestTriggeredPublish();
     },
@@ -1170,6 +1470,9 @@ export function createBrainAccountMachinePublisherService(options: {
     getMachineKey: options.getMachineKey,
     getMachineIdentitySigningPublicKey: () =>
       signingStore.getOrCreate().publicKeyRawBase64,
+    // Same shared auth service the access token comes from, so the grant a
+    // device sign-in earned in this brain reaches the publish that needs it.
+    consumePairingGrant: () => accountAuthService.consumePairingGrant(),
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {

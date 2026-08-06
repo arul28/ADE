@@ -33,6 +33,25 @@ dropped, never failing the link). A receiver that cannot resolve the primary id
 uses the envelope for real fallbacks; see "Portable envelopes and the
 resolution ladder" below.
 
+Links minted from an Activity item additionally carry **ownership** —
+`accountMachineKey` and `projectId` — so a receiver can route to the machine that
+owns the work instead of guessing. Two rules govern what goes in `projectId`:
+
+- Prefer the project's machine-independent canonical id
+  (`deriveProjectId(rootPath)`, the `project_<hash>` form), because a link is
+  opened by whichever machine the user happens to be on and the publisher's own
+  database uuid resolves nowhere but the publisher.
+- Never stamp the absolute `projectRoot`. ADE links are meant to be pasted into
+  PR descriptions, Linear issues, and Slack, and a
+  `projectRoot=/Users/<name>/Projects/<client>` parameter leaks the local
+  username and directory layout to every reader. Nothing is lost: the canonical
+  id *is* the hash of that root, and a receiver recomputes it from each root it
+  knows, matching exactly where a path comparison would have.
+
+`projectRoot` is still parsed — it is what rescues an older link whose
+`projectId` is the publishing machine's private uuid — and an over-long value is
+dropped rather than failing the whole link, since no link minted today carries it.
+
 The HTTPS form lives on `apps/web` (Vercel) and acts as a marketing landing
 page plus an OS-level upgrade into the `ade://` form when an ADE client is
 registered. The `ade://` form routes directly through the OS to the running
@@ -103,7 +122,25 @@ Desktop main process — protocol handler:
   window whose active project already matches the target root, then a window
   with the target root open in a background project tab, asking main to
   activate that project before dispatching. Only when no existing window/tab
-  can own the project does main open a new ADE window.
+  can own the project does main open a new ADE window. It also owns the rule for
+  a **remote** project opened from Activity: never the window the user is working
+  in. Binding a remote project replaces that window's global project context, so
+  an item about another machine opens elsewhere or in a new window rather than
+  throwing away what was on screen.
+- `apps/desktop/src/main/services/deeplinks/ownerAwareNavigation.ts` — routes an
+  ownership-carrying target (work / chat / PR) to its owning machine before the
+  ordinary focused-window fallback, returning false only for machine-unscoped
+  navigation.
+- `apps/desktop/src/main/services/deeplinks/localProjectResolution.ts` — resolves
+  a link's project against *this* machine's own projects. Three id spaces reach a
+  deeplink handler — a canonical `project_<hash>` from a modern link, a
+  publishing machine's private uuid from an older one, and this machine's own
+  private uuids — so neither an id match nor a path match alone is honest.
+  It tries exact id, then the root path the link carried, then a recomputed
+  canonical id, and returns `null` as a real answer so the caller routes to the
+  owning machine instead of guessing. Its remote twin is
+  `resolveRemoteProjectBinding` in `services/ipc/runtimeBridge.ts`; keep the two
+  in step.
 - `apps/desktop/src/main/main.ts` — calls `registerAdeProtocolHandler({...})`
   before `app.whenReady()` so cold-start URLs aren't lost. The iOS
   `deeplinks.open` path calls the project-scoped dispatcher for the sync

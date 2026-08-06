@@ -10,6 +10,7 @@ import {
   buildAccountMachineRegistration,
   createBrainAccountMachinePublisherService,
   createAccountMachinePublisherService,
+  PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
 } from "./accountMachinePublisherService";
 import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
@@ -1332,6 +1333,363 @@ describe("account machine registration publisher", () => {
       machineKey: "machine-studio",
       deviceId: "device-studio",
     }));
+  });
+
+  it("never marks a heartbeat as a pairing, and marks a deliberate link exactly once", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response("{}", { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    // Heartbeats never carry `pairing` — re-registering on a timer is exactly
+    // what used to resurrect a machine the account owner had removed.
+    await service.publishNow();
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).pairing).toBeUndefined();
+
+    await service.publishPairing();
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).pairing).toBe(true);
+
+    // One-shot: the pairing intent must not leak into the next heartbeat.
+    await service.publishNow();
+    expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body)).pairing).toBeUndefined();
+    service.dispose();
+  });
+
+  it("does not let an in-flight heartbeat swallow the pairing one-shot", async () => {
+    let releaseSnapshot!: () => void;
+    let markSnapshotEntered!: () => void;
+    const snapshotEntered = new Promise<void>((resolve) => {
+      markSnapshotEntered = resolve;
+    });
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let snapshotCalls = 0;
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => {
+      // The heartbeat that was already running fails on the network. A pairing
+      // flag it had swallowed would be gone for good, and the re-pair would
+      // then send an unpaired request, get told the machine is revoked, and
+      // report failure for a user action that was actually valid.
+      if (fetchImpl.mock.calls.length === 1) throw new Error("network down");
+      return new Response("{}", { status: 200 });
+    });
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          markSnapshotEntered();
+          await snapshotGate;
+        }
+        return routeSnapshot();
+      },
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    // Park a heartbeat PAST its early returns but before it reads the one-shot.
+    const heartbeat = service.publishNow();
+    await snapshotEntered;
+    const pairing = service.publishPairing();
+    releaseSnapshot();
+    await heartbeat;
+    await pairing;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).pairing).toBeUndefined();
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).pairing).toBe(true);
+    service.dispose();
+  });
+
+  it("drops the pairing one-shot when the re-pair never reaches the send", async () => {
+    // `publish` reads the one-shot only AFTER a long run of early returns, so a
+    // re-pair abandoned before that point (here: no active sync scope) left the
+    // intent armed. The very next 30-second heartbeat would then send
+    // `pairing: true` plus the single-use grant on a request the user never
+    // made — spending the grant and potentially clearing a revocation the
+    // account owner had applied in the meantime.
+    let hasSyncScope = false;
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response("{}", { status: 200 }));
+    const consumePairingGrant = vi.fn<[], string | null>(() => "grant-from-directory");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => (hasSyncScope ? routeSnapshot() : null),
+      getMachineKey: () => "machine-studio",
+      consumePairingGrant,
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    const result = await service.publishPairing();
+    expect(result.published).toBe(false);
+    expect(service.getPublisherHealth().state).toBe("no_active_sync_scope");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Nothing was sent, so nothing may have been spent.
+    expect(consumePairingGrant).not.toHaveBeenCalled();
+
+    // The scope comes back and the ordinary heartbeat resumes. It must be a
+    // plain heartbeat, not the pairing the failed call armed.
+    hasSyncScope = true;
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.pairing).toBeUndefined();
+    expect(body.pairingGrant).toBeUndefined();
+    expect(consumePairingGrant).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("spends a pairing grant only on the deliberate re-pair, and only once", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response("{}", { status: 200 }));
+    const consumePairingGrant = vi.fn<[], string | null>(() => "grant-from-directory");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      consumePairingGrant,
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    // A heartbeat has no use for a single-use proof, so it must never take one.
+    expect(consumePairingGrant).not.toHaveBeenCalled();
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).pairingGrant).toBeUndefined();
+
+    consumePairingGrant.mockReturnValueOnce("grant-from-directory").mockReturnValue(null);
+    await service.publishPairing();
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toMatchObject({
+      pairing: true,
+      pairingGrant: "grant-from-directory",
+    });
+
+    // The grant is gone after one spend: a second re-pair sends `pairing` alone
+    // and falls back to whatever freshness the token itself can prove.
+    await service.publishPairing();
+    const second = JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body));
+    expect(second.pairing).toBe(true);
+    expect(second.pairingGrant).toBeUndefined();
+    service.dispose();
+  });
+
+  it("re-pairs without a grant when none was minted, and survives a throwing reader", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response("{}", { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      consumePairingGrant: () => {
+        throw new Error("credential store is unreadable");
+      },
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishPairing();
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.pairing).toBe(true);
+    expect(body.pairingGrant).toBeUndefined();
+    service.dispose();
+  });
+
+  it("answers a refused re-pair with the action that fixes it", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(
+      JSON.stringify({
+        error: "Sign in again on this computer to reconnect it to your ADE account",
+        code: "pairing_authentication_required",
+        revokedAt: Date.parse("2026-07-05T11:00:00.000Z"),
+      }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    const result = await service.publishPairing();
+
+    expect(result).toMatchObject({
+      published: false,
+      revoked: true,
+      reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+      // The discriminator callers branch on. `state` cannot separate the two
+      // refusals — both are `http_error` — and `reason` is user-facing copy,
+      // so rewording it must never be able to disable the recovery path.
+      reasonCode: "pairing_authentication_required",
+    });
+    expect(result.state).toBe("http_error");
+    // A 403 the machine cannot argue with is terminal for the heartbeat too:
+    // retrying on a timer is what made removal non-durable in the first place.
+    expect(service.getMachineRevocation()).toEqual({
+      revoked: true,
+      revokedAt: "2026-07-05T11:00:00.000Z",
+    });
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    service.dispose();
+  });
+
+  it("stops publishing after a revoked machine response instead of retrying", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(
+      JSON.stringify({ code: "machine_revoked", revokedAt: "2026-07-05T11:00:00.000Z" }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+    const warn = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+      logger: { warn },
+    });
+
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(service.getMachineRevocation()).toEqual({
+      revoked: true,
+      revokedAt: "2026-07-05T11:00:00.000Z",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "account.machine_revoked",
+      { revokedAt: "2026-07-05T11:00:00.000Z" },
+    );
+    const health = service.getPublisherHealth();
+    expect(health.lastHttpStatus).toBe(403);
+    expect(health.skipReason).toMatch(/removed from your ADE account/i);
+
+    // Terminal: further heartbeats are no-ops, not retries.
+    await service.publishNow();
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // A deliberate re-pair is the one thing that may try again.
+    fetchImpl.mockResolvedValue(new Response("{}", { status: 200 }));
+    const repair = await service.publishPairing();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).pairing).toBe(true);
+    expect(service.getMachineRevocation().revoked).toBe(false);
+    // An accepted re-pair carries no refusal code, so the code from the earlier
+    // removal cannot leak forward and describe a success as a refusal.
+    expect(repair.published).toBe(true);
+    expect(repair.reasonCode).toBeUndefined();
+    service.dispose();
+  });
+
+  it("names the refusal by code, distinctly for each of the two answers", async () => {
+    const body = { code: "machine_revoked", revokedAt: "2026-07-05T11:00:00.000Z" };
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(
+      JSON.stringify(body),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    const removed = await service.publishPairing();
+    expect(removed).toMatchObject({
+      published: false,
+      state: "http_error",
+      reasonCode: "machine_revoked",
+    });
+    // Same state, different code — which is the whole point of the field.
+    expect(removed.reason).not.toBe(PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE);
+    service.dispose();
+  });
+
+  it("leaves the refusal code absent when the directory named no code it knows", async () => {
+    // Anything that is not one of ADE's two refusals — a WAF 403, a 500, an
+    // unrecognised future code — must read as "unknown", so a reader that has
+    // not been taught the new vocabulary fails closed instead of guessing.
+    const responses = [
+      new Response(
+        JSON.stringify({ error: "forbidden" }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      ),
+      new Response(
+        JSON.stringify({ code: "pairing_grant_expired" }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      ),
+      new Response("nope", { status: 500 }),
+    ];
+    for (const response of responses) {
+      const fetchImpl = vi.fn(async (
+        _input: string | URL | Request,
+        _init?: RequestInit,
+      ) => response.clone());
+      const service = createAccountMachinePublisherService({
+        getAccessToken: async () => "account-secret-token",
+        getSnapshot: async () => routeSnapshot(),
+        getMachineKey: () => "machine-studio",
+        directoryBaseUrl: () => "https://directory.example",
+        fetchImpl,
+      });
+      const result = await service.publishPairing();
+      expect(result.published).toBe(false);
+      expect(result.reasonCode).toBeUndefined();
+      expect("reasonCode" in result).toBe(false);
+      service.dispose();
+    }
+  });
+
+  it("treats a bare 403 as an ordinary failure, not a revocation", async () => {
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(
+      JSON.stringify({ error: "forbidden" }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    expect(service.getMachineRevocation().revoked).toBe(false);
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    service.dispose();
   });
 
   it("ignores a development directory at the core publisher boundary when packaged", async () => {

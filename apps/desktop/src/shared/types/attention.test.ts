@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT,
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
   activityItemIsAmbient,
   activityItemTier,
   attentionDestinationDeepLink,
   attentionItemNeedsInbox,
+  runAcknowledgmentChunks,
   sanitizeAttentionPreview,
   sortAttentionItems,
+  unreachedOutcomeFields,
   type AttentionItem,
 } from "./attention";
 
@@ -109,6 +112,41 @@ describe("attention contract helpers", () => {
     );
   });
 
+  it("never stamps the project's absolute root into a shareable link", () => {
+    // ADE links get pasted into PR descriptions, Linear issues and Slack; a
+    // `projectRoot=` parameter would hand every reader the local username and
+    // directory layout. The canonical id IS the hash of that path, so the
+    // receiver still resolves it.
+    const ownership = item({
+      machine: {
+        machineKey: "runtime-target",
+        accountMachineKey: "account-machine-key",
+        name: "Studio Mac",
+        online: true,
+        lastSeenAt: null,
+      },
+      project: {
+        projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+        canonicalId: "project_9f2c1b7a4e",
+        name: "ADE",
+        rootPath: "/Users/arul/Projects/ClientWork/acme-secret",
+      },
+    });
+    for (const link of [
+      attentionDestinationDeepLink({ kind: "session", sessionId: "s1" }, ownership),
+      attentionDestinationDeepLink(
+        { kind: "pull_request", number: 42, tab: "overview" },
+        ownership,
+      ),
+    ]) {
+      expect(link).not.toContain("projectRoot");
+      expect(link).not.toContain("acme-secret");
+      expect(link).not.toContain("arul");
+      // The machine-independent id is what replaces it.
+      expect(link).toContain("projectId=project_9f2c1b7a4e");
+    }
+  });
+
   it("sanitizes common secret shapes and bounds lock-screen copy", () => {
     const preview = sanitizeAttentionPreview(
       "Use Bearer abcdefghijklmnopqrstuvwxyz and ghp_abcdefghijklmnopqrstuvwxyz123456 for the request",
@@ -116,5 +154,54 @@ describe("attention contract helpers", () => {
     );
     expect(preview).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(preview.length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("runAcknowledgmentChunks", () => {
+  const ids = (count: number, prefix = "item") =>
+    Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
+
+  it("keeps the three lists disjoint and totalling every id the caller sent", async () => {
+    // Three chunks: the first partly refused, the second wholly accepted, the
+    // third never reached because the second-to-last throw aborts the loop.
+    const itemIds = ids(ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT * 3);
+    let call = 0;
+    const outcome = await runAcknowledgmentChunks(itemIds, async (chunk) => {
+      call += 1;
+      if (call === 1) return [chunk[0], chunk[1]];
+      if (call === 2) return [];
+      throw new Error("relay 503");
+    });
+
+    expect(outcome.failure).toBeInstanceOf(Error);
+    expect(outcome.stale).toEqual([itemIds[0], itemIds[1]]);
+    expect(outcome.unreached).toEqual(itemIds.slice(ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT * 2));
+    // Disjoint, and together exactly the input — in the caller's order.
+    const all = [...outcome.acknowledged, ...outcome.stale, ...outcome.unreached];
+    expect(new Set(all).size).toBe(all.length);
+    expect([...all].sort()).toEqual([...itemIds].sort());
+  });
+
+  it("aborts on the first failing chunk instead of pushing the rest at a failing host", async () => {
+    const itemIds = ids(ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT * 3);
+    const send = vi.fn(async () => {
+      throw new Error("auth expired");
+    });
+    const outcome = await runAcknowledgmentChunks(itemIds, send);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(outcome.acknowledged).toEqual([]);
+    expect(outcome.stale).toEqual([]);
+    expect(outcome.unreached).toEqual(itemIds);
+  });
+
+  it("ignores stale ids the host names outside the chunk it was sent", async () => {
+    const itemIds = ids(3);
+    const outcome = await runAcknowledgmentChunks(itemIds, async () => ["item-9"]);
+
+    expect(outcome.stale).toEqual([]);
+    expect(outcome.acknowledged).toEqual(itemIds);
+    expect(outcome.unreached).toEqual([]);
+    expect(unreachedOutcomeFields(outcome.unreached, outcome.failure)).toEqual({});
   });
 });

@@ -730,6 +730,49 @@ public enum AccountActivityTier: String, Codable, Hashable, Sendable {
     case idle
 }
 
+/// The one optional additive field the Activity state table trusts beyond the
+/// frozen phase vocabulary.
+///
+/// `AccountAttentionPhase` deliberately has no `planning` member — the wire
+/// vocabulary is closed, and widening it would have broken every installed
+/// build's exhaustive switch. Planning is carried alongside the phase instead,
+/// exactly as desktop's `activityChatMode()` reads it.
+///
+/// Decoded leniently on purpose: any value other than the literal `"planning"`
+/// — including a JSON type a newer publisher might send — reads as "not
+/// planning" rather than throwing. A throw here would be caught by
+/// `FailableDecodable` and drop the WHOLE item, which is a wildly
+/// disproportionate outcome for one cosmetic hint.
+public enum AccountChatActivityMode: Codable, Hashable, Sendable {
+    /// The single value this build acts on: a violet "Planning" row.
+    case planning
+    /// Anything else, carried verbatim so a re-encode is lossless, and treated
+    /// as absent everywhere it is read.
+    case unrecognized(String)
+
+    public var isPlanning: Bool {
+        if case .planning = self { return true }
+        return false
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        guard let raw = try? container.decode(String.self) else {
+            self = .unrecognized("")
+            return
+        }
+        self = raw.lowercased() == "planning" ? .planning : .unrecognized(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .planning: try container.encode("planning")
+        case .unrecognized(let raw): try container.encode(raw)
+        }
+    }
+}
+
 public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     public let contractVersion: Int
     public let id: String
@@ -740,6 +783,9 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     public let phase: AccountAttentionPhase
     /// Kept as an optional wire string so future tier values remain additive.
     public let activityTier: String?
+    /// Additive planning hint. Absent on every payload from an older publisher,
+    /// which is why it is optional rather than defaulted.
+    public let chatActivityMode: AccountChatActivityMode?
     public let statusSince: Date?
     public private(set) var machine: AccountAttentionMachine
     public let project: AccountAttentionProject
@@ -770,6 +816,7 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         eventKind: AccountAttentionEventKind,
         phase: AccountAttentionPhase,
         activityTier: String? = nil,
+        chatActivityMode: AccountChatActivityMode? = nil,
         statusSince: Date? = nil,
         machine: AccountAttentionMachine,
         project: AccountAttentionProject,
@@ -799,6 +846,7 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.eventKind = eventKind
         self.phase = phase
         self.activityTier = activityTier
+        self.chatActivityMode = chatActivityMode
         self.statusSince = statusSince
         self.machine = machine
         self.project = project

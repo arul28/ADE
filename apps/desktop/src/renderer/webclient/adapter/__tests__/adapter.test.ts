@@ -216,18 +216,31 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     expect(Object.keys(adapter.ade.account).sort()).toEqual([
+      "cancelDeviceLogin",
       "cancelLogin",
       "getLocalMachineIdentity",
       "listMachines",
       "onPairMachineProgress",
       "pairMachine",
+      "pollDeviceLogin",
       "pollLogin",
       "removeMachine",
       "renameMachine",
+      "repairMachinePairing",
       "signOut",
+      "startDeviceLogin",
       "startLogin",
       "status",
     ]);
+
+    // Present on the surface, deliberately not functional: re-pairing has to run
+    // on the machine being repaired (only its brain holds the live push gate),
+    // and the sync command channel exposes no `account.*` action for a browser
+    // to reach one. So it fails loudly with copy that names the real next step
+    // instead of resolving into a no-op that would look like a repair.
+    await expect(adapter.ade.account.repairMachinePairing()).rejects.toThrow(
+      "Open ADE on the computer you want to reconnect, then try again there.",
+    );
 
     await expect(adapter.ade.account.status()).resolves.toEqual({
       signedIn: true,
@@ -309,6 +322,206 @@ describe("createAdeWebAdapter", () => {
       seenAt: "2026-07-29T12:01:00.000Z",
     })).rejects.toThrow(/account changed/i);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    adapter.dispose();
+  });
+
+  it("chunks a browser Clear all past the relay's 64-id ceiling", async () => {
+    // The relay answers 400 for `itemIds.length > 64` before parsing anything
+    // else, and this shell used to send the whole list — so a "Clear all" over
+    // a large inbox dismissed NOTHING and surfaced a generic invalid-
+    // acknowledgment error.
+    const itemIds = Array.from({ length: 65 }, (_, index) => `item-${index}`);
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        contractVersion: 1,
+        streamId: "account-stream",
+        revision: 4,
+        generatedAt: "2026-07-29T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      }), { status: 200 }))
+      // First chunk applies cleanly; the one item in the second chunk is
+      // refused by its alert fence.
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true, applied: [], stale: [],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true, applied: [], stale: ["item-64"],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await adapter.ade.attention.getSnapshot(0, "account-stream");
+    const outcome = await adapter.ade.attention.acknowledge({
+      itemIds,
+      sourceRevisions: Object.fromEntries(itemIds.map((id, index) => [id, index])),
+      alertFingerprints: Object.fromEntries(itemIds.map((id) => [id, `alert-${id}`])),
+      expectedAccountOwnerId: "account-a",
+      dismissedAt: "2026-07-29T12:01:00.000Z",
+    });
+
+    const ackBodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/attention/account/ack"))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(ackBodies).toHaveLength(2);
+    expect(ackBodies[0].itemIds).toHaveLength(64);
+    expect(ackBodies[1].itemIds).toEqual(["item-64"]);
+    for (const body of ackBodies) {
+      // Every per-item map is rebuilt per chunk — a fence naming an id outside
+      // the batch is a 400 for that whole call.
+      expect(Object.keys(body.alertFingerprints)).toEqual(body.itemIds);
+      expect(Object.keys(body.sourceRevisions)).toEqual(body.itemIds);
+      // The owner fence rides on every chunk, not just the first.
+      expect(body.expectedAccountOwnerId).toBe("account-a");
+      expect(body.dismissedAt).toBe("2026-07-29T12:01:00.000Z");
+    }
+    // Per-item staleness merges across chunks.
+    expect(outcome).toEqual({
+      acknowledged: itemIds.filter((id) => id !== "item-64"),
+      stale: ["item-64"],
+    });
+    adapter.dispose();
+  });
+
+  it("clears a 200-row browser Clear all and aborts at a failing chunk", async () => {
+    const itemIds = Array.from({ length: 200 }, (_, index) => `item-${index}`);
+    // A distinct account identity per test: the relay push backoff is module
+    // state keyed by `userId:generation`, so a shared key would carry this
+    // test's deliberate transport failure into the next one.
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-chunked",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-chunked", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "token"),
+    } as unknown as BrowserAccountClient;
+    const okAck = () => new Response(JSON.stringify({
+      ok: true, applied: [], stale: [],
+    }), { status: 200 });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        contractVersion: 1,
+        streamId: "account-stream",
+        revision: 4,
+        generatedAt: "2026-07-29T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      }), { status: 200 }))
+      // Four chunks: 64 + 64 + 64 + 8, all applying cleanly.
+      .mockResolvedValueOnce(okAck())
+      .mockResolvedValueOnce(okAck())
+      .mockResolvedValueOnce(okAck())
+      .mockResolvedValueOnce(okAck())
+      // Second run: chunk 1 lands, chunk 2 fails at the transport.
+      .mockResolvedValueOnce(okAck())
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await adapter.ade.attention.getSnapshot(0, "account-stream");
+    expect(await adapter.ade.attention.acknowledge({
+      itemIds,
+      expectedAccountOwnerId: "account-chunked",
+    })).toEqual({ acknowledged: itemIds, stale: [] });
+    const firstRun = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/attention/account/ack"))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(firstRun).toHaveLength(4);
+    expect(firstRun.flatMap((body) => body.itemIds)).toEqual(itemIds);
+
+    fetchMock.mockClear();
+    // Abort policy: chunk 1 committed at the relay, so it must NOT be rolled
+    // back — the renderer rolls back exactly what the two failure lists name,
+    // and rolling back a committed chunk is what makes cleared rows reappear.
+    //
+    // And the failed plus unsent chunks are `unreached`, not `stale`: the relay
+    // never answered for them, so nothing about them changed underneath the
+    // user, and only `unreached` earns the retry copy.
+    expect(await adapter.ade.attention.acknowledge({
+      itemIds,
+      expectedAccountOwnerId: "account-chunked",
+    })).toEqual({
+      acknowledged: itemIds.slice(0, 64),
+      stale: [],
+      unreached: itemIds.slice(64),
+      unreachedReason: "Failed to fetch",
+    });
+    // Aborted, not continued: chunks 3 and 4 were never attempted.
+    expect(fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/attention/account/ack"))).toHaveLength(2);
+    adapter.dispose();
+  });
+
+  it("sends a browser acknowledgment that fits in one request as exactly one request", async () => {
+    // Chunking is a ceiling, not a new default of splitting work up — the
+    // single-call behaviour this branch restored must not regress.
+    const itemIds = Array.from({ length: 64 }, (_, index) => `item-${index}`);
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-single-batch",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-single-batch", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        contractVersion: 1,
+        streamId: "account-stream",
+        revision: 4,
+        generatedAt: "2026-07-29T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true, applied: [], stale: [],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await adapter.ade.attention.getSnapshot(0, "account-stream");
+    expect(await adapter.ade.attention.acknowledge({
+      itemIds,
+      expectedAccountOwnerId: "account-single-batch",
+    })).toEqual({ acknowledged: itemIds, stale: [] });
+    expect(fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/attention/account/ack"))).toHaveLength(1);
     adapter.dispose();
   });
 
@@ -752,6 +965,186 @@ describe("createAdeWebAdapter", () => {
     });
     expect(fake.hostDeviceId).toBe("host-studio");
     adapter.dispose();
+  });
+
+  it("opens a cross-machine Activity item by root path, in a new tab", async () => {
+    const ownerMachine = {
+      machineKey: "account-machine-studio",
+      deviceId: "host-studio",
+      name: "Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      reachableEndpoints: [],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const accountClient = {
+      getSnapshot: () => ({
+        state: "signed_in",
+        userId: "account-a",
+        email: "owner@example.test",
+        name: "Owner",
+        imageUrl: null,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+        machines: [ownerMachine],
+        relayBaseUrls: ["wss://relay.example"],
+        message: null,
+      }),
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+      getRelayBaseUrls: () => ["wss://relay.example"],
+    } as unknown as BrowserAccountClient;
+    const open = vi.fn(() => ({}));
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.ade-app.dev", hostname: "app.ade-app.dev" },
+      open,
+    });
+    const navigations: unknown[] = [];
+    fake.projects.push({
+      ...fake.projects[0]!,
+      id: "project-studio",
+      displayName: "Studio Repo",
+      rootPath: "/Users/arul/Projects/Studio",
+    });
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+    adapter.ade.app.onNavigate!((payload: unknown) => navigations.push(payload));
+
+    try {
+      await adapter.ade.attention.openItem({
+        contractVersion: 1,
+        id: "remote-item",
+        revision: 1,
+        fingerprint: "remote-item",
+        kind: "agent",
+        eventKind: "agent_running",
+        phase: "running",
+        machine: {
+          machineKey: "runtime-studio",
+          accountMachineKey: ownerMachine.machineKey,
+          deviceId: ownerMachine.deviceId,
+          name: ownerMachine.name,
+          online: true,
+          lastSeenAt: null,
+        },
+        // The owning machine's local uuid — the host registry has never seen it.
+        project: {
+          projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+          name: "Studio Repo",
+          rootPath: "/Users/arul/Projects/Studio",
+        },
+        title: "Remote work",
+        preview: "Working",
+        privacyPreview: "Agent is working",
+        destination: { kind: "session", sessionId: "session-studio" },
+        actions: [],
+        occurredAt: "2026-07-29T12:00:00.000Z",
+        updatedAt: "2026-07-29T12:00:00.000Z",
+        seenAt: null,
+        dismissedAt: null,
+        expiresAt: null,
+      } as AttentionItem);
+
+      expect(fake.projectSwitchCalls).toEqual([{
+        projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+        rootPath: "/Users/arul/Projects/Studio",
+      }]);
+      expect(open).toHaveBeenCalledWith(
+        "https://app.ade-app.dev/work?sessionId=session-studio",
+        "_blank",
+        "noopener,noreferrer",
+      );
+      // A new tab owns the destination, so the current one must not move.
+      expect(navigations).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+      adapter.dispose();
+    }
+  });
+
+  it("navigates in place when the browser blocks the Activity popup", async () => {
+    const ownerMachine = {
+      machineKey: "account-machine-studio",
+      deviceId: "host-studio",
+      name: "Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      reachableEndpoints: [],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const accountClient = {
+      getSnapshot: () => ({
+        state: "signed_in",
+        userId: "account-a",
+        email: "owner@example.test",
+        name: "Owner",
+        imageUrl: null,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+        machines: [ownerMachine],
+        relayBaseUrls: ["wss://relay.example"],
+        message: null,
+      }),
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+      getRelayBaseUrls: () => ["wss://relay.example"],
+    } as unknown as BrowserAccountClient;
+    // A popup blocker that did not read this as a user gesture returns null.
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.ade-app.dev", hostname: "app.ade-app.dev" },
+      open: vi.fn(() => null),
+    });
+    const navigations: unknown[] = [];
+    fake.projects.push({
+      ...fake.projects[0]!,
+      id: "project-studio",
+      displayName: "Studio Repo",
+      rootPath: "/Users/arul/Projects/Studio",
+    });
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+    adapter.ade.app.onNavigate!((payload: unknown) => navigations.push(payload));
+
+    try {
+      await adapter.ade.attention.openItem({
+        contractVersion: 1,
+        id: "remote-item",
+        revision: 1,
+        fingerprint: "remote-item",
+        kind: "agent",
+        eventKind: "agent_running",
+        phase: "running",
+        machine: {
+          machineKey: "runtime-studio",
+          accountMachineKey: ownerMachine.machineKey,
+          deviceId: ownerMachine.deviceId,
+          name: ownerMachine.name,
+          online: true,
+          lastSeenAt: null,
+        },
+        project: {
+          projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
+          name: "Studio Repo",
+          rootPath: "/Users/arul/Projects/Studio",
+        },
+        title: "Remote work",
+        preview: "Working",
+        privacyPreview: "Agent is working",
+        destination: { kind: "session", sessionId: "session-studio" },
+        actions: [],
+        occurredAt: "2026-07-29T12:00:00.000Z",
+        updatedAt: "2026-07-29T12:00:00.000Z",
+        seenAt: null,
+        dismissedAt: null,
+        expiresAt: null,
+      } as AttentionItem);
+
+      expect(navigations).toHaveLength(1);
+      expect(navigations[0]).toMatchObject({ source: "attention" });
+    } finally {
+      vi.unstubAllGlobals();
+      adapter.dispose();
+    }
   });
 
   it("routes commands through sync with project id stamping and descriptor fallbacks", async () => {
@@ -2817,6 +3210,7 @@ class FakeAdeSyncClient {
   ];
   activeProjectId: string | null = "project-1";
   projectSwitchResult: unknown = null;
+  projectSwitchCalls: { projectId: string; rootPath: string | null }[] = [];
   /** Transport state, so tests can exercise "the socket is down" paths. */
   connectionState: "connected" | "reconnecting" | "disconnected" = "connected";
 
@@ -2935,9 +3329,15 @@ class FakeAdeSyncClient {
     return { projects: this.projects };
   }
 
-  async switchProject(projectId: string): Promise<unknown> {
+  async switchProject(projectId: string, rootPath: string | null = null): Promise<unknown> {
+    this.projectSwitchCalls.push({ projectId, rootPath });
     if (this.projectSwitchResult) return this.projectSwitchResult;
-    const project = this.projects.find((entry) => entry.id === projectId);
+    // Mirrors the host resolver: id first, then root path — the only identity
+    // an Activity item from another machine shares with this registry.
+    const project = this.projects.find((entry) => entry.id === projectId)
+      ?? (rootPath
+        ? this.projects.find((entry) => entry.rootPath === rootPath)
+        : undefined);
     return { ok: Boolean(project), project };
   }
 

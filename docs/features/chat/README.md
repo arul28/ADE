@@ -339,6 +339,15 @@ Controls and summaries project this runtime state rather than owning it:
   **Working**; legacy permission flags and CLI terminal text are not treated as
   plan-mode truth. The optional `scheduledWork` management snapshot lets desktop
   merge KV truth over stale transcript projections.
+- Account-wide Activity applies the same two facts, so the sidebar and the phone
+  cannot disagree about whether a turn is over. The push publisher tracks live
+  background-task ids per run and holds a completed turn at `running`, parking
+  the real outcome until the last task drains, and the sync roster reports a chat
+  with live background tasks as `running` rather than letting it decay
+  idle → stale → Done. It also carries `chatActivityMode: "planning"` alongside
+  the `running` phase, because the push phase vocabulary is frozen and cannot
+  gain a planning value; there is no chat event for an interaction-mode change,
+  so the publisher re-reads the session summary on a bounded cadence.
 - Every unattended turn starts with a `Woke on schedule` divider. Desktop
   tracks the last viewed time per session in renderer `localStorage` and
   offers a dismissible while-you-were-away strip with jump links to those

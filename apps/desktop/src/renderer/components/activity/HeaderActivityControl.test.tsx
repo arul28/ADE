@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -34,6 +34,7 @@ let getSnapshot: ReturnType<typeof vi.fn>;
 let captureAnalytics: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  window.localStorage.clear();
   publishAccountStatus(signedInAccount);
   openItem = vi.fn(async () => {});
   acknowledge = vi.fn(async () => {});
@@ -132,14 +133,20 @@ function openPanel(): HTMLElement {
 
 describe("HeaderActivityControl", () => {
   it("badges only work that needs you, and records a bounded header open", async () => {
-    seedItems([item("a", "needs_you"), item("b", "running"), item("c", "merge_ready")]);
+    seedItems([
+      item("a", "needs_you"),
+      item("b", "running"),
+      item("c", "failed"),
+      item("d", "merge_ready", { kind: "pull_request", eventKind: "pr_merge_ready" }),
+    ]);
     renderControl();
 
     const trigger = screen.getByTestId("header-activity-trigger");
-    // merge_ready is a review, not a raised hand: it files under needs-you's
-    // priority band but the badge itself stays the needs-you count.
-    expect(trigger.textContent).toContain("2");
-    expect(trigger.getAttribute("aria-label")).toBe("Activity · 2 need you · 1 working");
+    // A raised hand is the only thing the badge counts. A failed run is loud in
+    // its own section, and a pull request is not a session at all.
+    expect(trigger.textContent).toContain("1");
+    expect(trigger.getAttribute("aria-label"))
+      .toBe("Activity · 1 needs you · 1 failed · 1 working");
     expect(trigger.getAttribute("data-state")).toBe("waiting");
 
     fireEvent.click(trigger);
@@ -169,25 +176,88 @@ describe("HeaderActivityControl", () => {
     expect(trigger.getAttribute("aria-label")).toBe("Activity · 1 working");
   });
 
-  it("renders the three priority sections in order, and only those", () => {
+  /**
+   * Done is the most final and the most common state there is. Letting it into
+   * the dropdown turns a glance into a scroll past yesterday's finished runs,
+   * so it lives in the full list — with a count here that says where it went.
+   */
+  it("shows only live sections and hands the done band to the full list", () => {
     seedItems([
       item("done", "completed"),
       item("live", "running"),
       item("asks", "needs_you"),
+      item("broke", "failed"),
     ]);
-    renderControl();
+    const onOpenPane = renderControl();
     const dialog = openPanel();
 
     expect(activityStore.getState().headerSurfaceVisible).toBe(true);
     const sections = Array.from(
       dialog.querySelectorAll<HTMLElement>("[data-activity-section]"),
     ).map((section) => section.getAttribute("data-activity-section"));
-    expect(sections).toEqual(["needs-you", "working", "done"]);
+    expect(sections).toEqual(["needs-you", "failed", "working"]);
     expect(
       Array.from(dialog.querySelectorAll("[data-activity-row]")).map((row) =>
         row.getAttribute("data-activity-row"),
       ),
-    ).toEqual(["asks", "live", "done"]);
+    ).toEqual(["asks", "broke", "live"]);
+
+    const handoff = screen.getByRole("button", { name: /1 done in the full list/ });
+    fireEvent.click(handoff);
+    expect(onOpenPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapses a section, persists it, and keeps the count visible", () => {
+    seedItems([item("asks", "needs_you"), item("live", "running")]);
+    renderControl();
+    openPanel();
+
+    const toggle = () => document.body.querySelector<HTMLButtonElement>(
+      '[data-activity-section-toggle="needs-you"]',
+    )!;
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById(toggle().getAttribute("aria-controls")!)?.hidden).toBe(true);
+    // The heading still reports what it is hiding.
+    expect(toggle().textContent).toContain("1");
+
+    // Reopening the popover keeps the shape the user chose.
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Activity" }), { key: "Escape" });
+    openPanel();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  /**
+   * Per-surface memory: the dropdown is a glance and the pane is a work
+   * session, so folding Done away in one must not fold it away in the other.
+   */
+  it("keeps its collapsed sections separate from the pane's", () => {
+    seedItems([item("asks", "needs_you")]);
+    renderControl();
+    openPanel();
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>(
+      '[data-activity-section-toggle="needs-you"]',
+    )!);
+
+    expect(window.localStorage.getItem("ade:activity:collapsed-sections-popover"))
+      .toBe(JSON.stringify(["needs-you"]));
+    expect(window.localStorage.getItem("ade:activity:collapsed-sections-pane")).toBeNull();
+  });
+
+  it("gives every row a way out, and clears it with one call", async () => {
+    seedItems([item("quiet", "stale")]);
+    renderControl();
+    openPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Task quiet" }));
+
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(
+      expect.objectContaining({ itemIds: ["quiet"] }),
+    ));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
   it("omits a section with nothing in it rather than showing an empty heading", () => {
@@ -247,12 +317,19 @@ describe("HeaderActivityControl", () => {
           lastSeenAt: "2026-08-01T10:00:00.000Z",
         },
       }),
+      item("pr", "checks_failing", {
+        kind: "pull_request",
+        eventKind: "pr_checks_failing",
+      }),
     ]);
     const onOpenPane = renderControl();
     const dialog = openPanel();
 
     const footer = dialog.querySelector(".activity-hdr-panel-foot") as HTMLElement;
-    expect(within(footer).getByText("2 sessions · 1 of 2 machines online")).toBeTruthy();
+    // Sessions are sessions; the pull request is counted as what it is.
+    expect(within(footer).getByText(
+      "2 sessions · 1 notification · 1 of 2 machines online",
+    )).toBeTruthy();
     expect(dialog.textContent).toContain("last-known state from an offline machine");
 
     fireEvent.click(within(footer).getByRole("button", { name: /Open all/ }));
@@ -260,12 +337,80 @@ describe("HeaderActivityControl", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  /**
+   * "Some of this is remembered, not observed" is the headline; "which machines
+   * and how long ago" is the follow-up, and it costs four lines of a dropdown
+   * to answer unprompted.
+   */
+  it("names the offline machines behind a disclosure", () => {
+    seedItems([
+      item("a", "running", {
+        machine: {
+          machineKey: "laptop",
+          name: "MacBook Pro",
+          online: false,
+          lastSeenAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+        },
+      }),
+      item("b", "running", {
+        machine: {
+          machineKey: "cloud",
+          name: "Cloud Mac",
+          online: false,
+          lastSeenAt: null,
+        },
+      }),
+    ]);
+    renderControl();
+    openPanel();
+
+    const disclosure = screen.getByRole("button", { name: /2 machines/ });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    const list = document.getElementById(disclosure.getAttribute("aria-controls")!)!;
+    expect(list.hidden).toBe(true);
+
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(list.hidden).toBe(false);
+    expect(list.textContent).toContain("Cloud Mac");
+    expect(list.textContent).toContain("never seen");
+    expect(list.textContent).toContain("MacBook Pro");
+    expect(list.textContent).toContain("last seen");
+  });
+
+  /**
+   * The one unambiguously good transition in Activity, and until now the only
+   * one with no representation: the section just stopped existing.
+   */
+  it("plays an all-clear beat when the last raised hand goes down", async () => {
+    seedItems([item("a", "needs_you")]);
+    renderControl();
+    openPanel();
+    expect(document.body.querySelector("[data-activity-all-clear]")).toBeNull();
+
+    act(() => {
+      seedItems([item("a", "completed")]);
+    });
+
+    await waitFor(() => expect(
+      document.body.querySelector("[data-activity-all-clear]")?.textContent,
+    ).toContain("All clear"));
+  });
+
+  it("never celebrates an account that was already quiet when it opened", () => {
+    seedItems([]);
+    renderControl();
+    openPanel();
+
+    expect(document.body.querySelector("[data-activity-all-clear]")).toBeNull();
+  });
+
   it("opens the exact destination through the Activity bridge, then marks it seen", async () => {
     seedItems([item("a", "needs_you")]);
     renderControl();
     openPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: /Task a/ }));
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('[data-activity-row="a"]')!);
 
     await waitFor(() =>
       expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ id: "a" })),
@@ -284,7 +429,7 @@ describe("HeaderActivityControl", () => {
     renderControl();
     openPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: /Task a/ }));
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('[data-activity-row="a"]')!);
 
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("Studio Mac is offline"),

@@ -21,7 +21,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
-import { activitySections, summarizeActivity } from "./activityPriority";
+import { activityFeedOrder, summarizeActivity } from "./activityPriority";
 import {
   activityNotchSupported,
   activityNotchSettingsFromPreferences,
@@ -129,8 +129,6 @@ function failClosedActivityNotchSettings(): AttentionNotchSettings {
     // chosen mode here stops a lost account load from re-covering the menu bar.
     revealMode: presentation.revealMode,
     expandedPanelEnabled: presentation.expandedPanelEnabled,
-    automaticRevealEnabled: presentation.automaticRevealEnabled,
-    tickerEnabled: presentation.tickerEnabled,
     preferredDisplayId: null,
     hideDetails: true,
     celebrationsEnabled: false,
@@ -228,10 +226,19 @@ function projectActivityNotchItem(item: AttentionItem): AttentionItem {
   };
 }
 
+/**
+ * The notch's totals. All FIVE state groups travel, because the strip renders
+ * five: sending only three left the native side able to floor `needs-you`,
+ * `working` and `done` from the totals while `failed` and `planning` could only
+ * ever count the rows that survived the projection — which is what the
+ * now-deleted `notchStripUnattributedCount` residual was invented to hide.
+ */
 function activityNotchCounts(items: readonly AttentionItem[]): AttentionCounts {
   const summary = summarizeActivity(items);
   return {
     needsYou: summary.needsYouCount,
+    failed: summary.failedCount,
+    planning: summary.planningCount,
     working: summary.workingCount,
     done: summary.doneCount,
     total: summary.trackedCount,
@@ -243,9 +250,11 @@ function activityNotchCounts(items: readonly AttentionItem[]): AttentionCounts {
 export function materializeActivityNotchSnapshot(): AttentionSnapshot {
   const state = activityStore.getState();
   const allItems = Object.values(state.itemsById);
-  // Activity's own order, flattened: needs-you, then working, then done.
-  // `activitySections` already drops dismissed and expired rows.
-  const ordered = activitySections(allItems).flatMap((section) => section.items);
+  // Activity's own order: the agent sections flattened, then the notification
+  // tail. Both travel because the native panel splits them itself — agents and
+  // events are different views of one projection, not two feeds — and
+  // `activityFeedOrder` already drops dismissed and expired rows.
+  const ordered = activityFeedOrder(allItems);
   const projected = ordered
     .slice(0, MAX_NOTCH_PROJECTION_ITEMS)
     .map(projectActivityNotchItem);
@@ -366,7 +375,6 @@ export type ActivityToastDecisionInput = {
   lastToastAtByItem: ReadonlyMap<string, number>;
   lastToastAt: number;
   availabilityState: string | null;
-  automaticRevealEnabled: boolean;
   hideDetails: boolean;
   now?: number;
 };
@@ -383,7 +391,9 @@ export function activityToastForTransition(
   input: ActivityToastDecisionInput,
 ): AttentionNotchToast | null {
   const now = input.now ?? Date.now();
-  if (!input.automaticRevealEnabled) return null;
+  // There is no "automatic reveal" switch to consult any more: flashing for
+  // work that needs you is what the surface is for, and the toggle that could
+  // turn it off left a notch with nothing to say.
   // Degraded/signed-out snapshots carry last-known rows; announcing one as if
   // it just happened would be a lie about freshness.
   if (input.availabilityState !== "ready") return null;
@@ -445,16 +455,12 @@ function resetActivityToastState(): void {
  */
 function emitActivityNotchToast(snapshot: AttentionSnapshot): void {
   const items = Object.values(activityStore.getState().itemsById);
-  const presentation = resolveActivityNotchPresentation(
-    activityStore.getState().preferences,
-  );
   const toast = activityToastForTransition({
     items,
     previousPhases: notchToastPhases,
     lastToastAtByItem: notchToastCooldownByItem,
     lastToastAt: notchLastToastAt,
     availabilityState: snapshot.availability?.state ?? null,
-    automaticRevealEnabled: presentation.automaticRevealEnabled,
     // The notch takes hide-details' fail-closed default, exactly like
     // `failClosedActivityNotchSettings`: it paints over the menu bar of a Mac
     // whose owner may have walked away.

@@ -58,7 +58,29 @@ export type RosterLiveSession = {
   provider?: string | null;
   model?: string | null;
   lastActivityAt?: string | null;
+  /**
+   * Provider-reported background tasks still running after the foreground turn
+   * ended. `AgentChatSessionSummary` already carries this; the roster reads it
+   * so a chat whose subagents are still working is not reported as idle.
+   */
+  activeBackgroundTaskCount?: number | null;
+  /**
+   * Set on CTO/identity chats. The roster still carries these rows — the mobile
+   * hub renders them — but the Activity feed must not, because the desktop
+   * sidebar strips them and the two counts have to agree. The roster's job is
+   * only to label them; see `RosterChat.identityKey`.
+   */
+  identityKey?: string | null;
 };
+
+/**
+ * A roster chat plus the additive `identityKey` label. Deliberately NOT folded
+ * into the shared `SyncRosterChat` wire type: this is a hint for one consumer
+ * (the Activity publisher, which excludes identity chats from the feed), and
+ * every other consumer — the mobile hub above all — keeps rendering the rows
+ * exactly as before and simply ignores the extra field.
+ */
+export type RosterChat = SyncRosterChat & { identityKey?: string | null };
 
 export type RosterAgentChatService = {
   listSessions(
@@ -308,6 +330,8 @@ type Sidecar = {
   provider?: string | null;
   model?: string | null;
   awaitingInput?: boolean;
+  /** Persisted CTO/identity marker; see `RosterLiveSession.identityKey`. */
+  identityKey?: string | null;
 };
 
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
@@ -320,6 +344,7 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       provider: typeof parsed.provider === "string" ? parsed.provider : null,
       model: typeof parsed.model === "string" ? parsed.model : null,
       awaitingInput: parsed.awaitingInput === true,
+      identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
     };
   } catch {
     return null;
@@ -341,6 +366,13 @@ function diskChatStatus(row: TerminalSessionRow, sidecarAwaiting: boolean): Sync
 function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   if (live.awaitingInput) return "awaiting";
   if (live.status === "active") return "running";
+  // Claude's background subagents keep working after the foreground turn ends,
+  // and agentChatService reports the chat `idle` for the whole of it. The
+  // desktop sidebar overrides that to Working
+  // (`sessionStatusPresentation.ts` — `activeBackgroundTaskCount > 0`); the
+  // roster has to agree, or Activity maps the session idle → stale → Done and
+  // reports a live agent as finished.
+  if ((live.activeBackgroundTaskCount ?? 0) > 0) return "running";
   if (live.status === "idle") return "idle";
   return "ended";
 }
@@ -411,12 +443,13 @@ async function buildRosterProject(
     .sort(compareLanes);
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
 
-  const chats: SyncRosterChat[] = [];
+  const chats: RosterChat[] = [];
   let runningCount = 0;
   let attentionCount = 0;
   for (const row of desktopVisibleRosterRows(disk.chats, visibleLaneIds)) {
     const live = liveBySessionId.get(row.id);
     const sidecar = readChatSidecar(chatSessionsDir, row.id);
+    const identityKey = live?.identityKey ?? sidecar?.identityKey ?? null;
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
@@ -458,6 +491,7 @@ async function buildRosterProject(
       model: live?.model ?? sidecar?.model ?? null,
       toolType: row.tool_type,
       status,
+      ...(identityKey ? { identityKey } : {}),
       ...(awaitingInput ? { awaitingInput: true } : {}),
       ...(row.pinned ? { pinned: true } : {}),
       lastActivityAt,

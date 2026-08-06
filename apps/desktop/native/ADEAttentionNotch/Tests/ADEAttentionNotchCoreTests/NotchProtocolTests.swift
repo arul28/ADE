@@ -164,11 +164,15 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertFalse(settings.hideDetails)
     }
 
-    func testSettingsDecodeEveryRevealModeAndDegradeUnknownOnes() throws {
+    /// Two live values, and every retired one lands on the mode that keeps a
+    /// strip on screen — an upgrade may not silently hide a surface the user
+    /// had pinned.
+    func testSettingsDecodeBothRevealModesAndNormalizeRetiredOnes() throws {
         for (raw, expected) in [
-            ("minimal", NotchRevealMode.minimal),
+            ("always", NotchRevealMode.always),
             ("hover", .hover),
-            ("click", .click),
+            ("minimal", .always),
+            ("click", .always),
             // A newer host may name a mode this build has never heard of.
             ("telepathy", .hover),
         ] {
@@ -183,12 +187,13 @@ final class NotchProtocolTests: XCTestCase {
             XCTAssertEqual(settings.revealMode, expected, "reveal mode \(raw)")
             XCTAssertFalse(settings.expandedPanelEnabled)
         }
+        XCTAssertEqual(NotchRevealMode.allCases, [.always, .hover])
     }
 
     func testSettingsRoundTripThroughTheWire() throws {
         let settings = NotchSettings(
             enabled: true,
-            revealMode: .minimal,
+            revealMode: .always,
             expandedPanelEnabled: false,
             preferredDisplayId: 7,
             hideDetails: false,
@@ -213,26 +218,27 @@ final class NotchProtocolTests: XCTestCase {
             soundsEnabled: true
         )
 
-        let clickOnly = applyingNotchSettingsMenuAction(
-            .setRevealMode(.click),
-            to: original
-        )
-        XCTAssertEqual(clickOnly.revealMode, .click)
-        XCTAssertEqual(clickOnly.preferredDisplayId, 42)
-        XCTAssertFalse(clickOnly.hideDetails)
-        XCTAssertTrue(clickOnly.soundsEnabled)
+        let pinned = applyingNotchSettingsMenuAction(.setRevealMode(.always), to: original)
+        XCTAssertEqual(pinned.revealMode, .always)
+        XCTAssertEqual(pinned.preferredDisplayId, 42)
+        XCTAssertFalse(pinned.hideDetails)
+        XCTAssertTrue(pinned.soundsEnabled)
+        // Choosing a mode may never turn the surface off or resize the panel.
+        XCTAssertTrue(pinned.enabled)
+        XCTAssertTrue(pinned.expandedPanelEnabled)
 
-        let compactPanel = applyingNotchSettingsMenuAction(
-            .toggleExpandedPanel,
-            to: clickOnly
-        )
-        XCTAssertFalse(compactPanel.expandedPanelEnabled)
-        XCTAssertEqual(compactPanel.revealMode, .click)
+        let privateMode = applyingNotchSettingsMenuAction(.toggleHideDetails, to: pinned)
+        XCTAssertTrue(privateMode.hideDetails)
+        XCTAssertEqual(privateMode.revealMode, .always)
 
-        let hidden = applyingNotchSettingsMenuAction(.hide, to: compactPanel)
+        let celebrating = applyingNotchSettingsMenuAction(.toggleCelebrations, to: privateMode)
+        XCTAssertTrue(celebrating.celebrationsEnabled)
+        XCTAssertTrue(celebrating.hideDetails)
+
+        let hidden = applyingNotchSettingsMenuAction(.hide, to: celebrating)
         XCTAssertFalse(hidden.enabled)
-        XCTAssertFalse(hidden.expandedPanelEnabled)
-        XCTAssertEqual(hidden.revealMode, .click)
+        XCTAssertEqual(hidden.revealMode, .always)
+        XCTAssertTrue(hidden.celebrationsEnabled)
     }
 
     func testHoverDormancyDoesNotDisableOrHideTheNotchSetting() {
@@ -240,7 +246,14 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertTrue(hover.enabled)
         XCTAssertTrue(notchSurfaceIsDormant(
             presentation: .compact,
-            revealMode: hover.revealMode
+            revealMode: hover.revealMode,
+            pointerInside: false
+        ))
+        // Under the pointer it is the identical strip the pinned mode draws.
+        XCTAssertFalse(notchSurfaceIsDormant(
+            presentation: .compact,
+            revealMode: hover.revealMode,
+            pointerInside: true
         ))
 
         let hidden = applyingNotchSettingsMenuAction(.hide, to: hover)
@@ -251,7 +264,7 @@ final class NotchProtocolTests: XCTestCase {
     func testSettingsOutputCarriesTheWholeUpdatedSettingsFrame() throws {
         let settings = NotchSettings(
             enabled: false,
-            revealMode: .minimal,
+            revealMode: .always,
             expandedPanelEnabled: false,
             hideDetails: true
         )
@@ -264,7 +277,7 @@ final class NotchProtocolTests: XCTestCase {
 
         XCTAssertEqual(object["type"] as? String, "settings")
         XCTAssertEqual(encodedSettings["enabled"] as? Bool, false)
-        XCTAssertEqual(encodedSettings["revealMode"] as? String, "minimal")
+        XCTAssertEqual(encodedSettings["revealMode"] as? String, "always")
         XCTAssertEqual(encodedSettings["expandedPanelEnabled"] as? Bool, false)
     }
 
@@ -593,7 +606,7 @@ final class NotchProtocolTests: XCTestCase {
             // Only a merge earns the confetti.
             XCTAssertEqual(
                 toast.treatment.presentation,
-                expected == .celebration ? .celebration : .attention
+                expected == .celebration ? .celebration : .flash
             )
         }
     }
@@ -610,7 +623,7 @@ final class NotchProtocolTests: XCTestCase {
             return XCTFail("expected a toast")
         }
         XCTAssertEqual(toast.treatment, .info)
-        XCTAssertEqual(toast.treatment.presentation, .attention)
+        XCTAssertEqual(toast.treatment.presentation, .flash)
         XCTAssertNil(toast.itemId)
         XCTAssertEqual(toast.resolvedTone, .blue)
         XCTAssertEqual(toast.resolvedDurationMs, 5_000)
@@ -623,7 +636,11 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(toastFixture(durationMs: -5_000).resolvedDurationMs, 800)
         XCTAssertEqual(toastFixture(durationMs: 600_000).resolvedDurationMs, 15_000)
         XCTAssertEqual(toastFixture(durationMs: 3_000).resolvedDurationMs, 3_000)
-        XCTAssertEqual(toastFixture(durationMs: nil).resolvedDurationMs, 5_000)
+        // A needs-you card is the one actionable surface the notch has, so its
+        // default is the ~10s the flash design calls for, not the old 5.
+        XCTAssertEqual(toastFixture(durationMs: nil).resolvedDurationMs, 10_000)
+        XCTAssertEqual(NotchToastTreatment.celebration.defaultDurationMs, 3_000)
+        XCTAssertEqual(NotchToastTreatment.info.defaultDurationMs, 5_000)
     }
 
     func testToastCommandWithoutAPayloadIsRejected() {
@@ -641,82 +658,368 @@ final class NotchProtocolTests: XCTestCase {
         )
     }
 
+    /// Both modes are about where the strip *rests*. An event that needs you is
+    /// not a resting state, so it takes over in either one — the old "click
+    /// only" mode that swallowed alerts is gone with the sprawl.
     @MainActor
-    func testClickOnlyModeDoesNotLatchSuppressedToast() {
+    func testTakeoversInterruptInBothRevealModes() {
+        for mode in NotchRevealMode.allCases {
+            let model = NotchViewModel()
+            model.handle(.settings(NotchSettings(
+                enabled: true,
+                revealMode: mode,
+                soundsEnabled: false
+            )))
+
+            model.handle(.toast(toastFixture(durationMs: 3_000)))
+
+            XCTAssertNotNil(model.activeToast, "\(mode) swallowed a takeover")
+            XCTAssertEqual(model.interaction.presentation, .flash, "\(mode)")
+        }
+    }
+
+    /// A merge still honours the opt-out, and nothing else does — an alert is
+    /// not a celebration and may not be suppressed by the celebration setting.
+    @MainActor
+    func testCelebrationOptOutOnlySuppressesCelebrations() {
         let model = NotchViewModel()
         model.handle(.settings(NotchSettings(
             enabled: true,
-            revealMode: .click,
-            soundsEnabled: false,
-            automaticRevealEnabled: true
+            revealMode: .always,
+            celebrationsEnabled: false
         )))
 
-        model.handle(.toast(toastFixture(durationMs: 3_000)))
-
+        model.handle(.toast(AttentionToast(
+            itemId: nil,
+            eventKind: "pr_merged",
+            treatment: .celebration,
+            title: "Merged #1030"
+        )))
         XCTAssertNil(model.activeToast)
         XCTAssertEqual(model.interaction.presentation, .compact)
-        XCTAssertFalse(model.policy.allowsAutomaticReveal)
+
+        model.handle(.toast(toastFixture(durationMs: 3_000)))
+        XCTAssertEqual(model.interaction.presentation, .flash)
     }
 
-    func testAutomaticRevealAndTickerDefaultOnAndRoundTrip() throws {
-        let defaults = NotchSettings()
-        XCTAssertTrue(defaults.automaticRevealEnabled)
-        XCTAssertTrue(defaults.tickerEnabled)
-
-        // A host built before these keys keeps the shipped behaviour.
+    /// The retired keys may still be arriving from a host mid-rollout. They may
+    /// not fail the frame, and they may not come back out of the helper as
+    /// settings the user never chose.
+    func testRetiredPresentationKeysAreIgnoredWithoutCostingTheFrame() throws {
         let legacy = """
-        {"type":"settings","settings":{"enabled":true,"revealMode":"hover",
-         "expandedPanelEnabled":true,"hideDetails":false,
-         "celebrationsEnabled":true,"soundsEnabled":false}}
-        """
-        guard case .settings(let inherited) = try NotchInputDecoder.decode(line: legacy) else {
-            return XCTFail("expected settings")
-        }
-        XCTAssertTrue(inherited.automaticRevealEnabled)
-        XCTAssertTrue(inherited.tickerEnabled)
-
-        let off = """
         {"type":"settings","settings":{"enabled":true,"revealMode":"minimal",
          "expandedPanelEnabled":true,"hideDetails":false,"celebrationsEnabled":true,
          "soundsEnabled":false,"automaticRevealEnabled":false,"tickerEnabled":false}}
         """
-        guard case .settings(let explicit) = try NotchInputDecoder.decode(line: off) else {
+        guard case .settings(let settings) = try NotchInputDecoder.decode(line: legacy) else {
             return XCTFail("expected settings")
         }
-        XCTAssertFalse(explicit.automaticRevealEnabled)
-        XCTAssertFalse(explicit.tickerEnabled)
+        XCTAssertTrue(settings.enabled)
+        XCTAssertEqual(settings.revealMode, .always)
+        XCTAssertFalse(settings.hideDetails)
 
-        // Both survive the round trip back to the host through the settings
-        // output, which is how the context menu's checkmarks are persisted.
-        let encoded = try JSONEncoder().encode(NotchOutput(type: "settings", settings: explicit))
+        let encoded = try JSONEncoder().encode(NotchOutput(type: "settings", settings: settings))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        let settings = try XCTUnwrap(object["settings"] as? [String: Any])
-        XCTAssertEqual(settings["automaticRevealEnabled"] as? Bool, false)
-        XCTAssertEqual(settings["tickerEnabled"] as? Bool, false)
+        let emitted = try XCTUnwrap(object["settings"] as? [String: Any])
+        XCTAssertNil(emitted["automaticRevealEnabled"])
+        XCTAssertNil(emitted["tickerEnabled"])
+        XCTAssertEqual(emitted["revealMode"] as? String, "always")
     }
 
-    func testContextMenuTogglesForAutomaticRevealAndTickerPreserveEverythingElse() {
-        let original = NotchSettings(
-            enabled: true,
-            revealMode: .minimal,
-            expandedPanelEnabled: false,
-            preferredDisplayId: 42,
-            hideDetails: false,
-            celebrationsEnabled: false,
-            soundsEnabled: true
+    // MARK: - Compact strip
+
+    /// Every nonzero group, most urgent first, one hue each. The five-way split
+    /// is finer than the host's three counts, which file failed and review rows
+    /// inside their own `needsYou` band.
+    func testStripGroupsAreNonzeroAndUrgencyOrdered() {
+        let items = [
+            fixtureItem(id: "done-1", phase: "completed"),
+            // Planning is not a phase — the wire vocabulary is frozen — so it
+            // rides on `chatActivityMode` and only a running turn can carry it.
+            fixtureItem(id: "plan-1", phase: "running", chatActivityMode: .planning),
+            fixtureItem(id: "run-1", phase: "running"),
+            fixtureItem(id: "run-2", phase: "starting"),
+            fixtureItem(id: "review", phase: "review_requested"),
+            fixtureItem(id: "checks", phase: "checks_failing"),
+            fixtureItem(id: "needs", phase: "needs_you"),
+        ]
+        let groups = notchStripGroups(items: items)
+        XCTAssertEqual(
+            groups.map(\.kind),
+            [.needsYou, .failed, .planning, .working, .done]
         )
+        XCTAssertEqual(groups.map(\.count), [1, 1, 1, 3, 1])
+        // Amber is "your move" and nothing else borrows it.
+        XCTAssertEqual(groups.first?.tone, .amber)
+        XCTAssertEqual(NotchStripGroupKind.working.tone, .blue)
+        XCTAssertEqual(NotchStripGroupKind.done.tone, .emerald)
 
-        let noReveal = applyingNotchSettingsMenuAction(.toggleAutomaticReveal, to: original)
-        XCTAssertFalse(noReveal.automaticRevealEnabled)
-        XCTAssertTrue(noReveal.tickerEnabled)
-        XCTAssertEqual(noReveal.revealMode, .minimal)
-        XCTAssertEqual(noReveal.preferredDisplayId, 42)
-        XCTAssertTrue(noReveal.soundsEnabled)
+        // Nothing running at all draws no groups rather than a row of zeroes.
+        XCTAssertTrue(notchStripGroups(items: []).isEmpty)
+    }
 
-        let noTicker = applyingNotchSettingsMenuAction(.toggleTicker, to: noReveal)
-        XCTAssertFalse(noTicker.tickerEnabled)
-        XCTAssertFalse(noTicker.automaticRevealEnabled)
-        XCTAssertFalse(noTicker.hideDetails)
+    /// The ambient tail is exactly what the host's 48-row projection truncates,
+    /// so the account's own `done` total wins when it is larger.
+    func testDoneGroupPrefersTheAccountTotalOverTheProjectedRows() {
+        let items = [fixtureItem(id: "done-1", phase: "completed")]
+        let groups = notchStripGroups(
+            items: items,
+            counts: AttentionCounts(needsYou: 0, working: 0, done: 54, total: 55)
+        )
+        XCTAssertEqual(groups.first(where: { $0.kind == .done })?.count, 54)
+    }
+
+    /// All five groups are floored, not three: the projection truncates by
+    /// priority, so failed and planning rows are exactly the ones it drops, and
+    /// counting only what survived is the strip under-reporting the account.
+    func testEveryGroupIsFlooredByTheAccountCountsIncludingFailedAndPlanning() {
+        let items = [
+            fixtureItem(id: "fail-1", phase: "checks_failing"),
+            fixtureItem(id: "plan-1", phase: "running", chatActivityMode: .planning),
+        ]
+        let groups = notchStripGroups(
+            items: items,
+            counts: AttentionCounts(
+                needsYou: 2,
+                failed: 6,
+                planning: 4,
+                working: 9,
+                done: 54,
+                total: 75
+            )
+        )
+        XCTAssertEqual(groups.map(\.kind), [.needsYou, .failed, .planning, .working, .done])
+        XCTAssertEqual(groups.map(\.count), [2, 6, 4, 9, 54])
+    }
+
+    /// A host that predates the two new counts must keep exactly the behaviour
+    /// it has today: absent is not zero, so those groups stay row-derived.
+    func testAbsentFailedAndPlanningCountsLeaveThoseGroupsRowDerived() throws {
+        let line = """
+        {"type":"snapshot","snapshot":{"contractVersion":1,"revision":1,
+         "generatedAt":"2026-08-01T12:00:00Z","items":[],
+         "counts":{"needsYou":1,"working":2,"done":3,"total":6}}}
+        """
+        guard case .snapshot(let snapshot) = try NotchInputDecoder.decode(line: line) else {
+            return XCTFail("expected a snapshot")
+        }
+        let counts = try XCTUnwrap(snapshot.counts)
+        XCTAssertNil(counts.failed)
+        XCTAssertNil(counts.planning)
+
+        let items = [fixtureItem(id: "fail-1", phase: "failed")]
+        let groups = notchStripGroups(items: items, counts: counts)
+        XCTAssertEqual(groups.first(where: { $0.kind == .failed })?.count, 1)
+        XCTAssertNil(groups.first(where: { $0.kind == .planning }))
+    }
+
+    /// And a host that sends them is believed, through the same total decoding
+    /// every other advisory block gets.
+    func testFailedAndPlanningCountsDecodeFromTheWire() throws {
+        let line = """
+        {"type":"snapshot","snapshot":{"contractVersion":1,"revision":1,
+         "generatedAt":"2026-08-01T12:00:00Z","items":[],
+         "counts":{"needsYou":1,"failed":7,"planning":-3,"working":2,"done":3,"total":16}}}
+        """
+        guard case .snapshot(let snapshot) = try NotchInputDecoder.decode(line: line) else {
+            return XCTFail("expected a snapshot")
+        }
+        let counts = try XCTUnwrap(snapshot.counts)
+        XCTAssertEqual(counts.failed, 7)
+        // Clamped like every other count: a negative is drift, not a group.
+        XCTAssertEqual(counts.planning, 0)
+    }
+
+    /// Without a counts block the fallback tallies the rows through the same
+    /// five-way table, so the panel and the strip cannot disagree with it.
+    func testResolvedCountsFallBackThroughTheFiveWayTable() {
+        let snapshot = AttentionSnapshot(
+            revision: 1,
+            generatedAt: "2026-08-01T12:00:00Z",
+            items: [
+                fixtureItem(id: "needs", phase: "needs_you"),
+                fixtureItem(id: "fail", phase: "changes_requested"),
+                fixtureItem(id: "plan", phase: "running", chatActivityMode: .planning),
+                fixtureItem(id: "run", phase: "running"),
+            ]
+        )
+        let counts = snapshot.resolvedCounts()
+        XCTAssertEqual(counts.needsYou, 1)
+        XCTAssertEqual(counts.failed, 1)
+        XCTAssertEqual(counts.planning, 1)
+        XCTAssertEqual(counts.working, 1)
+        XCTAssertEqual(counts.done, 0)
+        XCTAssertEqual(counts.total, 4)
+    }
+
+    /// The right wing carries real content, and falls back to a quiet summary
+    /// rather than to nothing.
+    func testTopSignalPrefersRealNewsAndFallsBackQuietly() {
+        let merged = AttentionItem(
+            id: "pr-1",
+            fingerprint: "f",
+            kind: "pull_request",
+            eventKind: "pr_merged",
+            phase: "merged",
+            machine: AttentionMachine(machineKey: "m", name: "Studio", online: true, lastSeenAt: nil),
+            project: AttentionProject(projectId: "ade", name: "ADE"),
+            title: "Merge the notch redesign",
+            preview: "",
+            privacyPreview: "Pull request update",
+            destination: AttentionDestination(
+                kind: "pull_request",
+                repoOwner: "ade",
+                repoName: "desktop",
+                number: 1_030
+            ),
+            occurredAt: "2026-08-01T12:00:00Z",
+            updatedAt: "2026-08-01T12:00:00Z"
+        )
+        let signal = notchTopSignal(
+            items: [merged, fixtureItem(id: "run", phase: "running")],
+            counts: AttentionCounts(),
+            status: nil,
+            hideDetails: false
+        )
+        XCTAssertEqual(signal.text, "Merged #1030")
+        XCTAssertTrue(signal.isNotable)
+        XCTAssertEqual(signal.itemId, "pr-1")
+
+        // Nothing notable: a quiet machine summary, drawn muted.
+        let quiet = notchTopSignal(
+            items: [fixtureItem(id: "run", phase: "running")],
+            counts: AttentionCounts(machinesOnline: 1, machinesTotal: 3),
+            status: nil,
+            hideDetails: false
+        )
+        XCTAssertEqual(quiet.text, "1/3 machines")
+        XCTAssertFalse(quiet.isNotable)
+
+        // Privacy mode never leaks a repo, a number, or a title.
+        let private_ = notchTopSignal(
+            items: [merged],
+            counts: AttentionCounts(),
+            status: nil,
+            hideDetails: true
+        )
+        XCTAssertEqual(private_.text, "Pull request update")
+
+        // A broken stream outranks any row.
+        let degraded = notchTopSignal(
+            items: [merged],
+            counts: AttentionCounts(),
+            status: notchStatusPresentation(
+                availability: AttentionAvailability(state: .degraded),
+                itemCount: 1
+            ),
+            hideDetails: false
+        )
+        XCTAssertEqual(degraded.text, "Reconnecting")
+    }
+
+    /// Width follows content: the same strip with less to say has to be
+    /// narrower, and a runaway signal may not spread it across the menu bar.
+    func testStripWidthIsDerivedFromContentAndCapped() {
+        let quiet = notchStripMetrics(
+            groups: notchStripGroups(items: [fixtureItem(id: "run", phase: "running")]),
+            signal: NotchTopSignal(text: "1/3 machines", tone: .neutral, symbolName: "desktopcomputer", isNotable: false)
+        )
+        let busy = notchStripMetrics(
+            groups: notchStripGroups(items: [
+                fixtureItem(id: "needs", phase: "needs_you"),
+                fixtureItem(id: "checks", phase: "checks_failing"),
+                fixtureItem(id: "review", phase: "review_requested"),
+                fixtureItem(id: "run", phase: "running"),
+                fixtureItem(id: "done", phase: "completed"),
+            ]),
+            signal: NotchTopSignal(text: "Checks failing #466", tone: .red, symbolName: "x", isNotable: true)
+        )
+        XCTAssertLessThan(quiet.leadingWidth, busy.leadingWidth)
+
+        let quietWidth = notchSurfaceSize(
+            presentation: .compact,
+            physicalNotchWidth: 182,
+            safeAreaTop: 34,
+            strip: quiet
+        ).width
+        let busyWidth = notchSurfaceSize(
+            presentation: .compact,
+            physicalNotchWidth: 182,
+            safeAreaTop: 34,
+            strip: busy
+        ).width
+        XCTAssertLessThan(quietWidth, busyWidth)
+        // The old fixed strip was 406pt wide no matter what it carried.
+        XCTAssertLessThan(quietWidth, 406)
+
+        let runaway = notchStripMetrics(
+            groups: [],
+            signal: NotchTopSignal(
+                text: String(repeating: "very long signal ", count: 12),
+                tone: .amber,
+                symbolName: "x",
+                isNotable: true
+            )
+        )
+        XCTAssertLessThanOrEqual(
+            notchSurfaceSize(
+                presentation: .compact,
+                physicalNotchWidth: 182,
+                safeAreaTop: 34,
+                strip: runaway
+            ).width,
+            NotchDisplayGeometry.panelSize.width
+        )
+    }
+
+    // MARK: - Events tab
+
+    /// Three failing checks on one pull request are one story, not three rows.
+    func testEventClustersGroupByPullRequestAndKeepAgentsOut() {
+        func check(_ id: String, phase: String, number: Int) -> AttentionItem {
+            AttentionItem(
+                id: id,
+                fingerprint: "f-\(id)",
+                kind: "pull_request",
+                eventKind: "pr_checks_failing",
+                phase: phase,
+                machine: AttentionMachine(machineKey: "m", name: "Studio", online: true, lastSeenAt: nil),
+                project: AttentionProject(projectId: "ade", name: "ADE"),
+                title: "Check \(id)",
+                preview: "",
+                privacyPreview: "Pull request update",
+                destination: AttentionDestination(
+                    kind: "pull_request",
+                    repoOwner: "ade",
+                    repoName: "desktop",
+                    number: number
+                ),
+                occurredAt: "2026-08-01T12:00:00Z",
+                updatedAt: "2026-08-01T12:00:00Z"
+            )
+        }
+        let items = [
+            fixtureItem(id: "agent", phase: "running"),
+            check("c1", phase: "checks_failing", number: 466),
+            check("c2", phase: "checks_failing", number: 466),
+            check("c3", phase: "open", number: 466),
+            check("other", phase: "merged", number: 1_030),
+        ]
+
+        let clusters = notchEventClusters(items)
+        XCTAssertEqual(clusters.count, 2)
+        XCTAssertEqual(clusters.first?.title, "desktop #466")
+        XCTAssertEqual(clusters.first?.count, 3)
+        XCTAssertEqual(clusters.first?.tone, .red)
+        XCTAssertEqual(clusters.last?.count, 1)
+
+        // Tabs partition the feed; an agent is never an event.
+        XCTAssertEqual(notchItems(items, in: .agents).map(\.id), ["agent"])
+        XCTAssertEqual(notchItems(items, in: .events).count, 4)
+        XCTAssertEqual(notchPanelTab(for: items[1]), .events)
+
+        // Privacy mode never names the repository or the number.
+        XCTAssertEqual(notchEventClusters(items, hideDetails: true).first?.title, "Pull request")
     }
 
     private func toastFixture(durationMs: Int?) -> AttentionToast {
@@ -732,7 +1035,8 @@ final class NotchProtocolTests: XCTestCase {
         id: String = "agent-1",
         phase: String = "running",
         updatedAt: String = "2026-07-28T12:00:00Z",
-        tier: String? = nil
+        tier: String? = nil,
+        chatActivityMode: AttentionChatActivityMode? = nil
     ) -> AttentionItem {
         AttentionItem(
             id: id,
@@ -742,6 +1046,7 @@ final class NotchProtocolTests: XCTestCase {
             phase: phase,
             machine: AttentionMachine(machineKey: "mac-1", name: "Studio", online: true, lastSeenAt: nil),
             project: AttentionProject(projectId: "ade", name: "ADE"),
+            chatActivityMode: chatActivityMode,
             title: "Implement attention",
             preview: "Running tests",
             privacyPreview: "Agent update",

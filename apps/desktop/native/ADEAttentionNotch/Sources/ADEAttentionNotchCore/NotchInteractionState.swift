@@ -1,11 +1,20 @@
 import Foundation
 
+/// Four states, and only four.
+///
+/// `prehover` and `peek` are gone with the mode sprawl they belonged to: hover
+/// no longer grows anything, so there is nothing between the strip and the
+/// panel, and the one-item peek card a click used to open was a menu with a
+/// single entry.
 public enum NotchPresentationState: String, Codable, Equatable, Sendable {
+    /// The strip. The only resting state, identical in both reveal modes.
     case compact
-    case prehover
-    case peek
+    /// The full panel, which only ever a click opens.
     case expanded
-    case attention
+    /// A timed takeover — the needs-you card and its siblings. Auto-dismisses
+    /// by morphing back into its glyph in the strip.
+    case flash
+    /// A merge, celebrated once and then settled.
     case celebration
 }
 
@@ -18,61 +27,47 @@ public enum NotchPresentationState: String, Codable, Equatable, Sendable {
 public struct NotchPresentationPolicy: Equatable, Sendable {
     public let revealMode: NotchRevealMode
     public let expandedPanelEnabled: Bool
-    public let automaticRevealEnabled: Bool
-    public let tickerEnabled: Bool
 
     public static let `default` = NotchPresentationPolicy()
 
     public init(
         revealMode: NotchRevealMode = .hover,
-        expandedPanelEnabled: Bool = true,
-        automaticRevealEnabled: Bool = true,
-        tickerEnabled: Bool = true
+        expandedPanelEnabled: Bool = true
     ) {
         self.revealMode = revealMode
         self.expandedPanelEnabled = expandedPanelEnabled
-        self.automaticRevealEnabled = automaticRevealEnabled
-        self.tickerEnabled = tickerEnabled
     }
 
     public init(settings: NotchSettings) {
         self.init(
             revealMode: settings.revealMode,
-            expandedPanelEnabled: settings.expandedPanelEnabled,
-            automaticRevealEnabled: settings.automaticRevealEnabled,
-            tickerEnabled: settings.tickerEnabled
+            expandedPanelEnabled: settings.expandedPanelEnabled
         )
     }
 
-    /// Hover mode is the only one where the pointer alone changes the surface,
-    /// and since the Activity revamp it stops at prehover: the old peek-on-hover
-    /// is gone and its layout now belongs to event toasts.
-    public var allowsHoverReveal: Bool { revealMode == .hover }
+    /// Hover mode reveals the strip the pointer entered; it never grows it.
+    /// The bulge that answers the pointer is drawn feedback, not a state, and
+    /// runs identically in both modes.
+    public var revealsOnHover: Bool { revealMode == .hover }
 
-    /// An event may open the surface by itself when the user allows it — except
-    /// in "click only", which is literal: nothing but a click opens anything.
-    public var allowsAutomaticReveal: Bool {
-        automaticRevealEnabled && revealMode != .click
-    }
-
-    /// The ticker is a property of the pinned strip, so it only ever runs in the
-    /// mode that keeps a strip on screen at rest.
-    public var showsTicker: Bool { tickerEnabled && revealMode == .minimal }
-
-    /// Compact mode never grows past a short peek. Other modes may open the
-    /// tall panel unless the user disabled it globally.
-    public var clickPresentation: NotchPresentationState {
-        revealMode == .minimal || !expandedPanelEnabled ? .peek : .expanded
-    }
+    /// Whether a click grows the surface here. When the user has turned the
+    /// tall panel off, the click routes to ADE instead — a surface that eats
+    /// clicks and does nothing is the one outcome no mode may produce.
+    public var clickOpensPanel: Bool { expandedPanelEnabled }
 }
 
 /// Hover mode contributes no visible chrome while resting. The helper process
 /// and interaction state remain alive so a bounded hot zone can reveal it.
+///
+/// Load-bearing that this is keyed on the *pointer*, not on a second
+/// presentation state: the revealed strip has to be the same `compact` rect the
+/// pinned mode draws, or the two modes look like two different features again.
 public func notchSurfaceIsDormant(
     presentation: NotchPresentationState,
-    revealMode: NotchRevealMode
+    revealMode: NotchRevealMode,
+    pointerInside: Bool
 ) -> Bool {
-    revealMode == .hover && presentation == .compact
+    revealMode == .hover && presentation == .compact && !pointerInside
 }
 
 public struct NotchSize: Equatable, Sendable {
@@ -91,78 +86,85 @@ public struct NotchInteractionState: Equatable, Sendable {
     public private(set) var selectedIndex: Int = 0
     public private(set) var isVisible = true
     public private(set) var isExplicitlyInteractive = false
+    /// Tracked here rather than only in the view model because dormancy — the
+    /// one thing hover mode does differently — is a function of it.
+    public private(set) var pointerInside = false
 
     public init() {}
 
-    /// Hover stops here. Before the Activity revamp a 145ms timer promoted this
-    /// to `.peek`; the peek layout is now the toast's, and a hover that grew
-    /// into a card competed with the toast it looks identical to.
+    /// Hover reveals; it never grows. In `always` the strip is already there,
+    /// so entering it changes nothing but the bulge the view draws.
+    ///
+    /// Deliberately takes no policy and no item count: neither mode grows on
+    /// hover and an empty strip still reveals, so a parameter here would only
+    /// be a promise this function does not keep.
     @discardableResult
-    public mutating func pointerEntered(
-        hasItems: Bool,
-        policy: NotchPresentationPolicy = .default
-    ) -> UInt64 {
+    public mutating func pointerEntered() -> UInt64 {
         generation &+= 1
-        guard policy.allowsHoverReveal, isVisible, hasItems, presentation != .celebration else {
-            return generation
-        }
-        if presentation == .compact {
-            presentation = .prehover
-        }
+        guard isVisible else { return generation }
+        pointerInside = true
         return generation
     }
 
     @discardableResult
     public mutating func pointerExited() -> UInt64 {
         generation &+= 1
+        pointerInside = false
         if isExplicitlyInteractive {
             return generation
         }
-        if presentation != .attention && presentation != .celebration {
+        // A takeover owns the surface for its own timer; the pointer leaving is
+        // not an answer to it.
+        if presentation != .flash && presentation != .celebration {
             presentation = .compact
         }
         return generation
     }
 
+    /// Returns whether the panel actually opened, so a click the policy refuses
+    /// to grow can be routed to ADE instead of silently doing nothing.
+    @discardableResult
     public mutating func explicitToggle(
         hasItems: Bool,
         policy: NotchPresentationPolicy = .default
-    ) {
+    ) -> Bool {
         generation &+= 1
-        guard isVisible, hasItems else { return }
-        let opened = policy.clickPresentation
-        // A second click closes what the first one opened. A peek the pointer
-        // opened is not "open", so clicking through a hover still latches.
-        if presentation == opened, isExplicitlyInteractive {
+        guard isVisible, hasItems, policy.clickOpensPanel else { return false }
+        // A second click closes what the first one opened. A takeover the user
+        // clicks through is not "open", so clicking one still latches the panel.
+        if presentation == .expanded, isExplicitlyInteractive {
             presentation = .compact
             isExplicitlyInteractive = false
-        } else {
-            presentation = opened
-            isExplicitlyInteractive = true
+            return false
         }
+        presentation = .expanded
+        isExplicitlyInteractive = true
+        return true
     }
 
-    public mutating func setAttention(policy: NotchPresentationPolicy = .default) {
+    /// A timed takeover. Unlike the state it replaces this is never gated on a
+    /// reveal mode: both modes are about where the strip rests, and an event
+    /// that needs you is not a resting state. That is why none of the three
+    /// takeover transitions takes a policy — passing one would imply a mode can
+    /// suppress the news, which is the behaviour they exist to prevent.
+    public mutating func setFlash() {
         generation &+= 1
-        guard isVisible, policy.allowsAutomaticReveal else { return }
-        presentation = .attention
+        guard isVisible, !isExplicitlyInteractive else { return }
+        presentation = .flash
     }
 
-    public mutating func setCelebration(policy: NotchPresentationPolicy = .default) {
+    public mutating func setCelebration() {
         generation &+= 1
-        guard isVisible, policy.allowsAutomaticReveal else { return }
+        guard isVisible, !isExplicitlyInteractive else { return }
         presentation = .celebration
     }
 
-    /// A toast always settles back to the compact bar. `.peek` is the toast's
-    /// own layout now, so landing there would leave a card on screen with
-    /// nothing left to say.
-    public mutating func finishTransient(
-        pointerInside: Bool,
-        policy: NotchPresentationPolicy = .default
-    ) {
+    /// A takeover always settles back to the strip — which, under a pointer in
+    /// hover mode, is a strip that stays revealed.
+    public mutating func finishTransient(pointerInside: Bool) {
         generation &+= 1
-        presentation = (pointerInside && policy.allowsHoverReveal) ? .prehover : .compact
+        self.pointerInside = pointerInside
+        presentation = .compact
     }
 
     public mutating func select(index: Int, itemCount: Int) {
@@ -183,6 +185,7 @@ public struct NotchInteractionState: Equatable, Sendable {
         if !visible {
             presentation = .compact
             isExplicitlyInteractive = false
+            pointerInside = false
         }
     }
 
@@ -197,22 +200,13 @@ public struct NotchInteractionState: Equatable, Sendable {
     /// otherwise the setting appears not to work until the next interaction.
     public mutating func applyPolicy(_ policy: NotchPresentationPolicy) {
         generation &+= 1
-        if isExplicitlyInteractive {
-            // The user opened this themselves; only a now-forbidden size is
-            // corrected, and it steps down rather than vanishing under them.
-            if presentation == .expanded, policy.clickPresentation != .expanded {
-                presentation = policy.clickPresentation
-            }
+        if presentation == .expanded, !policy.clickOpensPanel {
+            presentation = .compact
+            isExplicitlyInteractive = false
             return
         }
-        switch presentation {
-        case .compact, .expanded:
-            presentation = .compact
-        case .prehover, .peek:
-            if !policy.allowsHoverReveal { presentation = .compact }
-        case .attention, .celebration:
-            if !policy.allowsAutomaticReveal { presentation = .compact }
-        }
+        // Switching reveal mode never changes what is drawn: both modes draw
+        // the identical strip, and only visibility at rest differs.
     }
 }
 
@@ -245,57 +239,6 @@ public func sortedAttentionItems(_ items: [AttentionItem]) -> [AttentionItem] {
         }
 }
 
-/// The priority-flat three, mirroring `activityPriority.ts` in the renderer so
-/// the panel files a row exactly where the desktop popover files it.
-public struct NotchActivitySections: Equatable, Sendable {
-    public let needsYou: [AttentionItem]
-    public let working: [AttentionItem]
-    public let done: [AttentionItem]
-
-    public init(needsYou: [AttentionItem], working: [AttentionItem], done: [AttentionItem]) {
-        self.needsYou = needsYou
-        self.working = working
-        self.done = done
-    }
-
-    public var total: Int { needsYou.count + working.count + done.count }
-    public var isEmpty: Bool { total == 0 }
-
-    /// Rows still doing something, in priority order — what the ticker cycles
-    /// and what the hover strip's live dot counts.
-    public var live: [AttentionItem] { needsYou + working }
-}
-
-/// Mirrors `activitySectionId` in `activityPriority.ts`, including its rule that
-/// an idle roster row is quiet history regardless of the phase it preserved.
-public func notchActivitySectionId(for item: AttentionItem) -> String {
-    if item.isIdleTier { return "done" }
-    let priority = phasePriorities[item.phase] ?? 99
-    if priority <= (phasePriorities["blocked"] ?? 2) { return "needs-you" }
-    if priority <= (phasePriorities["stale"] ?? 4) { return "working" }
-    return "done"
-}
-
-public func notchActivitySections(_ items: [AttentionItem]) -> NotchActivitySections {
-    var needsYou: [AttentionItem] = []
-    var working: [AttentionItem] = []
-    var done: [AttentionItem] = []
-    for item in sortedAttentionItems(items) {
-        switch notchActivitySectionId(for: item) {
-        case "needs-you": needsYou.append(item)
-        case "working": working.append(item)
-        default: done.append(item)
-        }
-    }
-    // Idle roster history is the ambient tail even when its preserved phase has
-    // a numerically higher priority than a fresh completed outcome.
-    return NotchActivitySections(
-        needsYou: needsYou,
-        working: working,
-        done: done.filter { !$0.isIdleTier } + done.filter(\.isIdleTier)
-    )
-}
-
 /// Height of the menu-bar band the hardware notch lives in. The surface's top
 /// `band` points sit *inside* that strip, so compact ends exactly on the
 /// hardware notch's bottom edge and expanded content starts just below it.
@@ -308,16 +251,20 @@ public func notchMenuBarBandHeight(safeAreaTop: Double) -> Double {
 /// deliberately without covering the whole menu bar. Floating fallback
 /// surfaces primarily use their real status-item frame and retain this small
 /// centered target as a safety net.
+///
+/// Strictly inside the revealed strip's own rect, in both axes. A hot zone that
+/// poked out past the strip made the pointer oscillate between "revealed" and
+/// "dormant" along that sliver, which reads as the notch flickering at you.
 public func notchHoverHotZoneSize(
     physicalNotchWidth: Double?,
     safeAreaTop: Double = 0
 ) -> NotchSize {
     guard let physicalNotchWidth else {
-        return NotchSize(width: 96, height: 34)
+        return NotchSize(width: 96, height: 30)
     }
     return NotchSize(
         width: clampedNotchWidth(physicalNotchWidth) + 88,
-        height: notchMenuBarBandHeight(safeAreaTop: safeAreaTop) + 8
+        height: notchMenuBarBandHeight(safeAreaTop: safeAreaTop)
     )
 }
 
@@ -326,43 +273,67 @@ private func clampedNotchWidth(_ width: Double) -> Double {
     max(140, min(240, width))
 }
 
+/// Smallest and largest an ear may get. The floor keeps the strip from
+/// collapsing into the cutout when the account is quiet; the ceiling is what
+/// stops a long signal from spreading the surface across the menu bar.
+private let notchEarMinimumWidth: Double = 58
+private let notchEarMaximumWidth: Double = 150
+/// Outer margin plus the gap that keeps content off the hardware cutout.
+private let notchEarPadding: Double = 18
+
+/// The width one ear needs for the content it carries.
+public func notchCompactEarWidth(_ metrics: NotchStripMetrics) -> Double {
+    max(
+        notchEarMinimumWidth,
+        min(notchEarMaximumWidth, metrics.widest + notchEarPadding)
+    )
+}
+
 public func notchSurfaceSize(
     presentation: NotchPresentationState,
     physicalNotchWidth: Double?,
-    safeAreaTop: Double = 0
+    safeAreaTop: Double = 0,
+    strip: NotchStripMetrics = .empty
 ) -> NotchSize {
+    let ear = notchCompactEarWidth(strip)
+
     guard let physicalNotchWidth else {
+        // No cutout to sit around: the pill only needs its own content, one gap
+        // between the wings, and its horizontal padding.
+        let floating = max(
+            210,
+            min(520, strip.leadingWidth + strip.trailingWidth + 60)
+        )
         switch presentation {
-        case .compact: return NotchSize(width: 272, height: 34)
-        case .prehover: return NotchSize(width: 282, height: 38)
-        case .peek: return NotchSize(width: 316, height: 76)
-        case .expanded: return NotchSize(width: 420, height: 440)
-        case .attention: return NotchSize(width: 336, height: 130)
-        case .celebration: return NotchSize(width: 352, height: 150)
+        case .compact:
+            return NotchSize(width: floating, height: 34)
+        case .expanded:
+            return NotchSize(width: max(420, floating), height: 452)
+        case .flash:
+            return NotchSize(width: max(392, floating), height: 92)
+        case .celebration:
+            return NotchSize(width: max(372, floating), height: 138)
         }
     }
 
     let notch = clampedNotchWidth(physicalNotchWidth)
     let band = notchMenuBarBandHeight(safeAreaTop: safeAreaTop)
-    // Each compact ear gets ~105pt beside the cutout: enough to hold the
-    // longest phase label with its elapsed time ("Checks failing  22m") without
-    // truncating, and no wider.
-    let compactWidth = max(364, notch + 224)
-    // Every state is at least as wide as compact: growing into a hover or a
-    // click must never make the surface jump inwards.
+    // Symmetric by construction: the cutout is centered on the display and so
+    // is the panel, so the wider wing sets both ears. Content-derived rather
+    // than the old flat `notch + 224`, which padded every strip out to the
+    // width of the longest label it could ever hold.
+    let compactWidth = notch + 2 * ear
+    // Every state is at least as wide as compact: growing on a click must never
+    // make the surface jump inwards.
     switch presentation {
     case .compact:
         return NotchSize(width: compactWidth, height: band)
-    case .prehover:
-        return NotchSize(width: compactWidth + 10, height: band + 6)
-    case .peek:
-        return NotchSize(width: compactWidth + 10, height: band + 62)
     case .expanded:
-        return NotchSize(width: max(420, compactWidth + 10), height: band + 440)
-    case .attention:
-        return NotchSize(width: max(384, compactWidth + 10), height: band + 126)
+        return NotchSize(width: max(430, compactWidth), height: band + 452)
+    case .flash:
+        return NotchSize(width: max(400, compactWidth), height: band + 90)
     case .celebration:
-        return NotchSize(width: max(376, compactWidth), height: band + 124)
+        return NotchSize(width: max(380, compactWidth), height: band + 132)
     }
 }
 
@@ -393,9 +364,9 @@ public func notchSurfaceCorners(
         return NotchSurfaceCorners(top: radius, bottom: radius)
     }
     switch presentation {
-    case .compact, .prehover:
+    case .compact:
         return NotchSurfaceCorners(top: 0, bottom: min(12, size.height * 0.34))
-    case .peek, .expanded, .attention, .celebration:
+    case .expanded, .flash, .celebration:
         return NotchSurfaceCorners(top: 0, bottom: 20)
     }
 }

@@ -69,10 +69,55 @@ describe("applyActivityFilters", () => {
     expect(
       applyActivityFilters(items, {
         machineKeys: ["laptop"],
+        projects: [],
         kinds: ["agent"],
         models: [],
       }).map((entry) => entry.id),
     ).toEqual(["laptop"]);
+  });
+
+  /**
+   * The account-wide feed spans every recently-opened project while the Work
+   * sidebar shows one, so the totals can never agree without a way to say
+   * "just this repo". Narrowing what the publisher sends would delete the other
+   * machines' work instead — this is a presentation facet on purpose.
+   */
+  it("filters to one project across every machine reporting it", () => {
+    const otherRepoSameMachine = item("other", {
+      project: { projectId: "notes", name: "Notes", rootPath: "/repo/notes" },
+    });
+    const sameRepoOtherMachine = item("mirror", {
+      machine: { machineKey: "laptop", name: "MacBook", online: true, lastSeenAt: null },
+      // A different machine mints a different `projectId` for the same repo, so
+      // matching on it would split one project into two options.
+      project: {
+        projectId: "9f2c-random-uuid",
+        canonicalId: "project_ade",
+        name: "ADE",
+        rootPath: "/repo/ade",
+      },
+    });
+    const withCanonical = item("studio-canonical", {
+      project: {
+        projectId: "ade",
+        canonicalId: "project_ade",
+        name: "ADE",
+        rootPath: "/repo/ade",
+      },
+    });
+
+    expect(
+      applyActivityFilters(
+        [withCanonical, sameRepoOtherMachine, otherRepoSameMachine],
+        { ...EMPTY_ACTIVITY_FILTERS, projects: ["project_ade"] },
+      ).map((entry) => entry.id),
+    ).toEqual(["studio-canonical", "mirror"]);
+
+    // An older publisher sends no canonical id; the root path still resolves.
+    expect(
+      applyActivityFilters(items, { ...EMPTY_ACTIVITY_FILTERS, projects: ["/repo/ade"] })
+        .map((entry) => entry.id),
+    ).toEqual(["studio", "laptop", "pr"]);
   });
 
   it("excludes items with no model from a model filter", () => {
@@ -98,6 +143,28 @@ describe("ActivityFilters", () => {
     fireEvent.click(screen.getByRole("button", { name: "Filter by machine" }));
     expect(screen.getAllByRole("menuitemcheckbox").map((node) => node.textContent))
       .toEqual(["Studio Mac"]);
+  });
+
+  it("offers one project option per repo, however many machines report it", () => {
+    render(
+      <ActivityFilters
+        items={[
+          item("a"),
+          item("b", {
+            machine: { machineKey: "laptop", name: "MacBook", online: true, lastSeenAt: null },
+          }),
+          item("c", {
+            project: { projectId: "notes", name: "Notes", rootPath: "/repo/notes" },
+          }),
+        ]}
+        filters={EMPTY_ACTIVITY_FILTERS}
+        onChange={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter by project" }));
+    expect(screen.getAllByRole("menuitemcheckbox").map((node) => node.textContent))
+      .toEqual(["ADE", "Notes"]);
   });
 
   it("hides an axis with nothing to choose from", () => {

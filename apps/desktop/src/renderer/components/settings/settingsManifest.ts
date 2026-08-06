@@ -514,7 +514,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "activity.notch-reveal",
     label: "Notch behavior",
-    keywords: ["reveal", "hover", "click", "peek", "compact"],
+    keywords: ["reveal", "hover", "always", "compact", "strip"],
     tab: "activity",
     anchor: "activity-notch-reveal",
     scope: "machine",
@@ -531,26 +531,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Notch & menu bar",
   },
-  {
-    id: "activity.notch-auto-reveal",
-    label: "Automatic reveal",
-    keywords: ["reveal", "pop", "auto", "interrupt", "toast", "alert"],
-    tab: "activity",
-    anchor: "activity-auto-reveal",
-    scope: "machine",
-    web: "hidden",
-    group: "Notch & menu bar",
-  },
-  {
-    id: "activity.notch-ticker",
-    label: "Live ticker",
-    keywords: ["ticker", "cycle", "strip", "live", "rotate", "status"],
-    tab: "activity",
-    anchor: "activity-ticker",
-    scope: "machine",
-    web: "hidden",
-    group: "Notch & menu bar",
-  },
+  // `activity.notch-auto-reveal` and `activity.notch-ticker` are both retired:
+  // the notch always flashes for work that needs you, and the strip has no
+  // ticker to cycle — it is state-group counts, not scrolling text. Neither has
+  // a card left for search to land on.
   {
     id: "activity.celebrations",
     label: "Celebrations",

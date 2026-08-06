@@ -120,6 +120,47 @@ export type AccountMachineListOptions = {
 export type AccountMachineDeleteOptions = AccountMachineListOptions;
 export type AccountMachineRenameOptions = AccountMachineListOptions;
 
+/**
+ * The machine left the account roster, but the push relay could not clear the
+ * Activity it published. Callers must not report a clean removal: the user is
+ * about to open Activity and see that machine's agents still there.
+ */
+export class AccountMachineActivityPurgeError extends Error {
+  readonly code = "activity_purge_failed" as const;
+  /** The directory row is gone and the machine can no longer re-register. */
+  readonly machineRemoved = true;
+
+  constructor(readonly machineKey: string, readonly detail: string | null) {
+    super(
+      "This machine was removed from your ADE account, but its Activity couldn't be cleared. Its agents may keep showing in Activity — try removing it again.",
+    );
+    this.name = "AccountMachineActivityPurgeError";
+  }
+}
+
+/**
+ * Read a directory failure body without letting a malformed or oversized
+ * response mask the removal outcome; anything unreadable falls back to the
+ * generic status error.
+ */
+async function readActivityPurgeFailure(
+  response: Response,
+): Promise<{ detail: string | null } | null> {
+  try {
+    const body = await readBoundedAccountDirectoryJson(response);
+    if (!body || typeof body !== "object") return null;
+    const record = body as Record<string, unknown>;
+    if (record.code !== "activity_purge_failed") return null;
+    return {
+      detail: typeof record.detail === "string" && record.detail.trim()
+        ? record.detail.trim()
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function packagedSafeAccountDirectoryOverride(
   rawUrl: string | null | undefined,
 ): string | undefined {
@@ -278,10 +319,18 @@ export class AccountMachineDirectoryService {
         throw new Error("Your ADE account session expired. Sign in again.");
       }
       if (!response.ok) {
+        // A partial removal (roster row gone, Activity left behind) has to read
+        // as a failure, or the UI reports success over a feed that still shows
+        // the machine's agents.
+        const purgeFailure = await readActivityPurgeFailure(response);
+        if (purgeFailure) {
+          throw new AccountMachineActivityPurgeError(machineKey, purgeFailure.detail);
+        }
         throw new Error(`Machine directory returned ${response.status}.`);
       }
       return { ok: true, machineKey };
     } catch (error) {
+      if (error instanceof AccountMachineActivityPurgeError) throw error;
       if (error instanceof Error && /account session expired|directory returned/i.test(error.message)) {
         throw error;
       }

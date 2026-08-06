@@ -2,31 +2,195 @@ import XCTest
 @testable import ADEAttentionNotchCore
 
 final class NotchInteractionStateTests: XCTestCase {
-    /// Hover stops at prehover. The 145ms promotion to `.peek` is gone: that
-    /// layout belongs to event toasts now, and a hover that grew into a card
-    /// competed with the toast it looked identical to.
-    func testHoverStopsAtPrehoverAndNeverOpensTheToastLayout() {
-        var state = NotchInteractionState()
-        state.pointerEntered(hasItems: true)
-        XCTAssertEqual(state.presentation, .prehover)
+    /// The whole point of the two-mode redesign: hover *reveals* the strip, it
+    /// never grows it. The old `prehover`/`peek` promotion is why hover mode
+    /// landed on a different, taller rect than the pinned mode did.
+    func testHoverRevealsTheIdenticalCompactStripInsteadOfGrowing() {
+        for mode in NotchRevealMode.allCases {
+            var state = NotchInteractionState()
+            state.pointerEntered()
 
-        // Nothing else the hover flow can do promotes it further.
-        state.pointerEntered(hasItems: true)
-        XCTAssertEqual(state.presentation, .prehover)
+            XCTAssertEqual(state.presentation, .compact, "\(mode) grew on hover")
+            XCTAssertTrue(state.pointerInside)
+            XCTAssertFalse(state.isExplicitlyInteractive)
 
-        state.pointerExited()
-        XCTAssertEqual(state.presentation, .compact)
+            state.pointerExited()
+            XCTAssertEqual(state.presentation, .compact)
+            XCTAssertFalse(state.pointerInside)
+        }
+    }
+
+    /// And the rects agree, on real hardware numbers: the revealed strip is the
+    /// pinned strip, to the point.
+    func testRevealedStripIsTheSameRectInBothModes() {
+        let strip = NotchStripMetrics(leadingWidth: 62, trailingWidth: 104)
+        let size = notchSurfaceSize(
+            presentation: .compact,
+            physicalNotchWidth: 182,
+            safeAreaTop: 34,
+            strip: strip
+        )
+        for mode in NotchRevealMode.allCases {
+            var state = NotchInteractionState()
+            state.pointerEntered()
+            XCTAssertEqual(
+                notchSurfaceSize(
+                    presentation: state.presentation,
+                    physicalNotchWidth: 182,
+                    safeAreaTop: 34,
+                    strip: strip
+                ),
+                size,
+                "\(mode) revealed onto a different rect"
+            )
+        }
+    }
+
+    /// Only hover mode hides at rest, and only while the pointer is elsewhere.
+    func testDormancyIsHoverModeWithThePointerAway() {
+        XCTAssertTrue(notchSurfaceIsDormant(
+            presentation: .compact,
+            revealMode: .hover,
+            pointerInside: false
+        ))
+        XCTAssertFalse(notchSurfaceIsDormant(
+            presentation: .compact,
+            revealMode: .hover,
+            pointerInside: true
+        ))
+        XCTAssertFalse(notchSurfaceIsDormant(
+            presentation: .compact,
+            revealMode: .always,
+            pointerInside: false
+        ))
+        for presentation in [NotchPresentationState.expanded, .flash, .celebration] {
+            XCTAssertFalse(notchSurfaceIsDormant(
+                presentation: presentation,
+                revealMode: .hover,
+                pointerInside: false
+            ))
+        }
+    }
+
+    /// The hot zone has to sit strictly inside the strip it reveals, or the
+    /// pointer oscillates along the sliver that pokes out.
+    func testDormantHoverHotZoneStaysInsideTheRevealedStrip() {
+        let strip = NotchStripMetrics.empty
+        let compact = notchSurfaceSize(
+            presentation: .compact,
+            physicalNotchWidth: 182,
+            safeAreaTop: 34,
+            strip: strip
+        )
+        let hotZone = notchHoverHotZoneSize(physicalNotchWidth: 182, safeAreaTop: 34)
+        XCTAssertEqual(hotZone.width, 270)
+        XCTAssertEqual(hotZone.height, 34)
+        XCTAssertLessThanOrEqual(hotZone.width, compact.width)
+        XCTAssertLessThanOrEqual(hotZone.height, compact.height)
+
+        let fallback = notchHoverHotZoneSize(physicalNotchWidth: nil)
+        XCTAssertEqual(fallback, NotchSize(width: 96, height: 30))
+    }
+
+    /// A click — and only a click — opens the panel, in both modes.
+    func testClickOpensTheSamePanelInEveryMode() {
+        for mode in NotchRevealMode.allCases {
+            var state = NotchInteractionState()
+            let policy = NotchPresentationPolicy(revealMode: mode)
+            XCTAssertTrue(state.explicitToggle(hasItems: true, policy: policy))
+            XCTAssertEqual(state.presentation, .expanded, "\(mode) ignored an explicit click")
+            XCTAssertTrue(state.isExplicitlyInteractive)
+
+            // A second click closes what the first opened.
+            XCTAssertFalse(state.explicitToggle(hasItems: true, policy: policy))
+            XCTAssertEqual(state.presentation, .compact)
+            XCTAssertFalse(state.isExplicitlyInteractive)
+        }
     }
 
     func testExplicitExpansionOnlyHappensWithItems() {
         var state = NotchInteractionState()
-        state.explicitToggle(hasItems: false)
+        XCTAssertFalse(state.explicitToggle(hasItems: false))
         XCTAssertEqual(state.presentation, .compact)
         XCTAssertFalse(state.isExplicitlyInteractive)
 
-        state.explicitToggle(hasItems: true)
+        XCTAssertTrue(state.explicitToggle(hasItems: true))
         XCTAssertEqual(state.presentation, .expanded)
         XCTAssertTrue(state.isExplicitlyInteractive)
+    }
+
+    /// With the tall panel switched off the click cannot grow the surface — and
+    /// says so, so the caller can route it to ADE instead of eating it.
+    func testDisabledPanelReportsThatTheClickDidNotOpenAnything() {
+        let policy = NotchPresentationPolicy(revealMode: .always, expandedPanelEnabled: false)
+        XCTAssertFalse(policy.clickOpensPanel)
+
+        var state = NotchInteractionState()
+        XCTAssertFalse(state.explicitToggle(hasItems: true, policy: policy))
+        XCTAssertEqual(state.presentation, .compact)
+        XCTAssertFalse(state.isExplicitlyInteractive)
+    }
+
+    /// Turning the tall panel off while it is open has to act immediately;
+    /// otherwise the setting looks broken until the next interaction.
+    func testTurningOffTheExpandedPanelClosesAnOpenPanel() {
+        var state = NotchInteractionState()
+        state.explicitToggle(hasItems: true, policy: .default)
+        XCTAssertEqual(state.presentation, .expanded)
+
+        state.applyPolicy(NotchPresentationPolicy(revealMode: .hover, expandedPanelEnabled: false))
+
+        XCTAssertEqual(state.presentation, .compact)
+        XCTAssertFalse(state.isExplicitlyInteractive)
+    }
+
+    /// Switching reveal modes may not disturb what is drawn: both modes draw
+    /// the identical strip, and only visibility at rest differs.
+    func testSwitchingRevealModeNeverChangesWhatIsOnScreen() {
+        var state = NotchInteractionState()
+        state.explicitToggle(hasItems: true, policy: NotchPresentationPolicy(revealMode: .hover))
+        state.applyPolicy(NotchPresentationPolicy(revealMode: .always))
+        XCTAssertEqual(state.presentation, .expanded)
+        XCTAssertTrue(state.isExplicitlyInteractive)
+    }
+
+    /// Takeovers are not a resting state, so no mode suppresses them — and each
+    /// settles back onto the strip.
+    func testTakeoversInterruptInEveryModeAndSettleOntoTheStrip() {
+        for mode in NotchRevealMode.allCases {
+            var alerting = NotchInteractionState()
+            alerting.setFlash()
+            XCTAssertEqual(alerting.presentation, .flash, "\(mode)")
+            alerting.finishTransient(pointerInside: false)
+            XCTAssertEqual(alerting.presentation, .compact, "\(mode)")
+
+            var celebrating = NotchInteractionState()
+            celebrating.setCelebration()
+            XCTAssertEqual(celebrating.presentation, .celebration, "\(mode)")
+            celebrating.finishTransient(pointerInside: true)
+            XCTAssertEqual(celebrating.presentation, .compact, "\(mode)")
+            XCTAssertTrue(celebrating.pointerInside)
+        }
+    }
+
+    /// A panel the user opened outranks the news: yanking it away mid-read to
+    /// show a card is the behaviour the timed takeover exists to avoid.
+    func testATakeoverNeverStealsAPanelTheUserOpened() {
+        var state = NotchInteractionState()
+        state.explicitToggle(hasItems: true)
+        state.setFlash()
+        XCTAssertEqual(state.presentation, .expanded)
+        state.setCelebration()
+        XCTAssertEqual(state.presentation, .expanded)
+    }
+
+    /// The pointer leaving is not an answer to a takeover — its own timer is.
+    func testPointerExitLeavesATakeoverAlone() {
+        var state = NotchInteractionState()
+        state.pointerEntered()
+        state.setFlash()
+        state.pointerExited()
+        XCTAssertEqual(state.presentation, .flash)
     }
 
     func testHidingStopsExplicitPresentation() {
@@ -38,232 +202,7 @@ final class NotchInteractionStateTests: XCTestCase {
 
         XCTAssertEqual(state.presentation, .compact)
         XCTAssertFalse(state.isVisible)
-    }
-
-    // MARK: - Presentation modes
-
-    /// Hover mode is the shipped behaviour and stays the default a caller gets
-    /// when it passes no policy at all.
-    func testHoverModeIsTheDefaultPolicy() {
-        XCTAssertEqual(NotchPresentationPolicy.default.revealMode, .hover)
-        XCTAssertTrue(NotchPresentationPolicy.default.expandedPanelEnabled)
-        XCTAssertEqual(NotchPresentationPolicy(settings: NotchSettings()), .default)
-
-        var state = NotchInteractionState()
-        state.pointerEntered(hasItems: true, policy: .default)
-        XCTAssertEqual(state.presentation, .prehover)
-    }
-
-    func testHoverModeIsVisuallyDormantOnlyWhileResting() {
-        XCTAssertTrue(notchSurfaceIsDormant(
-            presentation: .compact,
-            revealMode: .hover
-        ))
-        for presentation in [
-            NotchPresentationState.prehover, .peek, .expanded, .attention, .celebration,
-        ] {
-            XCTAssertFalse(notchSurfaceIsDormant(
-                presentation: presentation,
-                revealMode: .hover
-            ))
-        }
-        for mode in [NotchRevealMode.minimal, .click] {
-            XCTAssertFalse(notchSurfaceIsDormant(
-                presentation: .compact,
-                revealMode: mode
-            ))
-        }
-    }
-
-    func testDormantHoverHotZoneIsBoundedButEasyToEnter() {
-        let physical = notchHoverHotZoneSize(
-            physicalNotchWidth: 182,
-            safeAreaTop: 34
-        )
-        XCTAssertEqual(physical.width, 270)
-        XCTAssertEqual(physical.height, 42)
-        XCTAssertLessThan(
-            physical.width,
-            notchSurfaceSize(
-                presentation: .compact,
-                physicalNotchWidth: 182,
-                safeAreaTop: 34
-            ).width
-        )
-
-        let fallback = notchHoverHotZoneSize(physicalNotchWidth: nil)
-        XCTAssertEqual(fallback, NotchSize(width: 96, height: 34))
-    }
-
-    /// Click-only and compact+peek both mean "the pointer alone changes
-    /// nothing", so a hover may not grow the surface in either.
-    func testPointerNeverRevealsOutsideHoverMode() {
-        for mode in [NotchRevealMode.click, .minimal] {
-            let policy = NotchPresentationPolicy(revealMode: mode)
-            var state = NotchInteractionState()
-            state.pointerEntered(hasItems: true, policy: policy)
-            XCTAssertEqual(state.presentation, .compact, "\(mode) grew on hover")
-        }
-    }
-
-    /// Every mode keeps the click, so neither the notch nor the menu-bar status
-    /// item that stands in for it can ever become an inert control.
-    func testClickStillOpensInEveryMode() {
-        for mode in NotchRevealMode.allCases {
-            var state = NotchInteractionState()
-            state.explicitToggle(hasItems: true, policy: NotchPresentationPolicy(revealMode: mode))
-            let expected: NotchPresentationState = mode == .minimal ? .peek : .expanded
-            XCTAssertEqual(state.presentation, expected, "\(mode) ignored an explicit click")
-            XCTAssertTrue(state.isExplicitlyInteractive)
-        }
-    }
-
-    /// Automatic reveal is a setting now, but "click only" still outranks it:
-    /// that mode is literal, and nothing but a click may open anything.
-    func testAutomaticRevealHonoursTheSettingAndDefersToClickOnlyMode() {
-        for mode in NotchRevealMode.allCases {
-            let allowed = NotchPresentationPolicy(revealMode: mode, automaticRevealEnabled: true)
-            XCTAssertEqual(allowed.allowsAutomaticReveal, mode != .click, "\(mode)")
-
-            var alerting = NotchInteractionState()
-            alerting.setAttention(policy: allowed)
-            XCTAssertEqual(alerting.presentation, mode == .click ? .compact : .attention, "\(mode)")
-
-            var celebrating = NotchInteractionState()
-            celebrating.setCelebration(policy: allowed)
-            XCTAssertEqual(celebrating.presentation, mode == .click ? .compact : .celebration, "\(mode)")
-
-            // Turned off, no mode may grow the surface on its own.
-            let off = NotchPresentationPolicy(revealMode: mode, automaticRevealEnabled: false)
-            XCTAssertFalse(off.allowsAutomaticReveal, "\(mode)")
-            var suppressed = NotchInteractionState()
-            suppressed.setAttention(policy: off)
-            XCTAssertEqual(suppressed.presentation, .compact, "\(mode)")
-            suppressed.setCelebration(policy: off)
-            XCTAssertEqual(suppressed.presentation, .compact, "\(mode)")
-        }
-    }
-
-    /// Turning automatic reveal off while a toast is on screen has to collapse
-    /// it; otherwise the setting looks broken until the toast expires.
-    func testTurningOffAutomaticRevealCollapsesAToastAlreadyOnScreen() {
-        for treatment in [NotchToastTreatment.alert, .celebration] {
-            var state = NotchInteractionState()
-            let on = NotchPresentationPolicy(revealMode: .hover, automaticRevealEnabled: true)
-            if treatment == .celebration {
-                state.setCelebration(policy: on)
-            } else {
-                state.setAttention(policy: on)
-            }
-            XCTAssertEqual(state.presentation, treatment.presentation)
-
-            state.applyPolicy(NotchPresentationPolicy(
-                revealMode: .hover,
-                automaticRevealEnabled: false
-            ))
-            XCTAssertEqual(state.presentation, .compact, "\(treatment)")
-        }
-    }
-
-    /// The ticker belongs to the pinned strip, the one mode that keeps a bar on
-    /// screen at rest.
-    func testTickerOnlyRunsInThePinnedMode() {
-        for mode in NotchRevealMode.allCases {
-            XCTAssertEqual(
-                NotchPresentationPolicy(revealMode: mode, tickerEnabled: true).showsTicker,
-                mode == .minimal,
-                "\(mode)"
-            )
-            XCTAssertFalse(
-                NotchPresentationPolicy(revealMode: mode, tickerEnabled: false).showsTicker
-            )
-        }
-    }
-
-    /// With the tall panel off, a click may only ever open the short peek — the
-    /// point of the setting is that nothing covers menu-bar content.
-    func testDisabledExpandedPanelDowngradesTheClickToAPeek() {
-        let policy = NotchPresentationPolicy(revealMode: .hover, expandedPanelEnabled: false)
-        XCTAssertEqual(policy.clickPresentation, .peek)
-
-        var state = NotchInteractionState()
-        state.explicitToggle(hasItems: true, policy: policy)
-        XCTAssertEqual(state.presentation, .peek)
-        XCTAssertTrue(state.isExplicitlyInteractive)
-
-        // A second click closes it again.
-        state.explicitToggle(hasItems: true, policy: policy)
-        XCTAssertEqual(state.presentation, .compact)
-        XCTAssertFalse(state.isExplicitlyInteractive)
-    }
-
-    /// A hover-opened peek is not "open": clicking through one has to latch the
-    /// surface rather than dismiss it.
-    func testClickingThroughAHoverLatchesInsteadOfClosing() {
-        let policy = NotchPresentationPolicy(revealMode: .hover, expandedPanelEnabled: false)
-        var state = NotchInteractionState()
-        state.pointerEntered(hasItems: true, policy: policy)
-        XCTAssertEqual(state.presentation, .prehover)
-        XCTAssertFalse(state.isExplicitlyInteractive)
-
-        state.explicitToggle(hasItems: true, policy: policy)
-        XCTAssertEqual(state.presentation, .peek)
-        XCTAssertTrue(state.isExplicitlyInteractive)
-    }
-
-    /// Turning the tall panel off while it is open has to act immediately;
-    /// otherwise the setting looks broken until the next interaction.
-    func testTurningOffTheExpandedPanelStepsAnOpenPanelDown() {
-        var state = NotchInteractionState()
-        state.explicitToggle(hasItems: true, policy: .default)
-        XCTAssertEqual(state.presentation, .expanded)
-
-        state.applyPolicy(NotchPresentationPolicy(revealMode: .hover, expandedPanelEnabled: false))
-
-        XCTAssertEqual(state.presentation, .peek)
-        XCTAssertTrue(state.isExplicitlyInteractive)
-    }
-
-    /// Switching to a stricter mode also has to reclaim whatever the previous
-    /// mode had already put on screen.
-    func testSwitchingModesCollapsesSurfacesTheNewModeForbids() {
-        var hovering = NotchInteractionState()
-        hovering.pointerEntered(hasItems: true, policy: .default)
-        hovering.applyPolicy(NotchPresentationPolicy(revealMode: .click))
-        XCTAssertEqual(hovering.presentation, .compact)
-
-        var alerting = NotchInteractionState()
-        alerting.setAttention(policy: .default)
-        alerting.applyPolicy(NotchPresentationPolicy(
-            revealMode: .minimal,
-            automaticRevealEnabled: false
-        ))
-        XCTAssertEqual(alerting.presentation, .compact)
-
-        var manuallyExpanded = NotchInteractionState()
-        manuallyExpanded.explicitToggle(hasItems: true, policy: .default)
-        manuallyExpanded.applyPolicy(NotchPresentationPolicy(revealMode: .minimal))
-        XCTAssertEqual(manuallyExpanded.presentation, .peek)
-        XCTAssertTrue(manuallyExpanded.isExplicitlyInteractive)
-    }
-
-    /// A toast always settles back to the bar. `.peek` is the toast's own
-    /// layout now, so landing there would leave a card on screen with nothing
-    /// left to say — under a hovering pointer it lands on prehover instead.
-    func testTransientsNeverSettleOntoTheToastLayout() {
-        for (mode, pointerInside, expected) in [
-            (NotchRevealMode.click, true, NotchPresentationState.compact),
-            (.hover, true, .prehover),
-            (.hover, false, .compact),
-            (.minimal, true, .compact),
-        ] {
-            var state = NotchInteractionState()
-            let policy = NotchPresentationPolicy(revealMode: mode)
-            state.setAttention(policy: policy)
-            state.finishTransient(pointerInside: pointerInside, policy: policy)
-            XCTAssertEqual(state.presentation, expected, "\(mode) inside=\(pointerInside)")
-            XCTAssertNotEqual(state.presentation, .peek)
-        }
+        XCTAssertFalse(state.pointerInside)
     }
 
     /// Turning the notch off entirely stays the strongest setting: it outranks
@@ -278,28 +217,9 @@ final class NotchInteractionStateTests: XCTestCase {
             XCTAssertFalse(state.isVisible)
             XCTAssertEqual(state.presentation, .compact)
             state.explicitToggle(hasItems: true, policy: policy)
-            state.setAttention(policy: policy)
-            state.setCelebration(policy: policy)
+            state.setFlash()
+            state.setCelebration()
             XCTAssertEqual(state.presentation, .compact, "\(mode) reappeared while off")
-        }
-    }
-
-    /// Every mode's largest reachable surface still has to fit the panel, and
-    /// turning the tall panel off has to actually make the surface shorter.
-    func testDisablingTheExpandedPanelKeepsTheSurfaceShorter() {
-        for width in [Double?.none, 200] {
-            let safeAreaTop: Double = width == nil ? 0 : 34
-            let peek = notchSurfaceSize(
-                presentation: NotchPresentationPolicy(expandedPanelEnabled: false).clickPresentation,
-                physicalNotchWidth: width,
-                safeAreaTop: safeAreaTop
-            )
-            let expanded = notchSurfaceSize(
-                presentation: NotchPresentationPolicy(expandedPanelEnabled: true).clickPresentation,
-                physicalNotchWidth: width,
-                safeAreaTop: safeAreaTop
-            )
-            XCTAssertLessThan(peek.height, expanded.height)
         }
     }
 
@@ -320,22 +240,48 @@ final class NotchInteractionStateTests: XCTestCase {
 
     // MARK: - Activity sections
 
-    /// The panel files a row exactly where the desktop popover files it,
-    /// including the rule that idle roster history is the ambient tail of Done
-    /// no matter what phase it preserved.
-    func testSectionsMirrorTheRendererPriorityFlatThree() {
+    /// The panel files a row exactly where the strip counts it — the same
+    /// five-way table, so Failed and Planning are sections of their own rather
+    /// than rows borrowing amber. Idle roster history stays the ambient tail of
+    /// Done no matter what phase it preserved.
+    func testSectionsUseTheSameFiveWayTableAsTheStrip() {
         let needsYou = sectionFixture(id: "needs", phase: "needs_you")
         let failed = sectionFixture(id: "failed", phase: "failed")
+        let planning = sectionFixture(id: "planning", phase: "running", mode: .planning)
         let running = sectionFixture(id: "running", phase: "running")
         let completed = sectionFixture(id: "completed", phase: "completed")
         let idleButRunning = sectionFixture(id: "idle", phase: "running", tier: "idle")
 
-        let sections = notchActivitySections([completed, running, idleButRunning, failed, needsYou])
-        XCTAssertEqual(sections.needsYou.map(\.id), ["needs", "failed"])
-        XCTAssertEqual(sections.working.map(\.id), ["running"])
-        XCTAssertEqual(sections.done.map(\.id), ["completed", "idle"])
-        XCTAssertEqual(sections.live.map(\.id), ["needs", "failed", "running"])
-        XCTAssertEqual(sections.total, 5)
+        let sections = notchActivityGroupSections(
+            [completed, running, idleButRunning, planning, failed, needsYou]
+        )
+        XCTAssertEqual(sections.map(\.id), ["needs-you", "failed", "planning", "working", "done"])
+        XCTAssertEqual(sections.map(\.title), ["Needs you", "Failed", "Planning", "Working", "Done"])
+        XCTAssertEqual(sections.map(\.tone), [.amber, .red, .violet, .blue, .emerald])
+        XCTAssertEqual(sections.map { $0.items.map(\.id) }, [
+            ["needs"],
+            ["failed"],
+            ["planning"],
+            ["running"],
+            ["completed", "idle"],
+        ])
+        // An empty group is not drawn as a heading over nothing.
+        XCTAssertEqual(
+            notchActivityGroupSections([running]).map(\.id),
+            ["working"]
+        )
+        XCTAssertTrue(notchActivityGroupSections([]).isEmpty)
+    }
+
+    /// The section a row opens into is the section the panel actually built,
+    /// which is what makes `openPanel(revealing:)` uncollapse the right one.
+    func testSectionIdsAgreeWithTheStripGroupIds() {
+        for kind in NotchStripGroupKind.allCases {
+            XCTAssertEqual(
+                NotchActivityGroupSection(kind: kind, items: []).id,
+                kind.sectionId
+            )
+        }
     }
 
     /// A host that predates the counts block must not make the surface claim an
@@ -369,7 +315,8 @@ final class NotchInteractionStateTests: XCTestCase {
     private func sectionFixture(
         id: String,
         phase: String,
-        tier: String? = nil
+        tier: String? = nil,
+        mode: AttentionChatActivityMode? = nil
     ) -> AttentionItem {
         AttentionItem(
             id: id,
@@ -379,6 +326,7 @@ final class NotchInteractionStateTests: XCTestCase {
             phase: phase,
             machine: AttentionMachine(machineKey: "mac-1", name: "Studio", online: true, lastSeenAt: nil),
             project: AttentionProject(projectId: "ade", name: "ADE"),
+            chatActivityMode: mode,
             title: "Work",
             preview: "Working",
             privacyPreview: "Agent update",
@@ -389,20 +337,29 @@ final class NotchInteractionStateTests: XCTestCase {
         )
     }
 
-    func testPhysicalSurfaceReservesHardwareAndSideEars() {
-        let compact = notchSurfaceSize(
+    // MARK: - Geometry
+
+    /// The strip hugs the cutout plus its wings. The old flat `notch + 224` is
+    /// what made an empty strip as wide as its busiest possible self.
+    func testPhysicalStripHugsTheCutoutPlusItsWings() {
+        let empty = notchSurfaceSize(
             presentation: .compact,
             physicalNotchWidth: 182,
             safeAreaTop: 34
         )
-        let peek = notchSurfaceSize(
-            presentation: .peek,
+        XCTAssertEqual(empty.width, 182 + 2 * 58)
+        XCTAssertEqual(empty.height, 34)
+        XCTAssertLessThan(empty.width, 406)
+
+        // Both ears are the widest wing: the cutout is centered, so they must
+        // be symmetric or the content stops lining up with the hardware.
+        let lopsided = notchSurfaceSize(
+            presentation: .compact,
             physicalNotchWidth: 182,
-            safeAreaTop: 34
+            safeAreaTop: 34,
+            strip: NotchStripMetrics(leadingWidth: 40, trailingWidth: 120)
         )
-        XCTAssertEqual(compact.width, 406)
-        XCTAssertGreaterThan(peek.width, compact.width)
-        XCTAssertEqual(notchSurfaceSize(presentation: .compact, physicalNotchWidth: nil).width, 272)
+        XCTAssertEqual(lopsided.width, 182 + 2 * (120 + 18))
     }
 
     /// Compact has to end exactly on the hardware cutout's bottom edge. A taller
@@ -422,9 +379,7 @@ final class NotchInteractionStateTests: XCTestCase {
     /// bitten out of a floating slab, so every physical state stays square and
     /// flush at the top.
     func testPhysicalSurfaceTopEdgeIsFlushAndSquareInEveryState() {
-        for presentation in [
-            NotchPresentationState.compact, .prehover, .peek, .expanded, .attention, .celebration,
-        ] {
+        for presentation in NotchPresentationState.allSurfaceStates {
             let size = notchSurfaceSize(
                 presentation: presentation,
                 physicalNotchWidth: 200,
@@ -449,56 +404,67 @@ final class NotchInteractionStateTests: XCTestCase {
         XCTAssertGreaterThan(corners.top, 0)
     }
 
-    /// Hover is a glance, not a panel: it stays well under the expanded height
-    /// and only grows a little past the menu bar.
-    func testHoverStaysCalmerThanExpansion() {
+    /// A takeover is a card, not a panel: it stays far shorter than the thing a
+    /// click opens.
+    func testTakeoversStayCalmerThanThePanel() {
         let band = notchMenuBarBandHeight(safeAreaTop: 34)
-        let peek = notchSurfaceSize(presentation: .peek, physicalNotchWidth: 200, safeAreaTop: 34)
+        let flash = notchSurfaceSize(presentation: .flash, physicalNotchWidth: 200, safeAreaTop: 34)
         let expanded = notchSurfaceSize(presentation: .expanded, physicalNotchWidth: 200, safeAreaTop: 34)
-        XCTAssertLessThanOrEqual(peek.height - band, 64)
-        XCTAssertLessThan(peek.height, expanded.height / 2)
+        XCTAssertLessThanOrEqual(flash.height - band, 96)
+        XCTAssertLessThan(flash.height, expanded.height / 2)
     }
 
-    /// Hovering or clicking may only grow the surface. A state narrower than
-    /// compact reads as the notch flinching away from the pointer.
+    /// Growing on a click may only grow. A state narrower than the strip reads
+    /// as the notch flinching away from the pointer.
     func testNoStateIsNarrowerThanCompact() {
         for notchWidth in [140.0, 182.0, 200.0, 240.0] {
-            let compact = notchSurfaceSize(
-                presentation: .compact,
-                physicalNotchWidth: notchWidth,
-                safeAreaTop: 34
-            )
-            for presentation in [
-                NotchPresentationState.prehover, .peek, .expanded, .attention, .celebration,
+            for strip in [
+                NotchStripMetrics.empty,
+                NotchStripMetrics(leadingWidth: 90, trailingWidth: 140),
+                NotchStripMetrics(leadingWidth: 400, trailingWidth: 400),
             ] {
-                let size = notchSurfaceSize(
-                    presentation: presentation,
+                let compact = notchSurfaceSize(
+                    presentation: .compact,
                     physicalNotchWidth: notchWidth,
-                    safeAreaTop: 34
+                    safeAreaTop: 34,
+                    strip: strip
                 )
-                XCTAssertGreaterThanOrEqual(
-                    size.width,
-                    compact.width,
-                    "\(presentation) at notch \(notchWidth) shrinks below compact"
-                )
-                XCTAssertGreaterThanOrEqual(size.height, compact.height)
+                for presentation in [NotchPresentationState.expanded, .flash, .celebration] {
+                    let size = notchSurfaceSize(
+                        presentation: presentation,
+                        physicalNotchWidth: notchWidth,
+                        safeAreaTop: 34,
+                        strip: strip
+                    )
+                    XCTAssertGreaterThanOrEqual(
+                        size.width,
+                        compact.width,
+                        "\(presentation) at notch \(notchWidth) shrinks below compact"
+                    )
+                    XCTAssertGreaterThanOrEqual(size.height, compact.height)
+                }
             }
         }
     }
 
-    /// Every state has to fit the fixed panel the helper draws into.
+    /// Every state has to fit the fixed panel the helper draws into, including
+    /// with a strip whose content is trying to run away with it.
     func testEverySurfaceFitsInsideThePanel() {
-        for presentation in [
-            NotchPresentationState.compact, .prehover, .peek, .expanded, .attention, .celebration,
-        ] {
+        for presentation in NotchPresentationState.allSurfaceStates {
             for width in [Double?.none, 140, 200, 240] {
-                let size = notchSurfaceSize(
-                    presentation: presentation,
-                    physicalNotchWidth: width,
-                    safeAreaTop: width == nil ? 0 : 38
-                )
-                XCTAssertLessThanOrEqual(size.width, NotchDisplayGeometry.panelSize.width)
-                XCTAssertLessThanOrEqual(size.height, NotchDisplayGeometry.panelSize.height)
+                for strip in [
+                    NotchStripMetrics.empty,
+                    NotchStripMetrics(leadingWidth: 1_000, trailingWidth: 1_000),
+                ] {
+                    let size = notchSurfaceSize(
+                        presentation: presentation,
+                        physicalNotchWidth: width,
+                        safeAreaTop: width == nil ? 0 : 38,
+                        strip: strip
+                    )
+                    XCTAssertLessThanOrEqual(size.width, NotchDisplayGeometry.panelSize.width)
+                    XCTAssertLessThanOrEqual(size.height, NotchDisplayGeometry.panelSize.height)
+                }
             }
         }
     }
@@ -507,8 +473,20 @@ final class NotchInteractionStateTests: XCTestCase {
     /// surface narrower than its own ears.
     func testImplausibleNotchWidthIsClamped() {
         let absurd = notchSurfaceSize(presentation: .compact, physicalNotchWidth: 4_000, safeAreaTop: 34)
-        XCTAssertEqual(absurd.width, notchSurfaceSize(presentation: .compact, physicalNotchWidth: 240, safeAreaTop: 34).width)
+        XCTAssertEqual(
+            absurd.width,
+            notchSurfaceSize(presentation: .compact, physicalNotchWidth: 240, safeAreaTop: 34).width
+        )
         let tiny = notchSurfaceSize(presentation: .compact, physicalNotchWidth: 1, safeAreaTop: 34)
-        XCTAssertGreaterThanOrEqual(tiny.width, 364)
+        XCTAssertGreaterThanOrEqual(tiny.width, 140 + 2 * 58)
     }
+}
+
+extension NotchPresentationState {
+    /// Every state the surface can actually draw. Keeping the list in one place
+    /// means adding a state to the machine fails these tests until its geometry
+    /// is defined too.
+    static let allSurfaceStates: [NotchPresentationState] = [
+        .compact, .expanded, .flash, .celebration,
+    ]
 }

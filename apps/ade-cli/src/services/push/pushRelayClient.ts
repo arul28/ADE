@@ -144,6 +144,37 @@ export class PushRelayRequestError extends Error {
   }
 }
 
+/**
+ * The account owner removed this machine. Distinct from every other 4xx because
+ * it is TERMINAL: retrying cannot succeed, and a caller that treats it as a
+ * transient failure will hammer the relay forever while the user believes the
+ * machine is gone. Callers must stop their publish loop and surface it.
+ */
+export class PushRelayMachineRevokedError extends PushRelayRequestError {
+  readonly code = "machine_revoked" as const;
+
+  constructor(action: string, readonly revokedAt: string | null) {
+    super(action, 403, "this machine was removed from your ADE account");
+    this.name = "PushRelayMachineRevokedError";
+  }
+}
+
+/**
+ * Recognise the relay's revocation response. Shape-checked rather than
+ * status-only: a plain 403 from a proxy is not a revocation.
+ */
+export function readMachineRevokedResponse(
+  status: number,
+  body: Record<string, unknown> | null,
+): { revokedAt: string | null } | null {
+  if (status !== 403 || !body || body.code !== "machine_revoked") return null;
+  const revokedAt = typeof body.revokedAt === "string"
+    && !Number.isNaN(Date.parse(body.revokedAt))
+    ? body.revokedAt
+    : null;
+  return { revokedAt };
+}
+
 export function createPushRelayClient(args: {
   store: PushRegistrationStore;
   logger: Logger;
@@ -266,6 +297,14 @@ export function createPushRelayClient(args: {
 
   const requireOk = (action: string, response: RelayResponse): Record<string, unknown> => {
     if (!response.ok) {
+      // Every machine-signed route can answer the terminal revocation, not just
+      // the account-authorized Activity one: a removed machine still holds a
+      // valid machine signature, so the legacy publish and live-activity-token
+      // routes gate server-side too. Raised as the terminal error here so a
+      // caller on the legacy path stops its loop instead of retrying a
+      // de-authorization on every flush, forever.
+      const revoked = readMachineRevokedResponse(response.status, response.body);
+      if (revoked) throw new PushRelayMachineRevokedError(action, revoked.revokedAt);
       const message = typeof response.body?.error === "string" ? response.body.error : `HTTP ${response.status}`;
       throw new PushRelayRequestError(action, response.status, message);
     }
@@ -451,6 +490,13 @@ export function createPushRelayClient(args: {
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;
       }
+      // A removed machine keeps a valid signature and a valid account token —
+      // only the roster says it no longer belongs. Raise it as its own terminal
+      // error so the publisher stops instead of retrying on every flush.
+      const revoked = readMachineRevokedResponse(response.status, response.body);
+      if (revoked) {
+        throw new PushRelayMachineRevokedError("publishAttention", revoked.revokedAt);
+      }
       return requireActivityPublishResult(response);
     },
 
@@ -479,6 +525,13 @@ export function createPushRelayClient(args: {
     async acknowledgeAttention(acknowledgment: {
       itemIds: string[];
       sourceRevisions?: Record<string, number>;
+      /**
+       * `itemId -> the alertFingerprint the client displayed`. The relay
+       * rejects an ack (reporting the id as `stale`) when the stored
+       * `alert_fingerprint` differs, so an in-flight bulk ack cannot swallow an
+       * alert published after the poll. Items omitted here are unfenced.
+       */
+      alertFingerprints?: Record<string, string>;
       seenAt?: string;
       dismissedAt?: string | null;
       expectedAccountOwnerId?: string | null;
@@ -565,6 +618,40 @@ export function createPushRelayClient(args: {
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
       requireOk("putAttentionPreferences", response);
+    },
+
+    /**
+     * Purge every Activity row a machine published and revoke its ability to
+     * publish more. Called when the account owner removes the machine: the
+     * directory delete only drops the roster row, and without this the removed
+     * machine's agents stay in the feed forever (its own key is the only thing
+     * the relay's epoch sweep is scoped to).
+     *
+     * Errors propagate deliberately. A partial removal — roster row gone,
+     * Activity left behind — must reach the user, not be swallowed into a
+     * success message beside a feed that still lists the machine.
+     */
+    async purgeAccountMachineActivity(
+      expectedAccountUserId: string,
+      machineKey: string,
+    ): Promise<void> {
+      const trimmedMachineKey = machineKey.trim();
+      if (!trimmedMachineKey) {
+        throw new PushRelayRequestError(
+          "purgeAccountMachineActivity",
+          400,
+          "a machine key is required to purge Activity",
+        );
+      }
+      const response = await request(
+        "DELETE",
+        `/attention/account/machines/${encodeURIComponent(trimmedMachineKey)}`,
+        { accountAuthorized: true, expectedAccountUserId },
+      );
+      // Already purged (or never published) is the desired end state, not a
+      // failure — removing a machine twice must not report an error.
+      if (response.status === 404) return;
+      requireOk("purgeAccountMachineActivity", response);
     },
 
     async putActivityMachinePreferences(

@@ -110,6 +110,7 @@ import {
   parseAttentionNotchToast,
 } from "../attention/attentionNotchRouter";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
+import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -248,11 +249,14 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountDeviceLoginStart,
+  AdeAccountDeviceLoginPoll,
   AdeAccountLocalMachineIdentity,
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
+  AdeAccountMachinePairingRepairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -666,7 +670,7 @@ import {
 import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
-import { createAccountBridge } from "../account/accountBridge";
+import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -717,9 +721,10 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService } from "../runtime/projectRecoveryService";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
-import { registerRuntimeBridge } from "./runtimeBridge";
+import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
@@ -9345,6 +9350,15 @@ export function registerIpc({
   const accountBridge = createAccountBridge({
     getProjectRoot: () => getCtx().project.rootPath ?? null,
     reconcileAccountOwnership: runtimeBridge.reconcileAccountOwnership,
+    purgeMachineActivity: (machineKey) =>
+      attentionAccountCoordinator.purgeMachineActivity(machineKey),
+    // Routed to the brain rather than performed here: the push revocation's
+    // live gate is in that process, and this client initializes as `cto`
+    // (RuntimeRpcClient.initialize), which is what `account.call` requires.
+    callBrainAccountAction: createBrainAccountActionCaller(
+      localRuntimeConnectionPool,
+      LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+    ),
     logger: {
       info: (message, meta) => getCtx().logger.info(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),
@@ -9395,6 +9409,34 @@ export function registerIpc({
     },
   );
 
+  // The device-authorization sign-in the account directory can observe. Kept
+  // separate from the loopback flow above rather than replacing it: normal
+  // sign-in has no directory-observability requirement and should not grow a
+  // code-entry step to serve the removed-machine recovery path.
+  ipcMain.handle(
+    IPC.accountStartDeviceLogin,
+    async (): Promise<AdeAccountDeviceLoginStart> => {
+      return await accountBridge.startDeviceLogin();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountPollDeviceLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
+      const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
+      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountCancelDeviceLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
+      await accountBridge.cancelDeviceLogin(arg?.sessionId ?? "");
+      return accountBridge.status();
+    },
+  );
+
   ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.signOut();
     productAnalyticsService?.resetAccountIdentity();
@@ -9432,6 +9474,45 @@ export function registerIpc({
       arg: { machineKey?: string },
     ): Promise<AdeAccountMachineRemovalResult> => {
       return await accountBridge.removeMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  // Takes no arguments on purpose: it always targets THIS machine, and a
+  // machineKey parameter would invite a caller to "repair" a machine it does
+  // not own — the brain could not honour that anyway.
+  ipcMain.handle(
+    IPC.accountRepairMachinePairing,
+    async (): Promise<AdeAccountMachinePairingRepairResult> => {
+      // One coarse fact per "Reconnect this computer" click, captured here
+      // because this is where the outcome is known -- the renderer only sees a
+      // sentence, and the brain owns the two halves but not the user decision.
+      // Nothing else travels: no machine key or name, no account id, no refusal
+      // `reason`/`reasonCode`, no error text. Those stay in local logs and in
+      // the banner copy. The per-outcome one-hour dedupe bounds a frustrated
+      // click-loop to at most 24 accepted events per outcome per UTC day.
+      const captureReconnectOutcome = (outcome: "completed" | "failed") => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "connections", action: "machine_reconnect", outcome },
+          projectId: null,
+          dedupeKey: `machine_reconnect:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      };
+      let result: AdeAccountMachinePairingRepairResult;
+      try {
+        result = await accountBridge.repairMachinePairing();
+      } catch (error) {
+        captureReconnectOutcome("failed");
+        throw error;
+      }
+      // `not_revoked` is the no-op success the UI also reports as success
+      // ("already connected"): nothing was gated, so nothing failed.
+      captureReconnectOutcome(
+        result.repaired || result.state === "not_revoked" ? "completed" : "failed",
+      );
+      return result;
     },
   );
 
@@ -10677,22 +10758,42 @@ export function registerIpc({
   return {
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
     async openAttentionProject(args: {
       machineKey: string;
       projectId: string;
+      /** Owning-machine project root: the id space the runtime agrees on. */
+      rootPath?: string | null;
+      /** Display name for failure copy; the raw RPC string never reaches the UI. */
+      machineName?: string | null;
       windowId: number | null;
     }) {
       const machineKey = args.machineKey.trim();
       if (!machineKey) throw new Error("Activity machine identity is required.");
+      // Seeing the item already proves the machine is on this account, so an
+      // unknown machine is paired rather than refused.
       let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
       if (!targetId) {
-        targetId = (await accountBridge.pairMachine(machineKey)).targetId;
+        try {
+          targetId = (await accountBridge.pairMachine(machineKey)).targetId;
+        } catch (error) {
+          throw describeAttentionOpenFailure(error, "pair", args.machineName);
+        }
       }
-      return await runtimeBridge.openRemoteProjectForWindow({
-        targetId,
-        projectId: args.projectId,
-        windowId: args.windowId,
-      });
+      try {
+        return await runtimeBridge.openRemoteProjectForWindow({
+          targetId,
+          projectId: args.projectId,
+          rootPath: args.rootPath ?? null,
+          windowId: args.windowId,
+        });
+      } catch (error) {
+        // Typed, not text-matched: the stage decides whether the user is told
+        // to open the project or to check that ADE is running on that machine,
+        // and rewording either throw must not flip the instruction.
+        const stage = error instanceof RemoteProjectNotFoundError ? "open" : "connect";
+        throw describeAttentionOpenFailure(error, stage, args.machineName);
+      }
     },
   };
 }

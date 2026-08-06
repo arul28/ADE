@@ -41,7 +41,11 @@ import {
   dispatchOwnerAwareNavigation,
   ownerNavigationFailureCopy,
 } from "./services/deeplinks/ownerAwareNavigation";
-import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
+import { resolveLocalProjectRoot } from "./services/deeplinks/localProjectResolution";
+import {
+  selectRemoteHostWindow,
+  selectWindowForProjectNavigation,
+} from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -130,12 +134,15 @@ import {
   type AttentionNotchOutput,
 } from "./services/attention/attentionNotchHelper";
 import {
-  attentionRemoteBindingMatches,
+  attentionNotchAppNavigation,
   attentionItemNavigationRequest,
   createAttentionNotchToastDeduper,
+  remoteBindingMatchesProject,
   resolveAttentionNotchOutput,
   type AttentionNotchResolvedOutput,
 } from "./services/attention/attentionNotchRouter";
+import { pathsEqual } from "./services/shared/pathCompare";
+import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -973,9 +980,30 @@ let dispatchAppNavigationForProjectRoot:
   | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
   | null = null;
 
+// Queue rather than drop when the window layer has not registered its
+// dispatcher yet. The notch, `ade://` deeplinks, and file opens can all fire
+// during launch, and a silent no-op is indistinguishable from a dead button.
+const MAX_PENDING_APP_NAVIGATION_REQUESTS = 32;
+
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
   if (!dispatchAppNavigationRequest) {
     pendingAppNavigationRequests.push(request);
+    if (pendingAppNavigationRequests.length > MAX_PENDING_APP_NAVIGATION_REQUESTS) {
+      pendingAppNavigationRequests.splice(
+        0,
+        pendingAppNavigationRequests.length - MAX_PENDING_APP_NAVIGATION_REQUESTS,
+      );
+    }
+    try {
+      // The structured logger is not up this early; console keeps the signal.
+      console.warn("[main] app_navigation.queued_before_dispatcher_ready", {
+        target: request.target.kind,
+        source: request.source,
+        queued: pendingAppNavigationRequests.length,
+      });
+    } catch {
+      // A missing console must never break navigation queueing.
+    }
     return;
   }
   dispatchAppNavigationRequest(request);
@@ -6546,15 +6574,26 @@ app.whenReady().then(async () => {
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
         getLocalMachineKey: () =>
           attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "",
-        resolveLocalProjectRoot: (projectId) => {
-          const contextMatch = [...projectContexts.entries()]
-            .find(([, context]) => context.projectId === projectId);
-          if (contextMatch) return contextMatch[0];
-          const recentMatch = readLocalRecentProjects()
-            .map(inspectRecentProject)
-            .find((entry) => entry.projectId === projectId);
-          return recentMatch?.summary.rootPath ?? null;
-        },
+        resolveLocalProjectRoot: (projectId, projectRoot) =>
+          resolveLocalProjectRoot(projectId, projectRoot, {
+            candidates: () => [
+              ...[...projectContexts.entries()]
+                .map(([root, context]) => ({ root, projectId: context.projectId })),
+              ...readLocalRecentProjects()
+                .map(inspectRecentProject)
+                // A remote recent has no local project id, and its root path
+                // names a directory on the OTHER machine — resolving a local
+                // destination against it would be a wrong answer, not a match.
+                .filter((entry): entry is typeof entry & { projectId: string } =>
+                  typeof entry.projectId === "string" && entry.projectId.length > 0)
+                .map((entry) => ({
+                  root: entry.summary.rootPath,
+                  projectId: entry.projectId,
+                })),
+            ],
+            pathsEqual,
+            deriveProjectId,
+          }),
         deliverLocal: async (projectRoot, ownedRequest) => {
           const delivered = await deliverAppNavigationToProject(
             projectRoot,
@@ -6562,44 +6601,30 @@ app.whenReady().then(async () => {
           );
           if (!delivered.ok) throw new Error(delivered.message);
         },
-        findRemote: (accountMachineKey, projectId) => {
-          const targetId =
-            attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey)
-            ?? null;
-          if (!targetId) return null;
-          for (const [windowId, binding] of windowProjectBindings) {
-            if (
-              binding.targetId !== targetId
-              || binding.projectId !== projectId
-            ) {
-              continue;
-            }
-            const win = BrowserWindow.fromId(windowId);
-            if (win && !win.isDestroyed()) return win;
-          }
-          return null;
-        },
-        openRemote: async (accountMachineKey, projectId) => {
-          const win = await attentionWindow();
+        findRemote: (accountMachineKey, projectId, projectRoot) =>
+          matchingRemoteProjectWindow(
+            attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null,
+            { projectId, rootPath: projectRoot },
+          ),
+        openRemote: async (accountMachineKey, projectId, projectRoot) => {
+          // Never the focused window: a deeplink is a side errand, and rebinding
+          // the window the user is working in throws away their project context.
+          const win = await acquireRemoteAttentionHostWindow();
           if (!win || win.isDestroyed() || !attentionIpcBridge) {
             throw new Error("No ADE window is available for the owning machine.");
           }
           const binding = await attentionIpcBridge.openAttentionProject({
             machineKey: accountMachineKey,
             projectId,
+            rootPath: projectRoot,
+            machineName:
+              attentionIpcBridge.resolveTargetNameForMachineKey(accountMachineKey),
             windowId: win.id,
           });
-          for (const [windowId, openBinding] of windowProjectBindings) {
-            if (
-              openBinding.targetId !== binding.targetId
-              || openBinding.projectId !== projectId
-            ) {
-              continue;
-            }
-            const exactWindow = BrowserWindow.fromId(windowId);
-            if (exactWindow && !exactWindow.isDestroyed()) return exactWindow;
-          }
-          return win;
+          return matchingRemoteProjectWindow(binding.targetId, {
+            projectId: binding.projectId,
+            rootPath: binding.rootPath,
+          }) ?? win;
         },
         deliverRemote: async (handle, ownedRequest) => {
           if (!(handle instanceof BrowserWindow) || handle.isDestroyed()) {
@@ -6886,23 +6911,34 @@ app.whenReady().then(async () => {
     target.webContents.send(IPC.attentionNotchRefreshRequested, { force });
   };
 
-  const matchingRemoteAttentionWindow = (
-    item: AttentionItem,
-    targetId?: string | null,
-    requiresExactMachine = false,
+  /**
+   * The live window whose remote binding satisfies `predicate`.
+   *
+   * The single place window bindings are scanned; who counts as a match is
+   * `remoteBindingMatchesProject`'s business, not this loop's.
+   */
+  const matchingRemoteBindingWindow = (
+    predicate: (binding: RemoteOpenProjectBinding) => boolean,
   ): BrowserWindow | null => {
     for (const [windowId, binding] of windowProjectBindings) {
-      if (!attentionRemoteBindingMatches(
-        item,
-        binding,
-        targetId ?? null,
-        requiresExactMachine,
-      )) continue;
+      if (!predicate(binding)) continue;
       const win = BrowserWindow.fromId(windowId);
       if (win && !win.isDestroyed()) return win;
     }
     return null;
   };
+
+  /** A window already showing this remote project on this machine. */
+  const matchingRemoteProjectWindow = (
+    targetId: string | null,
+    project: { projectId?: string | null; rootPath?: string | null },
+  ): BrowserWindow | null => (
+    targetId
+      ? matchingRemoteBindingWindow(
+        (binding) => remoteBindingMatchesProject(binding, project, targetId),
+      )
+      : null
+  );
 
   const foregroundAttentionWindow = (win: BrowserWindow): void => {
     if (win.isMinimized()) win.restore();
@@ -6910,14 +6946,67 @@ app.whenReady().then(async () => {
     win.focus();
   };
 
+  /**
+   * The notch runs as a separate helper process, so clicking it never activates
+   * ADE. Without this the navigation lands correctly in a window the user is
+   * still not looking at, and every notch button reads as dead.
+   */
+  const activateAppForAttentionNotch = (): void => {
+    try {
+      // `steal` is macOS-only; other platforms ignore it and rely on the
+      // per-window show/focus that follows.
+      app.focus({ steal: true });
+    } catch {
+      // Activation is best-effort: never let it break the navigation itself.
+    }
+  };
+
+  /**
+   * A window with no project of its own — safe to hand to a remote Activity
+   * project without destroying anything the user had open.
+   */
+  const emptyAttentionHostWindow = (): BrowserWindow | null => {
+    const focusedWindowId = BrowserWindow.getFocusedWindow()?.id ?? null;
+    const windowId = selectRemoteHostWindow(
+      BrowserWindow.getAllWindows()
+        .filter((win) => !win.isDestroyed())
+        .map((win) => ({
+          id: win.id,
+          hasRemoteBinding: windowProjectBindings.has(win.id),
+          activeProjectRoot: windowProjectRoots.get(win.id) ?? null,
+          openProjectRoots: windowProjectTabRoots.get(win.id) ?? new Set<string>(),
+          focused: win.id === focusedWindowId,
+        })),
+    );
+    if (windowId == null) return null;
+    const win = BrowserWindow.fromId(windowId);
+    return win && !win.isDestroyed() ? win : null;
+  };
+
+  /**
+   * Where to put a remote project opened from Activity or a deeplink. Never a
+   * window that already holds a project — rebinding one yanks the user's global
+   * project context out from under them just because they clicked a
+   * notification about another machine.
+   */
+  const acquireRemoteAttentionHostWindow = async (): Promise<BrowserWindow | null> => {
+    const empty = emptyAttentionHostWindow();
+    if (empty) return empty;
+    const opened = await openAdeWindow();
+    return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
+  };
+
   const navigateFromAttentionItem = async (
     item: AttentionItem,
     request: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["request"],
     options: {
       acknowledge: boolean;
+      /** Notch-originated navigation must bring ADE itself forward. */
+      activateApp?: boolean;
       fallbackAction?: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["fallbackAction"];
     },
   ): Promise<void> => {
+    if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
     const localMachineKey = attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
@@ -6927,25 +7016,32 @@ app.whenReady().then(async () => {
       accountMachineKey
       && accountMachineKey !== localMachineKey,
     );
-    let remoteWindow = matchingRemoteAttentionWindow(
-      item,
-      targetId,
-      requiresRemoteMachine,
-    );
+    // A canonical foreign-machine identity with no resolved target has no
+    // window it may reuse: matching on root path alone would hand it a window
+    // bound to a different host that happens to check the repo out at the same
+    // path. Every other case names the machine it means, or means none.
+    let remoteWindow = requiresRemoteMachine && !targetId
+      ? null
+      : matchingRemoteBindingWindow(
+        (binding) => remoteBindingMatchesProject(binding, item.project, targetId),
+      );
 
     if (requiresRemoteMachine && !remoteWindow) {
-      const win = await attentionWindow();
+      // No window is showing this remote project yet, so give it one of its
+      // own — a reusable empty window if there is one, otherwise a new window.
+      const win = await acquireRemoteAttentionHostWindow();
       if (!win || win.isDestroyed() || !attentionIpcBridge) {
         throw new Error("ADE could not open the remote Activity destination.");
       }
       const binding = await attentionIpcBridge.openAttentionProject({
         machineKey: accountMachineKey,
         projectId: item.project.projectId,
+        // The item's uuid is not an id this runtime knows; its root path is.
+        rootPath: item.project.rootPath ?? null,
+        machineName: item.machine.name,
         windowId: win.id,
       });
-      remoteWindow = binding.targetId
-        ? matchingRemoteAttentionWindow(item, binding.targetId) ?? win
-        : win;
+      remoteWindow = matchingRemoteProjectWindow(binding.targetId, item.project) ?? win;
     }
 
     if (remoteWindow) {
@@ -7010,6 +7106,7 @@ app.whenReady().then(async () => {
   ): Promise<void> => {
     await navigateFromAttentionItem(resolved.item, resolved.request, {
       acknowledge: true,
+      activateApp: true,
       fallbackAction: resolved.fallbackAction,
     });
   };
@@ -7028,22 +7125,16 @@ app.whenReady().then(async () => {
       });
       return;
     }
-    if (output.type === "open_center") {
-      dispatchAppNavigationRequest?.({
-        target: { kind: "route", route: "/attention" },
-        source: "attention-notch",
-      });
-      return;
-    }
     if (output.type === "refresh") {
       requestAttentionNotchRefresh(true);
       return;
     }
-    if (output.type === "open_settings") {
-      dispatchAppNavigationRequest?.({
-        target: { kind: "settings", tab: "activity", anchor: null },
-        source: "attention-notch",
-      });
+    const chromeNavigation = attentionNotchAppNavigation(output);
+    if (chromeNavigation) {
+      // Activate first, then dispatch: the dispatcher shows/focuses the target
+      // window, but only app activation gets ADE in front of the notch.
+      if (chromeNavigation.activatesApp) activateAppForAttentionNotch();
+      dispatchOrQueueAppNavigationRequest(chromeNavigation.request);
       return;
     }
     if (output.type === "dismiss_item") {
@@ -7059,13 +7150,7 @@ app.whenReady().then(async () => {
       return;
     }
     if (output.type === "settings") {
-      // A helper older than the presentation booleans omits them; both default
-      // on, so an absent field must read as enabled rather than undefined.
-      const settings: AttentionNotchSettings = {
-        ...output.settings,
-        automaticRevealEnabled: output.settings.automaticRevealEnabled !== false,
-        tickerEnabled: output.settings.tickerEnabled !== false,
-      };
+      const settings: AttentionNotchSettings = output.settings;
       attentionNotchHelper?.updateSettings(settings);
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed() || win.webContents.isDestroyed()) continue;

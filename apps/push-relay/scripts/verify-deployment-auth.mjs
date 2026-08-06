@@ -10,6 +10,11 @@ const REQUIRED_SECONDARY_SECRETS = [
   "CLERK_SECONDARY_ISSUER",
   "CLERK_SECONDARY_OAUTH_CLIENT_ID",
 ];
+// Proves a machine came from the account-directory worker rather than merely
+// holding an account token. The machine re-pair route (the only route whose
+// effect is to UN-revoke a machine) fails closed without it, so a deploy that
+// forgets it silently breaks re-pairing — catch it here instead.
+const REQUIRED_DIRECTORY_SECRETS = ["DIRECTORY_AUTH_SECRET"];
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 
 function fail(message) {
@@ -110,6 +115,7 @@ if (mode === "bindings" || mode === "preflight") {
   const names = listedSecretNames();
   assertSecretsPresent(names, REQUIRED_PRIMARY_SECRETS);
   assertSecretsPresent(names, REQUIRED_SECONDARY_SECRETS);
+  assertSecretsPresent(names, REQUIRED_DIRECTORY_SECRETS);
   if (mode === "preflight") {
     smokeToken("ADE_PUSH_RELAY_SMOKE_TOKEN");
     smokeToken("ADE_PUSH_RELAY_SECONDARY_SMOKE_TOKEN");

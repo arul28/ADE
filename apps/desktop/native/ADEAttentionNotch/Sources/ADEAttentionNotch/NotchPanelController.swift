@@ -101,14 +101,27 @@ final class NotchPanelController {
         updatePresentation()
     }
 
+    /// The strip's own metrics decide its width, so every geometry read has to
+    /// go through here rather than calling `notchSurfaceSize` with defaults.
+    private func surfaceSize(for presentation: NotchPresentationState) -> NotchSize {
+        notchSurfaceSize(
+            presentation: presentation,
+            physicalNotchWidth: hasPhysicalNotch ? physicalNotchWidth : nil,
+            safeAreaTop: safeAreaTop,
+            strip: model.stripMetrics
+        )
+    }
+
     func close() {
         panel.orderOut(nil)
     }
 
     private func observeModel() {
-        Publishers.CombineLatest3(model.$interaction, model.$items, model.$settings)
+        // Counts ride along because the strip's width is derived from what it
+        // draws, and a counts-only frame changes both.
+        Publishers.CombineLatest4(model.$interaction, model.$items, model.$settings, model.$counts)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] _, _, _, _ in
                 guard let self else { return }
                 self.rebuildContent()
                 self.updatePresentation()
@@ -188,6 +201,9 @@ final class NotchPanelController {
         }
     }
 
+    /// The panel is keyboard navigable while it is open: arrows move focus
+    /// through exactly the rows on screen, left/right collapse and expand the
+    /// heading or cluster under it, Tab swaps Agents and Events, Return acts.
     private func handleLocalEvent(_ event: NSEvent) -> NSEvent? {
         if event.type == .keyDown, model.interaction.isExplicitlyInteractive {
             switch event.keyCode {
@@ -195,7 +211,22 @@ final class NotchPanelController {
                 model.dismissExpanded()
                 return nil
             case 36, 76:
-                model.openSelected()
+                model.activateFocusedRow()
+                return nil
+            case 125:
+                model.moveFocus(by: 1)
+                return nil
+            case 126:
+                model.moveFocus(by: -1)
+                return nil
+            case 123:
+                model.setFocusedRowExpanded(false)
+                return nil
+            case 124:
+                model.setFocusedRowExpanded(true)
+                return nil
+            case 48:
+                model.cycleTab()
                 return nil
             default:
                 break
@@ -225,13 +256,11 @@ final class NotchPanelController {
                 panel.allowsKeyActivation = true
                 panel.makeKey()
                 if !global {
-                    switch model.interaction.presentation {
-                    case .compact, .prehover, .peek:
+                    // Only the strip resolves a click here. The takeover cards
+                    // and the panel carry real controls, and consuming their
+                    // mouse-downs at this level would beat the buttons to them.
+                    if model.interaction.presentation == .compact {
                         model.toggleExpanded()
-                    case .celebration:
-                        model.openSelected()
-                    case .expanded, .attention:
-                        break
                     }
                 }
             } else if model.interaction.isExplicitlyInteractive {
@@ -294,11 +323,7 @@ final class NotchPanelController {
                 yRadius: min(12, hotZone.height / 2)
             )
         }
-        let size = notchSurfaceSize(
-            presentation: presentation,
-            physicalNotchWidth: hasPhysicalNotch ? physicalNotchWidth : nil,
-            safeAreaTop: safeAreaTop
-        )
+        let size = surfaceSize(for: presentation)
         let corners = notchSurfaceCorners(
             presentation: presentation,
             hasPhysicalNotch: hasPhysicalNotch,
@@ -361,11 +386,7 @@ final class NotchPanelController {
             ?? selectedScreen()
         guard let screen else { return }
 
-        let size = notchSurfaceSize(
-            presentation: model.interaction.presentation,
-            physicalNotchWidth: nil,
-            safeAreaTop: 0
-        )
+        let size = surfaceSize(for: model.interaction.presentation)
         let target = menuBarAnchoredPanelFrame(
             statusItemFrame: rect(anchorFrame),
             displayFrame: rect(screen.frame),

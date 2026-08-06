@@ -6,10 +6,31 @@ import {
 } from "../../shared/types";
 import {
   acknowledgeActivityItem,
+  acknowledgeActivityItems,
   activityStore,
   resetActivityStoreForTests,
   selectActivityUnseenCount,
 } from "./activityStore";
+
+function installAcknowledge(
+  acknowledge: (args: {
+    itemIds: string[];
+    alertFingerprints?: Record<string, string>;
+  }) => Promise<{
+    acknowledged: string[];
+    stale: string[];
+    /** Omitted by every producer that has nothing to report — and by older ones. */
+    unreached?: string[];
+    unreachedReason?: string;
+  }>,
+) {
+  const spy = vi.fn(acknowledge);
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { ade: { attention: { acknowledge: spy } } },
+  });
+  return spy;
+}
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
 
@@ -237,6 +258,205 @@ describe("activityStore", () => {
       },
     });
     expect(selectActivityUnseenCount(activityStore.getState())).toBe(0);
+  });
+
+  /**
+   * "Clear all" was N calls, N races, and N swallowed rejections. One call with
+   * one outcome is the whole fix, and the request has to name every row.
+   */
+  it("clears a whole batch in one call", async () => {
+    const acknowledge = installAcknowledge(async ({ itemIds }) => ({
+      acknowledged: itemIds,
+      stale: [],
+    }));
+    activityStore.setState({
+      accountOwnerId: "account-a",
+      itemsById: {
+        first: item("first", "needs_you"),
+        second: item("second", "completed"),
+      },
+    });
+
+    const outcome = await acknowledgeActivityItems(["first", "second"], "dismiss");
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge.mock.calls[0]![0]).toMatchObject({
+      itemIds: ["first", "second"],
+      expectedAccountOwnerId: "account-a",
+    });
+    expect(outcome).toEqual({ acknowledged: ["first", "second"], stale: [], unreached: [] });
+    expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().pendingAcknowledgements).toEqual({});
+  });
+
+  /**
+   * The narrow fence, and the reason it exists.
+   *
+   * Poll at revision N with a row `running`; the user hits Clear all; the row
+   * flips to `needs_you` and THAT publish lands first, resetting seen and
+   * dismissed because the alert identity changed. Without a fence the ack then
+   * marks the new needs-you entry seen and dismissed, and an alert nobody ever
+   * saw is gone from the inbox and the badge. Quoting the fingerprint the user
+   * actually looked at is what lets the host refuse that one row — and only
+   * that row. A publisher that sends no `alertFingerprint` quotes nothing, so
+   * an older fleet acks exactly as it does today.
+   */
+  it("quotes the alert fingerprint it displayed for each acknowledged row", async () => {
+    const acknowledge = installAcknowledge(async ({ itemIds }) => ({
+      acknowledged: itemIds,
+      stale: [],
+    }));
+    activityStore.setState({
+      accountOwnerId: "account-a",
+      itemsById: {
+        fenced: item("fenced", "needs_you", { alertFingerprint: "alert-v2" }),
+        padded: item("padded", "needs_you", { alertFingerprint: "  alert-v3  " }),
+        legacy: item("legacy", "needs_you"),
+      },
+    });
+
+    await acknowledgeActivityItems(["fenced", "padded", "legacy"], "dismiss");
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge.mock.calls[0]![0].alertFingerprints).toEqual({
+      fenced: "alert-v2",
+      padded: "alert-v3",
+    });
+  });
+
+  /**
+   * The host answers per item, so the rollback is per item too: putting the
+   * nine rows that DID clear back because a tenth moved would be the same lie
+   * as pretending the tenth cleared.
+   */
+  it("rolls back only the rows the host refused as stale", async () => {
+    installAcknowledge(async ({ itemIds }) => ({
+      acknowledged: itemIds.filter((id) => id !== "second"),
+      stale: ["second"],
+    }));
+    activityStore.setState({
+      itemsById: {
+        first: item("first", "needs_you"),
+        second: item("second", "needs_you"),
+        third: item("third", "completed"),
+      },
+    });
+
+    const outcome = await acknowledgeActivityItems(
+      ["first", "second", "third"],
+      "dismiss",
+    );
+
+    expect(outcome).toEqual({
+      acknowledged: ["first", "third"],
+      stale: ["second"],
+      unreached: [],
+    });
+    expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.third?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+    expect(activityStore.getState().itemsById.second?.seenAt).toBeNull();
+    // The refused row explains itself; the others carry no error at all.
+    expect(activityStore.getState().acknowledgementErrors.second).toContain(
+      "changed on the machine that owns it",
+    );
+    expect(activityStore.getState().acknowledgementErrors.first).toBeUndefined();
+    expect(activityStore.getState().pendingAcknowledgements).toEqual({});
+  });
+
+  /**
+   * The rollback is identical; the explanation is not. A row in a chunk that
+   * threw was never answered for, so telling the user it "changed on the
+   * machine that owns it" points them at a refresh that changes nothing.
+   */
+  it("explains an unreached row as a failed request, not as a stale one", async () => {
+    installAcknowledge(async () => ({
+      acknowledged: ["first"],
+      stale: ["second"],
+      unreached: ["third"],
+      unreachedReason: "Failed to fetch",
+    }));
+    activityStore.setState({
+      itemsById: {
+        first: item("first", "needs_you"),
+        second: item("second", "needs_you"),
+        third: item("third", "needs_you"),
+      },
+    });
+
+    const outcome = await acknowledgeActivityItems(
+      ["first", "second", "third"],
+      "dismiss",
+    );
+
+    expect(outcome).toEqual({
+      acknowledged: ["first"],
+      stale: ["second"],
+      unreached: ["third"],
+      unreachedReason: "Failed to fetch",
+    });
+    // Both failures roll back; only the row that landed stays cleared.
+    expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+    expect(activityStore.getState().itemsById.third?.dismissedAt).toBeNull();
+    // And each rolled-back row carries its OWN reason.
+    expect(activityStore.getState().acknowledgementErrors.second).toContain(
+      "changed on the machine that owns it",
+    );
+    expect(activityStore.getState().acknowledgementErrors.third).toContain(
+      "couldn’t reach Activity",
+    );
+    expect(activityStore.getState().acknowledgementErrors.third)
+      .not.toContain("changed on the machine that owns it");
+    expect(activityStore.getState().pendingAcknowledgements).toEqual({});
+  });
+
+  /**
+   * `unreached` is additive and optional: the machine paths never populate it,
+   * and neither does any producer built before it existed.
+   */
+  it("treats an outcome with no unreached list as nothing unreached", async () => {
+    installAcknowledge(async ({ itemIds }) => ({
+      acknowledged: itemIds,
+      stale: [],
+    }));
+    activityStore.setState({ itemsById: { only: item("only", "needs_you") } });
+
+    const outcome = await acknowledgeActivityItems(["only"], "dismiss");
+
+    expect(outcome).toEqual({ acknowledged: ["only"], stale: [], unreached: [] });
+    expect(activityStore.getState().itemsById.only?.dismissedAt).not.toBeNull();
+    expect(activityStore.getState().acknowledgementErrors).toEqual({});
+  });
+
+  it("surfaces a stale single item as a rejection its one caller can see", async () => {
+    installAcknowledge(async () => ({ acknowledged: [], stale: ["needs"] }));
+    activityStore.setState({ itemsById: { needs: item("needs", "needs_you") } });
+
+    await expect(acknowledgeActivityItem("needs", "dismiss")).rejects.toThrow(
+      /changed on the machine that owns it/,
+    );
+    expect(activityStore.getState().itemsById.needs?.dismissedAt).toBeNull();
+  });
+
+  it("rolls the whole batch back when the call itself fails", async () => {
+    installAcknowledge(async () => {
+      throw new Error("Relay unreachable");
+    });
+    activityStore.setState({
+      itemsById: {
+        first: item("first", "needs_you"),
+        second: item("second", "needs_you"),
+      },
+    });
+
+    await expect(acknowledgeActivityItems(["first", "second"], "dismiss"))
+      .rejects.toThrow("Relay unreachable");
+    expect(activityStore.getState().itemsById.first?.dismissedAt).toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
+    expect(activityStore.getState().acknowledgementErrors.first).toBe("Relay unreachable");
+    expect(activityStore.getState().acknowledgementErrors.second).toBe("Relay unreachable");
   });
 
   it("rolls back only acknowledgement fields when a newer snapshot arrives", async () => {

@@ -377,7 +377,13 @@ Runtime support files outside `services/sync/`:
   across the old token, new token, or userinfo fail closed. Attestation errors
   distinguish expired tokens and temporary verifier/JWKS outages from account
   mismatch, invalid tokens, and configuration failures so lease owners retry
-  only transient failures.
+  only transient failures. The device-authorization flow also carries this
+  machine's key to the directory and, on completion, keeps the single-use
+  pairing grant the directory minted — in memory only, with a 10-minute TTL, read
+  once through `consumePairingGrant` and cleared on sign-out. That grant is the
+  proof a removed machine needs to re-pair, which is why the desktop's Reconnect
+  affordance and `ade machines reconnect` both run the device flow rather than
+  the loopback PKCE flow.
 - `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
   account-machine list/delete/rename/adoption for ADE Code and the runtime.
   Rename writes the account-owned `customName` field without changing the
@@ -393,7 +399,12 @@ Runtime support files outside `services/sync/`:
   that presence bit expires. Every HTTP operation carries one bounded
   correlation id across the initial request and its one auth-refresh retry, so
   a user-visible failure can be joined to the Worker's structured lifecycle
-  record without logging an account token or response body.
+  record without logging an account token or response body. Removal is terminal:
+  the directory records a revocation before deleting the machine row and then
+  asks the relay to purge that machine's Activity, and a failed purge surfaces as
+  a typed `AccountMachineActivityPurgeError` (`machineRemoved: true`) rather than
+  a clean success. Getting back on requires `machinePairingRepair.ts` and proof
+  of a fresh interactive sign-in — see `push-notifications.md`.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts`
   and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
   projection. `mergeWebMachines` merges account rows with browser-saved
@@ -1452,49 +1463,104 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 
 Account Activity and push:
 
-- `apps/ade-cli/src/services/push/pushPublisherService.ts` — derives one
-  bounded machine contribution across every project hosted by the brain,
-  publishes it to the account relay, and owns the signed-out/degraded
-  machine-snapshot fallback.
+- `apps/ade-cli/src/services/push/pushPublisherService.ts` — owns the publish
+  lifecycle for one bounded machine contribution across every project hosted by
+  the brain: run/PR/session-removal tracking, the protocol-2 publish, the
+  signed-out/degraded machine-snapshot fallback, and the durable machine-revoked
+  gate (`getMachineRevocation` / `clearMachineRevocation`) that a removed machine
+  latches so it stops delivering across restarts.
+- `apps/ade-cli/src/services/push/attentionItemBuilder.ts` — the Activity
+  projection itself, lifted out of the publisher's closure so it can be
+  exercised with a plain context record instead of a booted publisher.
+  `(runs, recentRuns, prActivities, roster) → AttentionItem[]`: identity-chat and
+  child-shell filtering, phase derivation (including holding a completed turn at
+  `running` while background subagents live), the title/preview tables, the
+  2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
-  delivery, and machine-acknowledgment state. Machine acknowledgments are keyed
-  by account owner + item, carry the exact source revision, and remain pending
-  until a later successful account publish can reconcile them.
+  delivery, machine-revocation, and machine-acknowledgment state. Machine
+  acknowledgments are keyed by account owner + item and remain pending until a
+  later successful account publish can reconcile them.
 - `apps/ade-cli/src/services/push/pushRelayClient.ts` — authenticated relay
   client with one safe forced token refresh after a 401 and account-owner
   fences across asynchronous requests.
 - `apps/desktop/src/main/services/attention/attentionAccountCoordinator.ts` —
   desktop account-first read/ack/presence/preferences coordinator. It bypasses
   the selected project or remote-machine binding and uses the local machine
-  runtime only as an explicitly labeled fallback.
+  runtime only as an explicitly labeled fallback. It chunks bulk acknowledgments
+  at 64 through the shared `runAcknowledgmentChunks` and returns the three-way
+  `acknowledged` / `stale` / `unreached` outcome.
+- `apps/desktop/src/main/services/attention/remoteProjectIdentity.ts` —
+  reconciles the two project-id spaces an Activity click-through crosses. Root
+  paths are compared with rules taken from the path's own shape rather than
+  `process.platform`, because the path belongs to a machine that may not run this
+  OS; a case-folded match is accepted only when unambiguous.
+- `apps/desktop/src/main/services/attention/attentionOpenErrors.ts` — turns a
+  failed pair / connect / open into one sentence the user can act on, keeping the
+  raw error as `cause`. The signed-out and unreachable patterns are deliberately
+  narrow: a bare `session` or `401` match sent users to fix an account that was
+  fine.
+- `apps/desktop/src/main/services/deeplinks/localProjectResolution.ts` and
+  `projectNavigationWindowSelection.ts` — resolving a link's project against this
+  machine (exact id → carried root path → recomputed canonical id) and choosing
+  which window may host it. A remote project never rebinds the focused window.
 - `apps/ade-cli/src/services/push/activityFingerprint.ts` — the two identities
   every item carries. The *content* fingerprint is what the row looks like with
   elapsed durations and token/file counters normalized away, so progress churn
   does not rewrite account state; the *alert* fingerprint is the stable identity
   of one phase entry, so a re-published item cannot re-alert a phone that
-  already heard about it.
+  already heard about it. `chatActivityMode` is in the content fingerprint (it is
+  a visible distinction) and deliberately out of the alert fingerprint, because
+  planning and working flip several times a turn and neither flip is a new phase
+  worth notifying about.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
   destination, availability, preference, and native-presentation contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
-  version is separate (see `push-notifications.md`).
+  version is separate (see `push-notifications.md`). It also owns the
+  acknowledgment mechanics every shell shares:
+  `ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT` (64, derived from the relay's own
+  bound), `chunkAttentionAcknowledgmentItemIds`, `runAcknowledgmentChunks` (with
+  the abort-on-first-failing-chunk policy), and
+  `AttentionAcknowledgmentOutcome`.
+- `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
+  cross-language conformance fixture for the five-group state table. The mapping
+  is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
+  and the hermetic relay Worker) because the surfaces cannot share code, and
+  documentation alone did not keep them in step. Every implementation runs these
+  cases through its own mapper. Canonical source of truth:
+  `activityStateGroup` in
+  `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
   delivery defaults read this instead of each keeping a private switch.
 - `apps/desktop/src/renderer/state/activityStore.ts` — the renderer's account
-  snapshot, with account-switch and source-revision fences on every mutation.
+  snapshot. Mutations are fenced on the loaded account owner and, per item, on
+  the alert fingerprint the user actually had on screen; the old
+  source-revision fence is gone, because revision advances on every publish and
+  a live agent outran any poll. Rollback follows the three-way outcome:
+  `stale` and `unreached` each roll back only their own rows, with different
+  copy.
 - `apps/desktop/src/renderer/components/activity/useActivitySync.ts` — the
   single account poller, mounted in `AppShell` so the header control and ADE
   Notch stay truthful while `/activity` is closed. It also derives the notch
   toast stream.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
-  the global-header count and its popover preview of both buckets.
+  the global-header count (the `needs-you` group and nothing else) and its
+  popover preview, which shows every state section except `done`.
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
-  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (Needs you /
-  Working / Done, split per machine and divided where an offline machine's rows
-  become last-known state), `ActivityInboxColumn.tsx` (PR/CI and other
-  outcomes), `ActivityFilters.tsx` (machine / chat type / model, every option
-  derived from the snapshot on screen), and `ActivityDetailSheet.tsx`.
+  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
+  one section per state group, split per machine and divided where an offline
+  machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
+  Notifications column: PR/CI and review outcomes grouped by project),
+  `ActivityFilters.tsx` (machine / chat type / model, every option derived from
+  the snapshot on screen), and `ActivityDetailSheet.tsx`.
+- `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
+  `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
+  `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header
+  (the whole strip is the button, with the `<h3>`/`<h4>` outline preserved for
+  screen readers), per-surface collapsed-section memory, the Phosphor half of the
+  state glyph language, and the all-clear beat that fires on the transition to
+  zero raised hands and never on arrival.
 - `apps/desktop/src/renderer/components/activity/ActivityCard.tsx` and
   `ActivityCardSkeleton.tsx` — the row and its fixed-height placeholder. The
   card deliberately does **not** reuse `terminals/SessionCard`: an Activity row
@@ -1504,9 +1570,18 @@ Account Activity and push:
   shared instead through the pure `terminals/SessionStatusLabel.tsx`, extracted
   from `SessionStatusSlot` for exactly this reason. Read the comment at the top
   of `ActivityCard.tsx` before "simplifying" it.
-- `apps/desktop/src/renderer/components/activity/activityPriority.ts` and
-  `activityPresentation.ts` — section assignment (Needs you / Working / Done)
-  and the per-item label/tone/glyph derivation.
+- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — the
+  canonical state glyph language: `ActivityStateGroup`, `ACTIVITY_STATE_GLYPHS`,
+  `ACTIVITY_STATE_GROUPS` (also the priority order), `activityStateGroup`, plus
+  the per-item label/tone/glyph derivation and the detail sheet's
+  `activityStateSentence` / `activityStateElapsed`. Change the rule here first;
+  the notch, iOS, and relay mirrors follow.
+- `apps/desktop/src/renderer/components/activity/activityPriority.ts` — the
+  projection every surface reads: `activityFeedItems` (agents only),
+  `activitySections` (one per state group, empties included),
+  `activityNotificationItems` (non-agent, inbox-eligible),
+  `activityFeedOrder` (what the notch mirrors), and the counts/leading-group
+  helpers that replaced four hand-written priority ladders.
 - `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
   bounded row budget (60, stepped by 60) that keeps long columns cheap.
 - `apps/desktop/src/renderer/components/activity/activityNotchLocalSettings.ts`
@@ -1532,8 +1607,21 @@ Account Activity and push:
   pane and exact-destination acknowledgment flow. The hidden `/attention`
   alias and `attention.call` RPC remain for compatibility.
 - `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
-  Clerk verification, acknowledgments, presence/preferences, APNs fan-out, and
-  one account-wide Live Activity per phone.
+  Clerk verification, acknowledgments, presence/preferences, APNs fan-out,
+  machine removal/revocation and pairing restore, and the cron-only expiry and
+  orphaned-machine sweeps.
+- `apps/push-relay/src/liveActivity.ts` — the account-wide Live Activity
+  projection (state-group tally, roster caps, privacy redaction, start lease, and
+  the per-device APNs start/update/end loop), split out of `attention.ts`.
+- `apps/push-relay/src/attentionShared.ts` — the environment, bounds, and helper
+  vocabulary both of those need, existing to break the import cycle the split
+  would otherwise create. It is where the relay declares `chatActivityMode` on
+  its parsed item.
+- `apps/ade-cli/src/services/account/machinePairingRepair.ts` — re-pairing this
+  machine after removal. It owns the order the two halves lift in: the directory
+  publish first, the durable push gate only after the directory accepts, because
+  a machine back on the roster but silently undelivering is worse than one that
+  is plainly gone.
 
 See `push-notifications.md` for the full topology and delivery policy.
 

@@ -4,8 +4,11 @@ import type {
   AttentionPhase,
   AttentionTone,
 } from "../../../shared/types";
+import { activityItemTier } from "../../../shared/types";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
+import { providerDisplayName } from "../../../shared/pendingInputLabels";
 import {
+  formatWorkingDuration,
   sessionStatusPresentation,
   type SessionStatusGlyph,
   type SessionStatusPresentation,
@@ -79,11 +82,24 @@ const ACTIVE_PHASES = new Set<AttentionPhase>(["starting", "running", "needs_you
  * is, because a fallback that could manufacture amber would defeat the rule it
  * is meant to protect.
  */
-function requireSessionPresentation(phase: CanonicalSessionPhase): SessionStatusPresentation {
+function requireSessionPresentation(
+  phase: CanonicalSessionPhase,
+  activity: { chatActivityMode?: "planning" | null } = {},
+): SessionStatusPresentation {
   return (
-    sessionStatusPresentation(phase)
+    sessionStatusPresentation(phase, {}, activity)
     ?? { label: "Stale", tone: "neutral", glyph: "stale", showsElapsed: true, prominent: false }
   );
+}
+
+/**
+ * The boundary check for the one optional field a publisher may add to an item
+ * that this module trusts. Anything other than the single literal is treated as
+ * absent, so a future value from a newer publisher degrades to the phase rather
+ * than painting an unstyled tone.
+ */
+export function activityChatMode(item: AttentionItem): "planning" | null {
+  return item.chatActivityMode === "planning" ? "planning" : null;
 }
 
 function sessionDerivedPresentation(
@@ -175,7 +191,10 @@ export function activityItemPresentation(
   item: AttentionItem,
 ): SessionStatusPresentation | null {
   if (activityPhaseIsSessionDerived(item.phase)) {
-    return requireSessionPresentation(SESSION_PHASE_BY_ATTENTION_PHASE[item.phase]);
+    return requireSessionPresentation(
+      SESSION_PHASE_BY_ATTENTION_PHASE[item.phase],
+      { chatActivityMode: activityChatMode(item) },
+    );
   }
   const presentation = NON_SESSION_PRESENTATION[item.phase];
   const details = NON_SESSION_STATUS_DETAILS[item.phase];
@@ -193,6 +212,135 @@ export function activityPhaseIsSessionDerived(
   phase: AttentionPhase,
 ): phase is SessionDerivedActivityPhase {
   return phase in SESSION_PHASE_BY_ATTENTION_PHASE;
+}
+
+/* ── The state glyph language ──────────────────────────────────────────────
+   Five states, one glyph and one hue each. This is the canonical table; the
+   notch strip, the iOS widget rows and the Live Activity all mirror it, so a
+   change here is a change everywhere and must be made here first.
+
+   It exists because the surfaces that summarise Activity had nothing to
+   summarise WITH: a row of repeated provider logos says "three Claudes" when
+   the useful sentence is "one is asking you something and two are working".
+   A glyph plus a count reads at a glance and survives being 14px wide.
+
+   The hues are the same one-hue-one-meaning table as everywhere else — amber is
+   "your move" and is spent nowhere else, and `cyan` is never handed to a
+   session state (see the tone doc in `shared/types/attention.ts`). `planning`
+   takes violet, which it shares with an outstanding review: both mean "someone
+   is deliberating", neither means the reader must act. ────────────────────── */
+
+export type ActivityStateGroup =
+  | "needs-you"
+  | "failed"
+  | "planning"
+  | "working"
+  | "done";
+
+export type ActivityStateGlyph = {
+  /** Section heading and count-group label. */
+  label: string;
+  tone: AttentionTone;
+  /**
+   * Shared glyph identity, mapped to Phosphor by `ActivityStateGlyphMark` and
+   * to SF Symbols by the iOS mirror. `needs-you` is the filled dot — the one
+   * urgent mark — and `failed` is the warning triangle rather than the bare
+   * word the session row gets away with, because a count group has no room for
+   * a word at all.
+   */
+  glyph: Exclude<SessionStatusGlyph, null>;
+};
+
+export const ACTIVITY_STATE_GLYPHS = {
+  "needs-you": { label: "Needs you", tone: "amber", glyph: "needs-you" },
+  failed: { label: "Failed", tone: "red", glyph: "failed" },
+  planning: { label: "Planning", tone: "violet", glyph: "planning" },
+  working: { label: "Working", tone: "blue", glyph: "working" },
+  done: { label: "Done", tone: "emerald", glyph: "done" },
+} as const satisfies Record<ActivityStateGroup, ActivityStateGlyph>;
+
+/** Priority order — the order the strip, the sections, and the counts use. */
+export const ACTIVITY_STATE_GROUPS = [
+  "needs-you",
+  "failed",
+  "planning",
+  "working",
+  "done",
+] as const satisfies readonly ActivityStateGroup[];
+
+/**
+ * Which state group an item belongs to. Idle-tier rows are quiet history no
+ * matter what phase they preserved, so they land in `done`. This is the only
+ * place the rule is written: section headings, glyph counts, and the notch all
+ * call it, so "what is this row" has exactly one answer.
+ */
+export function activityStateGroup(item: AttentionItem): ActivityStateGroup {
+  if (activityItemTier(item) === "idle") return "done";
+  switch (item.phase) {
+    case "needs_you":
+      return "needs-you";
+    case "failed":
+    case "checks_failing":
+    case "changes_requested":
+      return "failed";
+    case "starting":
+    case "running":
+      return activityChatMode(item) === "planning" ? "planning" : "working";
+    case "stale":
+    case "open":
+      return "working";
+    case "review_requested":
+    case "merge_ready":
+    case "blocked":
+      // Someone else's move, not the reader's: filed with the live band so it
+      // cannot borrow the amber "needs you" heading.
+      return "working";
+    default:
+      return "done";
+  }
+}
+
+/**
+ * The one-line answer to "what is this agent doing", for the detail sheet.
+ * Reads as a sentence about a named agent — "Claude is asking a question" —
+ * because the sheet's whole job in v1 is to say the state plainly and offer the
+ * chat. Pull requests get the phase label instead: there is no agent to name.
+ */
+export function activityStateSentence(item: AttentionItem): string {
+  if (item.kind === "pull_request") {
+    return activityItemPresentation(item)?.label ?? "Tracked";
+  }
+  const who = providerDisplayName(item.provider);
+  switch (activityStateGroup(item)) {
+    case "needs-you":
+      return `${who} is asking a question`;
+    case "failed":
+      return `${who} stopped on an error`;
+    case "planning":
+      return `${who} is planning`;
+    case "working":
+      return item.phase === "stale"
+        ? `${who} has gone quiet`
+        : `${who} is working`;
+    case "done":
+      return `${who} is done`;
+  }
+}
+
+/**
+ * "needs you for 4m". `statusSince` is immutable for the life of a phase, so
+ * this is elapsed time in the STATE rather than time since the last cosmetic
+ * republish — the distinction that keeps the sheet from resetting every poll.
+ */
+export function activityStateElapsed(
+  item: AttentionItem,
+  now = Date.now(),
+): string | null {
+  const since = item.statusSince ?? item.occurredAt;
+  const sinceMs = since ? Date.parse(since) : Number.NaN;
+  if (!Number.isFinite(sinceMs) || sinceMs > now) return null;
+  const elapsed = formatWorkingDuration(now - sinceMs);
+  return elapsed || null;
 }
 
 export function activityActionTone(

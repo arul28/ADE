@@ -89,6 +89,43 @@
   background: var(--tone-color);
 }
 
+/* Dismiss floats over the row's right edge rather than living inside it: the
+   row is a button, and a button inside a button is not markup. The scrim is
+   what keeps a truncated line from reading as a collision when it appears. */
+.activity-card-shell {
+  position: relative;
+}
+
+.activity-card-dismiss {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  display: inline-flex;
+  height: 20px;
+  width: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-bg));
+  box-shadow: -10px 0 12px -4px color-mix(in srgb, var(--color-card) 92%, var(--color-bg));
+  color: var(--color-muted-fg);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.activity-card-shell:hover .activity-card-dismiss,
+.activity-card-shell:focus-within .activity-card-dismiss {
+  opacity: 1;
+}
+
+.activity-card-dismiss:hover,
+.activity-card-dismiss:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 12%, var(--color-card));
+  color: var(--color-fg);
+  outline: none;
+}
+
 /* ── Pane shell ─────────────────────────────────────────────────────── */
 
 .activity-pane {
@@ -383,9 +420,8 @@ button.activity-pane-freshness {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
   margin: 0;
-  padding: 8px 7px 5px;
+  padding: 3px 0 1px;
   background: color-mix(in srgb, var(--color-card) 94%, var(--color-bg));
   color: var(--color-muted-fg);
   font-size: var(--activity-fs-2xs);
@@ -394,12 +430,53 @@ button.activity-pane-freshness {
   text-transform: uppercase;
 }
 
-.activity-section-dot {
-  width: 6px;
-  height: 6px;
+/* The whole strip is the control. A 9px caret is a target you have to aim at;
+   a full-width header is one you can hit without looking. */
+.activity-section-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.activity-section-toggle:hover,
+.activity-section-toggle:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-fg);
+  outline: none;
+}
+
+.activity-section-caret {
   flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--tone-color);
+  opacity: 0.6;
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.activity-section-caret.is-open {
+  transform: rotate(90deg);
+}
+
+/* The glyph, not a dot: a dot repeats the hue, a glyph says what the hue
+   means. One vocabulary with the notch strip and the iOS rows. */
+.activity-section-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--tone-color);
+}
+
+.activity-section-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .activity-section-count {
@@ -407,6 +484,71 @@ button.activity-pane-freshness {
   font-family: var(--font-mono);
   font-size: var(--activity-fs-2xs);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── All-clear beat ─────────────────────────────────────────────────────
+   The one unambiguously good transition in Activity, and until now the only
+   one with no representation: the section simply stopped existing. Brief,
+   emerald, and gone before it can become furniture. */
+
+.activity-all-clear {
+  /* Emerald comes from the tone table, never a literal: the light theme swaps
+     it for a darker green (`#047857`) to stay legible on a pale surface, and a
+     hardcoded hue would quietly fail that swap. */
+  --tone-color: #34d399;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 5px 2px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--tone-color) 26%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--tone-color) 10%, transparent);
+  color: color-mix(in srgb, var(--tone-color) 82%, var(--color-fg));
+  font-size: var(--activity-fs-xs);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+[data-theme="light"] .activity-all-clear {
+  --tone-color: #047857;
+}
+
+.activity-all-clear[data-compact="true"] {
+  margin: 2px 1px;
+  padding: 5px 8px;
+}
+
+.activity-all-clear-mark {
+  display: inline-flex;
+  height: 16px;
+  width: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tone-color) 20%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .activity-all-clear {
+    animation: activity-all-clear-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .activity-all-clear-mark {
+    animation: activity-all-clear-mark 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+
+@keyframes activity-all-clear-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes activity-all-clear-mark {
+  0% { transform: scale(0.6); }
+  60% { transform: scale(1.12); }
+  100% { transform: scale(1); }
 }
 
 /* An offline machine's rows are memory, not observation: label the boundary
@@ -619,14 +761,57 @@ button.activity-pane-freshness {
   letter-spacing: -0.01em;
 }
 
-.activity-sheet-kicker {
+.activity-sheet-when {
+  flex-shrink: 0;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The state, said once. It is the first thing in the sheet because it is the
+   reason the sheet was opened: a row you clicked to find out what the agent is
+   actually doing should not make you read three fields to work it out. */
+.activity-sheet-state {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--tone-color) 24%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--tone-color) 8%, transparent);
+}
+
+.activity-sheet-state-mark {
+  display: inline-flex;
+  height: 26px;
+  width: 26px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--tone-color) 30%, transparent);
+  background: color-mix(in srgb, var(--tone-color) 14%, transparent);
   color: var(--tone-color);
-  font-size: var(--activity-fs-xs);
+}
+
+.activity-sheet-state-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.activity-sheet-state-copy strong {
+  color: var(--color-fg);
+  font-size: var(--activity-fs-md);
   font-weight: 650;
+}
+
+.activity-sheet-state-copy span {
+  color: color-mix(in srgb, var(--tone-color) 70%, var(--color-muted-fg));
+  font-size: var(--activity-fs-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .activity-sheet-note {
@@ -816,12 +1001,19 @@ button.activity-pane-freshness {
 
 /* All-clear is a state worth designing, not a gap to apologise for. */
 .activity-calm-dot {
+  /* Same tone contract as `.activity-all-clear` above — theme-swapped, never a
+     literal, so the calm state stays legible on a pale surface. */
+  --tone-color: #34d399;
   position: relative;
   width: 9px;
   height: 9px;
   margin-bottom: 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, #34d399 78%, transparent);
+  background: color-mix(in srgb, var(--tone-color) 78%, transparent);
+}
+
+[data-theme="light"] .activity-calm-dot {
+  --tone-color: #047857;
 }
 
 .activity-calm-dot::after {
@@ -829,7 +1021,7 @@ button.activity-pane-freshness {
   position: absolute;
   inset: -6px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, #34d399 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone-color) 26%, transparent);
   animation: activity-calm 3.6s ease-in-out infinite;
 }
 

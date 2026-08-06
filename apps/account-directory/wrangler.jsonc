@@ -7,11 +7,31 @@
   "preview_urls": false,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "triggers": { "crons": ["* * * * *"] },
+  // REQUIRED SECRET — DIRECTORY_AUTH_SECRET
+  // Not a var: it is a credential, so it is set out of band and never committed.
+  //   wrangler secret put DIRECTORY_AUTH_SECRET            # this worker
+  //   wrangler secret put DIRECTORY_AUTH_SECRET            # ade-push-relay
+  // Both workers must hold the SAME value. It proves to the relay that a machine
+  // membership change came from this worker rather than from a removed machine
+  // replaying the account token it still holds — the token alone cannot be
+  // trusted to un-revoke a machine. Unset on either side fails closed: machine
+  // removal reports 502 and re-pairing is refused.
+  // Repeat the secret for `env.production` (`wrangler secret put --env production`).
   "vars": {
     "ONLINE_WINDOW_MS": "90000",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
-    "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
+    "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
+    // Push relay origin. Removing a machine forwards the removal here so its
+    // Activity is purged and it cannot publish again; a machine removal fails
+    // loudly (502) when this is unset or unreachable.
+    //
+    // Optional alternative transport: add an `ACTIVITY_RELAY` service binding
+    // (`"services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }]`)
+    // to skip the public edge. PUSH_RELAY_URL is still required — it is what
+    // builds the request URL — and DIRECTORY_AUTH_SECRET is still required,
+    // because a service binding carries no provenance the relay can verify.
+    "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
   },
   "d1_databases": [
     {
@@ -24,9 +44,12 @@
   "env": {
     "production": {
       "name": "ade-account-directory-production",
+      // DIRECTORY_AUTH_SECRET is required here too and is set as a secret:
+      //   wrangler secret put DIRECTORY_AUTH_SECRET --env production
       "vars": {
         "ONLINE_WINDOW_MS": "90000",
-        "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
+        "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
+        "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
       },
       "d1_databases": [
         {

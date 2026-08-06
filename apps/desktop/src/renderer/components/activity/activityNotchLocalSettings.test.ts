@@ -30,27 +30,21 @@ describe("Activity notch local settings", () => {
     expect(readActivityNotchPresentation()).toEqual({
       revealMode: "hover",
       expandedPanelEnabled: true,
-      automaticRevealEnabled: true,
-      tickerEnabled: true,
     });
 
     window.localStorage.setItem("ade:attention:notch-reveal-mode", "telepathy");
     expect(readActivityNotchPresentation().revealMode).toBe("hover");
   });
 
-  it("round-trips every presentation mode independently from full disable", () => {
-    for (const revealMode of ["minimal", "hover", "click"] as const) {
+  it("round-trips both presentation modes independently from full disable", () => {
+    for (const revealMode of ["always", "hover"] as const) {
       writeActivityNotchPresentation({
         revealMode,
         expandedPanelEnabled: false,
-        automaticRevealEnabled: false,
-        tickerEnabled: true,
       });
       expect(readActivityNotchPresentation()).toEqual({
         revealMode,
         expandedPanelEnabled: false,
-        automaticRevealEnabled: false,
-        tickerEnabled: true,
       });
     }
     writeActivityNotchEnabled(false);
@@ -58,9 +52,54 @@ describe("Activity notch local settings", () => {
     expect(activityNotchSettingsFromPreferences(DEFAULT_ATTENTION_PREFERENCES))
       .toMatchObject({
         enabled: false,
-        revealMode: "click",
+        revealMode: "hover",
         expandedPanelEnabled: false,
       });
+  });
+
+  /**
+   * The two retired modes both kept a strip on the menu bar, so an upgrade must
+   * land on `always`. Mapping them to the default instead would hide the notch
+   * on every Mac that had ever chosen "Click only" — a setting silently
+   * becoming the opposite of itself.
+   */
+  it("maps the retired reveal modes forward instead of hiding the notch", () => {
+    for (const legacy of ["minimal", "click"]) {
+      window.localStorage.setItem("ade:attention:notch-reveal-mode", legacy);
+      expect(readActivityNotchPresentation().revealMode).toBe("always");
+    }
+  });
+
+  /**
+   * Automatic reveal and the live ticker are not settings any more — the native
+   * helper reads neither — so a value an older build left behind must not come
+   * back as a presentation field, and nothing here may write one either. The
+   * stored keys are deliberately left where they are rather than cleared: a
+   * downgrade should still find its own choice.
+   */
+  it("neither reads nor writes the retired reveal and ticker keys", () => {
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "false");
+    window.localStorage.setItem("ade:attention:notch-ticker", "false");
+
+    expect(readActivityNotchPresentation()).toEqual({
+      revealMode: "hover",
+      expandedPanelEnabled: true,
+    });
+    expect(resolveActivityNotchPresentation(DEFAULT_ATTENTION_PREFERENCES)).toEqual({
+      revealMode: "hover",
+      expandedPanelEnabled: true,
+    });
+
+    writeActivityNotchPresentation({ revealMode: "always", expandedPanelEnabled: true });
+    expect(window.localStorage.getItem("ade:attention:notch-auto-reveal")).toBe("false");
+    expect(window.localStorage.getItem("ade:attention:notch-ticker")).toBe("false");
+
+    const synced = activityPreferencesWithNotchPresentation(DEFAULT_ATTENTION_PREFERENCES, {
+      revealMode: "always",
+      expandedPanelEnabled: true,
+    });
+    expect(Object.keys(synced.account)).not.toContain("notchAutomaticReveal");
+    expect(Object.keys(synced.account)).not.toContain("notchTicker");
   });
 
   it("persists native context-menu changes and notifies the renderer", () => {
@@ -70,10 +109,8 @@ describe("Activity notch local settings", () => {
     });
     persistActivityNotchSettings({
       enabled: false,
-      revealMode: "minimal",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -82,14 +119,12 @@ describe("Activity notch local settings", () => {
 
     expect(readActivityNotchEnabled()).toBe(false);
     expect(readActivityNotchPresentation()).toEqual({
-      revealMode: "minimal",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
     });
     expect(observed).toMatchObject({
       enabled: false,
-      revealMode: "minimal",
+      revealMode: "always",
       expandedPanelEnabled: false,
     });
     unsubscribe();
@@ -97,41 +132,31 @@ describe("Activity notch local settings", () => {
 
   it("prefers the synced presentation and falls back to this Mac's cache", () => {
     writeActivityNotchPresentation({
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
     });
 
     // Nothing synced yet: the local cache is the whole answer, so an offline or
     // signed-out launch opens the notch the way this Mac last had it.
     expect(resolveActivityNotchPresentation(null)).toEqual({
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: false,
     });
 
     const synced = activityPreferencesWithNotchPresentation(DEFAULT_ATTENTION_PREFERENCES, {
-      revealMode: "minimal",
+      revealMode: "hover",
       expandedPanelEnabled: true,
-      automaticRevealEnabled: true,
-      tickerEnabled: true,
     });
     expect(resolveActivityNotchPresentation(synced)).toEqual({
-      revealMode: "minimal",
+      revealMode: "hover",
       expandedPanelEnabled: true,
-      automaticRevealEnabled: true,
-      tickerEnabled: true,
     });
   });
 
   it("ignores a synced reveal mode this build has never heard of", () => {
     writeActivityNotchPresentation({
-      revealMode: "minimal",
+      revealMode: "always",
       expandedPanelEnabled: true,
-      automaticRevealEnabled: true,
-      tickerEnabled: true,
     });
     const preferences = {
       ...DEFAULT_ATTENTION_PREFERENCES,
@@ -141,6 +166,8 @@ describe("Activity notch local settings", () => {
       },
     };
 
-    expect(resolveActivityNotchPresentation(preferences).revealMode).toBe("minimal");
+    // Unknown from a newer host: the shipped default, not this Mac's cache —
+    // an unrecognized mode is not evidence of anything.
+    expect(resolveActivityNotchPresentation(preferences).revealMode).toBe("hover");
   });
 });

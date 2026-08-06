@@ -273,84 +273,241 @@ export function resetActivityStoreForTests(): void {
   activityStore.setState(createInitialState());
 }
 
+const ACTIVITY_STALE_MESSAGE =
+  "This changed on the machine that owns it, so ADE left it alone. Refresh Activity to see where it got to.";
+
+/**
+ * The other reason a row rolls back, and the reason it needed its own sentence.
+ *
+ * A bulk acknowledgment aborts at the first chunk that throws — expired auth, a
+ * 5xx, a rejected CORS preflight, an owner-fence 409 — so the rows in and after
+ * that chunk were never answered for. They roll back exactly as a stale refusal
+ * does, but nothing changed underneath the user, and telling them it did sends
+ * them to refresh a list that is already correct.
+ */
+const ACTIVITY_UNREACHED_MESSAGE =
+  "ADE couldn’t reach Activity for this one, so nothing changed. Try again in a moment.";
+
 function activityErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "ADE couldn’t update this Activity item.";
+}
+
+/**
+ * Acknowledge one or more items in a SINGLE relay call.
+ *
+ * The bulk shape is the whole point. "Clear all" used to fire one acknowledge
+ * per row: N independent optimistic dismisses, N races against the revision
+ * fence, N rollbacks, and — because every caller swallowed the rejection — no
+ * explanation for why the rows came back. One call has one outcome, so either
+ * the inbox clears or the user is told why it did not.
+ *
+ * Optimism and rollback are both per item, because the host answers per item:
+ * `{ acknowledged, stale, unreached }`. It rejects only when it applied nothing
+ * at all, so a rejection rolls the whole batch back while `stale` and
+ * `unreached` roll back exactly their own rows — clearing nine of ten and
+ * putting the tenth back is the honest result, and pretending otherwise in
+ * either direction is how a list ends up disagreeing with the machine it came
+ * from. The two rollback lists carry the same consequence and different
+ * reasons, so each gets its own per-item message.
+ */
+export type ActivityAcknowledgementResult = {
+  /** Ids the host applied. Their optimistic state stands. */
+  acknowledged: string[];
+  /** Ids the host refused as stale. Rolled back, with a per-item message. */
+  stale: string[];
+  /**
+   * Ids the host never answered for, because the request failed in transport.
+   * Rolled back identically — only the explanation differs, and it has to:
+   * "this changed underneath you" is false for a call that did not complete.
+   * Always an array here, even though the bridge omits it when empty, so the
+   * pane never has to guess whether an older producer left it out.
+   */
+  unreached: string[];
+  /** The transport failure behind `unreached`, for the caller's detail line. */
+  unreachedReason?: string;
+};
+
+/**
+ * Undo the optimistic state for a subset of a batch, and say why.
+ *
+ * Shared by the two ways an acknowledgement can fail, which are genuinely
+ * different: a rejection means the host applied NOTHING (roll the batch back),
+ * while a `stale` list means it applied the rest (roll back only those, and
+ * leave the rows that really did clear cleared).
+ */
+function rollbackAcknowledgements(
+  ids: readonly string[],
+  timestamp: string,
+  kind: "seen" | "dismiss",
+  message: string,
+): void {
+  if (ids.length === 0) return;
+  activityStore.setState((state) => {
+    const pendingAcknowledgements = { ...state.pendingAcknowledgements };
+    const acknowledgementErrors = { ...state.acknowledgementErrors };
+    const itemsById = { ...state.itemsById };
+    let rolledBack = false;
+    for (const itemId of ids) {
+      const currentPending = pendingAcknowledgements[itemId];
+      // A newer acknowledgement of the same row owns the state now; this one
+      // has already lost and must not resurrect the old timestamps.
+      if (!currentPending || currentPending.seenAt !== timestamp) continue;
+      const current = itemsById[itemId];
+      const canRollback = current
+        && current.seenAt === timestamp
+        && (kind !== "dismiss" || current.dismissedAt === timestamp);
+      if (canRollback) {
+        itemsById[itemId] = {
+          ...current,
+          seenAt: currentPending.previous.seenAt,
+          dismissedAt: currentPending.previous.dismissedAt,
+        };
+        rolledBack = true;
+      }
+      delete pendingAcknowledgements[itemId];
+      acknowledgementErrors[itemId] = message;
+    }
+    return {
+      pendingAcknowledgements,
+      acknowledgementErrors,
+      itemsById: rolledBack ? itemsById : state.itemsById,
+    };
+  });
+}
+
+export async function acknowledgeActivityItems(
+  itemIds: readonly string[],
+  kind: "seen" | "dismiss",
+): Promise<ActivityAcknowledgementResult> {
+  const before = activityStore.getState();
+  const targets: AttentionItem[] = [];
+  const seenIds = new Set<string>();
+  for (const itemId of itemIds) {
+    const item = before.itemsById[itemId];
+    // A row already in flight, already gone, or named twice in one batch is
+    // silently skipped rather than double-counted into the request.
+    if (!item || before.pendingAcknowledgements[itemId] || seenIds.has(itemId)) continue;
+    seenIds.add(itemId);
+    targets.push(item);
+  }
+  if (targets.length === 0) return { acknowledged: [], stale: [], unreached: [] };
+
+  const timestamp = new Date().toISOString();
+  const sourceRevisions: Record<string, number> = {};
+  /**
+   * The alert identity each row carried AS RENDERED — the narrow fence that
+   * replaces the revision fence, and nothing wider.
+   *
+   * The race it closes: the client polls at revision N with X `running`, the
+   * user hits Clear all, X flips to `needs_you` and that publish lands FIRST
+   * (which resets seen/dismissed, because the alert identity changed). The ack
+   * then applies to the NEW needs-you entry and marks it seen and dismissed —
+   * so an alert nobody ever saw disappears from the inbox and the badge.
+   * Quoting the fingerprint lets the host refuse exactly that item and nothing
+   * else. It is emphatically NOT the old `source_revision <= ?` fence, which
+   * refused every dismiss on a live agent because a running row republishes
+   * constantly without its alert identity changing at all.
+   *
+   * An item with no `alertFingerprint` (a legacy publisher) quotes nothing, so
+   * the host has nothing to compare and the ack applies as it does today.
+   */
+  const alertFingerprints: Record<string, string> = {};
+  activityStore.setState((state) => {
+    const pendingAcknowledgements = { ...state.pendingAcknowledgements };
+    const acknowledgementErrors = { ...state.acknowledgementErrors };
+    for (const item of targets) {
+      pendingAcknowledgements[item.id] = {
+        previous: item,
+        seenAt: timestamp,
+        ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
+      };
+      delete acknowledgementErrors[item.id];
+      sourceRevisions[item.id] = item.revision;
+      const alertFingerprint = item.alertFingerprint?.trim();
+      if (alertFingerprint) alertFingerprints[item.id] = alertFingerprint;
+    }
+    return { pendingAcknowledgements, acknowledgementErrors };
+  });
+  for (const item of targets) {
+    if (kind === "dismiss") activityStore.getState().dismiss(item.id, timestamp);
+    else activityStore.getState().markSeen(item.id, timestamp);
+  }
+
+  const targetIds = targets.map((item) => item.id);
+  try {
+    const api = typeof window !== "undefined" ? window.ade?.attention : null;
+    // No bridge (tests, the web adapter before it loads) means nothing to be
+    // refused by: the optimistic state is the whole truth.
+    const outcome = api
+      ? await api.acknowledge({
+          itemIds: targetIds,
+          sourceRevisions,
+          alertFingerprints,
+          expectedAccountOwnerId: before.accountOwnerId,
+          seenAt: timestamp,
+          ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
+        })
+      : { acknowledged: targetIds, stale: [] };
+
+    // The host answers per item, and only rejects when it applied nothing at
+    // all. A row it refused must come back; the rows beside it must not.
+    //
+    // A producer that predates `unreached` — or a path that never has anything
+    // to put in it — sends nothing, which reads as the empty list it is.
+    const staleIds = (outcome?.stale ?? []).filter((id) => seenIds.has(id));
+    const unreachedIds = (outcome?.unreached ?? []).filter(
+      (id) => seenIds.has(id) && !staleIds.includes(id),
+    );
+    const rolledBack = new Set([...staleIds, ...unreachedIds]);
+    const acknowledgedIds = targetIds.filter((id) => !rolledBack.has(id));
+    activityStore.setState((state) => {
+      const pendingAcknowledgements = { ...state.pendingAcknowledgements };
+      for (const id of acknowledgedIds) delete pendingAcknowledgements[id];
+      return { pendingAcknowledgements };
+    });
+    rollbackAcknowledgements(staleIds, timestamp, kind, ACTIVITY_STALE_MESSAGE);
+    rollbackAcknowledgements(unreachedIds, timestamp, kind, ACTIVITY_UNREACHED_MESSAGE);
+    return {
+      acknowledged: acknowledgedIds,
+      stale: staleIds,
+      unreached: unreachedIds,
+      ...(unreachedIds.length > 0 && outcome?.unreachedReason?.trim()
+        ? { unreachedReason: outcome.unreachedReason.trim() }
+        : {}),
+    };
+  } catch (error) {
+    rollbackAcknowledgements(targetIds, timestamp, kind, activityErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * The reason a single row can still fail. Staleness is no longer the routine
+ * outcome it was — the relay-side revision fence that rejected every ack on a
+ * live agent is gone — so when this does appear it means something real.
+ */
+export class ActivityAcknowledgementStale extends Error {
+  constructor(readonly itemId: string) {
+    super(ACTIVITY_STALE_MESSAGE);
+    this.name = "ActivityAcknowledgementStale";
+  }
 }
 
 export async function acknowledgeActivityItem(
   itemId: string,
   kind: "seen" | "dismiss",
 ): Promise<void> {
-  const before = activityStore.getState();
-  const item = before.itemsById[itemId];
-  if (!item || before.pendingAcknowledgements[itemId]) return;
-
-  const timestamp = new Date().toISOString();
-  const pending: PendingActivityAcknowledgement = {
-    previous: item,
-    seenAt: timestamp,
-    ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
-  };
-  activityStore.setState((state) => {
-    const acknowledgementErrors = { ...state.acknowledgementErrors };
-    delete acknowledgementErrors[itemId];
-    return {
-      pendingAcknowledgements: {
-        ...state.pendingAcknowledgements,
-        [itemId]: pending,
-      },
-      acknowledgementErrors,
-    };
-  });
-  if (kind === "dismiss") activityStore.getState().dismiss(itemId, timestamp);
-  else activityStore.getState().markSeen(itemId, timestamp);
-
-  try {
-    const api = typeof window !== "undefined" ? window.ade?.attention : null;
-    if (api) {
-      await api.acknowledge({
-        itemIds: [itemId],
-        sourceRevisions: { [itemId]: item.revision },
-        expectedAccountOwnerId: before.accountOwnerId,
-        seenAt: timestamp,
-        ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
-      });
-    }
-    activityStore.setState((state) => {
-      const pendingAcknowledgements = { ...state.pendingAcknowledgements };
-      delete pendingAcknowledgements[itemId];
-      return { pendingAcknowledgements };
-    });
-  } catch (error) {
-    const message = activityErrorMessage(error);
-    activityStore.setState((state) => {
-      const currentPending = state.pendingAcknowledgements[itemId];
-      if (!currentPending || currentPending.seenAt !== timestamp) return state;
-      const current = state.itemsById[itemId];
-      const canRollback = current
-        && current.seenAt === timestamp
-        && (kind !== "dismiss" || current.dismissedAt === timestamp);
-      const pendingAcknowledgements = { ...state.pendingAcknowledgements };
-      delete pendingAcknowledgements[itemId];
-      return {
-        pendingAcknowledgements,
-        itemsById: canRollback
-          ? {
-              ...state.itemsById,
-              [itemId]: {
-                ...current,
-                seenAt: currentPending.previous.seenAt,
-                dismissedAt: currentPending.previous.dismissedAt,
-              },
-            }
-          : state.itemsById,
-        acknowledgementErrors: {
-          ...state.acknowledgementErrors,
-          [itemId]: message,
-        },
-      };
-    });
-    throw error;
+  const outcome = await acknowledgeActivityItems([itemId], kind);
+  // One item, so "some of the batch was refused" and "this failed" are the
+  // same sentence — and every caller of the single-item form is written to
+  // treat a rejection as the failure signal.
+  if (outcome.stale.includes(itemId)) throw new ActivityAcknowledgementStale(itemId);
+  // A one-item batch is one chunk, so a transport failure normally rejects
+  // outright and never reaches here. Handled anyway rather than letting a
+  // rolled-back row report success — and with the transport sentence, not the
+  // stale one.
+  if (outcome.unreached.includes(itemId)) {
+    throw new Error(outcome.unreachedReason?.trim() || ACTIVITY_UNREACHED_MESSAGE);
   }
 }

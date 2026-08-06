@@ -100,6 +100,7 @@ ade lanes list --json   # stable JSON for scripts and agents
     ade connect --timeout 120               # seconds to wait for the machine row (default 60)
     ade login                               # sign in without touching the service
     ade machines list --text                # machines registered to this account
+    ade machines reconnect                  # re-pair this machine after it was removed
     ade logout                              # undo the account half of connect
     ```
 
@@ -107,6 +108,17 @@ ade lanes list --json   # stable JSON for scripts and agents
     the brain must stay running for the machine to remain reachable. Full
     walkthrough, including running the brain on a Linux server:
     [Connect a machine](/getting-started/connect-machine).
+
+    Removing a machine from your account is deliberate and terminal: heartbeats
+    never re-register it, and its Activity, notifications, and Live Activities
+    stop. `ade machines reconnect` is the way back. It takes no selector — it
+    always re-pairs the machine you run it on — and it needs proof of a freshly
+    completed interactive sign-in, so it prompts for one when the account
+    directory asks and finishes the re-pair as soon as that lands. Only once the
+    directory accepts does it lift the push gate, so Activity, alerts, and
+    badges resume without restarting the brain. A normal `ade login` runs the
+    same repair automatically, and ADE desktop offers it as **Reconnect this
+    computer** in Settings.
   </Accordion>
 
   <Accordion title="Brain & pairing" icon="microchip">

@@ -325,10 +325,8 @@ describe("useActivitySync", () => {
     act(() => {
       settingsChanged?.({
         enabled: false,
-        revealMode: "click",
+        revealMode: "always",
         expandedPanelEnabled: false,
-        automaticRevealEnabled: false,
-        tickerEnabled: false,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: true,
@@ -337,7 +335,7 @@ describe("useActivitySync", () => {
     });
 
     expect(window.localStorage.getItem("ade:attention:notch-enabled")).toBe("false");
-    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
+    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("always");
     expect(window.localStorage.getItem("ade:attention:notch-expanded-panel")).toBe("false");
   });
 
@@ -880,9 +878,15 @@ describe("useActivitySync", () => {
     expect(getSnapshot).toHaveBeenCalledTimes(hiddenRefreshBaseline + 1);
   });
 
-  it("uses account automatic-reveal settings for both helper settings and toasts", async () => {
+  /**
+   * Automatic reveal stopped being a setting: flashing for work that needs you
+   * is what the notch is for, and the toggle's only outcome was a surface that
+   * never spoke. A stale `false` — persisted locally or still synced from an
+   * older build — must not keep suppressing it.
+   */
+  it("ignores a retired automatic-reveal preference for both helper settings and toasts", async () => {
     window.localStorage.clear();
-    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "false");
     const accountStatus = signedInStatus("user-account-reveal");
     publishAccountStatus(accountStatus);
     const initial = { ...liveItem(), activityTier: "signal" as const };
@@ -891,10 +895,9 @@ describe("useActivitySync", () => {
       account: {
         ...DEFAULT_ATTENTION_PREFERENCES.account,
         hideDetails: false,
-        notchAutomaticReveal: false,
       },
     };
-    const updateSettings = vi.fn(async () => undefined);
+    const updateSettings = vi.fn(async (_settings: AttentionNotchSettings) => undefined);
     const publishToast = vi.fn(async () => undefined);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -922,12 +925,11 @@ describe("useActivitySync", () => {
     });
 
     render(<Harness />);
-    await waitFor(() => expect(
-      activityStore.getState().preferences?.account.notchAutomaticReveal,
-    ).toBe(false));
-    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ automaticRevealEnabled: false }),
-    ));
+    // Nothing about automatic reveal survives into the helper settings.
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    expect(updateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ automaticRevealEnabled: expect.anything() }),
+    );
     await waitFor(() => expect(activityStore.getState().itemsById[initial.id]).toBeTruthy());
 
     act(() => {
@@ -943,12 +945,13 @@ describe("useActivitySync", () => {
       await Promise.resolve();
     });
 
-    expect(publishToast).not.toHaveBeenCalled();
+    await waitFor(() => expect(publishToast).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: initial.id }),
+    ));
   });
 
   it("clamps toast copy and rolls back cooldown after a failed publish", async () => {
     window.localStorage.clear();
-    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
     const accountStatus = signedInStatus("user-toast-publish");
     publishAccountStatus(accountStatus);
     const items = ["first", "second", "third"].map((suffix, index) => ({
@@ -976,7 +979,6 @@ describe("useActivitySync", () => {
             account: {
               ...DEFAULT_ATTENTION_PREFERENCES.account,
               hideDetails: false,
-              notchAutomaticReveal: true,
             },
           })),
           putPreferences: vi.fn(),
@@ -1042,7 +1044,6 @@ describe("useActivitySync", () => {
 
   it("optimistically rate-limits distinct signal items in one native round trip", async () => {
     window.localStorage.clear();
-    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
     const items = ["first", "second"].map((suffix, index) => ({
       ...liveItem(),
       id: `burst-${suffix}`,
@@ -1124,7 +1125,6 @@ describe("useActivitySync", () => {
 
   it("does not toast a transition before the notch is prepared", async () => {
     window.localStorage.clear();
-    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
     const initial = { ...liveItem(), activityTier: "signal" as const };
     let resolveSettings: () => void = () => {};
     const updateSettings = vi.fn(() => new Promise<void>((resolve) => {
@@ -1251,6 +1251,8 @@ describe("Activity renderer-to-notch bridge", () => {
       itemsTruncated: false,
       counts: {
         needsYou: 0,
+        failed: 0,
+        planning: 0,
         working: 1,
         done: 0,
         total: 1,
@@ -1304,16 +1306,12 @@ describe("Activity renderer-to-notch bridge", () => {
         soundsEnabled: false,
       },
     }, true, {
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: true,
     })).toEqual({
       enabled: true,
-      revealMode: "click",
+      revealMode: "always",
       expandedPanelEnabled: false,
-      automaticRevealEnabled: false,
-      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: false,
@@ -1419,9 +1417,13 @@ describe("Activity renderer-to-notch bridge", () => {
     expect(activityStore.getState().itemsById["working-000"]?.preview).toHaveLength(400);
     expect(activityStore.getState().itemsById["working-000"]?.recentActivity)
       .toHaveLength(2);
-    // Counts describe the whole account, not the 48 rows that travelled.
+    // Counts describe the whole account, not the 48 rows that travelled — and
+    // all FIVE state groups travel, so the strip can floor every wing rather
+    // than inferring a residual for the two it was never sent.
     expect(snapshot.counts).toEqual({
       needsYou: 5,
+      failed: 0,
+      planning: 0,
       working: 60,
       done: 0,
       total: 65,
@@ -1541,7 +1543,6 @@ describe("Activity notch toast decisions", () => {
     lastToastAtByItem: new Map(),
     lastToastAt: 0,
     availabilityState: "ready",
-    automaticRevealEnabled: true,
     hideDetails: false,
     now: 1_000_000,
     ...overrides,
@@ -1597,7 +1598,6 @@ describe("Activity notch toast decisions", () => {
   });
 
   it("stays silent when suppressed", () => {
-    expect(decide({ automaticRevealEnabled: false })).toBeNull();
     expect(decide({ availabilityState: "degraded" })).toBeNull();
     expect(decide({ availabilityState: null })).toBeNull();
     // Ambient rows never interrupt, however much they change.

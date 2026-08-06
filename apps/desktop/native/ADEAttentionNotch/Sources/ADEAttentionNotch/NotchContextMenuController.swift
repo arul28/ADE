@@ -21,6 +21,12 @@ final class NotchContextMenuController: NSObject {
         )
     }
 
+    /// Two modes and the settings that genuinely still apply.
+    ///
+    /// The sprawl this replaced offered three modes that all looked different,
+    /// an "Automatic reveal" toggle whose behaviour one mode silently overrode,
+    /// and a ticker that only existed in one of them. There is one thing to
+    /// choose now — whether the strip rests on the menu bar or on the pointer.
     private func menu() -> NSMenu {
         let menu = NSMenu(title: "ADE Notch")
         menu.autoenablesItems = false
@@ -28,33 +34,20 @@ final class NotchContextMenuController: NSObject {
         menu.addItem(item("Refresh", action: #selector(refresh)))
         menu.addItem(.separator())
 
-        for (mode, title) in [
-            (NotchRevealMode.minimal, "Compact + peek"),
-            (.hover, "Reveal on hover"),
-            (.click, "Click only"),
-        ] {
-            let modeItem = item(title, action: #selector(setRevealMode(_:)))
+        for mode in NotchRevealMode.allCases {
+            let modeItem = item(mode.menuTitle, action: #selector(setRevealMode(_:)))
             modeItem.representedObject = mode.rawValue
             modeItem.state = model.settings.revealMode == mode ? .on : .off
             menu.addItem(modeItem)
         }
 
         menu.addItem(.separator())
-        let expanded = item("Allow expanded panel", action: #selector(toggleExpandedPanel))
-        expanded.state = model.settings.expandedPanelEnabled ? .on : .off
-        menu.addItem(expanded)
-        let automaticReveal = item("Automatic reveal", action: #selector(toggleAutomaticReveal))
-        automaticReveal.state = model.settings.automaticRevealEnabled ? .on : .off
-        // "Click only" already means nothing but a click opens anything, so the
-        // checkmark would claim a behaviour the mode overrides.
-        automaticReveal.isEnabled = model.settings.revealMode != .click
-        menu.addItem(automaticReveal)
-        let ticker = item("Live ticker", action: #selector(toggleTicker))
-        ticker.state = model.settings.tickerEnabled ? .on : .off
-        // The ticker lives in the pinned strip, which only compact mode keeps
-        // on screen at rest.
-        ticker.isEnabled = model.settings.revealMode == .minimal
-        menu.addItem(ticker)
+        let hideDetails = item("Hide details", action: #selector(toggleHideDetails))
+        hideDetails.state = model.settings.hideDetails ? .on : .off
+        menu.addItem(hideDetails)
+        let celebrations = item("Celebrate merges", action: #selector(toggleCelebrations))
+        celebrations.state = model.settings.celebrationsEnabled ? .on : .off
+        menu.addItem(celebrations)
         menu.addItem(.separator())
         menu.addItem(item("Hide ADE Notch…", action: #selector(confirmHide)))
         return menu
@@ -82,16 +75,12 @@ final class NotchContextMenuController: NSObject {
         model.applySettingsMenuAction(.setRevealMode(mode))
     }
 
-    @objc private func toggleExpandedPanel() {
-        model.applySettingsMenuAction(.toggleExpandedPanel)
+    @objc private func toggleHideDetails() {
+        model.applySettingsMenuAction(.toggleHideDetails)
     }
 
-    @objc private func toggleAutomaticReveal() {
-        model.applySettingsMenuAction(.toggleAutomaticReveal)
-    }
-
-    @objc private func toggleTicker() {
-        model.applySettingsMenuAction(.toggleTicker)
+    @objc private func toggleCelebrations() {
+        model.applySettingsMenuAction(.toggleCelebrations)
     }
 
     @objc private func confirmHide() {

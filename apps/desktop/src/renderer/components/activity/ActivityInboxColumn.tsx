@@ -13,14 +13,13 @@ import {
 } from "@phosphor-icons/react";
 
 import { ACTIVITY_EVENT_BY_KIND, type ActivityIconKey } from "../../../shared/activityCatalog";
-import {
-  attentionItemNeedsInbox,
-  sortAttentionItems,
-  type AttentionItem,
-} from "../../../shared/types";
+import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
 import { cn } from "../ui/cn";
+import { ActivitySectionHeader } from "./ActivitySectionHeader";
 import { activityItemPresentation } from "./activityPresentation";
+import { activityNotificationItems } from "./activityPriority";
+import { useActivitySectionCollapse } from "./activitySectionCollapse";
 import { useProgressiveRows } from "./useProgressiveRows";
 
 /** The catalog names an icon per event; this is the renderer's half of that. */
@@ -37,10 +36,22 @@ const CATALOG_ICON: Record<ActivityIconKey, React.ElementType> = {
   closed: Prohibit,
 };
 
+/**
+ * The notification side of Activity: pull requests, checks and review outcomes.
+ *
+ * Agent rows are deliberately absent even when they would have pushed. They are
+ * sessions, they live in the Agents column, and rendering them here as well was
+ * how one raised hand became two rows on screen with the same id.
+ */
 export function activityInboxItems(
   items: readonly AttentionItem[],
 ): AttentionItem[] {
-  return sortAttentionItems(items.filter(attentionItemNeedsInbox));
+  return activityNotificationItems(items);
+}
+
+/** Repo first, project second: a notification's subject is where it landed. */
+function notificationGroupName(item: AttentionItem): string {
+  return item.project.name?.trim() || "Elsewhere";
 }
 
 function InboxRow({
@@ -97,10 +108,15 @@ function InboxRow({
 }
 
 /**
- * The right column: the things that would have pushed a notification — raised
- * hands, failures, review requests, and finished work nobody has looked at yet.
- * Dismiss is per row here because the whole point of the column is that it
- * should empty, and a list you can only clear wholesale never does.
+ * The right column: the things that would have pushed a notification — failing
+ * checks, review requests, and merged work nobody has looked at yet — grouped
+ * by the project they landed in, because a run of six rows from one repo is one
+ * fact, not six.
+ *
+ * Dismiss is per row because the whole point of the column is that it should
+ * empty, and a list you can only clear wholesale never does. Clear all is the
+ * bulk twin of the same gesture, and it is a SINGLE call: N racing calls was
+ * the reason the button looked inert.
  */
 export function ActivityInboxColumn({
   items,
@@ -110,7 +126,7 @@ export function ActivityInboxColumn({
   onDismissItem,
   onClearAll,
 }: {
-  /** Already filtered; inbox eligibility is decided here. */
+  /** Already filtered; notification eligibility is decided here. */
   items: readonly AttentionItem[];
   selectedItemId: string | null;
   filtered: boolean;
@@ -119,6 +135,7 @@ export function ActivityInboxColumn({
   onClearAll: (items: readonly AttentionItem[]) => void;
 }) {
   const inbox = useMemo(() => activityInboxItems(items), [items]);
+  const collapse = useActivitySectionCollapse("pane");
   const {
     visibleRows: shown,
     hiddenCount,
@@ -126,10 +143,23 @@ export function ActivityInboxColumn({
     showMore,
   } = useProgressiveRows(inbox);
 
+  // Grouping preserves the priority order the sort already established: a group
+  // appears where its most urgent row would have.
+  const groups = useMemo(() => {
+    const byName = new Map<string, AttentionItem[]>();
+    for (const item of shown) {
+      const name = notificationGroupName(item);
+      const existing = byName.get(name);
+      if (existing) existing.push(item);
+      else byName.set(name, [item]);
+    }
+    return [...byName.entries()].map(([name, rows]) => ({ name, rows }));
+  }, [shown]);
+
   return (
-    <section className="activity-column" aria-label="Inbox">
+    <section className="activity-column" aria-label="Notifications">
       <header className="activity-column-head">
-        <h3>Inbox</h3>
+        <h3>Notifications</h3>
         <span className="activity-column-head-count">{inbox.length}</span>
         {inbox.length > 0 ? (
           <button
@@ -147,30 +177,50 @@ export function ActivityInboxColumn({
             {filtered ? (
               <>
                 <strong>Nothing here matches</strong>
-                <p>Clear a filter to see the rest of your inbox.</p>
+                <p>Clear a filter to see the rest of your notifications.</p>
               </>
             ) : (
               <>
                 <CheckCircle size={20} weight="duotone" aria-hidden />
                 <strong>Inbox zero</strong>
                 <p>
-                  Failures, review requests, and finished work you haven’t seen
-                  collect here.
+                  Failing checks, review requests, and merged work you haven’t
+                  seen collect here.
                 </p>
               </>
             )}
           </div>
         ) : (
           <>
-            {shown.map((item) => (
-              <InboxRow
-                key={item.id}
-                item={item}
-                selected={selectedItemId === item.id}
-                onOpen={onOpenItem}
-                onDismiss={onDismissItem}
-              />
-            ))}
+            {groups.map((group) => {
+              const sectionId = `notifications:${group.name}`;
+              const collapsed = collapse.isCollapsed(sectionId);
+              const regionId = `activity-notifications-${encodeURIComponent(group.name)}`;
+              return (
+                <React.Fragment key={group.name}>
+                  <ActivitySectionHeader
+                    variant="pane"
+                    sectionId={sectionId}
+                    regionId={regionId}
+                    label={group.name}
+                    count={group.rows.length}
+                    collapsed={collapsed}
+                    onToggle={() => collapse.toggle(sectionId)}
+                  />
+                  <div id={regionId} className="activity-section-rows" hidden={collapsed}>
+                    {collapsed ? null : group.rows.map((item) => (
+                      <InboxRow
+                        key={item.id}
+                        item={item}
+                        selected={selectedItemId === item.id}
+                        onOpen={onOpenItem}
+                        onDismiss={onDismissItem}
+                      />
+                    ))}
+                  </div>
+                </React.Fragment>
+              );
+            })}
             {hiddenCount > 0 ? (
               <button
                 type="button"

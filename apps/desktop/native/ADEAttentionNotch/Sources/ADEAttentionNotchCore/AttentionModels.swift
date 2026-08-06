@@ -187,6 +187,28 @@ public enum AttentionJSONValue: Codable, Equatable, Sendable {
     }
 }
 
+/// The chat-activity flavour of a running turn.
+///
+/// It exists because "planning" is a state the Activity glyph language names
+/// (violet notepad) but `AttentionPhase` cannot carry — the phase vocabulary is
+/// frozen push wire. Decoding is total in both directions a drift can come
+/// from: a value this build has never heard of, and a value that is not even a
+/// string, both land on `.unknown`, which every reader treats as absent and
+/// falls back to the phase. Throwing here would cost the whole item.
+public enum AttentionChatActivityMode: String, Codable, Equatable, Sendable {
+    case planning
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        guard let container = try? decoder.singleValueContainer(),
+              let raw = try? container.decode(String.self) else {
+            self = .unknown
+            return
+        }
+        self = AttentionChatActivityMode(rawValue: raw) ?? .unknown
+    }
+}
+
 public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public let contractVersion: Int
     public let id: String
@@ -201,6 +223,9 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public let laneName: String?
     public let provider: String?
     public let model: String?
+    /// Optional and additive: a publisher that never sets it leaves the item
+    /// reading exactly as it does today.
+    public let chatActivityMode: AttentionChatActivityMode?
     public let title: String
     public let preview: String
     public let privacyPreview: String
@@ -257,6 +282,7 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         laneName: String? = nil,
         provider: String? = nil,
         model: String? = nil,
+        chatActivityMode: AttentionChatActivityMode? = nil,
         title: String,
         preview: String,
         privacyPreview: String,
@@ -286,6 +312,7 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         self.laneName = laneName
         self.provider = provider
         self.model = model
+        self.chatActivityMode = chatActivityMode
         self.title = title
         self.preview = preview
         self.privacyPreview = privacyPreview
@@ -315,6 +342,20 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
 
     public var isCelebration: Bool {
         eventKind == "pr_merged" && phase == "merged" && seenAt == nil
+    }
+
+    /// The one optional field this build trusts from a publisher, checked at the
+    /// boundary rather than believed: only the single literal counts, on a live
+    /// agent turn. Anything else is absent and the phase decides.
+    public var isPlanning: Bool {
+        chatActivityMode == .planning
+    }
+
+    /// Someone has already dealt with this — on this Mac, on the phone, or in
+    /// the web client. A takeover card for an acked row is a card about
+    /// yesterday, so the surface drops it as soon as a snapshot says so.
+    public var isAcknowledged: Bool {
+        seenAt != nil || dismissedAt != nil
     }
 
     public var statusLabel: String {
@@ -632,6 +673,13 @@ public struct AttentionAvailability: Codable, Equatable, Sendable {
 /// can only be honest if the totals travel separately from the rows.
 public struct AttentionCounts: Codable, Equatable, Sendable {
     public let needsYou: Int
+    /// Optional because they are the two newest counts on the wire: a host that
+    /// predates them sends nothing, and `nil` means "this frame carries no
+    /// account-wide figure for that group", which is not the same claim as `0`.
+    /// Readers floor with them only when present, so an older host keeps
+    /// exactly the behaviour it has today instead of being told it has none.
+    public let failed: Int?
+    public let planning: Int?
     public let working: Int
     public let done: Int
     public let total: Int
@@ -640,6 +688,8 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
 
     public init(
         needsYou: Int = 0,
+        failed: Int? = nil,
+        planning: Int? = nil,
         working: Int = 0,
         done: Int = 0,
         total: Int = 0,
@@ -647,6 +697,8 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
         machinesTotal: Int = 0
     ) {
         self.needsYou = needsYou
+        self.failed = failed.map { max(0, $0) }
+        self.planning = planning.map { max(0, $0) }
         self.working = working
         self.done = done
         self.total = total
@@ -655,17 +707,25 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case needsYou, working, done, total, machinesOnline, machinesTotal
+        case needsYou, failed, planning, working, done, total, machinesOnline, machinesTotal
     }
 
     /// Totally decoding, like every other advisory block: a host that learns to
-    /// send a seventh count, or forgets one, must not cost us the snapshot.
+    /// send a ninth count, or forgets one, must not cost us the snapshot.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         func count(_ key: CodingKeys) -> Int {
             max(0, ((try? container.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0)
         }
+        func optionalCount(_ key: CodingKeys) -> Int? {
+            guard let value = (try? container.decodeIfPresent(Int.self, forKey: key)) ?? nil else {
+                return nil
+            }
+            return max(0, value)
+        }
         needsYou = count(.needsYou)
+        failed = optionalCount(.failed)
+        planning = optionalCount(.planning)
         working = count(.working)
         done = count(.done)
         total = count(.total)
@@ -697,9 +757,9 @@ public enum NotchToastTreatment: String, Codable, Equatable, Sendable, CaseItera
         self = NotchToastTreatment(rawValue: raw) ?? .info
     }
 
-    /// Only a merge earns the confetti; everything else uses the alert layout.
+    /// Only a merge earns the confetti; everything else rides the flash card.
     public var presentation: NotchPresentationState {
-        self == .celebration ? .celebration : .attention
+        self == .celebration ? .celebration : .flash
     }
 
     public var defaultTone: NotchStatusTone {
@@ -710,9 +770,16 @@ public enum NotchToastTreatment: String, Codable, Equatable, Sendable, CaseItera
         }
     }
 
-    /// Matches the transient timers the surface already runs.
+    /// How long the takeover owns the surface. A needs-you card is the one
+    /// place the notch is actionable, so it gets long enough to read and act on
+    /// (~10s) before it morphs back into its amber glyph; a merge card outlives
+    /// its ~1s confetti burst and settles; ordinary news is briefer still.
     public var defaultDurationMs: Int {
-        self == .celebration ? 1_650 : 5_000
+        switch self {
+        case .celebration: return 3_000
+        case .alert: return 10_000
+        case .success, .info: return 5_000
+        }
     }
 }
 
@@ -809,9 +876,15 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
 
     /// The counts the host sent, or an honest tally of the rows on hand when it
     /// sent none. Never invents an overflow it cannot see.
+    ///
+    /// Tallied through the same five-way table the strip and the panel file
+    /// rows under, and agent-only for the same reason the host's block is: a
+    /// pull request is not "planning", and its `total` is the session figure.
+    /// A group with no rows stays absent rather than becoming a `0` the strip
+    /// would then floor against.
     public func resolvedCounts() -> AttentionCounts {
         if let counts { return counts }
-        let sections = notchActivitySections(items)
+        let tally = notchStripTally(items)
         var online = Set<String>()
         var machines = Set<String>()
         for item in items where item.dismissedAt == nil {
@@ -819,10 +892,12 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
             if item.machine.online { online.insert(item.machine.machineKey) }
         }
         return AttentionCounts(
-            needsYou: sections.needsYou.count,
-            working: sections.working.count,
-            done: sections.done.count,
-            total: sections.total,
+            needsYou: tally[.needsYou] ?? 0,
+            failed: tally[.failed],
+            planning: tally[.planning],
+            working: tally[.working] ?? 0,
+            done: tally[.done] ?? 0,
+            total: tally.values.reduce(0, +),
             machinesOnline: online.count,
             machinesTotal: machines.count
         )
@@ -876,41 +951,60 @@ public struct AttentionSnapshotCursor: Equatable, Sendable {
     }
 }
 
-/// What is allowed to grow the surface past its compact bar.
+/// When the compact strip is on the menu bar. Nothing else.
 ///
-/// A click opens the surface in every mode, so no mode leaves the notch — or
-/// the menu-bar status item that stands in for it — inert.
+/// The two modes are deliberately indistinguishable once the strip is on
+/// screen: both render the identical compact chrome at the identical rect, and
+/// in both a click — and only a click — opens the full panel. The retired
+/// `minimal`/`click` values described a third "peek" layout that no longer
+/// exists, and hover used to reveal into the *expanded* rect, which is why the
+/// same feature looked like two different products.
 public enum NotchRevealMode: String, Codable, Equatable, Sendable, CaseIterable {
-    /// Alerts and hover stay compact; a click opens only a short peek.
-    case minimal
-    /// The surface is hidden at rest; hover opens a peek and click opens more.
+    /// The strip is pinned to the menu bar.
+    case always
+    /// The strip is dormant until the pointer enters the top-edge hot zone,
+    /// then appears exactly as it does in `always`.
     case hover
-    /// Hover and alerts stay compact; only an explicit click opens more.
-    case click
 
-    /// A mode this build has never heard of degrades to today's behaviour
-    /// rather than costing the helper the whole settings frame.
+    /// Total decoding, and legacy-aware: `minimal` and `click` both kept a
+    /// strip on screen at rest, so both land on `always` rather than silently
+    /// hiding a surface the user had pinned. Anything unrecognised keeps
+    /// today's default instead of costing the helper the settings frame.
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
-        self = NotchRevealMode(rawValue: raw) ?? .hover
+        self = NotchRevealMode(legacyRawValue: raw)
+    }
+
+    public init(legacyRawValue: String) {
+        switch legacyRawValue {
+        case "always", "minimal", "click":
+            self = .always
+        case "hover":
+            self = .hover
+        default:
+            self = .hover
+        }
+    }
+
+    public var menuTitle: String {
+        switch self {
+        case .always: return "Always show"
+        case .hover: return "Show on hover"
+        }
     }
 }
 
 public struct NotchSettings: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var revealMode: NotchRevealMode
-    /// When false the tall expanded panel is never shown, so the surface can
-    /// never grow far enough to sit over menu-bar content.
+    /// When false the tall panel is never drawn, so the surface can never grow
+    /// far enough to sit over menu-bar content. A click still does something:
+    /// it opens Activity in ADE instead of growing the notch.
     public var expandedPanelEnabled: Bool
     public var preferredDisplayId: UInt32?
     public var hideDetails: Bool
     public var celebrationsEnabled: Bool
     public var soundsEnabled: Bool
-    /// Whether an event may briefly open the surface by itself. The reveal mode
-    /// still wins: "click only" means only when I ask, in every case.
-    public var automaticRevealEnabled: Bool
-    /// Whether the pinned strip cycles what each live agent is doing.
-    public var tickerEnabled: Bool
 
     public init(
         enabled: Bool = false,
@@ -919,9 +1013,7 @@ public struct NotchSettings: Codable, Equatable, Sendable {
         preferredDisplayId: UInt32? = nil,
         hideDetails: Bool = true,
         celebrationsEnabled: Bool = true,
-        soundsEnabled: Bool = false,
-        automaticRevealEnabled: Bool = true,
-        tickerEnabled: Bool = true
+        soundsEnabled: Bool = false
     ) {
         self.enabled = enabled
         self.revealMode = revealMode
@@ -930,19 +1022,18 @@ public struct NotchSettings: Codable, Equatable, Sendable {
         self.hideDetails = hideDetails
         self.celebrationsEnabled = celebrationsEnabled
         self.soundsEnabled = soundsEnabled
-        self.automaticRevealEnabled = automaticRevealEnabled
-        self.tickerEnabled = tickerEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, revealMode, expandedPanelEnabled, preferredDisplayId
         case hideDetails, celebrationsEnabled, soundsEnabled
-        case automaticRevealEnabled, tickerEnabled
     }
 
-    /// Decoding is total. A host that predates the presentation keys keeps the
-    /// hover-and-expand behaviour it was built against; anything it does not
-    /// send falls back to the same private, silent defaults as a fresh launch.
+    /// Decoding is total, and forward/backward compatible in both directions: a
+    /// host that predates a key keeps the private, silent defaults of a fresh
+    /// launch, and the retired `automaticRevealEnabled` / `tickerEnabled` keys a
+    /// host may still be sending are simply not read — the behaviours they
+    /// gated no longer exist.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = NotchSettings()
@@ -959,11 +1050,6 @@ public struct NotchSettings: Codable, Equatable, Sendable {
             ?? defaults.celebrationsEnabled
         soundsEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .soundsEnabled)) ?? nil)
             ?? defaults.soundsEnabled
-        automaticRevealEnabled =
-            ((try? container.decodeIfPresent(Bool.self, forKey: .automaticRevealEnabled)) ?? nil)
-            ?? defaults.automaticRevealEnabled
-        tickerEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .tickerEnabled)) ?? nil)
-            ?? defaults.tickerEnabled
     }
 }
 
@@ -972,9 +1058,8 @@ public struct NotchSettings: Codable, Equatable, Sendable {
 /// changes and lets the wire-level behaviour stay covered without AppKit.
 public enum NotchSettingsMenuAction: Equatable, Sendable {
     case setRevealMode(NotchRevealMode)
-    case toggleExpandedPanel
-    case toggleAutomaticReveal
-    case toggleTicker
+    case toggleHideDetails
+    case toggleCelebrations
     case hide
 }
 
@@ -986,12 +1071,10 @@ public func applyingNotchSettingsMenuAction(
     switch action {
     case .setRevealMode(let revealMode):
         next.revealMode = revealMode
-    case .toggleExpandedPanel:
-        next.expandedPanelEnabled.toggle()
-    case .toggleAutomaticReveal:
-        next.automaticRevealEnabled.toggle()
-    case .toggleTicker:
-        next.tickerEnabled.toggle()
+    case .toggleHideDetails:
+        next.hideDetails.toggle()
+    case .toggleCelebrations:
+        next.celebrationsEnabled.toggle()
     case .hide:
         next.enabled = false
     }

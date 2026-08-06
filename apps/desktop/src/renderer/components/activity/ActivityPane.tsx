@@ -21,6 +21,7 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import {
   acknowledgeActivityItem,
+  acknowledgeActivityItems,
   activityStore,
   selectActivityHideDetails,
   useActivityStore,
@@ -36,7 +37,7 @@ import {
 import { ActivityInboxColumn } from "./ActivityInboxColumn";
 import { ActivitySessionsColumn } from "./ActivitySessionsColumn";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
-import { summarizeActivity } from "./activityPriority";
+import { activityFooterLine, summarizeActivity } from "./activityPriority";
 import { refreshActivitySnapshot } from "./useActivitySync";
 import "./Activity.css";
 
@@ -45,8 +46,80 @@ function navigationErrorMessage(error: unknown): string {
   return "ADE couldn’t open the exact machine and project for this item.";
 }
 
-function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+/**
+ * Failure copy for a dismiss. The count matters: "nothing was cleared" is a
+ * different fact from "this row would not clear", and the bulk path is the one
+ * a user is most likely to try twice.
+ */
+function dismissErrorMessage(error: unknown, count: number): string {
+  const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "";
+  const subject = count === 1
+    ? "ADE couldn’t dismiss that item."
+    : `ADE couldn’t clear ${count} items.`;
+  return detail ? `${subject} ${detail}` : `${subject} Refresh Activity, then try again.`;
+}
+
+/** "1 item" / "N items", the noun every partial-outcome sentence shares. */
+function itemsPhrase(count: number): string {
+  return count === 1 ? "1 item" : `${count} items`;
+}
+
+/**
+ * Partial-outcome copy. The host acknowledges per item and refuses only what
+ * actually moved underneath it, so the honest report names how many stayed
+ * rather than implying the whole gesture failed.
+ */
+function staleClearMessage(staleCount: number, total: number): string {
+  const cleared = total - staleCount;
+  const stayed = itemsPhrase(staleCount);
+  return cleared > 0
+    ? `Cleared ${cleared} of ${total}. ${stayed} changed while you were reading — refresh Activity to see where they got to.`
+    : `${stayed} changed while you were reading, so nothing cleared. Refresh Activity, then try again.`;
+}
+
+/**
+ * The OTHER partial outcome, and the reason it is not the one above.
+ *
+ * A bulk clear aborts at the first chunk that fails, so the rows in and after
+ * that chunk were never answered for: the call did not complete. They roll back
+ * exactly like a stale refusal, but "changed while you were reading" is simply
+ * false for them — nothing changed, and refreshing Activity shows the same list
+ * back. What that user needs is the failure and the invitation to retry.
+ */
+function unreachedClearMessage(
+  unreachedCount: number,
+  staleCount: number,
+  total: number,
+  reason?: string,
+): string {
+  const cleared = total - unreachedCount - staleCount;
+  const unreached = itemsPhrase(unreachedCount);
+  const detail = reason?.trim();
+  const head = cleared > 0
+    ? `Cleared ${cleared} of ${total}. ADE couldn’t reach ${unreached}, so nothing changed for them — try again.`
+    : `ADE couldn’t reach ${unreached}, so nothing cleared. Try again in a moment.`;
+  // A batch can hit both at once: an earlier chunk refuses a row, a later one
+  // never lands. Say both rather than pick the tidier half.
+  const alsoStale = staleCount > 0
+    ? ` ${itemsPhrase(staleCount)} changed while you were reading — refresh Activity to see where they got to.`
+    : "";
+  return `${head}${detail ? ` ${detail}` : ""}${alsoStale}`;
+}
+
+/** Nothing to say when every row cleared; otherwise the honest sentence. */
+function clearOutcomeMessage(
+  outcome: { stale: readonly string[]; unreached: readonly string[]; unreachedReason?: string },
+  total: number,
+): string | null {
+  if (outcome.unreached.length > 0) {
+    return unreachedClearMessage(
+      outcome.unreached.length,
+      outcome.stale.length,
+      total,
+      outcome.unreachedReason,
+    );
+  }
+  return outcome.stale.length > 0 ? staleClearMessage(outcome.stale.length, total) : null;
 }
 
 /**
@@ -193,13 +266,37 @@ export function ActivityPane({
   }, [closeSheet, openItem, pendingActionId]);
 
   const dismissItem = useCallback((item: AttentionItem) => {
-    void acknowledgeActivityItem(item.id, "dismiss").catch(() => {});
+    setNavigationError(null);
+    void acknowledgeActivityItem(item.id, "dismiss").catch((error: unknown) => {
+      // A dismiss that silently failed and rolled back is exactly how this
+      // surface earned "the button does nothing" — say what happened.
+      setNavigationError(dismissErrorMessage(error, 1));
+    });
   }, []);
 
+  /**
+   * Clear all, as ONE call. It used to fire an acknowledge per row: every one
+   * of them raced the revision fence, every one that lost rolled its optimistic
+   * dismiss back, and every rejection was swallowed by a bare `.catch(() => {})`
+   * — so the rows reappeared and nothing on screen admitted why.
+   *
+   * The host now answers per item, so there are four outcomes and all four are
+   * said out loud: everything cleared, some rows changed underneath us, some
+   * rows could not be reached at all, or the call itself failed. The middle two
+   * used to share the "changed while you were reading" sentence, which was a
+   * lie for the half of them the request never reached.
+   */
   const clearInbox = useCallback((items: readonly AttentionItem[]) => {
-    for (const item of items) {
-      void acknowledgeActivityItem(item.id, "dismiss").catch(() => {});
-    }
+    if (items.length === 0) return;
+    setNavigationError(null);
+    void acknowledgeActivityItems(items.map((item) => item.id), "dismiss")
+      .then((outcome) => {
+        const message = clearOutcomeMessage(outcome, items.length);
+        if (message) setNavigationError(message);
+      })
+      .catch((error: unknown) => {
+        setNavigationError(dismissErrorMessage(error, items.length));
+      });
   }, []);
 
   if (!open || typeof document === "undefined") return null;
@@ -216,11 +313,7 @@ export function ActivityPane({
         : generatedAt
           ? { tone: "ready" as const, label: `Synced ${relativeWhen(generatedAt)}`, retry: false }
           : null;
-  const machineLine = summary.machinesTotal === 0
-    ? "No machines reporting yet"
-    : summary.machinesOnline === summary.machinesTotal
-      ? `${pluralize(summary.machinesTotal, "machine")} online`
-      : `${summary.machinesOnline} of ${pluralize(summary.machinesTotal, "machine")} online`;
+  const footerLine = activityFooterLine(summary);
   const filtered = !activityFiltersAreEmpty(filters);
 
   return createPortal(
@@ -243,10 +336,7 @@ export function ActivityPane({
       >
         <header className="activity-pane-head">
           <h2>Activity</h2>
-          <span className="activity-pane-machines">
-            {machineLine}
-            {summary.trackedCount > 0 ? ` · ${pluralize(summary.trackedCount, "session")}` : ""}
-          </span>
+          <span className="activity-pane-machines">{footerLine}</span>
           {freshness ? (
             freshness.retry ? (
               <button
@@ -309,6 +399,7 @@ export function ActivityPane({
             filtered={filtered}
             loading={allItems.length === 0 && syncStatus !== "ready" && syncStatus !== "error"}
             onOpenItem={(item) => setSelectedItemId(item.id)}
+            onDismissItem={dismissItem}
           />
           <ActivityInboxColumn
             items={visibleItems}

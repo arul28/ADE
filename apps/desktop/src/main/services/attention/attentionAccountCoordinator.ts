@@ -2,6 +2,9 @@ import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/p
 import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
   DEFAULT_ATTENTION_PREFERENCES,
+  runAcknowledgmentChunks,
+  unreachedOutcomeFields,
+  type AttentionAcknowledgmentOutcome,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
@@ -17,7 +20,19 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
-> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">>;
+> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">> & {
+  /**
+   * Purge every Activity row a removed machine published (relay
+   * `DELETE /attention/account/machines/:machineKey`). Optional so a relay
+   * client built before the route exists still satisfies the contract; the
+   * desktop then reports the purge as unavailable rather than silently
+   * pretending the machine's work is gone.
+   */
+  purgeAccountMachineActivity?: (
+    expectedAccountUserId: string,
+    machineKey: string,
+  ) => Promise<void>;
+};
 
 type AttentionAccountCoordinatorOptions = {
   getLogger: () => Pick<Logger, "warn">;
@@ -34,6 +49,13 @@ type AttentionSnapshotRequest = {
 type AttentionAcknowledgmentRequest = {
   itemIds?: unknown;
   sourceRevisions?: unknown;
+  /**
+   * `itemId -> the alertFingerprint the caller had on screen`. The narrow
+   * fence that replaces the retired `source_revision <= ?` predicate: an ack
+   * may only land on the alert the user actually saw, so an in-flight
+   * "Clear all" cannot swallow a `needs_you` that was published after the poll.
+   */
+  alertFingerprints?: unknown;
   expectedAccountOwnerId?: unknown;
   seenAt?: unknown;
   dismissedAt?: unknown;
@@ -46,6 +68,14 @@ type AttentionPreferenceRequest = {
 type AttentionPreferenceUpdateRequest = AttentionPreferenceRequest & {
   preferences?: unknown;
 };
+
+/**
+ * Per-item result of one bulk acknowledgment. Defined on the wire contract in
+ * `shared/types/attention` so the preload bridge, the browser adapter and this
+ * coordinator cannot drift; re-exported here because this is where the shape is
+ * produced.
+ */
+export type { AttentionAcknowledgmentOutcome };
 
 export class ActivityAcknowledgmentStaleError extends Error {
   readonly code = "activity_acknowledgment_stale" as const;
@@ -60,6 +90,50 @@ export class ActivityAcknowledgmentStaleError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Cap on the remembered-revision cache; an account snapshot tops out well below. */
+const MAX_REMEMBERED_ITEM_REVISIONS = 4_096;
+
+/** Matches the notch snapshot parser's bound on the same field. */
+const MAX_ALERT_FINGERPRINT_LENGTH = 1_024;
+
+/** The revisions for one chunk. Sent whole, a map would name ids outside it. */
+function pickSourceRevisions(
+  revisions: Record<string, number>,
+  chunk: string[],
+): Record<string, number> {
+  const picked: Record<string, number> = {};
+  for (const itemId of chunk) {
+    const revision = revisions[itemId];
+    if (revision !== undefined) picked[itemId] = revision;
+  }
+  return picked;
+}
+
+/**
+ * The alert fences to quote for a batch.
+ *
+ * Caller-supplied only, with NO fallback to any cache this process happens to
+ * hold: a fingerprint from another surface's poll is not what the user was
+ * looking at, and quoting it is exactly how the retired revision fence
+ * manufactured staleness. An item the caller did not fence is simply
+ * acknowledged unfenced, so a bulk "Clear all" still clears in one call.
+ */
+function resolveAlertFingerprints(
+  itemIds: string[],
+  supplied: unknown,
+): Record<string, string> {
+  const requested = isRecord(supplied) ? supplied : {};
+  const fingerprints: Record<string, string> = {};
+  for (const itemId of itemIds) {
+    const value = requested[itemId];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > MAX_ALERT_FINGERPRINT_LENGTH) continue;
+    fingerprints[itemId] = trimmed;
+  }
+  return fingerprints;
 }
 
 export class AttentionAccountCoordinator {
@@ -198,24 +272,39 @@ export class AttentionAccountCoordinator {
     );
   }
 
-  async acknowledge(input: unknown): Promise<void> {
+  async acknowledge(input: unknown): Promise<AttentionAcknowledgmentOutcome> {
     const request = isRecord(input) ? input as AttentionAcknowledgmentRequest : {};
     const itemIds = Array.isArray(request.itemIds)
       ? request.itemIds
         .filter((value): value is string =>
           typeof value === "string" && value.trim().length > 0)
         .map((value) => value.trim())
-        .slice(0, 64)
       : [];
     if (itemIds.length === 0) {
       throw new Error("At least one Activity item id is required.");
     }
-    const acknowledgment = {
-      itemIds,
+    const timestamps = {
       ...(typeof request.seenAt === "string" ? { seenAt: request.seenAt } : {}),
       ...(request.dismissedAt === null || typeof request.dismissedAt === "string"
         ? { dismissedAt: request.dismissedAt }
         : {}),
+    };
+    /**
+     * One request per chunk, with every per-item map rebuilt for that chunk.
+     *
+     * The maps MUST be rebuilt rather than sliced alongside: the relay rejects
+     * an acknowledgment whose fence names an id outside the batch, so a whole
+     * -batch map sent with a partial id list is a 400 for the entire call.
+     */
+    const chunkRequest = (chunk: string[]) => {
+      const alertFingerprints = resolveAlertFingerprints(chunk, request.alertFingerprints);
+      return {
+        itemIds: chunk,
+        // Omitted entirely when nothing was quoted, so an older host or relay
+        // never has to reason about an empty fence object.
+        ...(Object.keys(alertFingerprints).length > 0 ? { alertFingerprints } : {}),
+        ...timestamps,
+      };
     };
     const currentAccountOwnerId = this.currentAccountOwnerId();
     if (this.lastSnapshotAccountOwnerId !== currentAccountOwnerId) {
@@ -224,19 +313,7 @@ export class AttentionAccountCoordinator {
       );
     }
     if (this.lastSnapshotScope === "machine") {
-      const sourceRevisions = isRecord(request.sourceRevisions)
-        ? Object.fromEntries(
-            Object.entries(request.sourceRevisions)
-              .filter((entry): entry is [string, number] => Number.isFinite(entry[1])),
-          )
-        : {};
-      const staleItemIds = itemIds.filter((itemId) =>
-        sourceRevisions[itemId] !== this.lastSnapshotItemRevisions.get(itemId));
-      if (staleItemIds.length > 0) {
-        throw new Error(
-          "This machine can only acknowledge the exact item revision that was loaded. Refresh and try again.",
-        );
-      }
+      const sourceRevisions = this.resolveSourceRevisions(itemIds, request.sourceRevisions);
       const requestedAccountOwnerId =
         request.expectedAccountOwnerId === null
         || typeof request.expectedAccountOwnerId === "string"
@@ -250,19 +327,37 @@ export class AttentionAccountCoordinator {
           "The machine Activity account scope changed after this item loaded. Refresh and try again.",
         );
       }
-      if (!this.options.localRuntimeConnectionPool) {
+      const pool = this.options.localRuntimeConnectionPool;
+      if (!pool) {
         throw new Error("Machine Activity is unavailable until this computer's ADE brain is ready.");
       }
-      await this.options.localRuntimeConnectionPool.callAttention<void>(
-        "acknowledge",
-        {
-          ...acknowledgment,
-          scope: "machine",
-          sourceRevisions,
-          expectedAccountOwnerId: requestedAccountOwnerId,
-        },
-      );
-      return;
+      // The host caps a batch at the same 64, so chunk here too rather than
+      // report success for ids that were never sent. It answers per CHUNK, not
+      // per item — it applies the whole payload or throws — so no chunk ever
+      // yields stale ids, and an id that did not land was simply never answered
+      // for. It rolls back either way, but nothing about it changed underneath
+      // the user.
+      const machine = await runAcknowledgmentChunks(itemIds, async (chunk) => {
+        await pool.callAttention<void>(
+          "acknowledge",
+          {
+            ...chunkRequest(chunk),
+            scope: "machine",
+            sourceRevisions: pickSourceRevisions(sourceRevisions, chunk),
+            expectedAccountOwnerId: requestedAccountOwnerId,
+          },
+        );
+        return [];
+      });
+      // Nothing landed: surface the real reason, exactly as an unchunked batch
+      // always has. Otherwise report the truth per item — the chunks that
+      // landed must not be rolled back by the caller.
+      if (machine.acknowledged.length === 0 && machine.failure) throw machine.failure;
+      return {
+        acknowledged: machine.acknowledged,
+        stale: machine.stale,
+        ...unreachedOutcomeFields(machine.unreached, machine.failure),
+      };
     }
     if (this.lastSnapshotScope !== "account") {
       throw new Error("Refresh Activity before acknowledging this item.");
@@ -281,28 +376,41 @@ export class AttentionAccountCoordinator {
           "The account Activity scope changed after this item loaded. Refresh and try again.",
         );
       }
-      const sourceRevisions = Object.fromEntries(
-        itemIds.flatMap((itemId) => {
-          const revision = this.lastSnapshotItemRevisions.get(itemId);
-          return revision === undefined ? [] : [[itemId, revision]];
-        }),
-      );
-      const staleItemIds = itemIds.filter((itemId) => sourceRevisions[itemId] === undefined);
-      if (staleItemIds.length > 0) {
-        throw new ActivityAcknowledgmentStaleError(staleItemIds);
-      }
-      const result = await this.options.accountAttentionClient.acknowledgeAttention({
-        ...acknowledgment,
-        sourceRevisions,
-        expectedAccountOwnerId: requestedAccountOwnerId,
+      const sourceRevisions = this.resolveSourceRevisions(itemIds, request.sourceRevisions);
+      // One relay call for the whole batch, split ONLY at the relay's hard
+      // 64-id ceiling. Splitting per item (or pre-rejecting the items this
+      // process has not personally seen) is what made "Clear all" and every
+      // detail-sheet ack fail: the revision the coordinator quoted came from
+      // another surface's poll, not from what the user was looking at. A batch
+      // that fits stays exactly one call; one that does not used to be
+      // truncated, which reported success for ids that never left this process.
+      //
+      // Mid-batch failure and per-item aggregation policy live in
+      // `runAcknowledgmentChunks`, shared with the browser adapter so the two
+      // shells cannot drift on them.
+      const client = this.options.accountAttentionClient;
+      const relay = await runAcknowledgmentChunks(itemIds, async (chunk) => {
+        const result = await client.acknowledgeAttention({
+          ...chunkRequest(chunk),
+          sourceRevisions: pickSourceRevisions(sourceRevisions, chunk),
+          expectedAccountOwnerId: requestedAccountOwnerId,
+        });
+        if (!result) {
+          throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
+        }
+        return result.stale;
       });
-      if (!result) {
-        throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
+      // Only a batch where NOTHING landed is a failure worth interrupting for;
+      // a partial result is reported per item so the caller keeps its wins.
+      if (relay.acknowledged.length === 0) {
+        if (relay.failure) throw relay.failure;
+        if (relay.stale.length > 0) throw new ActivityAcknowledgmentStaleError(relay.stale);
       }
-      if (result.stale.length > 0) {
-        throw new ActivityAcknowledgmentStaleError(result.stale);
-      }
-      return;
+      return {
+        acknowledged: relay.acknowledged,
+        stale: relay.stale,
+        ...unreachedOutcomeFields(relay.unreached, relay.failure),
+      };
     }
     throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
   }
@@ -393,8 +501,63 @@ export class AttentionAccountCoordinator {
     );
   }
 
+  /**
+   * Drop a removed machine's Activity from the account feed.
+   *
+   * Removing a machine deletes one account-directory row and nothing else, so
+   * its items outlived the machine (idle rows are written with no expiry). The
+   * relay owns the purge; this is the desktop's call into it, and it reports
+   * failure instead of swallowing it — a machine the user believes is gone must
+   * not keep showing work.
+   */
+  async purgeMachineActivity(machineKey: unknown): Promise<void> {
+    const normalizedMachineKey = typeof machineKey === "string" ? machineKey.trim() : "";
+    if (!normalizedMachineKey) {
+      throw new Error("A machine is required to clear its Activity.");
+    }
+    const accountOwnerId = this.currentAccountOwnerId();
+    if (!accountOwnerId) return;
+    const purge = this.options.accountAttentionClient?.purgeAccountMachineActivity;
+    if (!purge) {
+      this.options.getLogger().warn("attention.machine_purge_unsupported", {
+        machineKey: normalizedMachineKey,
+        recovery: "update_relay_client",
+      });
+      return;
+    }
+    await purge(accountOwnerId, normalizedMachineKey);
+  }
+
   private currentAccountOwnerId(): string | null {
     return this.options.getCurrentAccountOwnerId()?.trim() || null;
+  }
+
+  /**
+   * The revisions to quote for a batch.
+   *
+   * The renderer's numbers are authoritative: they are the revisions the user
+   * actually saw. The coordinator's own map is a per-process cache written by
+   * whichever surface polled last — a notch refresh, another window, the web
+   * shell — so treating it as the source of truth quoted a revision nobody had
+   * been shown and manufactured staleness for every live item. It is kept only
+   * to fill in items the caller did not send.
+   */
+  private resolveSourceRevisions(
+    itemIds: string[],
+    supplied: unknown,
+  ): Record<string, number> {
+    const requested = isRecord(supplied) ? supplied : {};
+    const revisions: Record<string, number> = {};
+    for (const itemId of itemIds) {
+      const value = Number(requested[itemId]);
+      if (Number.isFinite(value)) {
+        revisions[itemId] = value;
+        continue;
+      }
+      const remembered = this.lastSnapshotItemRevisions.get(itemId);
+      if (remembered !== undefined) revisions[itemId] = remembered;
+    }
+    return revisions;
   }
 
   private rememberSnapshot(
@@ -403,9 +566,18 @@ export class AttentionAccountCoordinator {
   ): void {
     this.lastSnapshotScope = snapshot.scope ?? null;
     this.lastSnapshotAccountOwnerId = accountOwnerId;
-    this.lastSnapshotItemRevisions.clear();
+    // Merge rather than replace. Snapshots are delta-capable and arrive from
+    // several surfaces, so clearing the map on every poll dropped revisions a
+    // still-open detail sheet was about to acknowledge.
     for (const item of snapshot.items) {
+      this.lastSnapshotItemRevisions.delete(item.id);
       this.lastSnapshotItemRevisions.set(item.id, item.revision);
+    }
+    // Bounded, insertion-ordered: the oldest untouched ids fall off first.
+    while (this.lastSnapshotItemRevisions.size > MAX_REMEMBERED_ITEM_REVISIONS) {
+      const oldest = this.lastSnapshotItemRevisions.keys().next();
+      if (oldest.done) break;
+      this.lastSnapshotItemRevisions.delete(oldest.value);
     }
   }
 

@@ -51,6 +51,12 @@ public enum ADESharedContainer {
     /// calls `WidgetCenter.shared.reloadAllTimelines()` on change.
     public static let workspaceSnapshotKey = "ade.workspaceSnapshot"
     public static let attentionSnapshotKey = "ade.attentionSnapshot.v1"
+    /// Unix seconds of the last *successful* account-snapshot write on this
+    /// device. Distinct from the snapshot's own `generatedAt`, which is a relay
+    /// clock: this one answers "when did this phone last actually hear
+    /// anything", which is the question a widget rendering a cache has to be
+    /// able to answer out loud.
+    public static let attentionSnapshotFetchedAtKey = "ade.attentionSnapshot.fetchedAt.v1"
     public static let attentionPendingAcksKey = "ade.attentionPendingAcks.v1"
     public static let pushPreferencesKey = "ade.push.prefs"
     public static let pendingAccountDeviceRevocationKey =
@@ -109,19 +115,39 @@ public enum ADESharedContainer {
         try? attentionJSONDecoder().decode(AccountAttentionSnapshot.self, from: data)
     }
 
+    /// Encode-then-store: the JSON is built before either key is touched, so a
+    /// failed encode leaves the previous snapshot and its freshness marker
+    /// intact rather than half-updating the pair. `UserDefaults` writes each
+    /// key atomically, and a widget that reads the snapshot microseconds before
+    /// the marker lands simply reports itself a moment staler than it is —
+    /// which is the safe direction to be wrong in.
     @discardableResult
-    public static func writeAttentionSnapshot(_ snapshot: AccountAttentionSnapshot) -> Bool {
+    public static func writeAttentionSnapshot(
+        _ snapshot: AccountAttentionSnapshot,
+        fetchedAt: Date = Date()
+    ) -> Bool {
         guard snapshot.contractVersion == ADEAttentionContractVersion else { return false }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(snapshot) else { return false }
         defaults.set(data, forKey: attentionSnapshotKey)
+        defaults.set(fetchedAt.timeIntervalSince1970, forKey: attentionSnapshotFetchedAtKey)
         defaults.synchronize()
         return true
     }
 
+    /// When this device last wrote a snapshot, or `nil` if it never has (or
+    /// wrote one before the marker existed).
+    public static var attentionSnapshotFetchedAt: Date? {
+        guard defaults.object(forKey: attentionSnapshotFetchedAtKey) != nil else { return nil }
+        let seconds = defaults.double(forKey: attentionSnapshotFetchedAtKey)
+        guard seconds > 0, seconds.isFinite, seconds < 3_200_000_000 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
     public static func clearAttentionSnapshot() {
         defaults.removeObject(forKey: attentionSnapshotKey)
+        defaults.removeObject(forKey: attentionSnapshotFetchedAtKey)
         defaults.synchronize()
     }
 

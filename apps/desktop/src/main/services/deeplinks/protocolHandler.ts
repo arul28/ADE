@@ -6,7 +6,6 @@ import {
   deeplinkToNavigationTarget,
   isAdeDeeplinkHttpsHost,
   parseDeeplink,
-  type DeeplinkTarget,
 } from "../../../shared/deeplinks";
 import { IPC } from "../../../shared/ipc";
 import type {

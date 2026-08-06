@@ -5,14 +5,17 @@ import type {
 } from "../../../../desktop/src/shared/types/attention";
 import type { AdeCodeConnection } from "../types";
 import {
+  ACTIVITY_PANE_GROUP_BY_STATE_GROUP,
   acknowledgeActivityItem,
   activityItemContext,
   activityItemDeepLink,
   activityItemElapsed,
   activityPaneEntries,
   buildActivityPaneModel,
+  groupForItem,
   loadActivitySnapshot,
 } from "../activityPane";
+import stateGroupCases from "../../../../desktop/src/shared/attention/activityStateGroup.cases.json";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -100,6 +103,43 @@ function asRequest(
     await implementation(method, params) as T;
 }
 
+/**
+ * The state-group rule is implemented on five surfaces that cannot share code
+ * (renderer, native notch, iOS, the hermetic push-relay Worker, and this pane).
+ * `activityStateGroup.cases.json` is the pin that turns a documented mirror
+ * into an enforced one — every implementation runs the same cases through its
+ * own mapper. The pane keeps its own headings, so it conforms via the declared
+ * `ACTIVITY_PANE_GROUP_BY_STATE_GROUP` table rather than by producing the
+ * canonical names; drift in WHICH band a phase belongs to still fails here.
+ */
+describe("Activity pane state-group conformance", () => {
+  it("has cases to check", () => {
+    expect(stateGroupCases.cases.length).toBeGreaterThan(0);
+  });
+
+  for (const testCase of stateGroupCases.cases) {
+    it(`files "${testCase.name}" with the canonical ${testCase.expected} band`, () => {
+      const subject = item({
+        phase: testCase.phase as AttentionItem["phase"],
+        activityTier: testCase.tier as AttentionItem["activityTier"],
+        ...(testCase.chatActivityMode
+          ? { chatActivityMode: testCase.chatActivityMode as "planning" }
+          : {}),
+        // Unseen, so a `done`-band row lands in DONE, UNREVIEWED rather than
+        // the tail — the split this pane adds on top of the canonical band.
+        seenAt: null,
+      });
+      const expected = ACTIVITY_PANE_GROUP_BY_STATE_GROUP[
+        testCase.expected as keyof typeof ACTIVITY_PANE_GROUP_BY_STATE_GROUP
+      ];
+      const actual = groupForItem(subject);
+      // The canonical `done` band splits: idle-tier history is the ambient tail.
+      const resolved = expected === "done" && testCase.tier === "idle" ? "recent" : expected;
+      expect(actual).toBe(resolved);
+    });
+  }
+});
+
 describe("account-wide Activity pane", () => {
   it("groups waiting, failure, unreviewed, and live work without counting live as waiting", () => {
     const model = buildActivityPaneModel(snapshot([
@@ -119,6 +159,57 @@ describe("account-wide Activity pane", () => {
     expect(model.waitingCount).toBe(3);
     expect(model.liveCount).toBe(1);
     expect(model.items.map((entry) => entry.id)).not.toContain("dismissed");
+  });
+
+  // Activity is an AGENT feed on every surface. A lane with an open PR used to
+  // render twice — once as the agent working it, once as the PR — and a PR in
+  // `checks_failing` borrowed the agent FAILING heading. Non-agent rows keep
+  // flowing, but as the notification tail `activityFeedOrder` defines.
+  it("keeps pull requests out of the agent bands and files them as notifications", () => {
+    const model = buildActivityPaneModel(snapshot([
+      item({ id: "agent-failed", phase: "failed", eventKind: "agent_failed" }),
+      item({
+        id: "pr-checks",
+        kind: "pull_request",
+        eventKind: "pr_checks_failing",
+        phase: "checks_failing",
+      }),
+      item({
+        id: "pr-open",
+        kind: "pull_request",
+        eventKind: "pr_opened",
+        phase: "open",
+        activityTier: "ambient",
+      }),
+    ]));
+
+    expect(model.groups.map((group) => group.label))
+      .toEqual(["FAILING OR BLOCKED", "NOTIFICATIONS"]);
+    expect(model.groups.find((group) => group.id === "failing")?.items
+      .map((entry) => entry.id)).toEqual(["agent-failed"]);
+    // An open PR nobody is waiting on is not a notification either.
+    expect(model.groups.find((group) => group.id === "notifications")?.items
+      .map((entry) => entry.id)).toEqual(["pr-checks"]);
+    // Agent bands are what the pane counts as waiting; notifications are not.
+    expect(model.waitingCount).toBe(1);
+  });
+
+  it("drops expired rows the way every other Activity surface does", () => {
+    const now = Date.parse("2026-07-29T02:00:00.000Z");
+    const model = buildActivityPaneModel(
+      snapshot([
+        item({ id: "live", phase: "needs_you", eventKind: "agent_needs_you" }),
+        item({
+          id: "expired",
+          phase: "needs_you",
+          eventKind: "agent_needs_you",
+          expiresAt: "2026-07-29T01:00:00.000Z",
+        }),
+      ]),
+      now,
+    );
+
+    expect(model.items.map((entry) => entry.id)).toEqual(["live"]);
   });
 
   it("files idle-tier roster history as recent instead of counting it as waiting", () => {
