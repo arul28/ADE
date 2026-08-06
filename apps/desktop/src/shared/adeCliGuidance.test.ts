@@ -76,14 +76,17 @@ describe("ADE bootstrap guidance", () => {
     for (const invariant of [
       "ade chat note",
       "ade chat ask",
-      "6 words or fewer",
-      `${MAX_STATUS_NOTE_CHARACTERS} characters`,
-      `${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`,
-      "next accepted user message clears the prior hand-raise",
       "You cannot settle or unsettle a session",
     ]) {
       expect(bootstrap.toLowerCase()).toContain(invariant.toLowerCase());
       expect(skill.toLowerCase()).toContain(invariant.toLowerCase());
     }
+    expect(bootstrap).toContain("next accepted user message clears the prior hand-raise");
+    expect(skill).toContain("next accepted user message clears the hand-raise");
+    // The skill deliberately points at the code-owned bounds instead of
+    // duplicating values that can drift from the runtime contract.
+    expect(skill).toContain("sessionStatusNote.ts");
+    expect(bootstrap).toContain(`${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`);
+    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
   });
 });

@@ -255,6 +255,21 @@ The project surfaces use `buildCodingAgentSystemPrompt` with different identity/
   repository/project is attached and that explicit filesystem/shell work must
   remain inside the supplied scratch cwd.
 
+### Orchestration boundary and provider capabilities
+
+The orchestration protocol is injected into the provider system/developer
+prompt only for sessions carrying an orchestration role. Ordinary chats do
+not receive or follow that protocol, and `ade-orchestrator` is not a bundled
+skill. Orchestrator leads may inspect their lane but their provider-native
+mutating tools are denied at each provider's runtime boundary; workers retain
+the tools needed to edit and validate.
+
+Provider capability isolation is role-scoped. In particular, ordinary
+OpenCode chats and workers retain the user's OpenCode configuration, project
+configuration, and MCP servers. Only an OpenCode orchestration lead receives
+ADE's isolated configuration and ADE-owned MCP lease. Other providers apply
+their equivalent lead gate without changing ordinary-chat configuration.
+
 ## Smart memory and reconstruction
 
 The CTO's durable memory lives in files under `.ade/cto/` (`MEMORY.md`, `thread-state.md`, `daily/<date>.md`) owned by `ctoMemoryService`. A deterministic flush writes the rolling summary before compaction and before model switches; a best-effort LLM upgrade refines it. `refreshReconstructionContext()` re-injects identity plus memory after compaction and switches. Full details in [Identity and Personas](identity-and-personas.md#smart-memory-system).
