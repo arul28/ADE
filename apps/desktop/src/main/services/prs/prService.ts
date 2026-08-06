@@ -1559,13 +1559,14 @@ export function createPrService({
   }): void => {
     const sessionId = String(args.sessionId ?? "").trim();
     if (!sessionId) return;
-    const pr = db.get<{ id: string; lane_id: string }>(
-      "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
-      [args.prId, projectId],
-    );
-    if (!pr || pr.lane_id !== args.laneId) return;
 
     try {
+      const pr = db.get<{ id: string; lane_id: string }>(
+        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr || pr.lane_id !== args.laneId) return;
+
       // Chat surfaces use the terminal-session id. The Claude pointer fallback
       // keeps imported/older chats addressable when only their provider session
       // id was persisted.

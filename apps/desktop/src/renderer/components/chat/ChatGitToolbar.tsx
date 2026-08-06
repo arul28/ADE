@@ -135,7 +135,18 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const runtime = useLaneGitActionRuntimeState(laneId);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
-  const lanes = useAppStore((s) => s.lanes);
+  // Keep PR refresh identity stable across unrelated lane-list updates. The
+  // array is replaced by status refreshes, which otherwise re-subscribes the
+  // PR event pump even when this lane's identity is unchanged.
+  const laneType = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.laneType ?? "worktree");
+  const laneBranchRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.branchRef ?? "");
+  const laneBaseRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.baseRef ?? "");
+  const laneForPr = useMemo(() => ({
+    id: laneId,
+    laneType,
+    branchRef: laneBranchRef,
+    baseRef: laneBaseRef,
+  }), [laneBaseRef, laneBranchRef, laneId, laneType]);
 
   const [dirtyCount, setDirtyCount] = useState(0);
   const [linkedPrs, setLinkedPrs] = useState<PrSummary[]>([]);
@@ -195,10 +206,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
         lanePrs = legacy ? [legacy] : [];
       }
-      const lane = lanes.find((candidate) => candidate.id === laneId) ?? null;
-      const pr = lane
-        ? selectPrimaryLanePr(lane, lanePrs)
-        : lanePrs[0] ?? null;
+      const pr = selectPrimaryLanePr(laneForPr, lanePrs) ?? lanePrs[0] ?? null;
       if (!requestIsCurrent()) return null;
       setLinkedPrs(lanePrs);
       setLinkedPr(pr);
@@ -231,7 +239,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // it — but a callback that reads machine A must not be reused as if it reads
     // machine B, and its identity is what re-runs the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, lanes, projectRoot, runtimePinKey, sessionId]);
+  }, [laneForPr, laneId, projectRoot, runtimePinKey, sessionId]);
 
   useEffect(() => {
     setDirtyCount(0);

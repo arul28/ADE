@@ -131,6 +131,26 @@ describe("buildLanePrsByLaneId", () => {
     }));
   });
 
+  it("joins stack membership by repository and PR number", () => {
+    const result = buildLanePrsByLaneId({
+      lanes: [lane()],
+      prs: [mappedPr()],
+      githubPrs: [
+        githubPr({
+          id: "other-repo-pr-91",
+          repoOwner: "other-owner",
+          repoName: "other-repo",
+          stack: { id: "wrong-stack", number: 99, size: 2, position: 1, baseBranch: "main" },
+        }),
+        githubPr({
+          stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main" },
+        }),
+      ],
+    });
+
+    expect(result.get("lane-1")?.[0]?.stack).toEqual(expect.objectContaining({ number: 18 }));
+  });
+
   it("keeps a new GitHub-only PR visible alongside retained lane history", () => {
     const result = buildLanePrsByLaneId({
       lanes: [lane()],

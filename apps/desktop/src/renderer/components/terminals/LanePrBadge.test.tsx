@@ -5,6 +5,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../../shared/types";
 import { LanePrBadge } from "./LanePrBadge";
+import { LanePrBadgePopover } from "../lanes/LanePrBadgePopover";
+import type { LaneTabPrTag } from "../lanes/lanePageModel";
 
 function pr(overrides: Partial<PrSummary> = {}): PrSummary {
   return {
@@ -27,6 +29,21 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
     lastSyncedAt: null,
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function tag(overrides: Partial<LaneTabPrTag> = {}): LaneTabPrTag {
+  return {
+    source: "ade",
+    id: "pr-1",
+    linkedPrId: "pr-1",
+    githubPrNumber: 101,
+    githubUrl: "https://github.com/ade/desktop/pull/101",
+    title: "Current work",
+    state: "open",
+    checksStatus: "passing",
+    reviewStatus: "approved",
     ...overrides,
   };
 }
@@ -64,5 +81,30 @@ describe("LanePrBadge", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open 2 pull requests for this lane" }));
     expect(onOpenList).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces each multi-PR row's CI and review status", () => {
+    render(
+      <LanePrBadge
+        pr={pr()}
+        prs={[pr(), pr({ id: "pr-100", githubPrNumber: 100, checksStatus: "failing", reviewStatus: "changes_requested" })]}
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "CI failing; Review changes requested" })).toBeTruthy();
+  });
+
+  it("keeps a popover count non-interactive without a list handler", () => {
+    render(
+      <LanePrBadgePopover
+        prs={[tag(), tag({ id: "pr-100", githubPrNumber: 100, title: "Previous work", state: "merged" })]}
+        onActivate={vi.fn()}
+      />,
+    );
+
+    const count = screen.getByTitle("Hover to inspect all pull requests for this lane");
+    expect(count.tagName).toBe("SPAN");
+    expect(count.getAttribute("role")).toBeNull();
   });
 });

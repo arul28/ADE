@@ -74,7 +74,11 @@ export function buildLanePrsByLaneId(args: {
     const mapped = selectLanePrs(lane, args.prs)
       .map((pr) => ({
         ...pr,
-        stack: githubPrs.find((githubPr) => githubPr.githubPrNumber === pr.githubPrNumber)?.stack
+        stack: githubPrs.find((githubPr) => (
+          githubPr.githubPrNumber === pr.githubPrNumber
+          && githubPr.repoOwner.toLowerCase() === pr.repoOwner.toLowerCase()
+          && githubPr.repoName.toLowerCase() === pr.repoName.toLowerCase()
+        ))?.stack
           ?? pr.stack
           ?? null,
       }));

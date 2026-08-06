@@ -148,6 +148,17 @@ describe("ChatGitToolbar", () => {
     expect(selectPrsForChat([{ id: "legacy" }] as unknown as PrSummary[], "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
   });
 
+  it("keeps a legacy PR visible when another PR in the lane has an explicit chat link", () => {
+    const mixed = [
+      { id: "legacy" },
+      { id: "pr-a", chatSessionIds: ["chat-a"] },
+      { id: "pr-b", chatSessionIds: ["chat-b"] },
+    ] as unknown as PrSummary[];
+
+    expect(selectPrsForChat(mixed, "chat-a").map((pr) => pr.id)).toEqual(["legacy", "pr-a"]);
+    expect(selectPrsForChat(mixed, "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
+  });
+
   it("opens the PR creation handoff when the current lane has no linked PR", async () => {
     renderToolbar();
 

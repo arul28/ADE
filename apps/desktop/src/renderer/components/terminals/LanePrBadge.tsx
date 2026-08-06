@@ -26,6 +26,25 @@ function prTitle(pr: PrSummary): string {
   return `Pull request #${pr.githubPrNumber} · ${lanePrStateLabel(pr.state)}${pr.title ? ` · ${pr.title}` : ""}`;
 }
 
+function checksStatusLabel(status: PrSummary["checksStatus"]): string {
+  switch (status) {
+    case "passing": return "CI passing";
+    case "failing": return "CI failing";
+    case "pending": return "CI running";
+    case "not_run": return "CI not run";
+    default: return "CI unavailable";
+  }
+}
+
+function reviewStatusLabel(status: PrSummary["reviewStatus"]): string {
+  switch (status) {
+    case "approved": return "Review approved";
+    case "changes_requested": return "Review changes requested";
+    case "requested": return "Review requested";
+    default: return "Review unavailable";
+  }
+}
+
 /**
  * Compact lane PR cluster. The one-PR branch intentionally keeps the existing
  * chip shape; the multi-PR branch adds only a counter and a hover list, so a
@@ -163,7 +182,11 @@ export function LanePrBadge({
                   </span>
                   <span className="block truncate text-[9px] text-muted-fg/55">{candidate.title || "Untitled pull request"}</span>
                 </span>
-                <span className="flex shrink-0 items-center gap-1" aria-label="CI and review status">
+                <span
+                  className="flex shrink-0 items-center gap-1"
+                  role="img"
+                  aria-label={`${checksStatusLabel(candidate.checksStatus)}; ${reviewStatusLabel(candidate.reviewStatus)}`}
+                >
                   <StatusDot
                     color={getPrCiDotColor({ checksStatus: candidate.checksStatus })}
                     title={`CI: ${candidate.checksStatus}`}

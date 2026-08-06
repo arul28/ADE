@@ -99,10 +99,8 @@ export function LanePrBadgePopover({
     : allPrs[0] ?? null;
   if (!primaryPr) return null;
   if (allPrs.length > 1) {
-    const aggregate = allPrs.reduce((best, candidate) => (
-      lanePrAttentionRank(candidate) > lanePrAttentionRank(best) ? candidate : best
-    ), allPrs[0]!);
-    const aggregateColor = lanePrAttentionColor(lanePrAttention(aggregate));
+    const aggregateColor = lanePrAttentionColor(lanePrAttention(primaryPr));
+    const countClass = "rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px font-mono text-[9px] font-semibold text-muted-fg/65";
     const activate = (event: React.SyntheticEvent, candidate = primaryPr) => {
       event.stopPropagation();
       onActivate(event, candidate);
@@ -131,18 +129,27 @@ export function LanePrBadgePopover({
           {formatPrBadgeLabel(primaryPr)}
           <GitHubStackBadge stack={primaryPr.stack} compact bare />
         </button>
-        <button
-          type="button"
-          className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px font-mono text-[9px] font-semibold text-muted-fg/65 transition-colors hover:border-white/[0.15] hover:text-fg/90"
-          title={`Show all ${allPrs.length} pull requests for this lane`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenList?.();
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          +{allPrs.length - 1}
-        </button>
+        {onOpenList ? (
+          <button
+            type="button"
+            className={`${countClass} transition-colors hover:border-white/[0.15] hover:text-fg/90`}
+            title={`Show all ${allPrs.length} pull requests for this lane`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenList();
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            +{allPrs.length - 1}
+          </button>
+        ) : (
+          <span
+            className={`${countClass} cursor-default`}
+            title="Hover to inspect all pull requests for this lane"
+          >
+            +{allPrs.length - 1}
+          </span>
+        )}
         <span className="pointer-events-none invisible absolute left-0 top-full z-[80] w-[300px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
           <span className="block overflow-hidden" style={{ ...floatingPane(), fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
             <span className="block px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: COLORS.textMuted }}>

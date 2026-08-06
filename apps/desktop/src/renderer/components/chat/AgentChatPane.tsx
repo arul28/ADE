@@ -11798,7 +11798,7 @@ export function AgentChatPane({
         // lifecycle awareness at all. The composer slot below stays with drift.
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
-        prSessionId={selectedSessionId}
+        prSessionId={renderedSessionId}
         onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
         prPaneOpen={prPaneOpen}
         runtimePin={chatRuntimePin}
@@ -13067,7 +13067,7 @@ export function AgentChatPane({
                             laneId={laneId}
                             branchName={laneGitBranch}
                             sessionTitle={selectedSession?.title ?? null}
-                            sessionId={selectedSessionId}
+                            sessionId={renderedSessionId}
                             delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
                             runtimePin={chatRuntimePin}

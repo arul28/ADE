@@ -2979,20 +2979,6 @@ final class DatabaseService {
     try ensureColumn(tableName: "integration_proposals", columnName: "merge_into_head_sha", definition: "text")
 
     try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
-    try exec("""
-      create table if not exists pull_request_chat_sessions (
-        id text primary key,
-        project_id text not null,
-        pr_id text not null,
-        lane_id text not null,
-        session_id text not null,
-        created_at text not null,
-        updated_at text not null
-      )
-    """)
-    try exec("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)")
-    try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
-    try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 

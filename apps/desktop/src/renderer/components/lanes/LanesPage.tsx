@@ -56,6 +56,7 @@ import {
   selectLaneTabPrTags,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
+  VISIBLE_LANE_PR_REFRESH_LIMIT,
   type LaneTabPrTag,
 } from "./lanePageModel";
 import {
@@ -884,8 +885,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLanePrTags(prs);
       if (options?.refreshMapped !== true) return;
 
+      // Lane history is intentionally retained for rendering, but refreshing
+      // every historical row makes a growing lane fan out into an unbounded
+      // coalescer request. `selectLanePrs` puts the active PR first, so this
+      // keeps the current row plus a small, useful history window per lane.
       const matchedPrIds = [...new Set(sortedLanesRef.current.flatMap((lane) => (
-        selectLanePrs(lane, prs).map((pr) => pr.id)
+        selectLanePrs(lane, prs)
+          .slice(0, VISIBLE_LANE_PR_REFRESH_LIMIT)
+          .map((pr) => pr.id)
       )))];
       if (matchedPrIds.length === 0) return;
 

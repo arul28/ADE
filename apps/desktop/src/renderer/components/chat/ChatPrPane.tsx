@@ -441,7 +441,18 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 }) {
   const navigate = useNavigate();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
-  const lanes = useAppStore((s) => s.lanes);
+  // Keep the PR refresh callback keyed to the lane identity, not the lanes
+  // collection. Lane status refreshes replace that array frequently, and
+  // making it a dependency would tear down/recreate the PR event pump.
+  const laneType = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.laneType ?? "worktree");
+  const laneBranchRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.branchRef ?? null);
+  const laneBaseRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.baseRef ?? null);
+  const laneForPr = useMemo(() => ({
+    id: laneId,
+    laneType,
+    branchRef: laneBranchRef ?? branchName ?? "",
+    baseRef: laneBaseRef ?? "",
+  }), [branchName, laneBaseRef, laneBranchRef, laneId, laneType]);
   // See `ChatGitToolbar`: a local pin is a fresh object on every cross-machine
   // merge, so effects key on the stable pin key and read the object via a ref.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
@@ -489,12 +500,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         const ownedPrs = allPrs.filter((candidate) => candidate.laneId === laneId && !candidate.detached);
         const scopedPrs = selectPrsForChat(ownedPrs, sessionId);
         cached = selectPrimaryLanePr(
-          lanes.find((candidate) => candidate.id === laneId) ?? {
-            id: laneId,
-            laneType: "worktree",
-            branchRef: branchName ?? "",
-            baseRef: "",
-          },
+          laneForPr,
           scopedPrs,
         );
       } else {
@@ -516,7 +522,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     // See ChatGitToolbar: read via ref, but the identity must still follow the
     // pin so the effects keyed on it re-read from the new machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchName, laneId, lanes, projectRoot, runtimePinKey, sessionId, setCurrentPr]);
+  }, [laneForPr, laneId, projectRoot, runtimePinKey, sessionId, setCurrentPr]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
