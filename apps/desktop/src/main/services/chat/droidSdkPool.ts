@@ -81,6 +81,7 @@ export async function acquireDroidSdkConnection(args: {
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
   mcpServers?: unknown[];
+  allowedMcpServerNames?: readonly string[];
   baseEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
@@ -321,6 +322,9 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     resumeSessionId: args.resumeSessionId ?? null,
     settings: args.settings,
     ...(args.mcpServers?.length ? { mcpServers: args.mcpServers } : {}),
+    ...(args.allowedMcpServerNames
+      ? { allowedMcpServerNames: [...args.allowedMcpServerNames] }
+      : {}),
   };
   let ready: DroidSdkReady;
   try {

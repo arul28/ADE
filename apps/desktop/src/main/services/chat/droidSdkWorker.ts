@@ -10,7 +10,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
-import { droidDisabledToolIdsForCategories } from "./droidSdkProtocol";
+import { droidDisabledToolIdsForCategories, droidMcpToolsToDisable } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -264,9 +264,52 @@ async function resolveDisabledToolIds(
   return droidDisabledToolIdsForCategories(tools, categories);
 }
 
+/**
+ * DroidSession exposes MCP enumeration publicly, but @factory/droid-sdk
+ * 0.2.0 exposes `toggleMcpTool` only on its low-level client. Keep the
+ * private-field bridge in one place and fail closed if a future SDK removes it.
+ */
+async function disableUnmanagedMcpToolsForLead(): Promise<void> {
+  const allowedServerNames = initState?.allowedMcpServerNames;
+  if (!session || !allowedServerNames) return;
+  const listed = await session.listMcpTools();
+  if (!listed || !Array.isArray(listed.tools)) {
+    throw new Error("Droid did not return a valid MCP tool list for the orchestrator lead.");
+  }
+  const tools = listed.tools;
+  const toDisable = droidMcpToolsToDisable(tools, allowedServerNames);
+  if (!toDisable.length) return;
+  const client = (session as unknown as {
+    _client?: {
+      toggleMcpTool?: (params: {
+        serverName: string;
+        toolName: string;
+        enabled: boolean;
+      }) => Promise<unknown>;
+    };
+  })._client;
+  if (!client || typeof client.toggleMcpTool !== "function") {
+    throw new Error("This Droid SDK build does not expose session-scoped toggleMcpTool.");
+  }
+  for (const tool of toDisable) {
+    await client.toggleMcpTool({
+      serverName: tool.serverName,
+      toolName: tool.toolName,
+      enabled: false,
+    });
+  }
+  post({
+    type: "log",
+    level: "debug",
+    message: "Disabled unmanaged Droid MCP tools for orchestrator lead.",
+    detail: { disabledCount: toDisable.length },
+  });
+}
+
 async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const sdk = await getSdk();
+  await disableUnmanagedMcpToolsForLead();
   const disabledToolIds = await resolveDisabledToolIds(settings);
   if (settings.interactionMode === "spec") {
     await session.enterSpecMode({
@@ -318,6 +361,7 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
     const disabledToolIds = await resolveDisabledToolIds(init.settings);
     if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
   }
+  await disableUnmanagedMcpToolsForLead();
   const ready = buildReady();
   post({ type: "ready", ready });
   return ready;

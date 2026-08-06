@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { droidDisabledToolIdsForCategories } from "./droidSdkProtocol";
+import { droidDisabledToolIdsForCategories, droidMcpToolsToDisable } from "./droidSdkProtocol";
 import { ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES } from "../../../shared/orchestrationRuntimePolicy";
 
 // Shape mirrors Droid's `session.listTools()` result. Ids are build-specific
@@ -52,5 +52,30 @@ describe("droidDisabledToolIdsForCategories", () => {
       [{ id: "", category: "edit" }, { category: "edit" }, { id: "edit_file", category: "edit" }],
       ["edit"],
     )).toEqual(["edit_file"]);
+  });
+});
+
+describe("droidMcpToolsToDisable", () => {
+  it("disables enabled user MCP tools while retaining ADE's leased server", () => {
+    expect(droidMcpToolsToDisable([
+      { serverName: "ade-orchestration", name: "spawn_agent", isEnabled: true },
+      { serverName: "filesystem", name: "write_file", isEnabled: true },
+      { serverName: "filesystem", name: "read_file", isEnabled: false },
+      { serverName: "linear", name: "search", isEnabled: true },
+    ], ["ade-orchestration"])).toEqual([
+      { serverName: "filesystem", toolName: "write_file" },
+      { serverName: "linear", toolName: "search" },
+    ]);
+  });
+
+  it("ignores malformed entries and fails closed for unknown MCP state", () => {
+    expect(droidMcpToolsToDisable([
+      { serverName: "", name: "write_file", isEnabled: true },
+      { serverName: "filesystem", name: "", isEnabled: true },
+      { serverName: "filesystem", name: "write_file", isEnabled: false },
+      { serverName: "filesystem", name: "unknown_state" },
+    ], [])).toEqual([
+      { serverName: "filesystem", toolName: "unknown_state" },
+    ]);
   });
 });

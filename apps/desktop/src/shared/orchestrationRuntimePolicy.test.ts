@@ -66,15 +66,14 @@ describe("orchestrationRuntimePolicy", () => {
 
   it("registers an MCP isolation mechanism for every provider that receives MCP", () => {
     // A provider added to ADE without an entry here is a compile error; this
-    // asserts the runtime shape and pins the one provider that has no mechanism
-    // so the gap cannot quietly become "gated" without someone editing a test.
+    // asserts the runtime shape so a provider cannot quietly lose its gate
+    // without someone editing a test.
     for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
       const isolation = orchestrationLeadMcpIsolation(provider);
       expect(isolation?.mechanism).toBeTruthy();
       expect(isolation?.note.length).toBeGreaterThan(0);
     }
-    expect(ORCHESTRATION_LEAD_MCP_ISOLATION.droid.gated).toBe(false);
-    for (const provider of ["claude", "codex", "cursor", "opencode"] as const) {
+    for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
       expect(ORCHESTRATION_LEAD_MCP_ISOLATION[provider].gated).toBe(true);
     }
     expect(orchestrationLeadMcpIsolation("gemini")).toBeNull();
@@ -110,6 +109,13 @@ describe("orchestrationRuntimePolicy", () => {
     expect(codexConfiguredMcpServerNames(
       "mcp_servers = { linear = { command = \"linear\", args = [\"mcp\"] }, \"pg\" = { url = \"http://x\" } }",
     )).toEqual(["linear", "pg"]);
+
+    expect(codexConfiguredMcpServerNames([
+      "mcp_servers = {",
+      "  filesystem = { command = \"npx\", args = [\"-y\", \"filesystem\"] }, # inline comment",
+      "  \"my shell\" = { command = \"sh -c '{ echo ok; }'\" },",
+      "}",
+    ].join("\n"))).toEqual(["filesystem", "my shell"]);
 
     expect(codexConfiguredMcpServerNames("model = \"gpt-5.4\"")).toEqual([]);
   });

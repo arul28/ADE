@@ -164,6 +164,24 @@ describe("openCodeRuntime", () => {
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
   });
 
+  it("passes lead isolation through to a dedicated OpenCode server", async () => {
+    await startOpenCodeSession({
+      directory: "/repo",
+      title: "Lead chat",
+      leaseKind: "dedicated",
+      isolatedConfig: true,
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "lead-1",
+      ownerKey: "chat:lead-1",
+    });
+
+    expect(acquireDedicatedOpenCodeServer).toHaveBeenCalledWith(expect.objectContaining({
+      isolatedConfig: true,
+      ownerKey: "chat:lead-1",
+    }));
+  });
+
   it("omits the session title when ADE wants OpenCode to auto-name", async () => {
     await startOpenCodeSession({
       directory: "/repo",

@@ -38,9 +38,8 @@ export const ORCHESTRATION_LOCKED_PERMISSION_MODE = "full-auto" satisfies AgentC
 // ---------------------------------------------------------------------------
 // Orchestrator-lead provider-native tool denials
 //
-// The lead plans and delegates; it never edits code or runs shell (see
-// resources/agent-skills/ade-orchestrator/SKILL.md). ADE's own orchestration
-// toolset already withholds editFile/writeFile/bash from leads, but that
+// The lead plans and delegates; it never mutates code or runs mutating shell.
+// ADE's own orchestration toolset already withholds editFile/writeFile/bash from leads, but that
 // toolset is *additive* — it rides alongside each provider's built-in tools.
 // So every provider needs its own denial expressed in that provider's native
 // mechanism. All of those definitions live here so the lead's blast radius is
@@ -160,22 +159,21 @@ export const ORCHESTRATION_LEAD_MCP_ISOLATION = {
       + "as risk `unknown`, and are denied by the fail-closed allow-list above.",
   },
   droid: {
-    mechanism: "none",
-    gated: false,
-    note:
-      "Droid's SDK exposes no session-scoped MCP restriction. `disabledToolIds` covers the exec tool "
-      + "catalog only, and toggleMcpServer/toggleMcpTool write the user's global Factory settings "
-      + "(ToggleMcpServerRequestParams pins settingsLevel: User), which would disable a server for "
-      + "every other droid session on the machine. ADE will not mutate user config to fake a "
-      + "session gate, so a droid lead still sees the user's MCP servers.",
-  },
-  opencode: {
-    mechanism: "ADE-authored server config + OPENCODE_DISABLE_PROJECT_CONFIG",
+    mechanism: "session.listMcpTools + session-scoped toggleMcpTool",
     gated: true,
     note:
-      "Every ADE OpenCode server runs with an ADE-owned XDG_CONFIG_HOME, OPENCODE_CONFIG_CONTENT "
-      + "built by buildOpenCodeConfig, and OPENCODE_DISABLE_PROJECT_CONFIG=1, so the only MCP servers "
-      + "any session (lead or worker) can see are ADE's own leases.",
+      "Droid's `disabledToolIds` covers the exec tool catalog only, so ADE enumerates the live MCP "
+      + "tool list and uses the low-level session-scoped `toggleMcpTool` RPC to disable every tool "
+      + "whose server is not an ADE lease. This does not call `toggleMcpServer`, whose SDK request "
+      + "pins settingsLevel: User and would mutate the user's global config.",
+  },
+  opencode: {
+    mechanism: "dedicated lead server + ADE-authored config + OPENCODE_DISABLE_PROJECT_CONFIG",
+    gated: true,
+    note:
+      "Only an orchestrator lead gets a dedicated OpenCode server with an ADE-owned XDG_CONFIG_HOME, "
+      + "OPENCODE_CONFIG_CONTENT built by buildOpenCodeConfig, and OPENCODE_DISABLE_PROJECT_CONFIG=1. "
+      + "Ordinary chats and workers keep the user's normal OpenCode config and MCP layers.",
   },
 } as const satisfies Record<McpCapableProvider, OrchestrationLeadMcpIsolation>;
 
@@ -200,8 +198,8 @@ export const ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES = ["user", "team", "mdm"]
  * `mcp_servers.<name>.enabled`, so a lead's isolation is expressed as an
  * explicit `enabled = false` for every configured server. Handles the three
  * shapes `config.toml` can use: `[mcp_servers.name]` headers, dotted
- * `mcp_servers.name.key = …` assignments, and an inline
- * `mcp_servers = { name = { … } }` table.
+ * `mcp_servers.name.key = …` assignments, and single- or multi-line inline
+ * `mcp_servers = { name = { … } }` tables.
  */
 export function codexConfiguredMcpServerNames(configText: string): string[] {
   const names: string[] = [];
@@ -221,7 +219,20 @@ export function codexConfiguredMcpServerNames(configText: string): string[] {
     return segment.length ? segment : null;
   };
 
-  for (const line of configText.replace(/\r\n?/g, "\n").split("\n")) {
+  const normalizedConfig = configText.replace(/\r\n?/g, "\n");
+  const inlineAssignment = /^\s*mcp_servers\s*=\s*\{/gm;
+  let inlineMatch: RegExpExecArray | null;
+  while ((inlineMatch = inlineAssignment.exec(normalizedConfig)) !== null) {
+    const openBrace = normalizedConfig.indexOf("{", inlineMatch.index);
+    const closeBrace = findTomlInlineTableEnd(normalizedConfig, openBrace);
+    if (openBrace < 0 || closeBrace < 0) continue;
+    for (const key of inlineTableKeys(stripTomlComments(
+      normalizedConfig.slice(openBrace + 1, closeBrace),
+    ))) add(key);
+    inlineAssignment.lastIndex = closeBrace + 1;
+  }
+
+  for (const line of normalizedConfig.split("\n")) {
     const withoutComment = line.replace(/^\s*#.*$/, "").trim();
     if (!withoutComment.length) continue;
 
@@ -241,10 +252,71 @@ export function codexConfiguredMcpServerNames(configText: string): string[] {
 
     const inline = withoutComment.match(/^mcp_servers\s*=\s*\{(.*)\}\s*$/)?.[1];
     if (inline !== undefined) {
-      for (const key of inlineTableKeys(inline)) add(key);
+      for (const key of inlineTableKeys(stripTomlComments(inline))) add(key);
     }
   }
   return names;
+}
+
+function stripTomlComments(text: string): string {
+  let output = "";
+  let quote: string | null = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote) {
+      output += char;
+      if (quote === '"' && char === "\\") {
+        const next = text[index + 1];
+        if (next !== undefined) output += next;
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      output += char;
+    } else if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      if (index < text.length) output += "\n";
+    } else {
+      output += char;
+    }
+  }
+  return output;
+}
+
+function findTomlInlineTableEnd(text: string, openBrace: number): number {
+  if (openBrace < 0) return -1;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let index = openBrace; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 /** Top-level `key =` names of a single-line TOML inline table body. */

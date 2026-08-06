@@ -144,6 +144,8 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   ownerId?: string | null;
   ownerKey?: string | null;
   leaseKind?: "shared" | "dedicated";
+  /** Isolate user/project config for an orchestrator lead only. */
+  isolatedConfig?: boolean;
   logger?: Logger | null;
 };
 
@@ -635,6 +637,7 @@ async function startOpenCodeSessionInternal(
         key: buildSharedOpenCodeServerKey(config),
         ownerKind,
         ownerId: args.ownerId,
+        isolatedConfig: args.isolatedConfig,
         logger: args.logger,
       })
     : await acquireDedicatedOpenCodeServer({
@@ -642,6 +645,7 @@ async function startOpenCodeSessionInternal(
         config,
         ownerKind,
         ownerId: args.ownerId,
+        isolatedConfig: args.isolatedConfig,
         logger: args.logger,
       });
   const client = createOpencodeClient({

@@ -3196,10 +3196,7 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("CLI controls ADE state");
-      expect(opts?.systemPrompt?.append).toContain("read the matching `ade-*` skill");
-      expect(opts?.systemPrompt?.append).toContain("ade help <command>");
-      expect(opts?.systemPrompt?.append).toContain("clean up started processes");
+      expect(opts?.systemPrompt?.append).toContain("system prompt");
       expect(opts?.systemPrompt?.append).toContain(
         `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
       );
@@ -3371,7 +3368,7 @@ describe("createAgentChatService", () => {
       expect(userTurnPayload).not.toContain("CLI controls ADE state");
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("CLI controls ADE state");
+      expect(opts?.systemPrompt?.append).toContain("system prompt");
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
@@ -7000,6 +6997,7 @@ describe("createAgentChatService", () => {
       const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
       const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
       const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
+      const systemPromptCalls = vi.mocked(buildCodingAgentSystemPrompt).mock.calls;
 
       expect(openCodeStartCalls.length).toBeGreaterThan(0);
       expect(openCodeStartCalls[0]?.[0]).toEqual(expect.objectContaining({
@@ -7009,13 +7007,11 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
       expect(firstUserContent).toContain("mutating commands only inside that worktree");
-      expect(firstUserContent).toContain("CLI controls ADE state");
-      expect(firstUserContent).toContain("ade actions list --text");
-      expect(firstUserContent).toContain(
-        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
-      );
+      expect(systemPromptCalls.at(-1)?.[0]).toEqual(expect.objectContaining({
+        runtime: "opencode",
+      }));
       expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).toContain("CLI controls ADE state");
+      expect(secondUserContent).not.toContain("CLI controls ADE state");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
@@ -7353,6 +7349,7 @@ describe("createAgentChatService", () => {
             url: expect.stringContaining("/mcp"),
           }),
         ]);
+        expect(mockState.droidAcquireCalls.at(-1)?.allowedMcpServerNames).toEqual(["ade-orchestration"]);
       } finally {
         await orchestrationService.dispose();
       }
@@ -8809,6 +8806,17 @@ describe("createAgentChatService", () => {
         yield {
           type: "result",
           usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        // The idle reader can receive the same provider warning after the
+        // foreground turn has ended. The producer must keep this at one notice.
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-rate-limit",
+          rate_limit_info: {
+            status: "allowed_warning",
+            utilization: 0.82,
+            resetsAt: 1_770_000_000,
+          },
         };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -11284,6 +11292,79 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
+    it("reaps a background shell when its owning native subagent exits", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let releaseTurn: (() => void) | null = null;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-parent-stop", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-child-shell",
+          parent_agent_id: "agent-parent",
+          description: "child-owned background shell",
+          command: "tail -f log",
+          task_type: "background",
+        };
+        await turnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-bg-parent-stop",
+        stopTask,
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start child shell" });
+
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "scheduled_work_update"
+        && (event.event as any).id === "background:bg-child-shell"
+        && (event.event as any).status === "running");
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.SubagentStop?.[0]?.hooks[0];
+      expect(stopHook).toBeDefined();
+      await stopHook!(
+        {
+          hook_event_name: "SubagentStop",
+          agent_id: "agent-parent",
+          agent_type: "reviewer",
+          last_assistant_message: "parent finished",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "scheduled_work_update"
+        && (event.event as any).id === "background:bg-child-shell"
+        && (event.event as any).status === "stopped");
+      expect(stopTask).toHaveBeenCalledWith("bg-child-shell");
+      expect(events.some((event) =>
+        event.event.type === "subagent_result" && (event.event as any).taskId === "bg-child-shell")).toBe(false);
+
+      releaseTurn!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
     it("converges hook diff-close with a task_notification terminal (no duplicate distinct terminal events)", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
@@ -11647,6 +11728,7 @@ describe("createAgentChatService", () => {
       const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
         if (streamCall === 1) {
@@ -11667,7 +11749,7 @@ describe("createAgentChatService", () => {
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send, stream, close: vi.fn(), sessionId: "sdk-bg-int", setPermissionMode,
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-int", setPermissionMode, stopTask,
       } as any);
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
@@ -11686,6 +11768,7 @@ describe("createAgentChatService", () => {
         e.event.type === "scheduled_work_update"
         && (e.event as any).id === "background:bg-int"
         && (e.event as any).status === "stopped");
+      expect(stopTask).toHaveBeenCalledWith("bg-int");
       // Still never a subagent_result for a background shell.
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "bg-int")).toBe(false);
@@ -38767,6 +38850,10 @@ describe("orchestrator-lead provider-native tool denial", () => {
         patch: false,
         task: false,
       });
+      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+        runtime: "opencode",
+        orchestrationRole: "lead",
+      }));
 
       const worker = await service.createSession({
         laneId: "lane-1",
@@ -38783,6 +38870,10 @@ describe("orchestrator-lead provider-native tool denial", () => {
       });
       // No `tools` field at all: the worker keeps OpenCode's full default set.
       expect(workerState.promptBodies.at(-1)).not.toHaveProperty("tools");
+      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+        runtime: "opencode",
+        orchestrationRole: "worker",
+      }));
     } finally {
       await orchestrationService.dispose();
     }
@@ -38797,8 +38888,6 @@ describe("orchestrator-lead provider-native tool denial", () => {
 // capability back through another door, so a lead must see ADE-managed servers
 // only. Each test pins the MCP configuration ADE actually sends for a lead and
 // checks a worker on the SAME provider still receives the user's servers.
-// Droid is deliberately absent: it has no session-scoped MCP restriction (see
-// ORCHESTRATION_LEAD_MCP_ISOLATION.droid).
 // ---------------------------------------------------------------------------
 
 describe("orchestrator-lead MCP isolation", () => {
@@ -38968,7 +39057,7 @@ describe("orchestrator-lead MCP isolation", () => {
     }
   });
 
-  it("OpenCode: hands every session an ADE-authored config with ADE's servers only", async () => {
+  it("OpenCode: isolates only leads while ordinary chats keep user config", async () => {
     vi.mocked(streamText).mockImplementation(() => ({
       fullStream: (async function* () {
         yield { type: "finish", usage: {} };
@@ -38988,10 +39077,21 @@ describe("orchestrator-lead MCP isolation", () => {
 
       const leadStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
       // The MCP map ADE hands OpenCode for a lead carries ADE's lease only.
-      // `buildOpenCodeConfig`'s own behavior (that this map becomes the whole
-      // config the server sees) is covered directly in openCodeRuntime.test.ts
-      // — it cannot be asserted here because this suite mocks that module.
       expect(Object.keys(leadStart?.mcp ?? {})).toEqual(["ade-orchestration"]);
+      expect(leadStart?.leaseKind).toBe("dedicated");
+      expect(leadStart?.isolatedConfig).toBe(true);
+
+      const worker = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        ...workerArgs(created),
+      });
+      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
+      const workerStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
+      expect(workerStart?.leaseKind).toBe("shared");
+      expect(workerStart?.isolatedConfig).toBe(false);
     } finally {
       await orchestrationService.dispose();
     }

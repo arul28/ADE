@@ -56,6 +56,28 @@ export function droidDisabledToolIdsForCategories(
   return ids;
 }
 
+/**
+ * Selects the live Droid MCP tools a lead must disable. MCP tools are not part
+ * of `listTools()`'s native exec catalog; Droid exposes their per-session
+ * enable switch through the low-level `toggleMcpTool` RPC instead.
+ */
+export function droidMcpToolsToDisable(
+  tools: ReadonlyArray<{ serverName?: unknown; name?: unknown; isEnabled?: unknown }>,
+  allowedServerNames: readonly string[],
+): Array<{ serverName: string; toolName: string }> {
+  const allowed = new Set(allowedServerNames.map((name) => name.trim()).filter(Boolean));
+  const disabled: Array<{ serverName: string; toolName: string }> = [];
+  for (const tool of tools) {
+    const serverName = typeof tool?.serverName === "string" ? tool.serverName.trim() : "";
+    const toolName = typeof tool?.name === "string" ? tool.name.trim() : "";
+    // Unknown state is unsafe for a lead: disable anything that is not
+    // explicitly reported as already disabled.
+    if (!serverName || !toolName || allowed.has(serverName) || tool.isEnabled === false) continue;
+    disabled.push({ serverName, toolName });
+  }
+  return disabled;
+}
+
 export type DroidSdkWorkerInit = {
   sessionId: string;
   laneRoot: string;
@@ -63,6 +85,8 @@ export type DroidSdkWorkerInit = {
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
   mcpServers?: unknown[];
+  /** MCP server names ADE owns and a lead may retain; all other tools are disabled per session. */
+  allowedMcpServerNames?: string[];
 };
 
 export type DroidSdkUserImage = {
