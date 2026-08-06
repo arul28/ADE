@@ -131,14 +131,50 @@ describe("buildLanePrsByLaneId", () => {
     }));
   });
 
-  it("ignores stale mapped rows from an old lane branch", () => {
+  it("joins stack membership by repository and PR number", () => {
+    const result = buildLanePrsByLaneId({
+      lanes: [lane()],
+      prs: [mappedPr()],
+      githubPrs: [
+        githubPr({
+          id: "other-repo-pr-91",
+          repoOwner: "other-owner",
+          repoName: "other-repo",
+          stack: { id: "wrong-stack", number: 99, size: 2, position: 1, baseBranch: "main" },
+        }),
+        githubPr({
+          stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main" },
+        }),
+      ],
+    });
+
+    expect(result.get("lane-1")?.[0]?.stack).toEqual(expect.objectContaining({ number: 18 }));
+  });
+
+  it("keeps a new GitHub-only PR visible alongside retained lane history", () => {
+    const result = buildLanePrsByLaneId({
+      lanes: [lane()],
+      prs: [mappedPr({ headBranch: "feature/old" })],
+      githubPrs: [githubPr({
+        id: "github-pr-92",
+        githubPrNumber: 92,
+        githubUrl: "https://github.com/arul28/ADE/pull/92",
+        title: "Follow-up work",
+      })],
+    });
+
+    expect(result.get("lane-1")?.map((pr) => pr.githubPrNumber)).toEqual([91, 92]);
+    expect(result.get("lane-1")?.find((pr) => pr.githubPrNumber === 92)?.unmapped).toBe(true);
+  });
+
+  it("retains mapped rows from an old lane branch as history", () => {
     const result = buildLanePrsByLaneId({
       lanes: [lane()],
       prs: [mappedPr({ headBranch: "feature/old" })],
       githubPrs: [],
     });
 
-    expect(result.has("lane-1")).toBe(false);
+    expect(result.get("lane-1")?.map((pr) => pr.githubPrNumber)).toEqual([91]);
   });
 });
 

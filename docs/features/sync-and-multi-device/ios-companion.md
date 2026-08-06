@@ -776,7 +776,10 @@ Bootstrap flow on first launch:
    `kvDb.ts`). Bootstrap SQL includes CRR-safe cleanup for replicated
    tables whose desktop schema dropped secondary UNIQUE indexes, such as
    deduping `lane_linear_issue_links` and dropping the legacy
-   `uq_lane_linear_issue_links_role` index before triggers are installed.
+   `uq_lane_linear_issue_links_role` index before triggers are installed. The
+   PR projection also includes the CRR-safe `pull_request_chat_sessions`
+   relationship table, so a PR can retain more than one chat edge without
+   adding a nullable column to the phone-critical `pull_requests` table.
 3. Register custom SQLite functions (`ade_next_db_version`,
    `ade_local_site_id`, `ade_capture_local_changes`).
 4. Call `enableCrr(for:)` on every discovered non-internal table to
@@ -2549,6 +2552,9 @@ different machine's cached limits.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
   between desktop and iOS breaks the first-launch bootstrap.
+  The `pull_request_chat_sessions` table is part of the PR projection and is
+  cleaned with PR rows and retired chat sessions; it has no secondary UNIQUE
+  index because CRR only supports the primary-key identity here.
   `changeset_batch` apply no longer fails on tables the phone's
   schema doesn't know — those rows are skipped so a newer desktop can
   never freeze a phone's sync — but the skipped tables' data is

@@ -193,6 +193,8 @@ export type WorkSurfaceHeaderProps = {
   lifecycleSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
   showGitToolbar?: boolean;
+  /** Chat session owning the header; lets PR badges stay chat-specific. */
+  prSessionId?: string | null;
   /**
    * When set (ADE chat surfaces only), the PR pill toggles this callback
    * instead of opening its inline slide-out / navigating to the PRs tab. CLI
@@ -243,6 +245,7 @@ export function WorkSurfaceHeader({
   cacheIdleSinceAt,
   lifecycleSessionId = null,
   showGitToolbar = false,
+  prSessionId = null,
   onTogglePrPane,
   prPaneOpen,
   runtimePin = null,
@@ -295,6 +298,7 @@ export function WorkSurfaceHeader({
         {showGitToolbar && laneId ? (
           <ChatGitToolbar
             laneId={laneId}
+            sessionId={prSessionId}
             onTogglePrPane={onTogglePrPane}
             prPaneOpen={prPaneOpen}
             runtimePin={runtimePin}

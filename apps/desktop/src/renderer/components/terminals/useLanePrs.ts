@@ -4,8 +4,8 @@ import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCa
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import {
-  lanePrMatchesCurrentBranch,
-  selectGithubLanePrTag,
+  selectGithubLanePrTags,
+  selectLanePrs,
 } from "../lanes/lanePageModel";
 
 function githubItemToLanePr(item: GitHubPrListItem, laneId: string): PrSummary {
@@ -70,20 +70,31 @@ export function buildLanePrsByLaneId(args: {
 }): Map<string, PrSummary[]> {
   const byLane = new Map<string, PrSummary[]>();
   for (const lane of args.lanes) {
-    const githubPr = selectGithubLanePrTag(lane, args.githubPrs);
-    const mapped = args.prs
-      .filter((pr) => lanePrMatchesCurrentBranch(lane, pr))
+    const githubPrs = selectGithubLanePrTags(lane, args.githubPrs);
+    const mapped = selectLanePrs(lane, args.prs)
       .map((pr) => ({
         ...pr,
-        stack: githubPr?.githubPrNumber === pr.githubPrNumber
-          ? githubPr.stack ?? pr.stack ?? null
-          : pr.stack ?? null,
+        stack: githubPrs.find((githubPr) => (
+          githubPr.githubPrNumber === pr.githubPrNumber
+          && githubPr.repoOwner.toLowerCase() === pr.repoOwner.toLowerCase()
+          && githubPr.repoName.toLowerCase() === pr.repoName.toLowerCase()
+        ))?.stack
+          ?? pr.stack
+          ?? null,
       }));
-    if (mapped.length > 0) {
-      byLane.set(lane.id, mapped);
-    } else if (githubPr) {
-      byLane.set(lane.id, [githubItemToLanePr(githubPr, lane.id)]);
-    }
+    const mappedIds = new Set(mapped.map((pr) => pr.id));
+    const mappedRepoPrKeys = new Set(mapped.map((pr) => (
+      `${pr.repoOwner.toLowerCase()}/${pr.repoName.toLowerCase()}#${pr.githubPrNumber}`
+    )));
+    const unmappedGithubPrs = githubPrs.filter((githubPr) => {
+      const repoPrKey = `${githubPr.repoOwner.toLowerCase()}/${githubPr.repoName.toLowerCase()}#${githubPr.githubPrNumber}`;
+      return !mappedIds.has(githubPr.linkedPrId ?? "") && !mappedRepoPrKeys.has(repoPrKey);
+    });
+    const combined = [
+      ...mapped,
+      ...unmappedGithubPrs.map((githubPr) => githubItemToLanePr(githubPr, lane.id)),
+    ];
+    if (combined.length > 0) byLane.set(lane.id, combined);
   }
   return byLane;
 }

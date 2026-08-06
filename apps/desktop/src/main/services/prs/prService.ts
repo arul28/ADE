@@ -1501,6 +1501,132 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
+  type PullRequestChatSessionRow = { pr_id: string; session_id: string };
+
+  const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
+    const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    const result = new Map<string, string[]>();
+    if (ids.length === 0) return result;
+    try {
+      const placeholders = ids.map(() => "?").join(", ");
+      const rows = db.all<PullRequestChatSessionRow>(
+        `
+          select pr_id, session_id
+            from pull_request_chat_sessions
+           where project_id = ?
+             and pr_id in (${placeholders})
+           order by created_at asc, id asc
+        `,
+        [projectId, ...ids],
+      );
+      for (const row of rows) {
+        const sessionId = String(row.session_id ?? "").trim();
+        if (!sessionId) continue;
+        const current = result.get(row.pr_id) ?? [];
+        if (!current.includes(sessionId)) current.push(sessionId);
+        result.set(row.pr_id, current);
+      }
+    } catch (error) {
+      logger.warn("prs.chat_session_links_read_failed", { error: getErrorMessage(error) });
+    }
+    return result;
+  };
+
+  const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
+    const links = chatSessionIdsByPrId(summaries.map((summary) => summary.id));
+    return summaries.map((summary) => {
+      const sessionIds = links.get(summary.id);
+      return sessionIds?.length ? { ...summary, chatSessionIds: sessionIds } : summary;
+    });
+  };
+
+  const removeChatSessionLinksFromOtherLanes = (prId: string, laneId: string): void => {
+    try {
+      db.run(
+        `delete from pull_request_chat_sessions
+          where project_id = ? and pr_id = ? and lane_id <> ?`,
+        [projectId, prId, laneId],
+      );
+    } catch {
+      // Older test/embedded databases may predate the optional edge table.
+    }
+  };
+
+  const linkPrToChatSession = (args: {
+    prId: string;
+    laneId: string;
+    sessionId?: string | null;
+  }): void => {
+    const sessionId = String(args.sessionId ?? "").trim();
+    if (!sessionId) return;
+
+    try {
+      const pr = db.get<{ id: string; lane_id: string }>(
+        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr || pr.lane_id !== args.laneId) return;
+
+      // Chat surfaces use the terminal-session id. The Claude pointer fallback
+      // keeps imported/older chats addressable when only their provider session
+      // id was persisted.
+      const session = db.get<{ id: string }>(
+        `
+          select id
+            from terminal_sessions
+           where id = ? and lane_id = ?
+          union all
+          select chat_session_id as id
+            from claude_sessions
+           where session_id = ? and lane_id = ? and chat_session_id is not null
+           limit 1
+        `,
+        [sessionId, args.laneId, sessionId, args.laneId],
+      );
+      if (!session) {
+        logger.warn("prs.chat_session_link_session_missing", {
+          prId: args.prId,
+          laneId: args.laneId,
+          sessionId,
+        });
+        return;
+      }
+      const canonicalSessionId = String(session.id ?? "").trim();
+      if (!canonicalSessionId) return;
+      const now = nowIso();
+      const existing = db.get<{ id: string }>(
+        `
+          select id
+            from pull_request_chat_sessions
+           where project_id = ? and pr_id = ? and session_id = ?
+           limit 1
+        `,
+        [projectId, args.prId, canonicalSessionId],
+      );
+      if (existing) {
+        db.run(
+          "update pull_request_chat_sessions set lane_id = ?, updated_at = ? where id = ? and project_id = ?",
+          [args.laneId, now, existing.id, projectId],
+        );
+      } else {
+        db.run(
+          `
+            insert into pull_request_chat_sessions(
+              id, project_id, pr_id, lane_id, session_id, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?)
+          `,
+          [randomUUID(), projectId, args.prId, args.laneId, canonicalSessionId, now, now],
+        );
+      }
+    } catch (error) {
+      logger.warn("prs.chat_session_link_write_failed", {
+        prId: args.prId,
+        laneId: args.laneId,
+        sessionId,
+        error: getErrorMessage(error),
+      });
+    }
+  };
   const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
     github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
     head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
@@ -6728,6 +6854,8 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
+    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
 
     await publishLinearPrCardsForLane({
       lane,
@@ -6760,7 +6888,8 @@ export function createPrService({
       });
     });
 
-    return await refreshOne(prId);
+    const refreshed = await refreshOne(prId);
+    return withGithubStackMembership(refreshed) ?? refreshed;
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -6861,6 +6990,8 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
+    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
 
     await publishLinearPrCardsForLane({
       lane,
@@ -6893,7 +7024,8 @@ export function createPrService({
       });
     });
 
-    return await refreshOne(prId);
+    const refreshed = await refreshOne(prId);
+    return withGithubStackMembership(refreshed) ?? refreshed;
   };
 
   const cleanupBranch = async (args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> => {
@@ -9038,7 +9170,7 @@ export function createPrService({
   const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
     if (summaries.length === 0) return summaries;
     const memberships = githubStackStore.membershipsByPr();
-    return summaries.map((summary) => ({
+    return withChatSessionLinks(summaries).map((summary) => ({
       ...summary,
       stack: memberships.get(
         repoPrKey(summary.repoOwner, summary.repoName, summary.githubPrNumber),
@@ -10697,9 +10829,22 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      return withGithubStackMembership(
-        getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null,
-      );
+      const current = getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
+      if (current) return withGithubStackMembership(current);
+
+      // The single-value bridge is still used by older chat/web clients. Keep
+      // it honest for a lane that moved on: when there is no current-branch PR,
+      // return the newest retained lane-history row so those clients do not
+      // silently lose the lane's PR badge altogether.
+      const lane = getLanePrLookupRow(laneId);
+      if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
+        return null;
+      }
+      const previous = getRowForLane(laneId);
+      const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+      const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
+      if (!previous || !previousBranch || previousBranch === laneBranch) return null;
+      return withGithubStackMembership(rowToSummary(previous));
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {

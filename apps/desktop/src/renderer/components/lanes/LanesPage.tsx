@@ -51,11 +51,12 @@ import {
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
-  selectLanePrTag,
+  selectLanePrs,
   selectVisibleLanePrRefreshIds,
-  selectLaneTabPrTag,
+  selectLaneTabPrTags,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
+  VISIBLE_LANE_PR_REFRESH_LIMIT,
   type LaneTabPrTag,
 } from "./lanePageModel";
 import {
@@ -644,8 +645,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const lanePrByLaneId = useMemo(() => {
     const map = new Map<string, LaneTabPrTag>();
     for (const lane of sortedLanes) {
-      const pr = selectLaneTabPrTag(lane, lanePrTags, laneGithubPrTags);
+      const pr = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags)[0] ?? null;
       if (pr) map.set(lane.id, pr);
+    }
+    return map;
+  }, [sortedLanes, lanePrTags, laneGithubPrTags]);
+  const lanePrTagsByLaneId = useMemo(() => {
+    const map = new Map<string, LaneTabPrTag[]>();
+    for (const lane of sortedLanes) {
+      const tags = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags);
+      if (tags.length > 0) map.set(lane.id, tags);
     }
     return map;
   }, [sortedLanes, lanePrTags, laneGithubPrTags]);
@@ -876,9 +885,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLanePrTags(prs);
       if (options?.refreshMapped !== true) return;
 
-      const matchedPrIds = sortedLanesRef.current
-        .map((lane) => selectLanePrTag(lane, prs)?.id ?? null)
-        .filter((prId): prId is string => Boolean(prId));
+      // Lane history is intentionally retained for rendering, but refreshing
+      // every historical row makes a growing lane fan out into an unbounded
+      // coalescer request. `selectLanePrs` puts the active PR first, so this
+      // keeps the current row plus a small, useful history window per lane.
+      const matchedPrIds = [...new Set(sortedLanesRef.current.flatMap((lane) => (
+        selectLanePrs(lane, prs)
+          .slice(0, VISIBLE_LANE_PR_REFRESH_LIMIT)
+          .map((pr) => pr.id)
+      )))];
       if (matchedPrIds.length === 0) return;
 
       try {
@@ -1113,7 +1128,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const nowMs = Date.now();
     const prIds = selectVisibleLanePrRefreshIds({
       visibleLaneIds,
-      lanePrByLaneId,
+      lanePrByLaneId: lanePrTagsByLaneId,
       prs: lanePrTags,
       recentlyRequestedAtByPrId: laneVisiblePrRefreshRequestedAtRef.current,
       nowMs,
@@ -1143,7 +1158,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     getActiveProjectRoot,
     activeProjectRoot,
     visibleLaneIds,
-    lanePrByLaneId,
+    lanePrTagsByLaneId,
     lanePrTags,
     laneVisiblePrRefreshVisibilityToken,
   ]);
@@ -2439,6 +2454,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       laneId && linearIssueChatContextRequest?.laneId === laneId
         ? linearIssueChatContextRequest
         : null;
+    const lane = laneId ? lanesById.get(laneId) ?? null : null;
+    const lanePrs = lane ? selectLanePrs(lane, lanePrTags) : [];
     const mountGitActionsPane = shouldMountGitActionsPane({
       laneId,
       expandedGitActionsLaneId,
@@ -2512,6 +2529,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
               <LaneWorkPane
                 laneId={laneId}
+                lanePrs={lanePrs}
                 initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
                 onInitialLinearIssueContextConsumed={
                   pendingLinearIssueContext
@@ -2546,6 +2564,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     handleSelectFile,
     handleSelectCommit,
     handleClearLanePaneDetailSelection,
+    lanesById,
+    lanePrTags,
   ]);
 
   /* ---- Render ---- */
@@ -3067,6 +3087,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
           const lanePr = lanePrByLaneId.get(lane.id) ?? null;
+          const lanePrs = lanePrTagsByLaneId.get(lane.id) ?? [];
           const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
           const isDeleting = isLaneDeleteProgressActive(deleteProgress);
           // A freshly batch-launched lane whose headless agent session has not yet
@@ -3255,18 +3276,25 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               ) : null}
               {!isDeleting && lanePr ? (
                 <LanePrBadgePopover
-                  pr={lanePr}
-                  onActivate={() => {
-                    if (lanePr.linkedPrId) {
+                  prs={lanePrs}
+                  onOpenList={() => navigate(`/prs${buildPrsRouteSearch({
+                    activeTab: "normal",
+                    selectedPrId: null,
+                    selectedLaneId: lane.id,
+                    selectedRebaseItemId: null,
+                  })}`)}
+                  onActivate={(_event, selectedPr) => {
+                    const target = selectedPr ?? lanePr;
+                    if (target.linkedPrId) {
                       navigate(`/prs${buildPrsRouteSearch({
                         activeTab: "normal",
-                        selectedPrId: lanePr.linkedPrId,
+                        selectedPrId: target.linkedPrId,
                         selectedRebaseItemId: null,
                       })}`);
                       return;
                     }
-                    if (lanePr.githubUrl && isTrustedGitHubUrl(lanePr.githubUrl)) {
-                      void window.ade?.app?.openExternal?.(lanePr.githubUrl);
+                    if (target.githubUrl && isTrustedGitHubUrl(target.githubUrl)) {
+                      void window.ade?.app?.openExternal?.(target.githubUrl);
                     }
                   }}
                 />

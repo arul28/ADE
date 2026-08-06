@@ -12,6 +12,7 @@ import {
   buildPrReviewCard,
   emitPrCardsForChange,
   selectPrCardSession,
+  selectPrCardSessions,
 } from "./prChatCards";
 
 function pr(overrides: Partial<PrSummary> = {}): PrSummary {
@@ -120,6 +121,18 @@ describe("PR chat cards", () => {
       session("archived", "2026-07-27T14:00:00.000Z", { archivedAt: "2026-07-27T14:01:00.000Z" }),
       session("newer", "2026-07-27T12:00:00.000Z"),
     ])?.sessionId).toBe("newer");
+  });
+
+  it("selects every explicitly linked Work chat for a PR", () => {
+    expect(selectPrCardSessions([
+      session("older", "2026-07-27T10:00:00.000Z"),
+      session("newer", "2026-07-27T12:00:00.000Z"),
+      session("personal", "2026-07-27T13:00:00.000Z", { surface: "personal" }),
+      session("archived", "2026-07-27T14:00:00.000Z", { archivedAt: "2026-07-27T14:01:00.000Z" }),
+    ], ["older", "newer", "personal", "archived"]).map((entry) => entry.sessionId)).toEqual([
+      "newer",
+      "older",
+    ]);
   });
 
   it("builds one live CI episode keyed by head and attempt", () => {
@@ -449,6 +462,40 @@ describe("PR chat cards", () => {
       "pr_conflict",
     ]);
     expect(emitAdeCard.mock.calls.every(([call]) => call.sessionId === "newer")).toBe(true);
+  });
+
+  it("fans a PR transition out to every linked Work chat", async () => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const count = await emitPrCardsForChange({
+      change: {
+        pr: pr({
+          chatSessionIds: ["newer", "older"],
+          checksStatus: "failing",
+        }),
+        previousState: "open",
+        previousChecksStatus: "passing",
+        previousReviewStatus: "approved",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([run()]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: {
+        listSessions: vi.fn().mockResolvedValue([
+          session("older", "2026-07-27T10:00:00.000Z"),
+          session("newer", "2026-07-27T12:00:00.000Z"),
+          session("other-lane", "2026-07-27T13:00:00.000Z", { laneId: "lane-2" }),
+        ]),
+        emitAdeCard,
+      },
+    });
+
+    expect(count).toBe(1);
+    expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId).sort()).toEqual(["newer", "older"]);
   });
 
   it("emits a merge-ready episode once when the prior state was not ready", async () => {

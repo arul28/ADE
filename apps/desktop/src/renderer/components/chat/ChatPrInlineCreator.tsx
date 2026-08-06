@@ -47,10 +47,13 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   laneId,
   branchName,
   sessionTitle,
+  sessionId = null,
   onCreated,
 }: {
   laneId: string;
   branchName?: string | null;
+  /** The chat that owns this PR edge; omitted for non-chat creation surfaces. */
+  sessionId?: string | null;
   /**
    * Title of the chat this creator was opened from. When it's a real title (not
    * the placeholder "New chat") it seeds the PR title, which is far closer to a
@@ -165,6 +168,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       const resolvedTitle = title.trim() || defaultTitle;
       const created = await window.ade.prs.createFromLane({
         laneId,
+        ...(sessionId ? { sessionId } : {}),
         title: resolvedTitle,
         body,
         draft: false,
@@ -186,7 +190,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       setError(cleanError(err));
       setBusy(false);
     }
-  }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, title]);
+  }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, sessionId, title]);
 
   // The full integration composer lives in the PRs tab; this hands off with the
   // lane pre-selected.

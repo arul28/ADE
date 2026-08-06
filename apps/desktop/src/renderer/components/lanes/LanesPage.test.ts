@@ -5,6 +5,7 @@ import {
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
   lanePrMatchesCurrentBranch,
+  lanePrRole,
   planLaneDeleteBatches,
   resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
@@ -12,6 +13,7 @@ import {
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
   selectGithubLanePrTag,
+  selectLanePrs,
   selectLaneTabPrTag,
   selectLanePrTag,
   selectVisibleLanePrRefreshIds,
@@ -368,13 +370,33 @@ describe("selectLanePrTag", () => {
     expect(selectLanePrTag(makeLane(), [mergedPr])).toBe(mergedPr);
   });
 
-  it("ignores PR rows whose head branch no longer matches the lane branch", () => {
+  it("retains a PR row as lane history when its head branch moved on", () => {
     const stalePr = makePr({
       state: "merged",
       headBranch: "ade/old-pr-state",
     });
 
-    expect(selectLanePrTag(makeLane(), [stalePr])).toBeNull();
+    expect(selectLanePrTag(makeLane(), [stalePr])).toBe(stalePr);
+  });
+
+  it("orders active PRs before previous history while retaining both", () => {
+    const previous = makePr({
+      id: "previous-pr",
+      state: "merged",
+      headBranch: "ade/old-pr-state",
+    });
+    const active = makePr({
+      id: "active-pr",
+      state: "open",
+      headBranch: "ade/pr-state",
+    });
+
+    expect(selectLanePrs(makeLane(), [previous, active]).map((pr) => pr.id)).toEqual([
+      "active-pr",
+      "previous-pr",
+    ]);
+    expect(lanePrRole(makeLane(), previous)).toBe("previous");
+    expect(lanePrRole(makeLane(), active)).toBe("active");
   });
 
   it("ignores PR rows when either side has no branch to compare", () => {

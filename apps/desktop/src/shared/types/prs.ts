@@ -109,6 +109,8 @@ export type PrSummary = {
   mergeMethod?: MergeMethod | null;
   commitCount?: number | null;
   changedFiles?: number | null;
+  /** Chats that explicitly opened or worked on this PR. Empty/absent means legacy lane-wide routing. */
+  chatSessionIds?: string[];
 };
 
 /**
@@ -520,6 +522,8 @@ export type PrCreationStrategy = "pr_target" | "lane_base";
 
 export type CreatePrFromLaneArgs = {
   laneId: string;
+  /** The chat that initiated this PR, when the action came from a chat surface. */
+  sessionId?: string | null;
   title: string;
   body: string;
   draft: boolean;
@@ -535,6 +539,8 @@ export type CreatePrFromLaneArgs = {
 export type LinkPrToLaneArgs = {
   laneId: string;
   prUrlOrNumber: string;
+  /** The chat that initiated this link, when the action came from a chat surface. */
+  sessionId?: string | null;
 };
 
 export type CreateLaneFromPrBranchArgs = {

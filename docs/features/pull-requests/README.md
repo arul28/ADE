@@ -161,7 +161,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
 | `requiredChecks.ts` | Three-tier resolver for a base branch's required status-check contexts, cached per `(repo, base branch)` behind a 5-minute TTL. Tier 1 is `/repos/{owner}/{repo}/rules/branches/{branch}` (repository rulesets) — read access is enough, so it answers for every credential source ADE supports. Tier 2 is `/branches/{branch}/protection` (classic protection), admin-only and therefore a 403 for most contributors, but the only source for repos that never migrated to rulesets. Tier 3 is `mergeStateStatus === "blocked"`, already fetched for the merge box: it cannot name contexts and conflates missing checks with review-required and out-of-date branches, so it is corroboration only — enough to strengthen a not-run finding, never enough to contradict a genuine pass. When all three come up empty the result is `null` contexts meaning **unknown**, never "none required". See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
-| `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` (lane delete) and `detachPullRequestRowsByIds` (branch switch / rename-with-branch-change) stamp `detached_at` + the frozen lane identity and provenance, lift `commit_count` / `changed_files` off the snapshot, null the bulky snapshot JSON columns, and drop lane-scoped group membership. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for the genuinely destructive paths. See [Detached PR rows](#detached-pr-rows). |
+| `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` stamps `detached_at` + the frozen lane identity and provenance when a lane is deleted, lifts `commit_count` / `changed_files` off the snapshot, nulls the bulky snapshot JSON columns, drops lane-scoped group membership, and removes live PR↔chat routing edges. `detachPullRequestRowsByIds` remains an explicit cleanup helper for callers that truly need to detach selected rows; ordinary branch switching retains previous-branch PRs as live lane history. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for genuinely destructive paths. See [Multi-PR lane ownership](#multi-pr-lane-ownership-and-chat-edges) and [Detached PR rows](#detached-pr-rows). |
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
 | `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files eligible, unblocked chat and tracked-agent-CLI sessions for a newly discovered merged PR, but emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
@@ -260,6 +260,7 @@ Renderer PR helpers outside the PRs tab (the Work-surface badge/pill path):
 | `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` | The lane→PR map every Work surface reads. Builds the bound machine's map from a coalesced `prs.listAll` + GitHub snapshot refreshed by `prs-updated`, then folds in each union machine's `prs` slice. Exports the three namespaced key builders (`laneBoundMachineKey`, `lanePrCompositeKey`, `laneAnyMachineKey`) and their accessors `boundMachineLanePrs`, `lanePrsForMachine`, and `laneHasAnyPr` — see [Which machine answers a PR read](#which-machine-answers-a-pr-read). |
 | `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. |
 | `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx` | The compact PR chip itself. Presentation only — its host supplies `onOpen`, which is always `openLanePr`. |
+| `apps/desktop/src/renderer/lib/prChatScope.ts` | Pure chat-specific PR scoping. Explicit `pull_request_chat_sessions` edges win; rows with no edge use the lane fallback for legacy data, while a chat with no edge never displays another chat's explicitly linked PR. |
 
 Shared contracts:
 
@@ -684,6 +685,38 @@ try/catch. Today those sinks are the runtime `pr_event` emitter (surfaced to
 runtime-bound windows) and search indexing (`searchService.notifyPrChanged` on
 `prs-updated`). A throw in one sink can no longer suppress the others.
 
+## Multi-PR lane ownership and chat edges
+
+`pull_requests.lane_id` is intentionally non-unique. A live lane may retain
+multiple PR rows as it moves from one branch to another: a row whose
+`head_branch` matches the lane's current branch is `active`; a row with a
+different head branch is `previous`. This role is derived at read time, so a
+branch switch does not rewrite or detach the PR history. `detached_at` is
+reserved for deleting the lane (or an explicit destructive cleanup path).
+
+`prService.listAll({ laneId })` returns the lane's complete live set for the
+renderer. `getForLane(laneId)` remains a single-value compatibility bridge: it
+prefers the current-branch PR and otherwise returns the newest previous-branch
+row. New lane, Work, and chat surfaces should use the plural read so they can
+show a primary badge plus a `+N` counter and a short list on hover/focus. The
+primary state is the worst attention state across the set (conflicts,
+changes-requested, or failing CI outrank pending, open, merged, and closed),
+while the list keeps each PR's own state, CI, review, and active/previous
+signals.
+
+Chat ownership is a separate optional edge in
+`pull_request_chat_sessions`. Creating or linking a PR from a chat records the
+canonical `terminal_sessions.id` when that session is available. One chat can
+therefore be linked to multiple PRs, and a PR can retain links to multiple
+chats in the same lane. PR cards and merge auto-settlement use those explicit
+edges; rows created before this table existed fall back to the lane's recent
+eligible Work chat so old data stays useful. Deleting a lane or retiring a
+session removes its live routing edges while preserving the PR row/history.
+
+The edge table is a CRR table with a primary-key-only uniqueness contract and
+is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.
+Do not add a unique secondary index; CRR conversion rejects it.
+
 ## Detached PR rows
 
 A PR outlives the lane it was built in. The normal flow — merge, then delete the
@@ -717,14 +750,15 @@ a record that this PR was ADE's work, and which lane it was built in.
   snapshot join) deliberately do not filter — that is how the merged view gets
   its provenance back.
 - **Detaching is not free-form deletion.** `deletePullRequestRowsByIds` still
-  exists for genuinely destructive paths; the lane-delete and branch-change paths
-  must go through the detach helpers.
+  exists for genuinely destructive paths; lane deletion must go through the
+  detach helper so PR history and provenance survive the lane cascade.
 
-**What detaches a row:** lane delete (`detachPullRequestRowsForLane`), and
-`switchBranch` / rename-with-branch-change for rows whose `head_branch` no longer
-matches the lane (`detachPullRequestRowsByIds`). All three also drop
-`pr_group_members` — group membership is lane-scoped work in progress, not
-history — and prune any group left empty.
+**What detaches a row:** lane delete (`detachPullRequestRowsForLane`) and
+explicit destructive cleanup through `detachPullRequestRowsByIds`. Ordinary
+branch switching and rename-with-branch-change do not detach rows; their
+previous-branch PRs remain live lane history and are role-labeled by the
+renderer. Lane detachment also drops `pr_group_members` — group membership is
+lane-scoped work in progress, not history — and prunes any group left empty.
 
 **Storage does not grow.** Detach nulls `files_json`, `checks_json`,
 `comments_json` and `reviews_json` on `pull_request_snapshots`, which frees more
@@ -734,15 +768,13 @@ the PR row first so the merged view survives the purge; the 60-day
 
 **What may reclaim a detached row.** Only `upsertRow`, and only when *both* hold:
 the target lane still exists, **and** it still tracks the PR's head branch. Lane
-existence alone is not enough — `switchBranch` and `rename` detach while the lane
-lives on, so an existence-only check would let a background refresh reattach a PR
-to a lane that has since moved to a different branch, reinstating exactly the
-stale reference the old delete prevented and destroying the provenance snapshot
-on the way. The branch check also settles archived lanes correctly: one still on
-the branch may reclaim its PR, one that moved on may not. Reclaiming clears all
-four detach columns, and is written as a separate statement from the upsert so a
-plain refresh of a detached row — whose `lane_id` still names its dead lane —
-can never resurrect it.
+existence alone is not enough for legacy rows detached by an older branch switch
+or an explicit cleanup path: a background refresh must not reattach a PR to a
+lane that has since moved to a different branch. The branch check also settles
+archived lanes correctly: one still on the branch may reclaim its PR, one that
+moved on may not. Reclaiming clears all four detach columns, and is written as a
+separate statement from the upsert so a plain refresh of a detached row — whose
+`lane_id` still names its dead lane — can never resurrect it.
 
 **Two row lookups, deliberately different.** `getLiveRowForRepoPr` answers "does
 a lane already own this PR?" and backs the four ownership guards (auto-map by
@@ -1117,15 +1149,18 @@ PR state appears in two intentionally different chat surfaces:
   bounded episode, live while the episode is running and frozen when terminal.
   It remains in chronology to explain the surrounding agent conversation.
 
-The polling change hook emits provider-independent, durable cards into the most
-recent non-archived Work chat for the PR's lane. Variants are `pr_ci`,
+The polling change hook emits provider-independent, durable cards into every
+explicitly linked non-archived Work chat for the PR. Variants are `pr_ci`,
 `pr_review`, `pr_merge_ready`, `pr_merged`, and `pr_conflict` (conflicts and
 behind-base transitions). CI cards use a stable
 `prId + headSha + runAttempt` identity so all workflows in one attempt roll up
 into one episode and pending → terminal updates merge
 in place rather than append. Review cards include the latest reviewer and
 unresolved-thread count. Every card carries a PR `navTarget`; CI targets include
-`detailTab: "checks"` on desktop, iOS, and TUI/deeplink fallback.
+`detailTab: "checks"` on desktop, iOS, and TUI/deeplink fallback. Rows without a
+chat edge use the recent eligible Work chat in the PR's lane as a compatibility
+fallback, so older PRs do not lose cards while new chat-specific links settle
+the routing.
 
 CI detail ranks failed → running → queued → unknown → skipped → passed and
 shows at most three rows, followed by `+N more`. Rows are split into a **CI**
@@ -1283,12 +1318,15 @@ best-effort — failures log a warning and do not abort the tick.
   `detailDeployments`, `detailAiSummary`). It exposes
   `setTimelineFilters`, `setAiSummaryDismissed`, and
   `regeneratePrAiSummary`.
-- Chat-side PR surfaces (`ChatGitToolbar`, `ChatPrPane`) render the cached
-  lane PR row first, then use `renderer/lib/prReadCache.ts` to coalesce and
-  throttle a targeted `prs.refresh({ prIds })` for the linked PR when the
-  pane or compact menu opens. This keeps chat PR badges near-live without
-  forcing a repo snapshot refresh or broad background sync on every Work
-  chat mount. The **manual** sync affordance is the ↻ in `ChatPrPane`'s title
+- Chat-side PR surfaces (`ChatGitToolbar`, `ChatPrPane`) first scope the cached
+  lane PR set to the selected chat's explicit edges, so one chat can show more
+  than one PR without leaking another chat's PR. Rows with no edge retain the
+  lane fallback for backwards compatibility. They then use
+  `renderer/lib/prReadCache.ts` to coalesce and throttle a targeted
+  `prs.refresh({ prIds })` for the linked PR when the pane or compact menu
+  opens. This keeps chat PR badges near-live without forcing a repo snapshot
+  refresh or broad background sync on every Work chat mount. The **manual** sync
+  affordance is the ↻ in `ChatPrPane`'s title
   bar (`prs.syncLanePr`, then a re-read of the pane's PR); `ChatGitToolbar` is
   a status strip with no manual sync, so toolbar-only surfaces heal through
   reconcile-on-focus plus `prs-updated`. The pane spins for either a manual

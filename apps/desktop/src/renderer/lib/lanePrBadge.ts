@@ -1,5 +1,5 @@
 import type { LaneSummary, PrState, PrSummary } from "../../shared/types";
-import { lanePrMatchesCurrentBranch } from "../components/lanes/lanePageModel";
+import { selectLanePrs } from "../components/lanes/lanePageModel";
 import { COLORS } from "../components/lanes/laneDesignTokens";
 
 /**
@@ -47,12 +47,90 @@ export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: T[]): T | null
   return best;
 }
 
-/** The lane's primary PR from the ADE-mapped set, matched on the lane's current branch. */
+/**
+ * Choose the lane badge's attention target. A failing or blocked historical PR
+ * must be able to win over a healthy current PR so the collapsed chip never
+ * hides the lane's most actionable problem.
+ */
 export function selectPrimaryLanePr(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
   prs: PrSummary[],
 ): PrSummary | null {
-  return pickPrimaryPr(prs.filter((pr) => lanePrMatchesCurrentBranch(lane, pr)));
+  const lanePrs = selectLanePrs(lane, prs);
+  // Older/remote bridges sometimes return a compact PR summary without branch
+  // fields. Keep that single-value compatibility path usable while the richer
+  // lane selectors continue to reject branchless rows as lane history.
+  const candidates = lanePrs.length > 0
+    ? lanePrs
+    : prs.filter((pr) => pr.laneId === lane.id && !pr.detached);
+  let best: PrSummary | null = null;
+  for (const pr of candidates) {
+    if (!best || compareLanePrimaryPr(pr, best) < 0) best = pr;
+  }
+  return best;
+}
+
+function compareLanePrimaryPr(a: PrSummary, b: PrSummary): number {
+  const byAttention = lanePrAttentionRank(b) - lanePrAttentionRank(a);
+  if (byAttention !== 0) return byAttention;
+  return comparePrimaryPr(a, b);
+}
+
+export function lanePrsForLane(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  prs: PrSummary[],
+): PrSummary[] {
+  return selectLanePrs(lane, prs);
+}
+
+export type LanePrAttention = "danger" | "warning" | "active" | "success" | "muted";
+
+export type LanePrAttentionInput = {
+  state: PrState;
+  checksStatus?: PrSummary["checksStatus"] | null;
+  reviewStatus?: PrSummary["reviewStatus"] | null;
+  mergeConflicts?: PrSummary["mergeConflicts"] | null;
+  behindBaseBy?: PrSummary["behindBaseBy"] | null;
+};
+
+export function lanePrAttention(pr: LanePrAttentionInput): LanePrAttention {
+  // Attention is intentionally evaluated before lifecycle state. A previous
+  // PR with a failing check or requested changes must not disappear behind a
+  // healthy current PR merely because GitHub has since marked it merged/closed.
+  if (pr.mergeConflicts === true || pr.checksStatus === "failing" || pr.reviewStatus === "changes_requested") return "danger";
+  if (pr.checksStatus === "pending" || pr.checksStatus === "not_run" || pr.reviewStatus === "requested" || (pr.behindBaseBy ?? 0) > 0) return "warning";
+  if (pr.state === "open" || pr.state === "draft") {
+    return "active";
+  }
+  return pr.state === "merged" ? "success" : "muted";
+}
+
+export function lanePrAttentionRank(pr: LanePrAttentionInput): number {
+  switch (lanePrAttention(pr)) {
+    case "danger": return 4;
+    case "warning": return 3;
+    case "active": return 2;
+    case "success": return 1;
+    default: return 0;
+  }
+}
+
+export function lanePrAttentionColor(attention: LanePrAttention): string {
+  switch (attention) {
+    case "danger": return "#f87171";
+    case "warning": return "#fbbf24";
+    case "active": return "#60a5fa";
+    case "success": return "#34d399";
+    default: return "rgba(255,255,255,0.35)";
+  }
+}
+
+export function lanePrAggregateAttention<T extends LanePrAttentionInput>(prs: readonly T[]): LanePrAttention {
+  let best: T | null = null;
+  for (const pr of prs) {
+    if (!best || lanePrAttentionRank(pr) > lanePrAttentionRank(best)) best = pr;
+  }
+  return best ? lanePrAttention(best) : "muted";
 }
 
 /** One-word capsule copy for a PR state. */

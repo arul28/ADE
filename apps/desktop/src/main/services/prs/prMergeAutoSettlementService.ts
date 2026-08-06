@@ -93,6 +93,9 @@ export function createPrMergeAutoSettlementService(args: {
     );
 
     for (const pr of candidates) {
+      const linkedChatSessionIds = new Set(
+        (pr.chatSessionIds ?? []).map((sessionId) => String(sessionId ?? "").trim()).filter(Boolean),
+      );
       const rows = args.sessionService.list({
         laneId: pr.laneId,
         limit: 500,
@@ -100,7 +103,7 @@ export function createPrMergeAutoSettlementService(args: {
         !session.archivedAt
         && !session.settledAt
         && (isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)),
-      );
+      ).filter((session) => linkedChatSessionIds.size === 0 || linkedChatSessionIds.has(session.id));
 
       const settledSessionIds: string[] = [];
       for (const session of rows) {

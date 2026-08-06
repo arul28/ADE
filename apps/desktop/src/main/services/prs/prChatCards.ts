@@ -178,12 +178,31 @@ function formatContextList(contexts: readonly string[], limit = MISSING_REQUIRED
 export function selectPrCardSession(
   sessions: AgentChatSessionSummary[],
 ): AgentChatSessionSummary | null {
-  return sessions
+  return selectPrCardSessions(sessions)[0] ?? null;
+}
+
+/**
+ * Route a PR card to every live chat that explicitly worked on the PR. Older
+ * PR rows have no edge, so they retain the historic single most-recent-lane
+ * fallback instead of disappearing from chat altogether.
+ */
+export function selectPrCardSessions(
+  sessions: AgentChatSessionSummary[],
+  chatSessionIds?: readonly string[] | null,
+): AgentChatSessionSummary[] {
+  const eligible = sessions
     .filter((session) => (session.surface ?? "work") === "work" && session.archivedAt == null)
     .sort((left, right) => (
       timeMs(right.lastActivityAt) - timeMs(left.lastActivityAt)
       || right.sessionId.localeCompare(left.sessionId)
-    ))[0] ?? null;
+    ));
+  const linkedIds = new Set(
+    (chatSessionIds ?? []).map((sessionId) => String(sessionId ?? "").trim()).filter(Boolean),
+  );
+  if (linkedIds.size > 0) {
+    return eligible.filter((session) => linkedIds.has(session.sessionId));
+  }
+  return eligible.slice(0, 1);
 }
 
 /**
@@ -470,10 +489,11 @@ export async function emitPrCardsForChange(args: {
     return 0;
   }
 
-  const session = selectPrCardSession(
+  const sessions = selectPrCardSessions(
     await chat.listSessions(pr.laneId, { includeArchived: false }),
+    pr.chatSessionIds,
   );
-  if (!session) return 0;
+  if (sessions.length === 0) return 0;
 
   const cards: AdeCardPayload[] = [];
   if (checksChanged) {
@@ -512,12 +532,14 @@ export async function emitPrCardsForChange(args: {
     cards.push(buildPrMergedCard(pr));
   }
 
-  const results = await Promise.allSettled(cards.map((card) => (
-    chat.emitAdeCard({
-      sessionId: session.sessionId,
-      card,
-    })
-  )));
+  const results = await Promise.allSettled(
+    sessions.flatMap((session) => cards.map((card) => (
+      chat.emitAdeCard({
+        sessionId: session.sessionId,
+        card,
+      })
+    ))),
+  );
   const failures = results.filter((result) => result.status === "rejected");
   if (failures.length > 0) {
     throw new AggregateError(

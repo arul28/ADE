@@ -869,6 +869,11 @@ Cross-machine Work union:
   three namespaced key spaces and no bare lane ids — `bound:<laneId>`
   (`boundMachineLanePrs`), `<machineId>:<laneId>` (`lanePrsForMachine`), and
   `any:<laneId>` (`laneHasAnyPr`, used only by the Has PR filter chip). A
+  lane's value is plural: its current-branch row is `active`, retained rows
+  from previous branches are `previous`, and the collapsed badge rolls them up
+  without hiding a worse CI or review state. A session or chat narrows that set
+  to its explicit PR links when present; legacy rows without an edge keep the
+  recent lane fallback. A
   session card marks its badge foreign from the presence of a foreign row, not
   from a runtime pin — an unreachable machine's row has a null binding and no
   pin while still being foreign — and `openLanePr` sends a foreign PR to GitHub
@@ -1857,7 +1862,8 @@ iOS service files (`apps/ios/ADE/Services/`):
 - `Database.swift` — native SQLite3 + pure-SQL CRR emulation (triggers
   + custom SQLite functions). Offline caches for files workspaces,
   directory listings, file contents, session pin/runtime state, chat
-  snapshots, PR mobile snapshot persistence, and integration proposal
+  snapshots, PR mobile snapshot persistence, the CRR-safe
+  `pull_request_chat_sessions` relationship table, and integration proposal
   fields mirrored from desktop schema.
 - `SyncService.swift` — WebSocket client, legacy gzip plus negotiated
   zlib-wrapped deflate envelope encoding, bidirectional bounded chunk framing
@@ -1869,7 +1875,8 @@ iOS service files (`apps/ios/ADE/Services/`):
   presence announcements, terminal subscribe/unsubscribe tracking,
   terminal input/resize senders, mobile CLI launch/continuation,
   external-session list/import commands for Work,
-  PR mobile snapshot fetch, live chat-event push listener, subscription-scoped
+  PR mobile snapshot fetch (including active/previous lane PR projection),
+  live chat-event push listener, subscription-scoped
   `chat_history` request/response tracking with an 8-second non-disconnecting
   timeout and legacy command fallback, lane
   reparent payload building with the optional stack base-branch

@@ -297,6 +297,8 @@ export const SessionCard = React.memo(function SessionCard({
   githubStack = null,
   showLaneIdentity = false,
   lanePr = null,
+  lanePrs = [],
+  onOpenLanePrs,
   lanePrForeign = false,
   machineMarker = null,
   suppressMachineChip = false,
@@ -335,6 +337,10 @@ export const SessionCard = React.memo(function SessionCard({
    * divider owns the PR badge and a second copy per row would be noise.
    */
   lanePr?: PrSummary | null;
+  /** All live and previous PRs on the lane; the primary chip is still `lanePr`. */
+  lanePrs?: PrSummary[];
+  /** Opens the lane-filtered PR list from a multi-PR counter. */
+  onOpenLanePrs?: () => void;
   /**
    * True when this card's lane lives on another machine. The PR itself is read
    * from that machine; only its click-through has to change, because the PRs tab
@@ -689,6 +695,7 @@ export const SessionCard = React.memo(function SessionCard({
          an identity mark and not a status (see `sessionStatusPresentation.ts`).
      Everything else is muted, or borrows a colour that already means something
      (PR state, red for a broken exit). */
+  const lanePrList = lanePr ? (lanePrs.length > 0 ? lanePrs : [lanePr]) : [];
   const hoverRows: SessionHoverCardRow[] = [];
   hoverRows.push({
     id: "lane",
@@ -737,6 +744,9 @@ export const SessionCard = React.memo(function SessionCard({
           <span style={{ color: lanePrStateColor(lanePr.state) }}>
             {lanePrStateLabel(lanePr.state)}
           </span>
+          {lanePrList.length > 1 ? (
+            <span className="text-muted-fg/55"> · +{lanePrList.length - 1} more</span>
+          ) : null}
         </span>
       ),
       onActivate: () => openLanePr(lanePr, { foreign: lanePrForeign, navigate }),
@@ -871,7 +881,9 @@ export const SessionCard = React.memo(function SessionCard({
   const singletonPrBadge = showLaneIdentity && lanePr ? (
     <LanePrBadge
       pr={lanePr}
-      onOpen={() => openLanePr(lanePr, { foreign: lanePrForeign, navigate })}
+      prs={lanePrList}
+      onOpen={(target) => openLanePr(target, { foreign: lanePrForeign, navigate })}
+      onOpenList={onOpenLanePrs}
     />
   ) : null;
 

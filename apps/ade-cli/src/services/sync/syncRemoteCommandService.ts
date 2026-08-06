@@ -3074,8 +3074,10 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
   if (!laneId || !title) throw new Error("prs.createFromLane requires laneId and title.");
   const strategy: CreatePrFromLaneArgs["strategy"] =
     normalizePrCreationStrategy(asTrimmedString(value.strategy)) ?? undefined;
+  const sessionId = asTrimmedString(value.sessionId);
   return {
     laneId,
+    ...(sessionId ? { sessionId } : {}),
     title,
     body,
     draft: value.draft === true,
@@ -3089,9 +3091,11 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
 }
 
 function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs {
+  const sessionId = asTrimmedString(value.sessionId);
   return {
     laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
     prUrlOrNumber: requireString(value.prUrlOrNumber, "prs.linkToLane requires prUrlOrNumber."),
+    ...(sessionId ? { sessionId } : {}),
   };
 }
 
