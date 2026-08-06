@@ -24,6 +24,8 @@ import {
   type ServiceManagerStatusResult,
 } from "./common";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
+import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
 import {
   defaultWindowsRuntimeReadiness,
   queryWindowsSupervisor,
@@ -766,10 +768,26 @@ async function installWindowsServiceImpl(
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   const logPath = `${launcherPath}.log`;
-  const socketPath = resolveMachineAdeLayout(runtimeEnv, "win32").socketPath;
+  const machineLayout = resolveMachineAdeLayout(runtimeEnv, "win32");
+  const socketPath = machineLayout.socketPath;
+  // The supervisor loop doubles as this platform's wedge watchdog: it reads the
+  // brain's heartbeat between wait slices and stops a brain that hangs while
+  // staying alive. macOS gets the same protection from a separate
+  // `com.ade.watchdog` launch agent, because launchd's KeepAlive only reacts to
+  // an exit and has no loop to fold the check into.
+  const heartbeatPath = path.win32.join(machineLayout.runtimeDir, BRAIN_HEARTBEAT_FILE);
+  const wedgeBreadcrumbPath = path.win32.join(
+    machineLayout.runtimeDir,
+    BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
+  );
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath, logPath })}`, {
+    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+      pidPath,
+      logPath,
+      heartbeatPath,
+      wedgeBreadcrumbPath,
+    })}`, {
       encoding: "utf8",
       mode: 0o600,
     });

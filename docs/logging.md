@@ -107,6 +107,28 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Applying an update is one transaction — app swap, background service reinstalled,
+service restarted, service answering — and the brain half failing (the app
+updated but the background service never came back) is its own product-level
+failure category. The update service records it at the owner boundary where the
+transaction result is published (`autoUpdateService.setUpdateTransaction`) using
+the existing `ade_feature_used` event with `feature: "updates"`,
+`action: "transaction_failed"`, and a coarse `outcome` naming the failed step —
+`service`, `restart`, or `health`. A failed `swap` step is deliberately not
+reported here because the app half already has `ade_update_install_did_not_land`.
+Nothing else crosses the boundary: no versions, paths, step details, failure
+copy, or error text — those stay in the local `autoUpdate.transaction_failed`
+line. A persisted `update_transaction_failed:<step>` deduplication key with a
+one-hour minimum interval means a relaunch loop costs one accepted event per
+step per hour. Because a transaction runs at most once per post-update launch
+and stops at the first failed step, realistic worst case is a single-digit
+number of accepted events per installation per day (hard ceiling 72 across all
+three steps), inside the existing `ade_feature_used` 140-per-day / 30-per-minute
+limits and the shared 200-event ceiling — no ceiling was raised. The dashboard
+spec is deliberately untouched: there is no product question attached to this
+event yet, so it stays out of `scripts/posthog/dashboard-spec.mjs` until there
+is one.
+
 `ade_relay_suppressed` is the same shape for the relay leg. The relay keeps one host control socket per machine and evicts the previous holder, so two ADE brains on one machine can evict each other in a loop until relay is unusable for both. When the tunnel client exhausts its eviction budget and stops dialing, it emits one event carrying only `attempt` (the bounded eviction count) and a coarse `code` (`control_replaced`). It is keyed to the suppression *episode*, not the eviction, so a whole war collapses into one accepted event, and a 24-hour deduplication window bounds it further; a recovered control socket ends the episode so a genuinely new one still reports. The relay URL, machineKey, and raw WebSocket close reason stay in local logs and never reach the payload. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `escalation_reason` to `hard_deadline` / `post_staging`, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
 
 `ade_account_session_unreadable` covers the credential-store half of the same

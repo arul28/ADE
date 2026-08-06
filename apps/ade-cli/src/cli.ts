@@ -146,6 +146,7 @@ import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
 import {
+  accountSessionRetainsMachineOwnership,
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
@@ -174,6 +175,7 @@ import {
   readBrainLoopWatchdogLastWedge,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
 type JsonObject = Record<string, unknown>;
 
@@ -293,6 +295,8 @@ type FormatterId =
   | "storage-maintenance"
   | "sync-status"
   | "sync-web"
+  | "sync-pin"
+  | "sync-devices"
   | "update-status";
 
 type ChatWaitTarget =
@@ -1395,9 +1399,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade runtime status --text
     $ ade runtime start
     $ ade runtime stop
+    $ ade runtime watchdog-check
 
   Notes:
     "run" starts a foreground manual runtime on the selected endpoint.
+    "watchdog-check" is the external liveness check the ADE watchdog agent runs
+    on a timer. It reads the brain's heartbeat file and stops a brain that has
+    stopped responding, so the service supervisor can restart it. It never
+    opens the runtime socket and never starts anything.
     Manual runtimes always run with sync off so they cannot claim brain
     authority.
     "start" and "stop" are compatibility endpoint commands; use "ade brain"
@@ -14440,6 +14449,7 @@ Usage:
     return {
       kind: "execute",
       label: "sync devices",
+      formatter: "sync-devices",
       steps: [{ key: "result", method: "sync.listDevices" }],
     };
   }
@@ -14449,6 +14459,7 @@ Usage:
       return {
         kind: "execute",
         label: "sync pin get",
+        formatter: "sync-pin",
         steps: [{ key: "result", method: "sync.getPin" }],
       };
     }
@@ -14460,6 +14471,7 @@ Usage:
       return {
         kind: "execute",
         label: "sync pin set",
+        formatter: "sync-pin",
         steps: [{ key: "result", method: "sync.setPin", params: { pin } }],
       };
     }
@@ -14467,6 +14479,7 @@ Usage:
       return {
         kind: "execute",
         label: "sync pin generate",
+        formatter: "sync-pin",
         steps: [{ key: "result", method: "sync.generatePin" }],
       };
     }
@@ -14474,6 +14487,7 @@ Usage:
       return {
         kind: "execute",
         label: "sync pin clear",
+        formatter: "sync-pin",
         steps: [{ key: "result", method: "sync.clearPin" }],
       };
     }
@@ -15527,6 +15541,18 @@ async function runRuntimeCommand(
 ): Promise<unknown> {
   const args = [...rest];
   const sub = firstStandalonePositional(args) ?? "status";
+
+  // The external wedge check. Runs from the `com.ade.watchdog` launch agent on
+  // a timer, so it must not open the runtime socket: a wedged brain is exactly
+  // the case where connecting hangs, and a watchdog that blocks on its patient
+  // is no watchdog. It reads a file and, at most, kills one pid.
+  if (sub === "watchdog-check") {
+    const { runBrainWatchdogCheck } = await import("./services/runtime/brainWatchdogCheck");
+    return runBrainWatchdogCheck({
+      runtimeDir: resolveMachineAdeLayout().runtimeDir,
+    });
+  }
+
   const socketOverride = readValue(args, ["--socket"]);
   const socketPath = await resolveMachineRuntimeSocketPath(socketOverride);
 
@@ -16383,6 +16409,7 @@ async function runServe(
   }
   let serveStarted = false;
   let stopBrainLoopWatchdog: (() => void) | null = null;
+  let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
@@ -16397,11 +16424,13 @@ async function runServe(
     },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
-    { createBrainProjectActionsSyncHandler },
+    { createBrainProjectActionsSyncHandler, BOOTSTRAP_TOKEN_KEY },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
     { createSyncCloudRelayStore },
     { setSyncRuntimeRpcHandlerFactory },
     { buildProjectlessSyncSnapshot },
+    { resolveBrainMachineSyncStores, createProjectlessSyncControls },
+    { createMachineUpdateControls },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -16414,6 +16443,8 @@ async function runServe(
     import("./services/sync/syncCloudRelayStore"),
     import("./services/sync/syncPairedChannelService"),
     import("./services/sync/projectlessSyncSnapshot"),
+    import("./services/sync/brainMachineSyncStores"),
+    import("./services/runtime/machineUpdateAndRestart"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -16450,6 +16481,16 @@ async function runServe(
         minimumIntervalMs: 24 * 60 * 60 * 1_000,
       });
     },
+  });
+  // The loop watchdog above lives inside the process it guards, so it cannot
+  // report a brain whose whole runtime is stuck. This heartbeat is the same
+  // signal published where something OUTSIDE the process can read it: the
+  // `com.ade.watchdog` launch agent on macOS, the PowerShell supervisor loop on
+  // Windows. It ticks even when the brain is completely idle, which is exactly
+  // the state a wedge otherwise hides in.
+  stopBrainHeartbeat = startBrainHeartbeat({
+    runtimeDir: layout.runtimeDir,
+    warn: (event, meta) => headlessProjectLogger.warn(event, meta),
   });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
@@ -16792,6 +16833,11 @@ async function runServe(
   const machineCredentialStore = new EncryptedFileCredentialStore({
     secretsDir: layout.secretsDir,
   });
+  // ONE set of machine-level pairing stores for the whole brain — pairing
+  // identity is the machine's, not the caller's. The projectless ingress
+  // handler verifies PINs against these and the RPC surface below mutates the
+  // same instances, so both see the same in-memory state.
+  const brainMachineSyncStores = resolveBrainMachineSyncStores(layout.secretsDir);
   // Same file the per-scope sync services read; another store instance is fine
   // because every read reloads the file. The path doubles as the machine-wide
   // key for the shared relay tunnel client, so a projectless brain and a later
@@ -16827,7 +16873,9 @@ async function runServe(
       listener: sharedSyncListener,
       holdsSyncHostLease: brainSyncHostLease != null,
       relay: {
-        accountSignedIn: accountStatus.signedIn && Boolean(accountStatus.userId?.trim()),
+        // Ownership, not usability: an expired or unreadable session keeps the
+        // relay route advertised so already-paired devices keep connecting.
+        accountSignedIn: accountSessionRetainsMachineOwnership(accountStatus),
         // Same gate the scoped path applies: never advertise a relay URL the
         // tunnel has deliberately stopped dialing, or a phone that saved it
         // keeps retrying a route only this machine knows is dead.
@@ -16837,6 +16885,13 @@ async function runServe(
         status: tunnelStatus,
       },
       accountDirectory: getAccountDirectoryHealth(),
+      // The only nearby-pairing path a projectless machine has. Reported from
+      // the same store the ingress handler checks, so the desktop and `ade
+      // brain` stop claiming an unset PIN on a machine that has one.
+      pin: brainMachineSyncStores.pinStore,
+      // Minted by the ingress handler when it was constructed; read back here
+      // rather than derived a second time.
+      bootstrapToken: machineCredentialStore.getSync(BOOTSTRAP_TOKEN_KEY)?.trim() || null,
     });
   };
 
@@ -16881,8 +16936,7 @@ async function runServe(
       projectCatalogProvider: machineProjectCatalogProvider,
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
-      pairingSecretsPath: path.join(layout.secretsDir, "sync-paired-devices.json"),
-      pinPath: path.join(layout.secretsDir, "sync-pin.json"),
+      secretsDir: layout.secretsDir,
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
@@ -16944,6 +16998,28 @@ async function runServe(
     resolveDone?.();
   };
 
+  /**
+   * Reinstall the service definition and restart this brain.
+   *
+   * Resolves the command at call time rather than capturing one: after an
+   * update the on-disk runtime is a different file, and a captured command
+   * would reinstall the service pointing at the build that just got replaced.
+   */
+  const requestBrainServiceRestartFromServe = async (): Promise<{
+    status: number | null;
+    stdout: string;
+    stderr: string;
+  }> => {
+    const { requestBrainServiceRestart } = await import("./commands/brainUpdate");
+    const command = resolveAdeServeCommand();
+    const prepared = prepareMachineRuntimeDaemonCommand(command);
+    return requestBrainServiceRestart({
+      command: command.command,
+      commandArgs: prepared.args,
+      env: { ...process.env, ...(command.env ?? {}) },
+    });
+  };
+
   const createHandler = () =>
     createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
@@ -16955,6 +17031,18 @@ async function runServe(
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
       repairMachinePairing,
+      projectlessSyncControls: createProjectlessSyncControls({
+        stores: brainMachineSyncStores,
+        cloudRelayStore: machineCloudRelayStore,
+        getTunnelStatus: () => brainSyncTunnelClient?.getStatus() ?? null,
+        accountRetainsMachineOwnership: () =>
+          accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
+      }),
+      machineUpdateControls: createMachineUpdateControls({
+        version: VERSION,
+        logger: headlessProjectLogger,
+        requestRestart: requestBrainServiceRestartFromServe,
+      }),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -17511,6 +17599,7 @@ async function runServe(
     throw error;
   } finally {
     stopBrainFreshnessMonitor?.();
+    stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
   }
 }
@@ -18075,9 +18164,66 @@ function formatSyncStatus(value: unknown): string {
     ["directory success", lastSuccess],
     ["transfer readiness", transferState],
     ...transferRows,
+    ["pairing code", describeSyncPairingCode(snapshot)],
     ["survivable state", snapshot.survivableStateText],
     ["blocking state", snapshot.blockingStateText],
   ]);
+}
+
+/**
+ * One phrase for the pairing code, from either shape a sync snapshot has.
+ *
+ * A machine with no registered project reports its pairing state and nothing
+ * else — the code IS the status there — so leaving it off the status view made
+ * the one thing that matters on a fresh install invisible. The plaintext code
+ * is only ever known to the process that set it, so "set" and "set, and here it
+ * is" are different answers and have to read differently.
+ */
+function describeSyncPairingCode(snapshot: JsonObject): string | null {
+  const pin = asString(snapshot.pairingPin);
+  if (pin) return pin;
+  if (snapshot.pairingPinConfigured === true) {
+    return "set — hidden since the brain restarted (ade sync pin generate for a new one)";
+  }
+  if (snapshot.pairingConnectInfo == null) return null;
+  return "not set — run: ade sync pin generate";
+}
+
+/**
+ * `ade sync pin …` in words.
+ *
+ * `get` answers with `{ pin }`; set/generate/clear answer with the whole sync
+ * snapshot. Both land here, so the operator reads one line either way instead
+ * of the first two dozen keys of a snapshot.
+ */
+function formatSyncPin(value: unknown): string {
+  const noCode = "No pairing code is set — run: ade sync pin generate";
+  if (!isRecord(value)) return noCode;
+  const pin = asString(value.pin) ?? asString(value.pairingPin);
+  if (pin) return `Pairing code ${pin}\n\nEnter it on the phone or web client. Show the link too: ade sync web`;
+  if (value.pairingPinConfigured === true) {
+    return "A pairing code is set, but ADE cannot show it — only the run that set it knows the digits."
+      + "\n\nUse the code you already have, or set a new one: ade sync pin generate";
+  }
+  if ("pairingConnectInfo" in value && value.pairingConnectInfo == null) {
+    return "This machine is not hosting pairing right now — check: ade sync status --text";
+  }
+  return noCode;
+}
+
+/** Paired devices, or a plain line saying there are none yet. */
+function formatSyncDevices(value: unknown): string {
+  const devices = Array.isArray(value) ? value.filter(isRecord) : [];
+  return renderTable(
+    ["device", "type", "platform", "last seen"],
+    devices.map((device) => [
+      asString(device.name) ?? asString(device.deviceId) ?? "unknown",
+      asString(device.deviceType) ?? "",
+      asString(device.platform) ?? "",
+      asString(device.lastSeenAt) ?? "",
+    ]),
+    "No paired devices yet — run: ade sync pin generate",
+  );
 }
 
 function formatSyncWebPairing(value: unknown): string {
@@ -20013,6 +20159,17 @@ function formatTextOutput(
     }
     case "account-auth": {
       if (!isRecord(value) || value.signedIn !== true) {
+        // "Signed out", "the saved sign-in expired", and "this computer could
+        // not read its saved sign-in" all report signedIn: false and all need
+        // different words. Telling someone to sign in over a session that is
+        // merely unreadable makes them destroy a still-valid session.
+        const sessionState = isRecord(value) ? asString(value.sessionState) : null;
+        if (sessionState === "unreadable") {
+          return "ADE couldn't read this computer's saved sign-in — nothing changed. Try again in a moment; if it keeps failing, run `ade login`.";
+        }
+        if (sessionState === "expired") {
+          return "Your ADE account sign-in expired — run `ade login` again. Local use does not require an account.";
+        }
         return "Not signed in — local use does not require an account.";
       }
       const identity = asString(value.email)
@@ -20183,6 +20340,10 @@ function formatTextOutput(
       return formatSyncStatus(value);
     case "sync-web":
       return formatSyncWebPairing(value);
+    case "sync-pin":
+      return formatSyncPin(value);
+    case "sync-devices":
+      return formatSyncDevices(value);
     case "storage-snapshot":
       return formatStorageSnapshot(value);
     case "storage-compress":

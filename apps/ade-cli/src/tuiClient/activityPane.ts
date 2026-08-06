@@ -16,6 +16,7 @@ import {
   activityFeedItems,
   activityNotificationItems,
 } from "../../../desktop/src/renderer/components/activity/activityPriority";
+import type { AdeAccountSessionState } from "../../../desktop/src/shared/types/account";
 import { formatRelativePastTime } from "./relativeTime";
 import type { AdeCodeConnection } from "./types";
 
@@ -50,7 +51,36 @@ export type ActivityPaneEntry =
 
 type AccountStatus = {
   signedIn: boolean;
+  sessionState: AdeAccountSessionState;
 };
+
+/**
+ * Derive the session state from an `account.call status` result. Prefers the
+ * daemon's own `sessionState`; hosts older than that field only report
+ * `sessionReadState`, and anything reporting neither is a plain sign-out.
+ */
+export function accountSessionStateFromResult(
+  result: Record<string, unknown>,
+): AdeAccountSessionState {
+  if (result.signedIn === true) return "active";
+  const state = typeof result.sessionState === "string" ? result.sessionState : "";
+  if (state === "signed_out" || state === "expired" || state === "unreadable") {
+    return state;
+  }
+  return result.sessionReadState === "unreadable" ? "unreadable" : "signed_out";
+}
+
+/**
+ * The one line the header shows for a session that is not active. "unreadable"
+ * never suggests `ade login`: signing in overwrites the stored session, so a
+ * user who signs in to escape a bad read destroys the session that was fine.
+ */
+export function accountSessionLabel(state: AdeAccountSessionState): string | null {
+  if (state === "signed_out") return "account signed out · ade login";
+  if (state === "expired") return "account sign-in expired · ade login";
+  if (state === "unreadable") return "account sign-in unreadable · retry";
+  return null;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -100,7 +130,10 @@ async function getAccountStatus(connection: AdeCodeConnection): Promise<AccountS
     const result = envelope.result && typeof envelope.result === "object" && !Array.isArray(envelope.result)
       ? envelope.result as Record<string, unknown>
       : envelope;
-    return { signedIn: result.signedIn === true };
+    return {
+      signedIn: result.signedIn === true,
+      sessionState: accountSessionStateFromResult(result),
+    };
   } catch {
     return null;
   }
@@ -133,12 +166,20 @@ export async function loadActivitySnapshot(
 ): Promise<AttentionSnapshot> {
   const status = await getAccountStatus(connection);
   if (status?.signedIn === false) {
+    // An unreadable session is not a sign-out. Telling the user to run
+    // `ade login` over a session that merely could not be read is how a valid
+    // session gets overwritten, so that case asks for a retry instead.
+    const unreadable = status.sessionState === "unreadable";
     try {
       return await machineFallback(connection, {
-        state: "signed_out",
+        state: unreadable ? "degraded" : "signed_out",
         title: "This machine only",
-        message: "Run `ade login` to see every ADE machine. Local work remains available.",
-        recovery: "sign_in",
+        message: unreadable
+          ? "ADE couldn't read this computer's sign-in — your session is still there. Try again in a moment."
+          : status.sessionState === "expired"
+            ? "Your ADE sign-in expired. Run `ade login` to see every ADE machine. Local work remains available."
+            : "Run `ade login` to see every ADE machine. Local work remains available.",
+        recovery: unreadable ? "retry" : "sign_in",
         hostName: options.hostName ?? null,
       });
     } catch (error) {

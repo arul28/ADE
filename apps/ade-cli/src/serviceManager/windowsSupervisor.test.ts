@@ -9,6 +9,10 @@ import {
   windowsPowerShellCommand,
 } from "./installWindows";
 import {
+  BRAIN_HEARTBEAT_INTERVAL_MS,
+  BRAIN_HEARTBEAT_STALE_MS,
+} from "../services/runtime/brainHeartbeat";
+import {
   renderWindowsServiceLauncher,
   waitForWindowsRuntimeReadiness,
 } from "./windowsSupervisor";
@@ -165,4 +169,107 @@ describe("Windows runtime supervisor", () => {
     },
     60_000,
   );
+});
+
+describe("windows supervisor wedge guard", () => {
+  const command = {
+    command: "C:\\ade\\node.exe",
+    args: ["C:\\ade\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\example\\.ade" },
+  };
+
+  it("waits in slices and stops a brain that stopped beating", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // An unbounded WaitForExit is exactly what makes a wedge invisible.
+    expect(script).not.toContain("$process.WaitForExit()\r\n      $lastExitCode");
+    expect(script).toContain("while (-not $process.WaitForExit($heartbeatPollMs))");
+    expect(script).toContain("Test-BrainWedged $process.Id");
+    expect(script).toContain("Write-WedgeBreadcrumb $wedgeAgeMs");
+    // Kill($true) is .NET Core only; the supervisor must run under PS 5.1.
+    expect(script).toContain("$process.Kill()");
+    expect(script).not.toContain("$process.Kill($true)");
+  });
+
+  it("stops the wedged brain's whole process tree, through an absolute taskkill", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // Absolute System32 path, never a bare `taskkill` off PATH. On a real
+    // Windows host the resolver returns the verified filesystem form
+    // (C:\Windows\System32\taskkill.exe); elsewhere it falls back to the
+    // kernel GLOBALROOT form — both end in System32\taskkill.exe.
+    expect(script).toMatch(/\$taskkillPath = '[^']*System32\\taskkill\.exe'/i);
+    expect(script).toContain("& $taskkillPath '/PID' $process.Id '/T' '/F'");
+    // Kill() alone orphans ConPTYs and agent CLIs, so the tree kill must come
+    // first and Kill() must only mop up what taskkill could not.
+    const taskkillAt = script.indexOf("& $taskkillPath");
+    const killAt = script.indexOf("$process.Kill()");
+    expect(taskkillAt).toBeGreaterThan(-1);
+    expect(taskkillAt).toBeLessThan(killAt);
+    expect(script).toContain("if (-not $process.HasExited) { $process.Kill() }");
+    // Bounded, and never a bare WaitForExit(): if taskkill was unresolvable and
+    // Kill() threw, an unbounded wait parks the supervisor on the wedge forever.
+    expect(script).not.toContain("$process.WaitForExit()");
+    const waitAt = script.indexOf("if ($process.WaitForExit(30000)) { break }", killAt);
+    expect(waitAt).toBeGreaterThan(killAt);
+    expect(script).toContain("did not exit after the kill");
+    // Leaving the wait loop is conditional on the process being GONE. An
+    // unconditional break after a timed-out kill would start a second brain
+    // beside an unkillable one, both wanting the same ports and worktrees.
+    expect(script).not.toMatch(/WaitForExit\(30000\)[^\r\n]*[\r\n]+\s*break/);
+    const wedgeRetryAt = script.indexOf("retrying on the next heartbeat check", waitAt);
+    expect(wedgeRetryAt).toBeGreaterThan(waitAt);
+    // The bounded wait can fall through with the process still alive, and
+    // `.ExitCode` throws on a live process -- which would surface the wedge as
+    // a launch failure. Read it only once the process has actually exited.
+    expect(script).toContain(
+      "if ($process.HasExited) { $lastExitCode = $process.ExitCode } else { $lastExitCode = $null }",
+    );
+    // ...and never as an unguarded statement of its own.
+    expect(script).not.toMatch(/(?:^|[\r\n])\s*\$lastExitCode = \$process\.ExitCode/);
+  });
+
+  it("keeps the beat interval and stale threshold bound to the brain's own", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+    });
+    expect(script).toContain(`$heartbeatStaleMs = ${BRAIN_HEARTBEAT_STALE_MS}`);
+    expect(script).toContain(`$heartbeatPollMs = ${BRAIN_HEARTBEAT_INTERVAL_MS}`);
+  });
+
+  it("only judges a beat that belongs to the child it started", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+    expect(script).toContain("if ([int]$beat.pid -ne $runtimePid) { return $null }");
+    expect(script).toContain("if ($ageMs -le $heartbeatStaleMs) { return $null }");
+  });
+
+  it("keeps its old exit-only behaviour when no heartbeat path is configured", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+    });
+    expect(script).toContain("$heartbeatPath = $null");
+    expect(script).toContain("if ([string]::IsNullOrEmpty($heartbeatPath)) { return $null }");
+  });
+
+  it("refuses a stale threshold short enough to fire on an ordinary gap", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      heartbeatStaleMs: 500,
+    });
+    expect(script).toContain("$heartbeatStaleMs = 30000");
+  });
 });

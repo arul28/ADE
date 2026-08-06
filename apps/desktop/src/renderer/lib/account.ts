@@ -3,6 +3,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
   AdeAccountProvider,
+  AdeAccountSessionState,
   AdeAccountStatus,
 } from "../../shared/types";
 
@@ -69,7 +70,85 @@ function emit(status: AdeAccountStatus): void {
  * how a machine that never signed out ends up rendering as signed out.
  */
 function isUnreadableSession(status: AdeAccountStatus): boolean {
-  return !status.signedIn && status.sessionReadState === "unreadable";
+  return accountSessionState(status) === "unreadable";
+}
+
+/**
+ * The one place the renderer decides which of the four states a status is in.
+ * Prefers the daemon's own `sessionState`; older runtimes only report the read
+ * state, and anything that reports neither is a plain sign-out.
+ */
+export function accountSessionState(status: AdeAccountStatus): AdeAccountSessionState {
+  if (status.signedIn) return "active";
+  if (status.sessionState && status.sessionState !== "active") return status.sessionState;
+  return status.sessionReadState === "unreadable" ? "unreadable" : "signed_out";
+}
+
+/**
+ * Every string a session state is allowed to render, in one table. Four
+ * parallel switches over the same four states drift one case at a time; a
+ * single record makes a missing state a type error and puts the copy for one
+ * state on one line, where it can be read as a set.
+ *
+ * - `notice`: the one line each signed-out state shows. "unreadable" never
+ *   invites a fresh sign-in: a new session overwrites the stored one, so a user
+ *   who signs in to escape a bad read throws away the session that was fine.
+ * - `title`: the header line (Connections panel account header).
+ * - `shortLabel`: the compact sidebar label, only used when there is no
+ *   name/email/login to show — hence the generic "Account" for `active`.
+ * - `connectionsSubtitle`: the Connections panel's second line; for `active` it
+ *   is the fallback used when the account has no email to show.
+ */
+const ACCOUNT_SESSION_LABELS: Record<
+  AdeAccountSessionState,
+  {
+    notice: string | null;
+    title: string;
+    shortLabel: string;
+    connectionsSubtitle: string;
+  }
+> = {
+  active: {
+    notice: null,
+    title: "Signed in to ADE",
+    shortLabel: "Account",
+    connectionsSubtitle: "Manage your account",
+  },
+  signed_out: {
+    notice: null,
+    title: "Not signed in",
+    shortLabel: "Signed out",
+    connectionsSubtitle: "Sign in to connect your devices",
+  },
+  expired: {
+    notice: "Your ADE sign-in expired — sign in again.",
+    title: "Sign-in expired",
+    shortLabel: "Sign-in expired",
+    connectionsSubtitle: "Sign in again to connect your devices",
+  },
+  unreadable: {
+    notice:
+      "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+    title: "Can't read your sign-in",
+    shortLabel: "Sign-in unavailable",
+    connectionsSubtitle: "Your session is still there — open your account to fix it",
+  },
+};
+
+export function accountSessionNotice(state: AdeAccountSessionState): string | null {
+  return ACCOUNT_SESSION_LABELS[state].notice;
+}
+
+export function accountSessionTitle(state: AdeAccountSessionState): string {
+  return ACCOUNT_SESSION_LABELS[state].title;
+}
+
+export function accountSessionShortLabel(state: AdeAccountSessionState): string {
+  return ACCOUNT_SESSION_LABELS[state].shortLabel;
+}
+
+export function accountSessionConnectionsSubtitle(state: AdeAccountSessionState): string {
+  return ACCOUNT_SESSION_LABELS[state].connectionsSubtitle;
 }
 
 export async function fetchAccountStatus(options?: { force?: boolean }): Promise<AdeAccountStatus> {
@@ -323,4 +402,9 @@ export function accountProviderCaption(status: AdeAccountStatus): string | null 
   return provider ? `Signed in with ${providerLabel(provider)}` : null;
 }
 
-export type { AdeAccountMachine, AdeAccountMachinesResult, AdeAccountStatus };
+export type {
+  AdeAccountMachine,
+  AdeAccountMachinesResult,
+  AdeAccountSessionState,
+  AdeAccountStatus,
+};

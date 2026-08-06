@@ -184,6 +184,29 @@ export type RecentlyInstalledUpdate = {
   githubReleaseUrl: string | null;
 };
 
+/**
+ * Applying an update is one transaction: the app is swapped, the background
+ * service is set up for the new app, restarted, and answering. These are its
+ * four steps, in order.
+ */
+export type UpdateTransactionStepId = "swap" | "service" | "restart" | "health";
+
+export type UpdateTransactionStepStatus = "ok" | "failed" | "skipped";
+
+export type UpdateTransactionStep = {
+  id: UpdateTransactionStepId;
+  status: UpdateTransactionStepStatus;
+  detail: string;
+};
+
+export type UpdateTransactionResult = {
+  ok: boolean;
+  version: string | null;
+  steps: UpdateTransactionStep[];
+  /** One plain line for the renderer. Names the failed step. Empty when ok. */
+  failureMessage: string | null;
+};
+
 export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
 
 export type AutoUpdatePhase = "download" | "staging" | "verification" | "install";
@@ -259,6 +282,12 @@ export type AutoUpdateSnapshot = {
   autoApplyPending: { deadlineAt: number } | null;
   /** Explicit user cancellation suppresses another idle countdown until this epoch. */
   autoApplySuppressedUntil: number | null;
+  /**
+   * Outcome of the post-relaunch update transaction, once it has run. Null
+   * until then — most launches are not update relaunches. Optional so every
+   * existing snapshot literal keeps compiling.
+   */
+  updateTransaction?: UpdateTransactionResult | null;
 };
 
 export type RuntimeActivityCounts = {

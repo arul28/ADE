@@ -11,6 +11,8 @@ import {
   type AutoUpdatePreferences,
   type AutoUpdateSnapshot,
   type RecentlyInstalledUpdate,
+  type UpdateTransactionResult,
+  type UpdateTransactionStepId,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
@@ -58,6 +60,15 @@ const DEFAULT_AUTO_APPLY_COUNTDOWN_MS = 10_000;
 const DEFAULT_AUTO_APPLY_SUPPRESSION_MS = 4 * 60 * 60_000;
 const DEFAULT_ACTIVITY_CHECK_MS = 5_000;
 const AUTO_UPDATE_PREFERENCE_ANALYTICS_DEDUPE_MS = 24 * 60 * 60_000;
+const UPDATE_TRANSACTION_ANALYTICS_DEDUPE_MS = 60 * 60_000;
+/**
+ * Steps whose failure is a NEW product-level failure category: the app updated
+ * but the background service did not follow. `swap` is excluded because the app
+ * half already reports through `ade_update_install_did_not_land`.
+ */
+const UPDATE_TRANSACTION_ANALYTICS_STEPS = new Set<UpdateTransactionStepId>([
+  "service", "restart", "health",
+]);
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
   autoDownload: boolean;
@@ -181,6 +192,7 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
     lastInstallFailed: null,
     autoApplyPending: null,
     autoApplySuppressedUntil: null,
+    updateTransaction: null,
   };
 }
 
@@ -225,6 +237,12 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
     parked: snapshot.parked ? { ...snapshot.parked } : null,
     lastInstallFailed: snapshot.lastInstallFailed ? { ...snapshot.lastInstallFailed } : null,
     autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
+    updateTransaction: snapshot.updateTransaction
+      ? {
+          ...snapshot.updateTransaction,
+          steps: snapshot.updateTransaction.steps.map((step) => ({ ...step })),
+        }
+      : null,
   };
 }
 
@@ -901,6 +919,8 @@ export function createAutoUpdateService({
       latestKnownVersion: snapshot.latestKnownVersion ?? info.version,
       recentlyInstalled: snapshot.recentlyInstalled,
       autoApplySuppressedUntil: snapshot.autoApplySuppressedUntil,
+      // A cancelled download says nothing about the update that already landed.
+      updateTransaction: snapshot.updateTransaction ?? null,
     });
   };
 
@@ -1554,6 +1574,31 @@ export function createAutoUpdateService({
       return () => listeners.delete(cb);
     },
     dismissInstalledNotice,
+    /**
+     * Publishes the post-relaunch update-transaction result. It rides the same
+     * snapshot as everything else about updates, so the renderer learns about a
+     * half-applied update through `IPC.updateEvent` with no extra channel.
+     */
+    setUpdateTransaction(result: UpdateTransactionResult | null): void {
+      patchSnapshot({ updateTransaction: result });
+      if (!result || result.ok) return;
+      // One coarse event per failed transaction, at the boundary where the
+      // outcome is known. The step id is the only thing sent — no versions,
+      // paths, step details, or failure copy.
+      const failedStep = result.steps.find((step) => step.status === "failed")?.id;
+      if (!failedStep || !UPDATE_TRANSACTION_ANALYTICS_STEPS.has(failedStep)) return;
+      productAnalyticsService?.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: {
+          feature: "updates",
+          action: "transaction_failed",
+          outcome: failedStep,
+        },
+        dedupeKey: `update_transaction_failed:${failedStep}`,
+        minimumIntervalMs: UPDATE_TRANSACTION_ANALYTICS_DEDUPE_MS,
+      });
+    },
     quitAndInstall,
     cancelAutoApply(): boolean {
       if (snapshot.status !== "ready" || !snapshot.autoApplyPending) return false;

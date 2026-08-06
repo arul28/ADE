@@ -26,6 +26,7 @@ vi.mock("./syncPortForwardClient", () => ({
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
@@ -357,5 +358,117 @@ describe("bootstrapPairedRuntime", () => {
     expect(unavailable.message).not.toContain("private-machine-key");
     expect(unavailable.message).not.toContain("diagnostic-token");
     expect(JSON.stringify(unavailable.diagnostic)).not.toContain("ephemeral-account-token");
+  });
+  it("names the pairing as the cause when the host rejects the hello, and keeps the routes in the diagnostic", async () => {
+    // Tonight's scenario: three live routes, every one answered by the host
+    // with REPAIR_REQUIRED. The old headline regexed that message, matched
+    // nothing, and rendered "unknown" next to a dump of ports and URLs.
+    const repairRequired = "This device is not paired with this machine, or its saved"
+      + " pairing is no longer valid. Pair it again.";
+    const routedCredentials = {
+      ...credentials,
+      hostIdentity: { ...credentials.hostIdentity, name: "Arul's Mac Studio" },
+      accountOwnerUserId: "account-a",
+      endpoints: [
+        "wss://relay.example/connect/private-machine-key",
+        "ws://studio.example.ts.net:8787",
+        "ws://192.168.1.240:8788",
+      ],
+      relayUrl: "wss://relay.example/connect/private-machine-key",
+    };
+    const markEndpointFailed = vi.fn();
+    const forgetEndpoint = vi.fn();
+    let captured: unknown;
+    try {
+      await bootstrapPairedRuntime({
+        target,
+        registry: { update: vi.fn(() => target) } as any,
+        pairedStore: {
+          getForReference: vi.fn(() => routedCredentials),
+          save: vi.fn(),
+          markEndpointFailed,
+          forgetEndpoint,
+          markEndpointSucceeded: vi.fn(),
+        } as any,
+        appVersion: "1.0.0",
+        options: {
+          openTransport: vi.fn(async () => {
+            throw new PairedRuntimeHelloRejectedError(repairRequired, "repair_required", {
+              deviceId: "host-1",
+              name: "Arul's Mac Studio",
+            });
+          }),
+          getAccountRelayProof: vi.fn(async () => ({
+            userId: "account-a",
+            token: "ephemeral-account-token",
+          })),
+        },
+      });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+    const unavailable = captured as PairedRuntimeTransportUnavailableError;
+    expect(unavailable.message).toBe(
+      "Arul's Mac Studio says this device's pairing is out of date — pair it again.",
+    );
+    // The headline is the whole message: no route list, no host, no port.
+    for (const forbidden of ["192.168", "8788", "ts.net", "relay", "lan", "unknown", ";"]) {
+      expect(unavailable.message.toLowerCase()).not.toContain(forbidden);
+    }
+    expect(unavailable.diagnostic?.failure).toBe("pairing");
+    // Everything the message dropped is still available to the Details view.
+    expect(unavailable.diagnostic?.attempts).toMatchObject([
+      { kind: "lan", host: "192.168.1.240:8788", failure: "pairing" },
+      { kind: "tailnet", host: "studio.example.ts.net:8787", failure: "pairing" },
+      { kind: "relay", host: "relay.example", failure: "pairing" },
+    ]);
+    expect(unavailable.diagnostic?.correlationId).toEqual(expect.any(String));
+    // A stale pairing says nothing about any route, so no endpoint is demoted.
+    expect(markEndpointFailed).not.toHaveBeenCalled();
+    expect(forgetEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("forgets an endpoint that answers as a different machine instead of retrying it forever", async () => {
+    const routedCredentials = {
+      ...credentials,
+      endpoints: ["ws://studio.local:8787", "ws://macbook-pro-97.example.ts.net:8787"],
+    };
+    const markEndpointFailed = vi.fn();
+    const forgetEndpoint = vi.fn();
+    try {
+      await bootstrapPairedRuntime({
+        target,
+        registry: { update: vi.fn(() => target) } as any,
+        pairedStore: {
+          getForReference: vi.fn(() => routedCredentials),
+          save: vi.fn(),
+          markEndpointFailed,
+          forgetEndpoint,
+          markEndpointSucceeded: vi.fn(),
+        } as any,
+        appVersion: "1.0.0",
+        options: {
+          openTransport: vi.fn(async (args: { endpoint?: string }) => {
+            if (args.endpoint?.includes("macbook-pro-97")) {
+              throw new Error(
+                "Sync endpoint identity mismatch (expected host-1, received host-2).",
+              );
+            }
+            throw new Error("socket failed");
+          }),
+        },
+      });
+    } catch {
+      // The throw is asserted through the store calls below.
+    }
+
+    expect(forgetEndpoint.mock.calls.map(([, endpoint]) => endpoint)).toEqual([
+      "ws://macbook-pro-97.example.ts.net:8787/",
+    ]);
+    expect(markEndpointFailed.mock.calls.map(([, endpoint]) => endpoint)).toEqual([
+      "ws://studio.local:8787/",
+    ]);
   });
 });

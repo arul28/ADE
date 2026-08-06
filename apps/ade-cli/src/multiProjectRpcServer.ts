@@ -29,6 +29,7 @@ import type {
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
+import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
@@ -62,6 +63,7 @@ import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
+  type SyncCloudRelayStatus,
   type SyncPeerDeviceType,
   type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types";
@@ -129,6 +131,37 @@ function decodeSearchQueryResult(
   return { results, totalByKind, nextCursor };
 }
 
+/** Same shape the pin store enforces; checked here so the RPC error is typed. */
+const MACHINE_PAIRING_PIN_PATTERN = /^\d{6}$/;
+
+/**
+ * Machine-level pairing controls for a brain that hosts phone sync with no
+ * project scope.
+ *
+ * A machine that has never opened a project still hosts sync — it holds the
+ * machine-wide lease and the shared listener is bound — but every `sync.*`
+ * method resolved a project-scoped sync service and failed with "Sync service
+ * is not available". Nothing could set the pairing PIN, so a fresh install
+ * could not be paired at all. These controls are backed by the SAME stores the
+ * projectless ingress handler verifies against (see brainMachineSyncStores),
+ * so a PIN written here is live immediately instead of after a restart.
+ *
+ * Only the brain injects them. A handler built without them (tests, embedded
+ * runtimes) keeps failing loudly rather than silently pretending to host.
+ */
+export type ProjectlessSyncControls = {
+  getPin: () => string | null;
+  setPin: (pin: string) => void;
+  /** Sets and returns a fresh PIN. */
+  generatePin: () => string;
+  clearPin: () => void;
+  getRequireDpop: () => boolean;
+  setRequireDpop: (requireDpop: boolean) => boolean;
+  /** Drops a paired device from the machine pairing file. */
+  forgetDevice: (deviceId: string) => void;
+  getCloudRelayStatus: () => SyncCloudRelayStatus;
+};
+
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
   projectRegistry?: ProjectRegistry;
@@ -153,6 +186,14 @@ export type MultiProjectRpcHandlerOptions = {
   repairMachinePairing?: (
     input?: { onlyIfRevoked?: boolean },
   ) => Promise<MachinePairingRepairResult>;
+  /** Machine-level pairing controls for a brain hosting sync with no project scope. */
+  projectlessSyncControls?: ProjectlessSyncControls;
+  /**
+   * Backs `machine.updateAndRestart`. Absent for embedded/test runtimes, which
+   * have no installed service to update -- the method then refuses rather than
+   * pretending to have restarted something.
+   */
+  machineUpdateControls?: MachineUpdateAndRestartDeps;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -214,6 +255,7 @@ const RUNTIME_METHODS = new Set([
   "personalChats.call",
   "personalChats.streamEvents",
   "machineInfo.get",
+  "machine.updateAndRestart",
   "projects.list",
   "projects.add",
   "projects.setCatalogVisibility",
@@ -368,6 +410,17 @@ const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
 const LIST_ICON_COUNT_BUDGET = 24;
 const LIST_ICON_BYTE_BUDGET = 512 * 1024;
 const LIST_ICON_RESOLVE_BUDGET_MS = 750;
+
+/**
+ * The one "Update & restart" run this process will do at a time.
+ *
+ * Module-scoped on purpose: overlapping callers are not one impatient client
+ * but several — a desktop, a phone, and a reconnect that retried — each on its
+ * own connection and its own handler. Two runs would download and swap the same
+ * runtime concurrently and then both ask the service to restart, mid-swap.
+ * Whoever asks while a run is in flight joins that run and gets its result.
+ */
+let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
 type ProjectIconResolver = (
   rootPath: string,
@@ -1064,16 +1117,43 @@ export function createMultiProjectRpcRequestHandler(
     return { removed: true };
   };
 
-  const getSyncService = async () => {
+  const resolveSyncService = async () => {
     const scope = await scopeRegistry.resolveActiveSyncHost();
-    const syncService = scope?.runtime.syncService ?? null;
-    if (!syncService) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidRequest,
-        "Sync service is not available. Register a project first.",
-      );
-    }
+    return scope?.runtime.syncService ?? null;
+  };
+
+  const syncServiceUnavailable = (): JsonRpcError =>
+    new JsonRpcError(
+      JsonRpcErrorCode.invalidRequest,
+      "Sync service is not available. Register a project first.",
+    );
+
+  const getSyncService = async () => {
+    const syncService = await resolveSyncService();
+    if (!syncService) throw syncServiceUnavailable();
     return syncService;
+  };
+
+  type ActiveSyncService = NonNullable<Awaited<ReturnType<typeof resolveSyncService>>>;
+
+  /**
+   * Run a `sync.*` method against the project-scoped sync service, falling back
+   * to the machine-level pairing controls when no project scope owns sync.
+   *
+   * A machine that has never opened a project still hosts sync, so the methods
+   * it can genuinely answer go through `machineFallback`. A handler built
+   * without controls (tests, embedded runtimes) keeps failing loudly with the
+   * old "register a project" error rather than silently pretending to host.
+   */
+  const withSyncService = async <TService, TFallback>(
+    run: (syncService: ActiveSyncService) => TService | Promise<TService>,
+    machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
+  ): Promise<TFallback | TService> => {
+    const syncService = await resolveSyncService();
+    if (syncService) return await run(syncService);
+    const controls = options.projectlessSyncControls;
+    if (controls) return await machineFallback(controls);
+    throw syncServiceUnavailable();
   };
 
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
@@ -1101,6 +1181,22 @@ export function createMultiProjectRpcRequestHandler(
       secretsDir: resolveMachineAdeLayout().secretsDir,
       accountDirectory: getAccountDirectoryHealth(),
     });
+
+  /**
+   * The machine snapshot right after a PIN was written, with that PIN in it.
+   *
+   * The snapshot builder reads the PIN back through its own store handle, which
+   * can be a different instance than the one the call just wrote — and a store
+   * only shows a plaintext code it set itself. The caller would then set a PIN
+   * and be handed a snapshot saying there isn't one. The PIN is only reported
+   * while the machine is hosting, the same gate the builder applies to every
+   * other pairing field.
+   */
+  const machineSyncStatusWithPin = (pin: string): SyncRoleSnapshot => {
+    const snapshot = getMachineOnlySyncStatus();
+    if (!snapshot.pairingConnectInfo) return snapshot;
+    return { ...snapshot, pairingPin: pin, pairingPinConfigured: true };
+  };
 
   const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];
@@ -1388,6 +1484,46 @@ export function createMultiProjectRpcRequestHandler(
       return action === "status"
         ? { ...response, result: scopeAccountStatusForRole(response.result, role) }
         : response;
+    }
+
+    // A machine that is stuck or running old code has to be fixable from
+    // wherever the user is. Always user-initiated -- nothing here runs on a
+    // timer, and nothing here runs without this call.
+    //
+    // The channel is the authorization: this method only exists on the runtime
+    // RPC endpoint, which is a paired/authenticated transport, and the cto role
+    // gate below matches every other machine-lifecycle action.
+    if (method === "machine.updateAndRestart") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "machine.updateAndRestart requires the cto role.",
+        );
+      }
+      const controls = options.machineUpdateControls;
+      if (!controls) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "This ADE runtime cannot update itself.",
+        );
+      }
+      const targetVersion = typeof params.targetVersion === "string"
+        && params.targetVersion.trim()
+        ? params.targetVersion.trim()
+        : null;
+      if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
+      const run = (async () => {
+        const { runMachineUpdateAndRestart } = await import(
+          "./services/runtime/machineUpdateAndRestart"
+        );
+        return await runMachineUpdateAndRestart(controls, targetVersion);
+      })();
+      machineUpdateAndRestartInFlight = run;
+      try {
+        return await run;
+      } finally {
+        if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
+      }
     }
 
     if (method === "attention.call") {
@@ -1723,11 +1859,23 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.refreshDiscovery") {
-      return await (await getSyncService()).refreshDiscovery();
+      return await withSyncService(
+        (syncService) => syncService.refreshDiscovery(),
+        // Discovery is published by a project's sync host. With no project
+        // there is nothing to re-publish, so report the machine as it is
+        // rather than failing a refresh the user asked for.
+        () => getMachineOnlySyncStatus(),
+      );
     }
 
     if (method === "sync.listDevices") {
-      return await (await getSyncService()).listDevices();
+      return await withSyncService(
+        (syncService) => syncService.listDevices(),
+        // The machine pairing file is keyed by device id with no listing API,
+        // and the runtime state that fills this list comes from a project's
+        // device registry. An empty list is the honest answer here.
+        () => [],
+      );
     }
 
     if (method === "sync.updateLocalDevice") {
@@ -1760,7 +1908,13 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "sync.forgetDevice") {
       const deviceId =
         typeof params.deviceId === "string" ? params.deviceId : "";
-      return await (await getSyncService()).forgetDevice(deviceId);
+      return await withSyncService(
+        (syncService) => syncService.forgetDevice(deviceId),
+        (controls) => {
+          controls.forgetDevice(deviceId);
+          return getMachineOnlySyncStatus();
+        },
+      );
     }
 
     if (method === "sync.getTransferReadiness") {
@@ -1772,24 +1926,54 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getPin") {
-      return { pin: (await getSyncService()).getPin() };
+      return await withSyncService(
+        (syncService) => ({ pin: syncService.getPin() }),
+        (controls) => ({ pin: controls.getPin() }),
+      );
     }
 
     if (method === "sync.setPin") {
       const pin = typeof params.pin === "string" ? params.pin : "";
-      return await (await getSyncService()).setPin(pin);
+      return await withSyncService(
+        (syncService) => syncService.setPin(pin),
+        (controls) => {
+          const trimmed = pin.trim();
+          if (!MACHINE_PAIRING_PIN_PATTERN.test(trimmed)) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.invalidParams,
+              "The pairing code must be 6 digits.",
+            );
+          }
+          controls.setPin(trimmed);
+          return machineSyncStatusWithPin(trimmed);
+        },
+      );
     }
 
     if (method === "sync.generatePin") {
-      return await (await getSyncService()).generatePin();
+      return await withSyncService(
+        (syncService) => syncService.generatePin(),
+        (controls) => machineSyncStatusWithPin(controls.generatePin()),
+      );
     }
 
     if (method === "sync.clearPin") {
-      return await (await getSyncService()).clearPin();
+      return await withSyncService(
+        (syncService) => syncService.clearPin(),
+        (controls) => {
+          controls.clearPin();
+          return getMachineOnlySyncStatus();
+        },
+      );
     }
 
     if (method === "sync.getRuntimeName") {
-      return { runtimeName: (await getSyncService()).getRuntimeName() };
+      return await withSyncService(
+        (syncService) => ({ runtimeName: syncService.getRuntimeName() }),
+        // The runtime name is a per-project setting. A machine with no project
+        // has none, which is what the projectless snapshot already reports.
+        () => ({ runtimeName: null }),
+      );
     }
 
     if (method === "sync.setRuntimeName") {
@@ -1818,15 +2002,25 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getCloudRelayStatus") {
-      return (await getSyncService()).getCloudRelayStatus();
+      return await withSyncService(
+        (syncService) => syncService.getCloudRelayStatus(),
+        (controls) => controls.getCloudRelayStatus(),
+      );
     }
 
     if (method === "sync.getRequireDpop") {
-      return (await getSyncService()).getRequireDpop();
+      return await withSyncService(
+        (syncService) => syncService.getRequireDpop(),
+        (controls) => controls.getRequireDpop(),
+      );
     }
 
     if (method === "sync.setRequireDpop") {
-      return (await getSyncService()).setRequireDpop(params.requireDpop === true);
+      const requireDpop = params.requireDpop === true;
+      return await withSyncService(
+        (syncService) => syncService.setRequireDpop(requireDpop),
+        (controls) => controls.setRequireDpop(requireDpop),
+      );
     }
 
     if (method === "sync.setActiveLanePresence") {

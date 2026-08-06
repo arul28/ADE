@@ -38,6 +38,10 @@ import {
   accountAvatarImage,
   accountInitials,
   accountProviderCaption,
+  accountSessionNotice,
+  accountSessionState,
+  accountSessionTitle,
+  fetchAccountStatus,
   invalidateAccountMachines,
   providerTint,
   publishAccountMachines,
@@ -45,6 +49,7 @@ import {
   useAccountStatus,
   type AdeAccountMachine,
   type AdeAccountMachinesResult,
+  type AdeAccountSessionState,
   type AdeAccountStatus,
 } from "../../lib/account";
 import {
@@ -61,6 +66,8 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { docs } from "../../onboarding/docsLinks";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
@@ -334,14 +341,28 @@ function ConfirmSheet({
 export function SignInCard({
   configured,
   onSignedIn,
+  sessionState = "signed_out",
 }: {
   configured: boolean;
   onSignedIn: () => void;
+  /**
+   * Why there is no account here. "unreadable" is the one that must not lead
+   * with a sign-in button — the stored session is probably fine and a new one
+   * would overwrite it.
+   */
+  sessionState?: AdeAccountSessionState;
 }) {
   const { phase, error, beginLogin, cancel } = useAccountLogin({
     onSignedIn: () => onSignedIn(),
   });
   const busy = phase === "starting" || phase === "awaiting";
+  const unreadable = sessionState === "unreadable";
+  const expired = sessionState === "expired";
+  const notice = accountSessionNotice(sessionState);
+  const repair = useBrainRepair(() => {
+    void fetchAccountStatus({ force: true });
+  });
+  const signInLabel = expired ? "Sign in" : "Sign in or create account";
 
   return (
     <div
@@ -367,8 +388,28 @@ export function SignInCard({
       >
         <div style={{ textAlign: "center" }}>
           <div style={{ fontFamily: SANS_FONT, fontSize: 19, fontWeight: 700, color: COLORS.textPrimary }}>
-            Sign in to ADE
+            {/*
+              One source for the state's own words: `unreadable` and `expired`
+              both take their title from the label table, so the header never
+              drifts from the notice under it. `signed_out` keeps the call to
+              action -- the table's "Not signed in" describes the state, but
+              this card is where you act on it.
+            */}
+            {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
           </div>
+          {notice ? (
+            <div
+              style={{
+                marginTop: 8,
+                fontFamily: SANS_FONT,
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: COLORS.textSecondary,
+              }}
+            >
+              {notice}
+            </div>
+          ) : null}
         </div>
 
         {!configured ? (
@@ -393,61 +434,97 @@ export function SignInCard({
           </div>
         ) : null}
 
-        <div style={{ marginTop: 22 }}>
-          <button
-            type="button"
-            disabled={busy || !configured}
-            onClick={() => void beginLogin()}
-            style={primaryButton({
-              width: "100%",
-              height: 44,
-              fontSize: 14,
-              gap: 8,
-              opacity: busy || !configured ? 0.55 : 1,
-              cursor: busy || !configured ? "not-allowed" : "pointer",
-              WebkitAppRegion: "no-drag",
-            } as CSSProperties)}
-          >
-            {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
-            Sign in or create account
-          </button>
-          <div
-            style={{
-              marginTop: 10,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 5,
-              color: COLORS.textMuted,
-              fontFamily: SANS_FONT,
-              fontSize: 11.5,
-            }}
-          >
-            <span>Sign in to use ADE Relay</span>
+        {unreadable ? (
+          // Repair first, sign-in demoted: the fix here is regaining access to
+          // the session that already exists, not replacing it.
+          <div style={{ marginTop: 22, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            {repair.available ? (
+              <BrainRepairButton repair={repair} height={40} />
+            ) : (
+              <button
+                type="button"
+                onClick={() => void fetchAccountStatus({ force: true })}
+                style={outlineButton({ height: 40, fontSize: 13, padding: "0 16px" })}
+              >
+                Try again
+              </button>
+            )}
             <button
               type="button"
-              aria-label="Learn about ADE Relay"
-              title="Learn about ADE Relay"
-              onClick={() => openExternalUrl(docs.adeRelay)}
+              disabled={busy || !configured}
+              onClick={() => void beginLogin()}
               style={{
-                display: "inline-flex",
-                width: 18,
-                height: 18,
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 0,
                 border: 0,
-                borderRadius: "50%",
+                padding: "6px 8px",
                 background: "transparent",
                 color: COLORS.textMuted,
-                cursor: "pointer",
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                cursor: busy || !configured ? "not-allowed" : "pointer",
+                opacity: busy || !configured ? 0.55 : 1,
                 WebkitAppRegion: "no-drag",
               } as CSSProperties}
             >
-              <Question size={13} weight="bold" />
+              Sign in anyway
             </button>
           </div>
-        </div>
+        ) : (
+          <div style={{ marginTop: 22 }}>
+            <button
+              type="button"
+              disabled={busy || !configured}
+              onClick={() => void beginLogin()}
+              style={primaryButton({
+                width: "100%",
+                height: 44,
+                fontSize: 14,
+                gap: 8,
+                opacity: busy || !configured ? 0.55 : 1,
+                cursor: busy || !configured ? "not-allowed" : "pointer",
+                WebkitAppRegion: "no-drag",
+              } as CSSProperties)}
+            >
+              {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
+              {signInLabel}
+            </button>
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+                color: COLORS.textMuted,
+                fontFamily: SANS_FONT,
+                fontSize: 11.5,
+              }}
+            >
+              <span>Sign in to use ADE Relay</span>
+              <button
+                type="button"
+                aria-label="Learn about ADE Relay"
+                title="Learn about ADE Relay"
+                onClick={() => openExternalUrl(docs.adeRelay)}
+                style={{
+                  display: "inline-flex",
+                  width: 18,
+                  height: 18,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                  border: 0,
+                  borderRadius: "50%",
+                  background: "transparent",
+                  color: COLORS.textMuted,
+                  cursor: "pointer",
+                  WebkitAppRegion: "no-drag",
+                } as CSSProperties}
+              >
+                <Question size={13} weight="bold" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {phase === "awaiting" ? (
           <div
@@ -1491,7 +1568,11 @@ export function AccountPage() {
           <>
             {backButton}
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
-              <SignInCard configured={status.configured !== false} onSignedIn={handleSignedIn} />
+              <SignInCard
+                configured={status.configured !== false}
+                onSignedIn={handleSignedIn}
+                sessionState={accountSessionState(status)}
+              />
             </div>
           </>
         ) : (

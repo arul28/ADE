@@ -24,6 +24,12 @@ type RemoteErrorCardProps = {
   card: MachineErrorCard;
   onRetry?: () => void;
   retrying?: boolean;
+  /**
+   * One explicit recovery step for failures that retrying cannot fix — today,
+   * "Pair again" when the machine rejected the saved pairing. Never runs on its
+   * own; the user has to press it.
+   */
+  action?: { label: string; onClick: () => void } | null;
 };
 
 /**
@@ -31,7 +37,7 @@ type RemoteErrorCardProps = {
  * capped technical detail hides behind a "Show technical details" expander
  * (the only place monospace is warranted). A Try again button re-runs connect.
  */
-export function RemoteErrorCard({ card, onRetry, retrying }: RemoteErrorCardProps) {
+export function RemoteErrorCard({ card, onRetry, retrying, action = null }: RemoteErrorCardProps) {
   const [detailOpen, setDetailOpen] = useState(false);
   // Writes through the main process rather than `navigator.clipboard`, which
   // the remote pane cannot rely on. Clipboard may be unavailable; on failure
@@ -114,19 +120,32 @@ export function RemoteErrorCard({ card, onRetry, retrying }: RemoteErrorCardProp
         </div>
       ) : null}
 
-      {onRetry ? (
-        <button
-          type="button"
-          disabled={retrying}
-          onClick={onRetry}
-          style={{
-            ...outlineButton({ height: 30, padding: "0 12px", fontSize: 11, justifySelf: "start" }),
-            opacity: retrying ? 0.6 : 1,
-          }}
-        >
-          <ArrowClockwise size={13} weight="bold" />
-          {retrying ? "Retrying…" : "Try again"}
-        </button>
+      {onRetry || action ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {action ? (
+            <button
+              type="button"
+              onClick={action.onClick}
+              style={outlineButton({ height: 30, padding: "0 12px", fontSize: 11 })}
+            >
+              {action.label}
+            </button>
+          ) : null}
+          {onRetry ? (
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={onRetry}
+              style={{
+                ...outlineButton({ height: 30, padding: "0 12px", fontSize: 11 }),
+                opacity: retrying ? 0.6 : 1,
+              }}
+            >
+              <ArrowClockwise size={13} weight="bold" />
+              {retrying ? "Retrying…" : "Try again"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

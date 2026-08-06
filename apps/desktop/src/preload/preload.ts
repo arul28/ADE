@@ -728,6 +728,7 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+  RemoteRuntimeUpdateAndRestartResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
@@ -3924,6 +3925,14 @@ contextBridge.exposeInMainWorld("ade", {
       }),
     connect: async (id: string): Promise<RemoteRuntimeConnectResult> =>
       ipcRenderer.invoke(IPC.remoteRuntimeConnect, { id }),
+    updateAndRestart: async (
+      id: string,
+      targetVersion?: string | null,
+    ): Promise<RemoteRuntimeUpdateAndRestartResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeUpdateAndRestart, {
+        id,
+        targetVersion: targetVersion ?? null,
+      }),
     listProjects: async (id: string): Promise<RemoteRuntimeProjectRecord[]> =>
       ipcRenderer.invoke(IPC.remoteRuntimeListProjects, { id }),
     addProject: async (

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
-import type { AutoUpdateSnapshot } from "../../../shared/types";
+import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
+import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
@@ -125,34 +127,73 @@ export function AutoUpdateBanner() {
   // Tidy up the toast if this component unmounts mid-countdown.
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
 
-  if (!banner || signature === dismissedSignature) return null;
+  const showBanner = Boolean(banner) && signature !== dismissedSignature;
+
+  return (
+    <>
+      <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />
+      {showBanner && banner ? (
+        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
+          <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
+          <span className="flex-1 min-w-0">
+            {banner.kind === "parked"
+              ? "ADE update didn't finish — Restart to retry"
+              : "ADE update did not install — Restart to retry"}
+          </span>
+          <button
+            type="button"
+            onClick={handleRestart}
+            disabled={restarting}
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 font-medium text-amber-900 transition-colors hover:bg-amber-500/25 disabled:opacity-60"
+          >
+            <ArrowsClockwise size={12} weight="bold" aria-hidden="true" />
+            {restarting ? "Restarting…" : "Restart now"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              captureUpdatePromptDecision(snapshot, "dismissed");
+              setDismissedSignature(signature);
+            }}
+            className="shrink-0 text-amber-900/70 hover:text-amber-900"
+            title="Dismiss until the next update"
+            aria-label="Dismiss update banner"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Applying an update is one transaction. When it half-lands — the app is new
+ * but the background service is not — say which step failed and offer the same
+ * Repair control every other background-service failure uses.
+ */
+function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult | null }) {
+  const [dismissed, setDismissed] = useState(false);
+  const repair = useBrainRepair();
+  const failureMessage = result && !result.ok ? result.failureMessage : null;
+
+  useEffect(() => {
+    setDismissed(false);
+  }, [failureMessage]);
+
+  if (!failureMessage || dismissed) return null;
 
   return (
     <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
       <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
-      <span className="flex-1 min-w-0">
-        {banner.kind === "parked"
-          ? "ADE update didn't finish — Restart to retry"
-          : "ADE update did not install — Restart to retry"}
-      </span>
+      <span className="flex-1 min-w-0">{failureMessage}</span>
+      {repair.available ? <BrainRepairButton repair={repair} height={20} /> : null}
       <button
         type="button"
-        onClick={handleRestart}
-        disabled={restarting}
-        className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 font-medium text-amber-900 transition-colors hover:bg-amber-500/25 disabled:opacity-60"
-      >
-        <ArrowsClockwise size={12} weight="bold" aria-hidden="true" />
-        {restarting ? "Restarting…" : "Restart now"}
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          captureUpdatePromptDecision(snapshot, "dismissed");
-          setDismissedSignature(signature);
-        }}
+        onClick={() => setDismissed(true)}
         className="shrink-0 text-amber-900/70 hover:text-amber-900"
-        title="Dismiss until the next update"
-        aria-label="Dismiss update banner"
+        title="Dismiss"
+        aria-label="Dismiss update notice"
       >
         ×
       </button>

@@ -4,8 +4,14 @@ import {
   classifyPairedRuntimeEndpoint,
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
+  dominantPairedRuntimeFailure,
   orderPairedCandidates,
+  pairedRuntimeFailureMessage,
 } from "./pairedRuntimeRoutes";
+import {
+  PairedRuntimeHelloRejectedError,
+  PairedRuntimeRelayAuthRequiredError,
+} from "./pairedRuntimeErrors";
 import { isTailnetHostname } from "../../../shared/tailnet";
 
 describe("paired runtime endpoint routes", () => {
@@ -125,6 +131,88 @@ describe("paired runtime endpoint routes", () => {
     expect(isTailnetHostname("  STUDIO.EXAMPLE.TS.NET. ")).toBe(true);
     expect(isTailnetHostname(" [100.64.0.1]. ")).toBe(true);
     expect(isTailnetHostname("100.128.0.1")).toBe(false);
+  });
+
+  it("classifies a host rejection from its code, never from the message it wrote", () => {
+    // The exact rejection a host sends for a stale pairing. Its text mentions
+    // no word any transport regex matches, which is how it used to surface as
+    // "unknown" and hide the one instruction that helps.
+    const repairRequired = "This device is not paired with this machine, or its saved"
+      + " pairing is no longer valid. Pair it again.";
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(repairRequired, "repair_required", {
+        deviceId: "host-1",
+        name: "Arul's Mac Studio",
+      }),
+    )).toBe("pairing");
+    // Same message, host too old to send the specific code.
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(repairRequired, "auth_failed"),
+    )).toBe("pairing");
+    // And with no code at all it is still a rejection, not a dead route.
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(repairRequired, null),
+    )).toBe("pairing");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError("Sign in.", "relay_account_required"),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeRelayAuthRequiredError("Sign in to ADE."),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "A newer connection route already won this connection attempt.",
+        "connection_attempt_superseded",
+      ),
+    )).toBe("superseded");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError("Update ADE.", "protocol_version_mismatch"),
+    )).toBe("protocol");
+    // Neither of these is a pairing problem, and "pair it again" is the wrong
+    // instruction for both: one machine needs an update, the other needs its
+    // account session repaired. Both used to arrive as `auth_failed`.
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
+        "host_update_required",
+      ),
+    )).toBe("protocol");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "The ADE account session on this machine changed while connecting. Try again.",
+        "account_session_changed",
+      ),
+    )).toBe("authentication");
+  });
+
+  it("diagnoses one dominant cause and says it without routes or ports", () => {
+    const attempts = [
+      { kind: "lan", host: "192.168.1.240:8788", startedAt: 1, durationMs: 5, outcome: "failed", failure: "unreachable" },
+      { kind: "tailnet", host: "studio.example.ts.net:8788", startedAt: 2, durationMs: 5, outcome: "failed", failure: "timeout" },
+      { kind: "relay", host: "relay.example", startedAt: 3, durationMs: 5, outcome: "failed", failure: "pairing" },
+    ] as const;
+    // A single actionable rejection outranks a pile of dead routes.
+    expect(dominantPairedRuntimeFailure([...attempts])).toBe("pairing");
+    const message = pairedRuntimeFailureMessage("pairing", "Arul's Mac Studio");
+    expect(message).toBe(
+      "Arul's Mac Studio says this device's pairing is out of date — pair it again.",
+    );
+    for (const forbidden of ["192.168", "8788", "ts.net", "relay", "lan", "unknown"]) {
+      expect(message.toLowerCase()).not.toContain(forbidden);
+    }
+    expect(dominantPairedRuntimeFailure([
+      { kind: "lan", host: "a", startedAt: 1, durationMs: 1, outcome: "failed", failure: "unreachable" },
+      { kind: "relay", host: "b", startedAt: 2, durationMs: 1, outcome: "failed", failure: "timeout" },
+    ])).toBe("timeout");
+    expect(pairedRuntimeFailureMessage("timeout", "Mac Studio")).toBe(
+      "Can't reach Mac Studio — it may be asleep or ADE may be stopped there.",
+    );
+    expect(pairedRuntimeFailureMessage("authentication", "Mac Studio")).toBe(
+      "Sign in to ADE to connect through the relay.",
+    );
+    // No attempts recorded at all still produces a sentence, not an empty one.
+    expect(dominantPairedRuntimeFailure([])).toBe("unknown");
+    expect(pairedRuntimeFailureMessage("unknown", null)).toContain("that computer");
   });
 
   it("keeps transport failures meaningful when their sanitized text mentions a token", () => {

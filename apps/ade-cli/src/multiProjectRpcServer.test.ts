@@ -15,6 +15,13 @@ import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { buildProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import {
+  createProjectlessSyncControls,
+  resetBrainMachineSyncStoresForTests,
+  resolveBrainMachineSyncStores,
+} from "./services/sync/brainMachineSyncStores";
+import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
+import { createSyncPinStore } from "./services/sync/syncPinStore";
+import {
   createSyncAccountDirectoryHealth,
   type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types";
@@ -1967,6 +1974,222 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  describe("projectless brain pairing PIN", () => {
+    // A fresh Windows install of v1.2.55 with the brain running, signed in, and
+    // zero projects ever opened could not be paired: every `sync.*` method
+    // resolved a project-scoped sync service, so `ade sync pin generate` and
+    // the desktop's pairing UI both failed with "Sync service is not
+    // available", and `ade brain` reported pairingPinConfigured: false forever.
+    function makeProjectlessFixture(options: { snapshotReadsOwnPinStore?: boolean } = {}) {
+      const secretsDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "ade-projectless-pin-"),
+      );
+      resetBrainMachineSyncStoresForTests();
+      const stores = resolveBrainMachineSyncStores(secretsDir);
+      // A PIN store only shows a plaintext code it set itself, so a snapshot
+      // builder holding a SECOND instance reports "no PIN" for a PIN that was
+      // just written. That is the real wiring in a brain whose snapshot and
+      // controls were built at different times.
+      const snapshotPinStore = options.snapshotReadsOwnPinStore
+        ? createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") })
+        : stores.pinStore;
+      const { registry } = createRegistry();
+      const scopeRegistry = {
+        get: vi.fn(),
+        ensureSyncHost: vi.fn(),
+        switchSyncHost: vi.fn(),
+        resolveActiveSyncHost: vi.fn(async () => null),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      const snapshot = () => buildProjectlessSyncSnapshot({
+        secretsDir,
+        listener: {
+          getPort: () => 8791,
+          getLoopbackValidationStatus: () => ({
+            port: 8791,
+            loopbackAdeValidated: true,
+            lastFailureAt: null,
+            reason: null,
+            lastSuccessAt: "2026-08-05T00:00:00.000Z",
+          }),
+        },
+        holdsSyncHostLease: true,
+        relay: { accountSignedIn: true, wssUrl: null, status: null },
+        accountDirectory: createSyncAccountDirectoryHealth("published", null),
+        pin: snapshotPinStore,
+      });
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+        getProjectlessSyncSnapshot: snapshot,
+        projectlessSyncControls: createProjectlessSyncControls({
+          stores,
+          cloudRelayStore: createSyncCloudRelayStore({
+            filePath: path.join(secretsDir, "sync-cloud-relay.json"),
+          }),
+          getTunnelStatus: () => null,
+          accountRetainsMachineOwnership: () => false,
+        }),
+      });
+      return { handler, secretsDir, stores, registry, scopeRegistry };
+    }
+
+    it("projectless brain: sync.setPin succeeds with no project registered", async () => {
+      const { handler, secretsDir, stores } = makeProjectlessFixture();
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+      const status = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "sync.setPin",
+        params: { pin: "123456" },
+      }) as SyncRoleSnapshot;
+
+      expect(status.pairingPinConfigured).toBe(true);
+      expect(status.pairingPin).toBe("123456");
+      // The live ingress handler shares this instance, so the PIN it verifies
+      // against is the one just written — not a stale cached record.
+      expect(stores.pinStore.verifyPin("123456")).toBe(true);
+
+      handler.dispose();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+      resetBrainMachineSyncStoresForTests();
+    });
+
+    it("projectless brain: sync.generatePin mints a 6-digit PIN that sync.getPin reads back", async () => {
+      const { handler, secretsDir } = makeProjectlessFixture();
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+      const status = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "sync.generatePin",
+        params: {},
+      }) as SyncRoleSnapshot;
+
+      expect(status.pairingPinConfigured).toBe(true);
+      expect(status.pairingPin).toMatch(/^\d{6}$/);
+
+      const read = await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "sync.getPin",
+        params: {},
+      }) as { pin: string | null };
+      expect(read.pin).toBe(status.pairingPin);
+
+      const cleared = await handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "sync.clearPin",
+        params: {},
+      }) as SyncRoleSnapshot;
+      expect(cleared.pairingPinConfigured).toBe(false);
+      expect(cleared.pairingPin).toBe(null);
+
+      handler.dispose();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+      resetBrainMachineSyncStoresForTests();
+    });
+
+    // The pairing card reads the PIN straight off the snapshot it gets back.
+    // When the snapshot builder holds its own store instance it cannot see a
+    // plaintext code someone else set, so setting a PIN answered "no PIN" and
+    // the card stayed empty on a machine that was now perfectly pairable.
+    it("projectless brain: setPin and generatePin return a snapshot carrying the new PIN", async () => {
+      const { handler, secretsDir, stores } = makeProjectlessFixture({
+        snapshotReadsOwnPinStore: true,
+      });
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+      const set = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "sync.setPin",
+        params: { pin: "654321" },
+      }) as SyncRoleSnapshot;
+      expect(set.pairingPin).toBe("654321");
+      expect(set.pairingPinConfigured).toBe(true);
+      expect(stores.pinStore.verifyPin("654321")).toBe(true);
+
+      const generated = await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "sync.generatePin",
+        params: {},
+      }) as SyncRoleSnapshot;
+      expect(generated.pairingPin).toMatch(/^\d{6}$/);
+      expect(generated.pairingPinConfigured).toBe(true);
+      expect(stores.pinStore.verifyPin(generated.pairingPin ?? "")).toBe(true);
+
+      handler.dispose();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+      resetBrainMachineSyncStoresForTests();
+    });
+
+    it("projectless brain: sync.setPin rejects a PIN that is not 6 digits", async () => {
+      const { handler, secretsDir } = makeProjectlessFixture();
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "sync.setPin",
+        params: { pin: "12ab" },
+      })).rejects.toMatchObject({
+        code: JsonRpcErrorCode.invalidParams,
+        message: "The pairing code must be 6 digits.",
+      });
+
+      handler.dispose();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+      resetBrainMachineSyncStoresForTests();
+    });
+
+    it("a handler built without projectlessSyncControls still refuses PIN writes", async () => {
+      // Embedded runtimes and tests have no machine pairing stores to write to.
+      // They must keep failing loudly rather than silently pretending to host.
+      const { registry } = createRegistry();
+      const scopeRegistry = {
+        get: vi.fn(),
+        ensureSyncHost: vi.fn(),
+        switchSyncHost: vi.fn(),
+        resolveActiveSyncHost: vi.fn(async () => null),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+      });
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+      for (const [id, method] of [
+        [2, "sync.setPin"],
+        [3, "sync.generatePin"],
+        [4, "sync.getPin"],
+        [5, "sync.clearPin"],
+        [6, "sync.listDevices"],
+        [7, "sync.refreshDiscovery"],
+        [8, "sync.getRequireDpop"],
+      ] as const) {
+        await expect(handler({
+          jsonrpc: "2.0",
+          id,
+          method,
+          params: { pin: "123456" },
+        })).rejects.toMatchObject({
+          message: "Sync service is not available. Register a project first.",
+        });
+      }
+
+      handler.dispose();
+    });
+  });
+
   it("rejects desktop/TUI sync host switches through the runtime RPC", async () => {
     const { root, projectRoot, registry } = createRegistry();
     const first = registry.add(projectRoot);
@@ -2355,5 +2578,193 @@ describe("multi-project RPC server", () => {
     }));
 
     handler.dispose();
+  });
+});
+
+describe("machine.updateAndRestart", () => {
+  const makeControls = (overrides: Record<string, unknown> = {}) => ({
+    checkForUpdate: vi.fn(async (targetVersion: string | null) => ({
+      available: targetVersion !== "1.2.55",
+      currentVersion: "1.2.55",
+      targetVersion,
+      detail: "checked",
+    })),
+    applyUpdate: vi.fn(async () => ({ ok: true, version: "1.2.56", detail: "installed" })),
+    requestRestart: vi.fn(() => ({ ok: true, detail: "restarting" })),
+    ...overrides,
+  });
+
+  const initialize = async (
+    handler: ReturnType<typeof createMultiProjectRpcRequestHandler>,
+    role: string,
+  ) => {
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { role } },
+    });
+  };
+
+  it("refuses a caller below the cto role", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const controls = makeControls();
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "agent");
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: {},
+      })).rejects.toThrow(/requires the cto role/);
+      expect(controls.requestRestart).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("refuses when the runtime cannot update itself", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+      });
+      await initialize(handler, "cto");
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: {},
+      })).rejects.toThrow(/cannot update itself/);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("restarts without updating when the machine is already current", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const controls = makeControls();
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "cto");
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.55" },
+      }) as { ok: boolean; updateApplied: boolean; steps: Array<{ id: string; status: string }> };
+
+      expect(controls.checkForUpdate).toHaveBeenCalledWith("1.2.55");
+      expect(controls.applyUpdate).not.toHaveBeenCalled();
+      expect(controls.requestRestart).toHaveBeenCalledTimes(1);
+      expect(result.ok).toBe(true);
+      expect(result.updateApplied).toBe(false);
+      expect(result.steps.map((step) => [step.id, step.status])).toEqual([
+        ["check", "ok"],
+        ["apply", "skipped"],
+        ["restart", "pending"],
+      ]);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("runs once when two callers overlap, and hands both the same result", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      let releaseApply: () => void = () => {};
+      const applyStarted = new Promise<void>((resolve) => {
+        releaseApply = resolve;
+      });
+      let unblock: () => void = () => {};
+      const applyGate = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      const controls = makeControls({
+        applyUpdate: vi.fn(async () => {
+          releaseApply();
+          await applyGate;
+          return { ok: true, version: "1.2.56", detail: "installed" };
+        }),
+      });
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "cto");
+
+      const first = handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      });
+      await applyStarted;
+      const second = handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      });
+      unblock();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(controls.applyUpdate).toHaveBeenCalledTimes(1);
+      expect(controls.requestRestart).toHaveBeenCalledTimes(1);
+      expect(secondResult).toBe(firstResult);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("returns step results for an applied update", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const controls = makeControls();
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "cto");
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      }) as { ok: boolean; updateApplied: boolean; steps: Array<{ id: string; status: string }> };
+
+      expect(controls.applyUpdate).toHaveBeenCalledWith("1.2.56");
+      expect(result.ok).toBe(true);
+      expect(result.updateApplied).toBe(true);
+      expect(result.steps.map((step) => [step.id, step.status])).toEqual([
+        ["check", "ok"],
+        ["apply", "ok"],
+        ["restart", "pending"],
+      ]);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
   });
 });

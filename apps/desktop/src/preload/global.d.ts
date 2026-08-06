@@ -673,6 +673,7 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+  RemoteRuntimeUpdateAndRestartResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
@@ -912,6 +913,16 @@ declare global {
           fingerprintSha256: string,
         ) => Promise<RemoteRuntimeTrustSshHostKeyResult>;
         connect: (id: string) => Promise<RemoteRuntimeConnectResult>;
+        /**
+         * Asks a connected machine to install the newest ADE build and restart
+         * itself. Always user-initiated. `targetVersion` is what this desktop
+         * believes is newest; the machine refuses to "update" to the version it
+         * already runs and just restarts.
+         */
+        updateAndRestart: (
+          id: string,
+          targetVersion?: string | null,
+        ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (
           id: string,

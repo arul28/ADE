@@ -26,8 +26,9 @@ import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
-  MAX_ROUTE_ATTEMPTS,
+  dominantPairedRuntimeFailure,
   orderPairedCandidates,
+  pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
 } from "./pairedRuntimeRoutes";
@@ -117,15 +118,6 @@ export async function bootstrapPairedRuntime(args: {
   }
 
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
-  const routeErrors: string[] = [];
-  let omittedRouteErrorCount = 0;
-  const addRouteError = (message: string): void => {
-    if (routeErrors.length < MAX_ROUTE_ATTEMPTS) {
-      routeErrors.push(message);
-      return;
-    }
-    omittedRouteErrorCount += 1;
-  };
   const correlationId = randomUUID();
   const attemptRecorder = createRouteAttemptRecorder();
   const { attempts, record: recordAttempt } = attemptRecorder;
@@ -137,7 +129,18 @@ export async function bootstrapPairedRuntime(args: {
     candidate: PairedRuntimeEndpointCandidate,
     failure: RemoteRuntimeConnectionAttemptFailure,
   ): void => {
-    if (failure === "authentication") return;
+    // Nothing is wrong with the *route* when the account or the pairing is the
+    // problem — every other endpoint would fail the same way, so demoting this
+    // one teaches the dial order nothing.
+    if (failure === "authentication" || failure === "pairing") return;
+    if (failure === "identity") {
+      // A different machine answered here. Demotion expires; this must not.
+      args.pairedStore.forgetEndpoint(
+        credentials.hostIdentity.deviceId,
+        candidate.endpoint,
+      );
+      return;
+    }
     args.pairedStore.markEndpointFailed(
       credentials.hostIdentity.deviceId,
       candidate.endpoint,
@@ -234,7 +237,6 @@ export async function bootstrapPairedRuntime(args: {
         outcome: "failed",
         failure,
       });
-      addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
       continue;
     }
 
@@ -248,7 +250,6 @@ export async function bootstrapPairedRuntime(args: {
         outcome: "failed",
         failure: "capability",
       });
-      addRouteError(`${candidate.kind} ${safeHost}: capability`);
       continue;
     }
 
@@ -273,7 +274,6 @@ export async function bootstrapPairedRuntime(args: {
           outcome: "failed",
           failure,
         });
-        addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
         continue;
       }
       throw compatibilityError(error);
@@ -307,7 +307,6 @@ export async function bootstrapPairedRuntime(args: {
           outcome: "failed",
           failure,
         });
-        addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
         continue;
       }
       throw compatibilityError(error);
@@ -382,23 +381,30 @@ export async function bootstrapPairedRuntime(args: {
     }
   }
 
-  if (relayAuthError) throw relayAuthError;
-
+  // Every route is spent. Diagnose once from the recorded attempts and say it
+  // in one sentence — the per-route hosts, ports and outcomes stay in
+  // `attempts` for the UI's route details and the diagnostic ID.
+  const failure = dominantPairedRuntimeFailure(attempts);
+  const diagnostic = {
+    correlationId,
+    attempts,
+    failure,
+    ...(attemptRecorder.omittedAttemptCount > 0
+      ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+      : {}),
+  };
+  // A skipped relay leg only wins when nothing more actionable was found; a
+  // host that rejected the pairing outranks "you aren't signed in".
+  if (relayAuthError && failure === "authentication") {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      relayAuthError.message,
+      relayAuthError.cause,
+      diagnostic,
+    );
+  }
   throw new PairedRuntimeTransportUnavailableError(
-    "Could not reach the paired ADE runtime over LAN, tailnet, or relay. "
-      + routeErrors.join("; ")
-      + (
-        omittedRouteErrorCount > 0
-          ? `; ${omittedRouteErrorCount} more route attempts failed`
-          : ""
-      ),
+    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name),
     undefined,
-    {
-      correlationId,
-      attempts,
-      ...(attemptRecorder.omittedAttemptCount > 0
-        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
-        : {}),
-    },
+    diagnostic,
   );
 }

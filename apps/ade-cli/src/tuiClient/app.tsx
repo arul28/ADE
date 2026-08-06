@@ -357,6 +357,8 @@ import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybind
 import { buildDeeplinkForRow, buildWebClientUrlForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
 import {
+  accountSessionLabel,
+  accountSessionStateFromResult,
   acknowledgeActivityItem,
   activityItemDeepLink,
   buildActivityPaneModel,
@@ -3558,7 +3560,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ? envelope.result as Record<string, unknown>
           : envelope;
         if (result.signedIn !== true) {
-          setAccountLabel("account signed out · ade login");
+          // Signed out, expired, and "couldn't read it" all report
+          // signedIn: false and need different words — pointing at `ade login`
+          // over a merely unreadable session is how a valid one gets replaced.
+          setAccountLabel(
+            accountSessionLabel(accountSessionStateFromResult(result))
+              ?? "account signed out · ade login",
+          );
           return;
         }
         const identity = [result.email, result.name, result.userId]

@@ -10,7 +10,10 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdeAccountMachine } from "../../../shared/types";
+import type {
+  AdeAccountMachine,
+  RemoteRuntimeTarget,
+} from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { RemoteTargetList } from "./RemoteTargetList";
@@ -35,7 +38,33 @@ const remoteRuntimeMock = {
   parsePairingInput: vi.fn(),
   pairWithMachine: vi.fn(),
   runDoctor: vi.fn(),
+  updateAndRestart: vi.fn(),
 };
+
+const updateGetStateMock = vi.fn();
+const onUpdateEventMock = vi.fn();
+
+/** Steady-state auto-update snapshot: this computer runs `currentVersion`. */
+function autoUpdateSnapshot(currentVersion: string, latestKnownVersion: string | null = null) {
+  return {
+    status: "idle",
+    currentVersion,
+    latestKnownVersion,
+    version: null,
+    progressPercent: null,
+    bytesPerSecond: null,
+    transferredBytes: null,
+    totalBytes: null,
+    releaseNotesUrl: null,
+    error: null,
+    errorDetails: null,
+    recentlyInstalled: null,
+    parked: null,
+    lastInstallFailed: null,
+    autoApplyPending: null,
+    autoApplySuppressedUntil: null,
+  };
+}
 
 const lanesMock = {
   list: vi.fn(),
@@ -65,6 +94,8 @@ function installAdeMock(): void {
     relayAvailable: false,
   });
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
+  onUpdateEventMock.mockReturnValue(() => {});
+  updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.0.0"));
   appMock.getInfo.mockResolvedValue({ localRuntime: null });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   accountMock.onPairMachineProgress.mockReturnValue(() => {});
@@ -79,6 +110,8 @@ function installAdeMock(): void {
       lanes: lanesMock,
       app: appMock,
       account: accountMock,
+      updateGetState: updateGetStateMock,
+      onUpdateEvent: onUpdateEventMock,
     },
   });
 }
@@ -1151,9 +1184,9 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    fireEvent.click(await screen.findByText("Route details"));
-    expect(screen.getByText("studio.local:8787 · 250ms · Failed (timeout)")).toBeTruthy();
-    expect(screen.getByText("relay.example · 81ms · Failed (unreachable)")).toBeTruthy();
+    fireEvent.click(await screen.findByText("Details"));
+    expect(screen.getByText("studio.local:8787 · 250ms · Failed — timed out")).toBeTruthy();
+    expect(screen.getByText("relay.example · 81ms · Failed — no answer")).toBeTruthy();
     expect(screen.getByText("123e4567-e89b-42d3-a456-426614174000")).toBeTruthy();
     expect(screen.queryByText(/connect\/machine/)).toBeNull();
     expect(screen.queryByText(/token=secret/)).toBeNull();
@@ -1292,6 +1325,125 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-account"),
     );
+  });
+
+  // A saved paired target that is also an account machine, failing with one
+  // structured cause. Shared so the positive and negative cases differ by
+  // exactly the `failure` value and nothing else.
+  function renderAccountPairingFailure(failure: string) {
+    const savedTarget: RemoteRuntimeTarget = {
+      id: "target-account",
+      name: "Cloud Studio",
+      hostname: "cloud-studio",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "dev_cloud", machineKey: "mk_cloud" },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    const accountMachines: AdeAccountMachine[] = [
+      {
+        machineKey: "mk_cloud",
+        deviceId: "dev_cloud",
+        name: "Cloud Studio",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now() - 30_000,
+        online: true,
+      },
+    ];
+    const message = "Cloud Studio says this device's pairing is out of date — pair it again.";
+    remoteRuntimeMock.listTargets.mockResolvedValue([savedTarget]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target: savedTarget,
+            state: "error" as const,
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: message,
+            lastErrorInfo: {
+              kind: "generic" as const,
+              message,
+              failure,
+              correlationId: "123e4567-e89b-42d3-a456-426614174000",
+              attempts: [
+                {
+                  kind: "lan" as const,
+                  host: "192.168.1.240:8788",
+                  startedAt: 1,
+                  durationMs: 12,
+                  outcome: "failed" as const,
+                  failure,
+                },
+              ],
+            },
+            lastAttemptedAt: 1,
+            connectedAt: null,
+          },
+        ],
+        connectedCount: 0,
+        updatedAt: 1,
+      }),
+    });
+    accountMock.pairMachine.mockResolvedValue({
+      targetId: savedTarget.id,
+      machineKey: "mk_cloud",
+      deviceId: "dev_cloud",
+      name: "Cloud Studio",
+    });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target: savedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    installAdeMock();
+    render(
+      <RemoteTargetList
+        accountMachines={accountMachines}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+  }
+
+  it("offers one explicit Pair again when a machine rejects the saved pairing", async () => {
+    renderAccountPairingFailure("pairing");
+
+    const pairAgain = await screen.findByRole("button", { name: "Pair again" });
+    // The headline is one plain sentence; the addresses live behind a
+    // collapsed Details, never in the line the user reads first.
+    const headline = screen.getByText(/pairing is out of date/);
+    expect(headline.textContent).not.toContain("192.168");
+    expect(headline.textContent).not.toContain("8788");
+    expect(document.querySelector("details")?.hasAttribute("open")).toBe(false);
+    fireEvent.click(await screen.findByText("Details"));
+    expect(screen.getByText(/192\.168\.1\.240:8788/)).toBeTruthy();
+    expect(screen.getByText("123e4567-e89b-42d3-a456-426614174000")).toBeTruthy();
+
+    // Nothing re-pairs on its own; the user has to press it.
+    expect(accountMock.pairMachine).not.toHaveBeenCalled();
+    fireEvent.click(pairAgain);
+    await waitFor(() =>
+      expect(accountMock.pairMachine).toHaveBeenCalledWith("mk_cloud"),
+    );
+  });
+
+  it("does not offer Pair again when the machine was simply unreachable", async () => {
+    renderAccountPairingFailure("unreachable");
+
+    await screen.findByText("Details");
+    // Re-pairing cannot wake a sleeping Mac, so the action is not offered.
+    expect(screen.queryByRole("button", { name: "Pair again" })).toBeNull();
   });
 
   it("does not claim the account is empty when the account list failed to load", async () => {
@@ -1701,5 +1853,129 @@ describe("RemoteTargetList", () => {
 
     await waitFor(() => expect(accountMock.renameMachine).toHaveBeenCalledWith("studio", "Build Mac"));
     expect(onRenamed).toHaveBeenCalledOnce();
+  });
+  // --- Update & restart on a connected machine ----------------------------
+
+  function installConnectedMachine(remoteVersion: string): void {
+    const connectedTarget = {
+      id: "target-c",
+      name: "Studio Mac",
+      hostname: "studio.local",
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "studio" },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: remoteVersion,
+      lastConnectedAt: 1,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target: connectedTarget,
+            state: "connected",
+            arch: "darwin-arm64",
+            version: remoteVersion,
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: 1,
+            connectedAt: 1,
+          },
+        ],
+        connectedCount: 1,
+        updatedAt: 1,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+  }
+
+  it("does not offer Update & restart to a machine already level with this computer", async () => {
+    installConnectedMachine("1.2.0");
+    installAdeMock();
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Update & restart/ }),
+    ).toBeNull();
+  });
+
+  it("offers Update & restart to a connected machine running an older ADE", async () => {
+    installConnectedMachine("1.1.9");
+    installAdeMock();
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
+
+    render(<RemoteTargetList />);
+
+    expect(
+      await screen.findByRole("button", { name: /Update & restart/ }),
+    ).toBeTruthy();
+  });
+
+  it("asks the outdated machine to update to the newest version this computer knows", async () => {
+    installConnectedMachine("1.1.9");
+    installAdeMock();
+    // This computer runs 1.2.0 but has already seen 1.3.0 published.
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0", "1.3.0"));
+    remoteRuntimeMock.updateAndRestart.mockResolvedValue({
+      ok: true,
+      updateApplied: true,
+      currentVersion: "1.1.9",
+      targetVersion: "1.3.0",
+      steps: [],
+      message: "Studio Mac updated to 1.3.0 — restarting.",
+    });
+
+    render(<RemoteTargetList />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Update & restart/ }),
+    );
+
+    await waitFor(() =>
+      expect(remoteRuntimeMock.updateAndRestart).toHaveBeenCalledWith(
+        "target-c",
+        "1.3.0",
+      ),
+    );
+    expect(
+      await screen.findByText("Studio Mac updated to 1.3.0 — restarting."),
+    ).toBeTruthy();
+  });
+
+  it("shows the machine's own failure line when the update does not land", async () => {
+    installConnectedMachine("1.1.9");
+    installAdeMock();
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
+    remoteRuntimeMock.updateAndRestart.mockResolvedValue({
+      ok: false,
+      updateApplied: false,
+      currentVersion: "1.1.9",
+      targetVersion: "1.2.0",
+      steps: [{ id: "apply", status: "failed", detail: "no disk space" }],
+      message: "Could not install the update — the machine is out of disk space.",
+    });
+
+    render(<RemoteTargetList />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Update & restart/ }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Could not install the update — the machine is out of disk space.",
+      ),
+    ).toBeTruthy();
   });
 });

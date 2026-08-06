@@ -742,11 +742,13 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["brain", "pin", "generate"])).toEqual({
       kind: "execute",
       label: "sync pin generate",
+      formatter: "sync-pin",
       steps: [{ key: "result", method: "sync.generatePin" }],
     });
     expect(buildCliPlan(["brain", "pin", "set", "123456"])).toEqual({
       kind: "execute",
       label: "sync pin set",
+      formatter: "sync-pin",
       steps: [
         { key: "result", method: "sync.setPin", params: { pin: "123456" } },
       ],
@@ -754,6 +756,7 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["brain", "pin", "clear"])).toEqual({
       kind: "execute",
       label: "sync pin clear",
+      formatter: "sync-pin",
       steps: [{ key: "result", method: "sync.clearPin" }],
     });
     expect(buildCliPlan(["runtime", "status"])).toEqual({
@@ -1598,6 +1601,89 @@ describe("ADE CLI", () => {
         "Generate or set a new code only if you need ADE to display or copy one.",
     );
     expect(output).not.toContain("no PIN set");
+  });
+
+  it("says the pairing code in words for both shapes sync pin returns", () => {
+    const getPlan = expectExecutePlan(buildCliPlan(["sync", "pin", "get"]));
+    expect(inferFormatter(getPlan)).toBe("sync-pin");
+    expect(formatOutput({ pin: "123456" }, { text: true } as any, inferFormatter(getPlan)))
+      .toContain("Pairing code 123456");
+    expect(formatOutput({ pin: null }, { text: true } as any, inferFormatter(getPlan)))
+      .toContain("No pairing code is set — run: ade sync pin generate");
+
+    // generate/set/clear answer with the whole snapshot, not { pin }.
+    const generatePlan = expectExecutePlan(buildCliPlan(["sync", "pin", "generate"]));
+    expect(
+      formatOutput(
+        { pairingPin: "654321", pairingPinConfigured: true, pairingConnectInfo: { port: 8787 } },
+        { text: true } as any,
+        inferFormatter(generatePlan),
+      ),
+    ).toContain("Pairing code 654321");
+    expect(
+      formatOutput(
+        { pairingPin: null, pairingPinConfigured: true, pairingConnectInfo: { port: 8787 } },
+        { text: true } as any,
+        inferFormatter(generatePlan),
+      ),
+    ).toContain("ADE cannot show it");
+    const clearPlan = expectExecutePlan(buildCliPlan(["sync", "pin", "clear"]));
+    expect(
+      formatOutput(
+        { pairingPin: null, pairingPinConfigured: false, pairingConnectInfo: { port: 8787 } },
+        { text: true } as any,
+        inferFormatter(clearPlan),
+      ),
+    ).toContain("No pairing code is set — run: ade sync pin generate");
+  });
+
+  it("reports pairing state in sync status --text for a machine with no project", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
+    const projectless = {
+      mode: "standalone",
+      role: "brain",
+      runtimeRole: "host",
+      runtimeName: null,
+      connectedPeers: [],
+      pairingPin: null,
+      pairingPinConfigured: false,
+      pairingConnectInfo: { port: 8801 },
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8801 },
+        tailscale: { enabled: false },
+        relay: {},
+        accountDirectory: { state: "ok" },
+      },
+      survivableStateText: "This machine hosts phone sync without an open project.",
+      blockingStateText: "Register or open a project to sync its chats, lanes, and terminals.",
+    };
+    const output = formatOutput(projectless, { text: true } as any, inferFormatter(plan));
+    expect(output).toContain("mode");
+    expect(output).toContain("standalone");
+    expect(output).toContain("pairing code");
+    expect(output).toContain("not set — run: ade sync pin generate");
+    expect(output).toContain("This machine hosts phone sync without an open project.");
+
+    const paired = formatOutput(
+      { ...projectless, pairingPin: "246810", pairingPinConfigured: true },
+      { text: true } as any,
+      inferFormatter(plan),
+    );
+    expect(paired).toContain("246810");
+  });
+
+  it("names an empty paired-device list instead of printing []", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "devices"]));
+    expect(inferFormatter(plan)).toBe("sync-devices");
+    expect(formatOutput([], { text: true } as any, inferFormatter(plan)))
+      .toContain("No paired devices yet — run: ade sync pin generate");
+    expect(
+      formatOutput(
+        [{ name: "Arul's iPhone", deviceType: "phone", platform: "iOS", lastSeenAt: "2026-08-06T00:00:00.000Z" }],
+        { text: true } as any,
+        inferFormatter(plan),
+      ),
+    ).toContain("Arul's iPhone");
   });
 
   it("surfaces a prior install that did not land in update status --text", () => {

@@ -2586,6 +2586,57 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  // Neither of these codes means the saved pairing is bad, so neither may end in
+  // the `auth_failed` status that makes the session manager invalidate the
+  // environment. Both must leave the environment on disk and show the host's
+  // own message.
+  for (const scenario of [
+    {
+      code: "account_session_changed" as const,
+      message: "Your ADE account changed while connecting. Sign in again.",
+    },
+    {
+      code: "host_update_required" as const,
+      message: "Update ADE on that machine to connect.",
+    },
+  ]) {
+    it(`keeps the pairing when the host rejects with ${scenario.code}`, async () => {
+      const storage = new MemoryStorage();
+      const environment = await makeEnvironment(storage, { addressCandidates: [] });
+      const script = createSocketFactory((socket, envelope) => {
+        if (envelope.type !== "hello") return;
+        socket.serverSend({
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: {
+            code: scenario.code,
+            message: scenario.message,
+            host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
+          },
+        });
+      });
+      const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+      const seen: Array<{ state: string; error: string | null }> = [];
+      const unsubscribe = client.subscribe(() => {
+        const status = client.getStatus();
+        seen.push({ state: status.state, error: status.error ?? null });
+      });
+      const seenStates = () => seen.map((entry) => entry.state);
+
+      await expect(client.connect(environment.envId, signedInRelayAccess)).rejects.toMatchObject({
+        code: scenario.code,
+      });
+      expect(await client.listEnvironments()).toHaveLength(1);
+      // "auth_failed" is the status the session manager treats as "delete this
+      // environment"; these codes must never reach it. `account_session_changed`
+      // is retryable, so the visible state may already be "reconnecting".
+      expect(seen).toContainEqual({ state: "error", error: scenario.message });
+      expect(seenStates()).not.toContain("auth_failed");
+      unsubscribe();
+      client.dispose();
+    });
+  }
+
   it("disconnects a revoked Relay lease while preserving direct reconnect trust", async () => {
     const storage = new MemoryStorage();
     await makeEnvironment(storage, {

@@ -14,6 +14,8 @@ import {
   classifyUpdateError,
   estimateUpdateRequiredBytes,
 } from "./autoUpdateErrors";
+import { runUpdateTransaction } from "./updateTransaction";
+import { DEFAULT_AUTO_UPDATE_PREFERENCES, type AutoUpdateSnapshot } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -1947,5 +1949,153 @@ describe("compareUpdateVersions", () => {
     expect(compareUpdateVersions("v1.2.4-beta.2", "1.2.4-beta.1")).toBeGreaterThan(0);
     expect(compareUpdateVersions("1.2.4", "1.2.4-beta.2")).toBeGreaterThan(0);
     expect(compareUpdateVersions("1.2.4", "v1.2.4")).toBe(0);
+  });
+});
+
+describe("update transaction on the snapshot", () => {
+  it("starts null, publishes the transaction result, and pushes it to listeners", async () => {
+    const logger = makeLogger();
+    const globalStatePath = makeStatePath();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.4",
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(service.getSnapshot().updateTransaction).toBeNull();
+
+    const seen: (AutoUpdateSnapshot["updateTransaction"])[] = [];
+    const unsubscribe = service.onStateChange((snapshot) => {
+      seen.push(snapshot.updateTransaction);
+    });
+
+    const result = await runUpdateTransaction({
+      installedVersion: "1.2.4",
+      expectedVersion: "1.2.4",
+      reinstallService: async () => ({ ok: true, detail: "" }),
+      restartService: async () => ({ ok: false, detail: "endpoint never rebound" }),
+      checkHealth: async () => ({ ok: true, version: "1.2.4", detail: "" }),
+    });
+    service.setUpdateTransaction(result);
+
+    expect(service.getSnapshot().updateTransaction?.ok).toBe(false);
+    expect(service.getSnapshot().updateTransaction?.failureMessage).toBe(
+      "Updated the app, but the background service didn't restart — click Repair.",
+    );
+    expect(seen.at(-1)?.failureMessage).toBe(
+      "Updated the app, but the background service didn't restart — click Repair.",
+    );
+
+    unsubscribe();
+    service.dispose();
+  });
+
+  it("reports a failed brain half once, with only the coarse step name", async () => {
+    const productAnalyticsService = { captureInternal: vi.fn() };
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.4",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      productAnalyticsService: productAnalyticsService as never,
+      updater: new FakeAutoUpdater(),
+    });
+
+    // A healthy transaction is not a product fact.
+    service.setUpdateTransaction(await runUpdateTransaction({
+      installedVersion: "1.2.4",
+      expectedVersion: "1.2.4",
+      reinstallService: async () => ({ ok: true, detail: "" }),
+      restartService: async () => ({ ok: true, detail: "" }),
+      checkHealth: async () => ({ ok: true, version: "1.2.4", detail: "" }),
+    }));
+    service.setUpdateTransaction(null);
+    expect(productAnalyticsService.captureInternal).not.toHaveBeenCalled();
+
+    // The app half failing is already covered by ade_update_install_did_not_land.
+    service.setUpdateTransaction(await runUpdateTransaction({
+      installedVersion: "1.2.3",
+      expectedVersion: "1.2.4",
+      reinstallService: async () => ({ ok: true, detail: "" }),
+      restartService: async () => ({ ok: true, detail: "" }),
+      checkHealth: async () => ({ ok: true, version: "1.2.3", detail: "" }),
+    }));
+    expect(productAnalyticsService.captureInternal).not.toHaveBeenCalled();
+
+    // The brain half failing is the new category.
+    service.setUpdateTransaction(await runUpdateTransaction({
+      installedVersion: "1.2.4",
+      expectedVersion: "1.2.4",
+      reinstallService: async () => ({ ok: true, detail: "" }),
+      restartService: async () => ({ ok: false, detail: "endpoint /Users/alice never rebound" }),
+      checkHealth: async () => ({ ok: true, version: "1.2.4", detail: "" }),
+    }));
+
+    expect(productAnalyticsService.captureInternal).toHaveBeenCalledTimes(1);
+    expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "updates",
+        action: "transaction_failed",
+        outcome: "restart",
+      },
+      dedupeKey: "update_transaction_failed:restart",
+      minimumIntervalMs: 60 * 60_000,
+    });
+    expect(JSON.stringify(productAnalyticsService.captureInternal.mock.calls))
+      .not.toContain("/Users/alice");
+
+    service.dispose();
+  });
+
+  it("keeps the transaction result when a later download is cancelled", () => {
+    const logger = makeLogger();
+    const globalStatePath = makeStatePath();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.4",
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater,
+    });
+
+    service.setUpdateTransaction({
+      ok: false,
+      version: "1.2.4",
+      steps: [{ id: "health", status: "failed", detail: "no answer" }],
+      failureMessage: "Updated the app, but the background service isn't answering — click Repair.",
+    });
+    updater.emit("update-cancelled", { version: "1.2.5" });
+
+    expect(service.getSnapshot().updateTransaction?.failureMessage).toBe(
+      "Updated the app, but the background service isn't answering — click Repair.",
+    );
+
+    service.dispose();
+  });
+
+  it("keeps updates ask-first: automaticInstall defaults to false", () => {
+    const logger = makeLogger();
+    const globalStatePath = makeStatePath();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.4",
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(DEFAULT_AUTO_UPDATE_PREFERENCES.automaticInstall).toBe(false);
+    expect(service.getPreferences()).toEqual({ automaticInstall: false, onlyWhenIdle: true });
+
+    service.dispose();
   });
 });

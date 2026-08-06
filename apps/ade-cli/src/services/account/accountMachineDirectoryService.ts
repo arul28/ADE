@@ -24,7 +24,11 @@ import {
   shouldIgnoreDevelopmentAccountDirectoryUrl,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
-import type { AccountAuthService, AccountSessionReadState } from "./accountAuthService";
+import type {
+  AccountAuthService,
+  AccountSessionReadState,
+  AccountSessionState,
+} from "./accountAuthService";
 import { defaultRelayUrl } from "../sync/syncCloudRelayStore";
 
 type AccountMachinePairer = {
@@ -172,19 +176,25 @@ function packagedSafeAccountDirectoryOverride(
 }
 
 /**
- * "Signed out" and "this machine's stored session could not be READ" look
- * identical to `getStatus()` — both report `signedIn: false` — but they need
- * different words. Signing out is something the user did; an unreadable
- * session is a local decrypt/credential-store failure that has changed nothing
- * about the account, and telling the user to sign in makes them destroy a
- * session that is still perfectly valid. Only the first tells them to sign in.
+ * "Signed out", "the saved sign-in expired", and "this machine's stored session
+ * could not be READ" look identical to `getStatus()` — all three report
+ * `signedIn: false` — but they need different words. Signing out is something
+ * the user did; an expired session is one the identity provider rejected; an
+ * unreadable session is a local decrypt/credential-store failure that has
+ * changed nothing about the account, and telling the user to sign in makes
+ * them destroy a session that is still perfectly valid. Only the first two
+ * tell them to sign in.
  */
 function notSignedInMessage(
   readState: AccountSessionReadState | undefined,
   action: "remove a machine from your ADE account" | "rename a machine",
+  sessionState?: AccountSessionState,
 ): string {
-  if (readState === "unreadable") {
+  if (readState === "unreadable" || sessionState === "unreadable") {
     return `ADE couldn't read this computer's saved sign-in, so nothing was changed. Wait a moment and try again to ${action}; if it keeps failing, sign in again on this computer.`;
+  }
+  if (sessionState === "expired") {
+    return `Your ADE account sign-in expired — sign in again to ${action}.`;
   }
   return `Not signed in — sign in to ${action}.`;
 }
@@ -192,7 +202,7 @@ function notSignedInMessage(
 export class AccountMachineDirectoryService {
   constructor(
     private readonly account: Pick<AccountAuthService, "getStatus" | "getAccessToken">
-      & Partial<Pick<AccountAuthService, "getSessionReadState">>,
+      & Partial<Pick<AccountAuthService, "getSessionReadState" | "getSessionState">>,
     private readonly options: {
       directoryBaseUrl?: () => string | null;
       pairedStore?: AccountMachinePairer;
@@ -210,13 +220,24 @@ export class AccountMachineDirectoryService {
       // An unreadable stored session is a local failure, not a sign-out. Report
       // it as unavailable so the surface says "couldn't load" instead of
       // inviting the user to sign in over a session that is still valid.
-      return this.account.getSessionReadState?.() === "unreadable"
-        ? {
+      const sessionState = status.sessionState ?? this.account.getSessionState?.();
+      if (this.account.getSessionReadState?.() === "unreadable" || sessionState === "unreadable") {
+        return {
           state: "unavailable",
           machines: [],
           message: "ADE couldn't read this computer's saved sign-in. Try again in a moment.",
-        }
-        : { state: "signed_out", machines: [], message: null };
+        };
+      }
+      // A provider-rejected session is a real sign-out, but the user should be
+      // told it expired rather than that they were never signed in.
+      if (sessionState === "expired") {
+        return {
+          state: "auth_expired",
+          machines: [],
+          message: "Your ADE account session expired. Run `ade login` again.",
+        };
+      }
+      return { state: "signed_out", machines: [], message: null };
     }
     let token: string;
     try {
@@ -253,6 +274,7 @@ export class AccountMachineDirectoryService {
       throw new Error(notSignedInMessage(
         this.account.getSessionReadState?.(),
         "remove a machine from your ADE account",
+        status.sessionState ?? this.account.getSessionState?.(),
       ));
     }
     let token: string;
@@ -361,6 +383,7 @@ export class AccountMachineDirectoryService {
       throw new Error(notSignedInMessage(
         this.account.getSessionReadState?.(),
         "rename a machine",
+        status.sessionState ?? this.account.getSessionState?.(),
       ));
     }
     let token: string;

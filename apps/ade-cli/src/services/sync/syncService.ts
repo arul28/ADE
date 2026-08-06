@@ -64,7 +64,11 @@ import {
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
-import { createSyncCloudRelayStore, type SyncCloudRelayStore } from "./syncCloudRelayStore";
+import {
+  buildSyncCloudRelayStatus,
+  createSyncCloudRelayStore,
+  type SyncCloudRelayStore,
+} from "./syncCloudRelayStore";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
@@ -1624,29 +1628,13 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     getCloudRelayStatus(): SyncCloudRelayStatus {
-      const config = cloudRelayStore.getConfig();
       const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
-      const accountSignedIn = isRelayAccountSignedIn()
-        && (tunnelStatus?.accountLeaseValid ?? true);
-      const status = {
-        relayWssUrl: cloudRelayStore.getRelayWssUrl(),
-        machineKey: config.machineKey,
-        relayUrl: cloudRelayStore.getRelayUrl(),
-        connected: accountSignedIn && (tunnelStatus?.connected ?? false),
-        activeTunnels: accountSignedIn ? (tunnelStatus?.activeTunnels ?? 0) : 0,
-        relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
-        lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
-        lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
-        lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
-        relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
-        relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
-        relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
-        lastControlError: tunnelStatus?.lastControlError ?? null,
-        lastError: accountSignedIn
-          ? tunnelStatus?.lastError ?? null
-          : "Sign in to ADE to use ADE Relay.",
-      };
-      return status;
+      return buildSyncCloudRelayStatus({
+        cloudRelayStore,
+        tunnelStatus,
+        accountSignedIn: isRelayAccountSignedIn()
+          && (tunnelStatus?.accountLeaseValid ?? true),
+      });
     },
 
     async runSelfProbe(): Promise<{ ok: boolean; detail: string }> {

@@ -1090,7 +1090,27 @@ type SyncHelloErrorHost = {
 
 export type SyncHelloErrorPayload =
   | (SyncHelloErrorHost & {
-      code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
+      /**
+       * `repair_required` is the one rejection the user can act on directly:
+       * the host has no usable pairing record for this device, so the fix is to
+       * pair again. Clients must classify from this code and never by matching
+       * the host-sent message text.
+       *
+       * The two codes below it exist because `auth_failed` reads as "pair it
+       * again" on every client, and that is the wrong instruction for a host
+       * that simply cannot verify accounts yet (`host_update_required` — update
+       * it there) or whose account session moved under the handshake
+       * (`account_session_changed` — sign in, then retry). Neither is a reason
+       * to destroy a saved pairing.
+       */
+      code:
+        | "auth_failed"
+        | "repair_required"
+        | "host_update_required"
+        | "account_session_changed"
+        | "invalid_hello"
+        | "relay_account_required"
+        | "connection_attempt_superseded";
       message: string;
     })
   | (SyncHelloErrorHost & {

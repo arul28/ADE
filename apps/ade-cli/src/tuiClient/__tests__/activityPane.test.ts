@@ -6,6 +6,8 @@ import type {
 import type { AdeCodeConnection } from "../types";
 import {
   ACTIVITY_PANE_GROUP_BY_STATE_GROUP,
+  accountSessionLabel,
+  accountSessionStateFromResult,
   acknowledgeActivityItem,
   activityItemContext,
   activityItemDeepLink,
@@ -277,6 +279,38 @@ describe("account-wide Activity pane", () => {
     expect(result.availability?.message).toContain("Local work remains available");
   });
 
+  it("never offers sign-in for a session it merely could not read", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "account.call") {
+        return { result: { signedIn: false, sessionState: "unreadable" } };
+      }
+      return { ...snapshot([item()]), scope: "machine" };
+    });
+
+    const result = await loadActivitySnapshot(connection(asRequest(request)));
+    expect(result.availability).toMatchObject({
+      state: "degraded",
+      recovery: "retry",
+    });
+    expect(result.availability?.message).not.toContain("ade login");
+  });
+
+  it("names an expired sign-in instead of a plain sign-out", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "account.call") {
+        return { result: { signedIn: false, sessionState: "expired" } };
+      }
+      return { ...snapshot([item()]), scope: "machine" };
+    });
+
+    const result = await loadActivitySnapshot(connection(asRequest(request)));
+    expect(result.availability).toMatchObject({
+      state: "signed_out",
+      recovery: "sign_in",
+    });
+    expect(result.availability?.message).toContain("expired");
+  });
+
   it("acknowledges machine fallback items through the machine-scoped contract", async () => {
     const request = vi.fn(async () => null);
     await acknowledgeActivityItem(
@@ -393,5 +427,24 @@ describe("account-wide Activity pane", () => {
     const window = activityPaneEntries(model, 18, 8);
     expect(window.entries.some((entry) => entry.kind === "item" && entry.itemIndex === 18)).toBe(true);
     expect(window.hiddenBefore).toBeGreaterThan(0);
+  });
+
+  it("separates the three reasons signedIn can be false", () => {
+    expect(accountSessionStateFromResult({ signedIn: true })).toBe("active");
+    expect(accountSessionStateFromResult({ signedIn: false })).toBe("signed_out");
+    expect(accountSessionStateFromResult({ signedIn: false, sessionState: "expired" }))
+      .toBe("expired");
+    expect(accountSessionStateFromResult({ signedIn: false, sessionState: "unreadable" }))
+      .toBe("unreadable");
+    // Hosts older than `sessionState` only report the read state.
+    expect(accountSessionStateFromResult({ signedIn: false, sessionReadState: "unreadable" }))
+      .toBe("unreadable");
+  });
+
+  it("only points at ade login when signing in is the right move", () => {
+    expect(accountSessionLabel("active")).toBeNull();
+    expect(accountSessionLabel("signed_out")).toContain("ade login");
+    expect(accountSessionLabel("expired")).toContain("ade login");
+    expect(accountSessionLabel("unreadable")).not.toContain("ade login");
   });
 });

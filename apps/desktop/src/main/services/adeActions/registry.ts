@@ -299,6 +299,9 @@ export function scopeAccountStatusForRole(
     ? status as Record<string, unknown>
     : {};
   const source = record.source;
+  // sessionState carries no identity — an agent-role caller still needs to
+  // tell an expired sign-in from a signed-out machine or an unreadable store.
+  const sessionState = record.sessionState;
   return {
     signedIn: record.signedIn === true,
     userId: null,
@@ -306,6 +309,10 @@ export function scopeAccountStatusForRole(
     name: null,
     expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
     ...(source === "loopback" || source === "device" || source === "env-token" ? { source } : {}),
+    ...(sessionState === "active" || sessionState === "signed_out" || sessionState === "expired"
+      || sessionState === "unreadable"
+      ? { sessionState }
+      : {}),
   };
 }
 

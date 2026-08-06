@@ -35,10 +35,22 @@ export type AdeAccountStatus = {
    * dropped the distinction and rendered every failed read as a sign-out.
    */
   sessionReadState?: AdeAccountSessionReadState;
+  /**
+   * What the stored session actually is, which `signedIn: false` alone cannot
+   * say. "signed_out" is a real sign-out, "expired" is a session the issuer
+   * definitively rejected (still on disk, marked dead), and "unreadable" is a
+   * session that could not be read on this attempt and may be perfectly valid.
+   * Only "expired" and "signed_out" should ever invite a fresh sign-in — an
+   * unreadable read that offers one is how a good session gets clobbered.
+   */
+  sessionState?: AdeAccountSessionState;
 };
 
 /** Mirrors the daemon's `AccountSessionReadState`. */
 export type AdeAccountSessionReadState = "available" | "missing" | "unreadable";
+
+/** Mirrors the daemon's `AccountSessionState`. */
+export type AdeAccountSessionState = "active" | "signed_out" | "expired" | "unreadable";
 
 export type AdeAccountLoginStart = {
   sessionId: string;

@@ -11,6 +11,7 @@ import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
 import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
+import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 
 /**
@@ -61,6 +62,21 @@ export type ProjectlessSyncSnapshotArgs = {
     status: SyncTunnelClientStatus | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
+  /**
+   * The machine-level pairing PIN store, when the caller holds it.
+   *
+   * A machine with no project has exactly one nearby-pairing path — the PIN —
+   * and the desktop reads `pairingPinConfigured` to decide what to show. This
+   * builder used to hardcode "no PIN", so a fresh install looked unpairable
+   * even after one had been set.
+   */
+  pin?: Pick<SyncPinStore, "getPin" | "hasPin"> | null;
+  /**
+   * The brain's machine bootstrap token, when the caller can read it. Minted by
+   * the projectless ingress handler, so the brain reads it back rather than
+   * deriving a second one here.
+   */
+  bootstrapToken?: string | null;
 };
 
 const NO_SCOPE_REASON = "No active sync project scope.";
@@ -146,12 +162,14 @@ export function buildProjectlessSyncSnapshot(
     currentBrain: localDevice,
     currentRuntime: localDevice,
     clusterState: null,
-    bootstrapToken: null,
-    // Publishing a machine to the account directory deliberately does NOT
-    // require a pairing code: account membership is the auth path, and the PIN
-    // is only a fallback for nearby devices that are not signed in.
-    pairingPin: null,
-    pairingPinConfigured: false,
+    // Same gate the scoped host applies: the plaintext PIN and the bootstrap
+    // token are only exposed while this machine can actually host pairing.
+    // Publishing to the account directory does not need a PIN — account
+    // membership is the auth path — but a nearby phone that is not signed in
+    // has nothing else, so the PIN state has to be reported truthfully.
+    bootstrapToken: hosting ? args.bootstrapToken ?? null : null,
+    pairingPin: hosting ? args.pin?.getPin() ?? null : null,
+    pairingPinConfigured: hosting ? args.pin?.hasPin() ?? false : false,
     // The runtime name is a per-project-scope setting; a projectless brain has
     // no scope to read one from.
     runtimeName: null,
@@ -170,7 +188,7 @@ export function buildProjectlessSyncSnapshot(
       updatedAt: null,
       // Tailscale Serve is published by a project scope's sync host service,
       // which a projectless brain does not run.
-      error: "Tailnet discovery is waiting for an active sync project scope.",
+      error: "Open a project to publish this machine on your tailnet.",
       stderr: null,
     },
     routeHealth: {

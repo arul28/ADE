@@ -18,6 +18,10 @@ import {
   type TerminatePidDeps,
 } from "./common";
 import {
+  installLaunchdWatchdogAgent,
+  uninstallLaunchdWatchdogAgent,
+} from "./installLaunchdWatchdog";
+import {
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
   isSameChannelSyncHostOwner,
@@ -142,6 +146,15 @@ function selfServiceMutationBlock(args: {
   });
 }
 
+/**
+ * `ThrottleInterval` is stated explicitly rather than left to launchd's default
+ * (which is also 10s) because this service's crash-loop window is a real,
+ * observed failure: while `/Applications/ADE.app` is being swapped the brain can
+ * be restarted onto half-written files and die instantly -- the
+ * `Cannot find module '/serve'` loop. The floor is what turns that into a slow,
+ * self-healing retry instead of a hot spin, so it should not silently inherit
+ * whatever a future launchd decides the default is.
+ */
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
   const envEntries = Object.entries(command.env ?? {});
   const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
@@ -170,6 +183,8 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>${escapeXml(path.join(runtimeLogDir, "launchd.out.log"))}</string>
   <key>StandardErrorPath</key>
@@ -312,6 +327,10 @@ export async function installLaunchdService(
       deps.probeResponsiveness === false
       || probeResponsiveness({ socketPath, timeoutMs: 1_500, command })
     ) {
+      // Arm the watchdog even on the no-op path. Otherwise every machine that
+      // was already running when this shipped -- which is all of them -- would
+      // keep taking the early return and never get one.
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
       return {
         ok: true,
         serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -441,12 +460,22 @@ export async function installLaunchdService(
       `ADE service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
     );
   }
+  // Best effort, and deliberately after the brain is proven healthy: the
+  // watchdog is a safety net around a working brain, never a precondition for
+  // one. A machine that cannot install it still gets a brain.
+  const watchdog = installLaunchdWatchdogAgent({
+    command,
+    homeDir,
+    spawnSync: run,
+  });
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: servicePath,
-    message: "ADE service launchd service installed.",
+    message: watchdog.installed
+      ? "ADE service launchd service installed."
+      : `ADE service launchd service installed. ${watchdog.message}`,
   };
 }
 
@@ -470,6 +499,9 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
   terminatePidGracefully(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps));
+  // Remove the watchdog with the brain it guards. Left behind, it would keep
+  // waking every minute to read a heartbeat file nobody writes.
+  uninstallLaunchdWatchdogAgent({ homeDir: deps.homeDir, spawnSync: run });
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,

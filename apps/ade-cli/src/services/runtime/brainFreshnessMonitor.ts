@@ -4,6 +4,13 @@ import { computeRuntimeBuildHashAsync } from "./runtimeBuildIdentity";
 const DEFAULT_FRESHNESS_INTERVAL_MS = 300_000;
 const DEFAULT_IDLE_POLL_MS = 5_000;
 const DEFAULT_MAX_IDLE_WAIT_MS = 30 * 60_000;
+/**
+ * How long a changed runtime file must hold still before it counts as a new
+ * build rather than a swap in progress. An installer replacing the binary
+ * churns its size/mtime for as long as the copy takes; acting inside that
+ * window restarts the brain onto a truncated file.
+ */
+const DEFAULT_SETTLE_MS = 2_000;
 
 type BrainFreshnessLogger = {
   warn: (event: string, fields: Record<string, unknown>) => void;
@@ -26,6 +33,8 @@ export type BrainFreshnessMonitorOptions = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   intervalMs?: number;
+  /** Quiet period a changed file must survive before it is hashed. */
+  settleMs?: number;
   idlePollMs?: number;
   maxIdleWaitMs?: number;
   setInterval?: typeof globalThis.setInterval;
@@ -65,6 +74,7 @@ export function createBrainFreshnessMonitor(
   const now = options.now ?? Date.now;
   const intervalMs = options.intervalMs ?? parseIntervalMs(env);
   const idlePollMs = Math.max(1, options.idlePollMs ?? DEFAULT_IDLE_POLL_MS);
+  const settleMs = Math.max(0, options.settleMs ?? DEFAULT_SETTLE_MS);
   const maxIdleWaitMs = Math.max(0, options.maxIdleWaitMs ?? DEFAULT_MAX_IDLE_WAIT_MS);
   const setIntervalFn = options.setInterval ?? globalThis.setInterval;
   const clearIntervalFn = options.clearInterval ?? globalThis.clearInterval;
@@ -109,6 +119,10 @@ export function createBrainFreshnessMonitor(
     try {
       nextStat = await stat(options.filePath);
     } catch {
+      // The file is missing or unreadable. That is the MIDDLE of an app swap,
+      // not a new build: exiting here would hand the supervisor a brain that
+      // restarts onto half-written files and crash-loops. Keep the old baseline
+      // and re-decide once the file is back.
       return;
     }
     if (lastStat == null) {
@@ -116,8 +130,24 @@ export function createBrainFreshnessMonitor(
       return;
     }
     if (sameStat(lastStat, nextStat)) return;
+
+    // The file changed -- but a file being WRITTEN also looks like that, and
+    // hashing a partial copy yields a mismatch that would restart the brain
+    // into a truncated binary. Require the change to settle: re-stat after a
+    // short pause and only act when the two agree. A swap still in flight
+    // simply defers to the next probe with the baseline untouched.
+    await sleep(settleMs);
+    if (stopped) return;
+    let settledStat: BrainFileStat;
+    try {
+      settledStat = await stat(options.filePath);
+    } catch {
+      return;
+    }
+    if (!sameStat(nextStat, settledStat)) return;
+
     const previousStat = lastStat;
-    lastStat = nextStat;
+    lastStat = settledStat;
     const diskHash = await computeHash(options.filePath);
     const runningHash = options.runningHash;
     if (!diskHash || !runningHash || diskHash === runningHash) return;

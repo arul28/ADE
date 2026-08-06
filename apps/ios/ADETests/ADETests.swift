@@ -3737,6 +3737,88 @@ final class ADETests: XCTestCase {
     ))
   }
 
+  /// The host grew codes after this phone shipped. Only the two that actually
+  /// mean "the saved pairing is dead" may drop credentials; a machine that is
+  /// merely out of date, whose account session moved, or that sends a code no
+  /// build here has ever heard of, stays paired and retryable.
+  @MainActor
+  func testSyncOnlyPairingRejectionCodesInvalidateTheSavedPairing() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    func invalidates(_ code: String) -> Bool {
+      service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+        address: "192.168.1.8",
+        respondingHostIdentity: "host-1",
+        expectedHostIdentity: "host-1",
+        code: code
+      )
+    }
+
+    // An older brain that never learned `repair_required` still rejects a
+    // revoked device with a plain `auth_failed`, and that path must keep
+    // working against new phone builds.
+    XCTAssertTrue(invalidates("auth_failed"))
+    XCTAssertTrue(invalidates("repair_required"))
+
+    XCTAssertFalse(invalidates("host_update_required"))
+    XCTAssertFalse(invalidates("account_session_changed"))
+    XCTAssertFalse(invalidates("invalid_hello"))
+    XCTAssertFalse(invalidates("connection_attempt_superseded"))
+    XCTAssertFalse(invalidates("a_code_from_a_future_host"))
+  }
+
+  /// A host too old to verify accounts should not read as "pair again". The
+  /// phone names the machine to fix when the host attributed the rejection,
+  /// and stays useful when it did not.
+  func testSyncHostUpdateRequiredCopyNamesTheMachine() {
+    XCTAssertEqual(
+      syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: "Mac Studio"),
+      "Update ADE on Mac Studio, then try again."
+    )
+    XCTAssertEqual(
+      syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: "  "),
+      "Update ADE on that machine, then try again."
+    )
+    XCTAssertEqual(
+      syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: nil),
+      "Update ADE on that machine, then try again."
+    )
+
+    // Every other code keeps the host's own message.
+    XCTAssertNil(syncHelloErrorFriendlyMessage(code: "auth_failed", respondingHostName: "Mac Studio"))
+    XCTAssertNil(syncHelloErrorFriendlyMessage(code: "repair_required", respondingHostName: "Mac Studio"))
+    XCTAssertNil(syncHelloErrorFriendlyMessage(code: "account_session_changed", respondingHostName: "Mac Studio"))
+    XCTAssertNil(syncHelloErrorFriendlyMessage(code: nil, respondingHostName: "Mac Studio"))
+
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: NSError(domain: "ADE", code: 5, userInfo: [
+        NSLocalizedDescriptionKey: "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
+        "ADEErrorCode": "host_update_required",
+      ])),
+      "Update ADE on that machine, then try again."
+    )
+
+    // An unknown code degrades to the host's own words — not to a pairing
+    // instruction, and not to a blank error.
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: NSError(domain: "ADE", code: 5, userInfo: [
+        NSLocalizedDescriptionKey: "The machine refused this connection for a reason this app does not know.",
+        "ADEErrorCode": "a_code_from_a_future_host",
+      ])),
+      "The machine refused this connection for a reason this app does not know."
+    )
+
+    // `account_session_changed` must read as "try again", never as a lost
+    // pairing: the host's own line already says so and is passed through.
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: NSError(domain: "ADE", code: 5, userInfo: [
+        NSLocalizedDescriptionKey: "The ADE account session on this machine changed while connecting. Try again.",
+        "ADEErrorCode": "account_session_changed",
+      ])),
+      "The ADE account session on this machine changed while connecting. Try again."
+    )
+  }
+
   func testSyncTailscaleIPv6RouteClassification() {
     XCTAssertTrue(syncIsTailscaleIPv6Address("fd7a:115c:a1e0::1234"))
     XCTAssertTrue(syncIsTailscaleRoute("ws://[fd7a:115c:a1e0:ab12::42]:8787"))

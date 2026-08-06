@@ -722,7 +722,7 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { createProjectRecoveryService } from "../runtime/projectRecoveryService";
+import { createProjectRecoveryService, ProjectRecoveryService } from "../runtime/projectRecoveryService";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
@@ -1588,6 +1588,7 @@ export function registerIpc({
   bindRemoteProject,
   localRuntimeConnectionPool,
   projectRecoveryConnectionPool,
+  injectedProjectRecoveryService,
   createWindow,
   closeWindow,
   switchProjectFromDialog,
@@ -1617,6 +1618,13 @@ export function registerIpc({
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   projectRecoveryConnectionPool?: LocalRuntimeConnectionPool | null;
+  /**
+   * The machine's single recovery service, when the caller already owns one.
+   * main.ts does, because the post-update transaction reuses its verified
+   * restart; sharing the instance keeps its repair/restart mutual exclusion
+   * real instead of splitting it across two objects.
+   */
+  injectedProjectRecoveryService?: ProjectRecoveryService | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
@@ -1671,13 +1679,14 @@ export function registerIpc({
     droppedToday: 0,
     day: new Date().toISOString().slice(0, 10),
   });
-  const projectRecoveryService = projectRecoveryConnectionPool
+  const projectRecoveryService = injectedProjectRecoveryService
+    ?? (projectRecoveryConnectionPool
     ? createProjectRecoveryService({
         adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
         logger: getCtx().logger,
         connectionPool: projectRecoveryConnectionPool,
       })
-    : null;
+    : null);
   const resolveCurrentAttentionAccountOwnerId = (): string | null => {
     const ownerId = getCurrentAccountOwnerId
       ? getCurrentAccountOwnerId()
@@ -1709,6 +1718,35 @@ export function registerIpc({
       throw new Error("Sync service is not available.");
     }
     return service;
+  };
+
+  // A machine that has never opened a project still hosts phone sync: the brain
+  // holds the machine-wide sync-host lease and its listener is bound. The
+  // project-scoped sync service simply does not exist there, so `ade.sync.*`
+  // used to die on "Sync service is not available." and the user could never
+  // set a pairing code on a fresh install. Fall through to the machine brain,
+  // which owns the machine-level pairing code and device stores.
+  const callSyncOrBrain = async <T>(
+    method: string,
+    params: Record<string, unknown>,
+    viaService: (service: ReturnType<typeof createSyncService>) => Promise<T> | T,
+  ): Promise<T> => {
+    const service = await resolveOptionalSyncService();
+    if (service) return await viaService(service);
+    const pool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+    if (pool) {
+      try {
+        return await pool.callSync<T>(method, params);
+      } catch (error) {
+        // The brain has no sync service either. Keep the message the app has
+        // always shown here so nothing downstream has to learn a new one.
+        if (isSyncServiceUnavailableError(error)) {
+          throw new Error("Sync service is not available.");
+        }
+        throw error;
+      }
+    }
+    throw new Error("Sync service is not available.");
   };
 
   const normalizeWelcomeVideoTimestamp = (value: unknown): string | null => {
@@ -5015,14 +5053,12 @@ export function registerIpc({
       (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    const service = await resolveOptionalSyncService();
-    if (!service) {
-      throw new Error("Sync service is not available.");
-    }
-    return await service.getStatus({
-      includeTransferReadiness: arg?.includeTransferReadiness,
-      forceTransferReadiness: arg?.forceTransferReadiness,
-    });
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
+      service.getStatus({
+        includeTransferReadiness: arg?.includeTransferReadiness,
+        forceTransferReadiness: arg?.forceTransferReadiness,
+      }),
+    );
   });
 
   ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
@@ -5069,7 +5105,9 @@ export function registerIpc({
       (pool, rootPath) => pool.refreshSyncDiscoveryForRoot(rootPath),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).refreshDiscovery();
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.refreshDiscovery", {}, (service) =>
+      service.refreshDiscovery(),
+    );
   });
 
   ipcMain.handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
@@ -5080,7 +5118,9 @@ export function registerIpc({
       (pool, rootPath) => pool.syncDevicesForRoot(rootPath),
     );
     if (runtimeDevices.handled) return runtimeDevices.result;
-    return await (await requireSyncService()).listDevices();
+    return await callSyncOrBrain<SyncDeviceRuntimeState[]>("sync.listDevices", {}, (service) =>
+      service.listDevices(),
+    );
   });
 
   ipcMain.handle(
@@ -5100,7 +5140,9 @@ export function registerIpc({
         (pool, rootPath) => pool.updateSyncLocalDeviceForRoot(rootPath, params),
       );
       if (runtimeDevice.handled) return runtimeDevice.result;
-      return await (await requireSyncService()).updateLocalDevice(params);
+      return await callSyncOrBrain<SyncDeviceRecord>("sync.updateLocalDevice", params, (service) =>
+        service.updateLocalDevice(params),
+      );
     },
   );
 
@@ -5143,7 +5185,9 @@ export function registerIpc({
       (pool, rootPath) => pool.forgetSyncDeviceForRoot(rootPath, deviceId),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).forgetDevice(deviceId);
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.forgetDevice", { deviceId }, (service) =>
+      service.forgetDevice(deviceId),
+    );
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
@@ -5154,7 +5198,11 @@ export function registerIpc({
       (pool, rootPath) => pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness"),
     );
     if (runtimeReadiness.handled) return runtimeReadiness.result;
-    return await (await requireSyncService()).getTransferReadiness();
+    return await callSyncOrBrain<SyncTransferReadiness>(
+      "sync.getTransferReadiness",
+      {},
+      (service) => service.getTransferReadiness(),
+    );
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
@@ -5176,7 +5224,9 @@ export function registerIpc({
       (pool, rootPath) => pool.syncPinForRoot(rootPath),
     );
     if (runtimePin.handled) return runtimePin.result;
-    return { pin: (await requireSyncService()).getPin() };
+    return await callSyncOrBrain<{ pin: string | null }>("sync.getPin", {}, (service) => ({
+      pin: service.getPin(),
+    }));
   });
 
   ipcMain.handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
@@ -5188,7 +5238,9 @@ export function registerIpc({
       (pool, rootPath) => pool.setSyncPinForRoot(rootPath, normalizedPin),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).setPin(normalizedPin);
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.setPin", { pin: normalizedPin }, (service) =>
+      service.setPin(normalizedPin),
+    );
   });
 
   ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
@@ -5199,7 +5251,9 @@ export function registerIpc({
       (pool, rootPath) => pool.generateSyncPinForRoot(rootPath),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).generatePin();
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.generatePin", {}, (service) =>
+      service.generatePin(),
+    );
   });
 
   ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
@@ -5210,7 +5264,9 @@ export function registerIpc({
       (pool, rootPath) => pool.clearSyncPinForRoot(rootPath),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).clearPin();
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.clearPin", {}, (service) =>
+      service.clearPin(),
+    );
   });
 
   ipcMain.handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
@@ -5221,7 +5277,11 @@ export function registerIpc({
       (pool, rootPath) => pool.syncRuntimeNameForRoot(rootPath),
     );
     if (runtimeName.handled) return runtimeName.result;
-    return { runtimeName: (await requireSyncService()).getRuntimeName() };
+    return await callSyncOrBrain<{ runtimeName: string | null }>(
+      "sync.getRuntimeName",
+      {},
+      (service) => ({ runtimeName: service.getRuntimeName() }),
+    );
   });
 
   ipcMain.handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
@@ -5233,7 +5293,11 @@ export function registerIpc({
       (pool, rootPath) => pool.setSyncRuntimeNameForRoot(rootPath, normalizedName),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).setRuntimeName(normalizedName);
+    return await callSyncOrBrain<SyncRoleSnapshot>(
+      "sync.setRuntimeName",
+      { name: normalizedName },
+      (service) => service.setRuntimeName(normalizedName),
+    );
   });
 
   ipcMain.handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
@@ -5244,7 +5308,9 @@ export function registerIpc({
       (pool, rootPath) => pool.clearSyncRuntimeNameForRoot(rootPath),
     );
     if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).clearRuntimeName();
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.clearRuntimeName", {}, (service) =>
+      service.clearRuntimeName(),
+    );
   });
 
   ipcMain.handle(
@@ -5263,11 +5329,14 @@ export function registerIpc({
       if (runtimeResult.handled) {
         return;
       }
-      const service = await resolveOptionalSyncService();
-      if (!service) {
-        throw new Error("Sync service is not available.");
-      }
-      await service.setActiveLanePresence(laneIds);
+      await callSyncOrBrain<unknown>(
+        "sync.setActiveLanePresence",
+        { laneIds },
+        async (service) => {
+          await service.setActiveLanePresence(laneIds);
+          return null;
+        },
+      );
     },
   );
 
@@ -5279,7 +5348,9 @@ export function registerIpc({
       (pool, rootPath) => pool.syncCloudRelayStatusForRoot(rootPath),
     );
     if (runtimeResult.handled) return runtimeResult.result;
-    return (await requireSyncService()).getCloudRelayStatus();
+    return await callSyncOrBrain<SyncCloudRelayStatus>("sync.getCloudRelayStatus", {}, (service) =>
+      service.getCloudRelayStatus(),
+    );
   });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {

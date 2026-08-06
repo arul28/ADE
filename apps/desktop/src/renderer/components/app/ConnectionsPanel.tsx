@@ -27,6 +27,9 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import {
   accountAvatarImage,
   accountInitials,
+  accountSessionConnectionsSubtitle,
+  accountSessionState,
+  accountSessionTitle,
   fetchAccountMachines,
   invalidateAccountMachines,
   providerTint,
@@ -83,11 +86,13 @@ function AccountHeader({
   const ringTint = providerTint(status, githubConnected);
   const [imgBroken, setImgBroken] = useState(false);
 
-  // State-first title so the panel reads honestly at a glance.
-  const title = status.signedIn ? "Signed in to ADE" : "Not signed in";
-  const subtitle = status.signedIn
-    ? status.email ?? "Manage your account"
-    : "Sign in to connect your devices";
+  // State-first title so the panel reads honestly at a glance. A session that
+  // could not be READ is not a sign-out, and must not be summarized as one.
+  const sessionState = accountSessionState(status);
+  const title = accountSessionTitle(sessionState);
+  const subtitle = sessionState === "active"
+    ? status.email ?? accountSessionConnectionsSubtitle(sessionState)
+    : accountSessionConnectionsSubtitle(sessionState);
 
   return (
     <div
@@ -128,7 +133,13 @@ function AccountHeader({
           cursor: "pointer",
           textAlign: "left",
         }}
-        aria-label={status.signedIn ? "Manage account" : "Sign in to ADE"}
+        aria-label={
+          sessionState === "active"
+            ? "Manage account"
+            : sessionState === "unreadable"
+              ? "Fix your sign-in"
+              : "Sign in to ADE"
+        }
       >
         <span style={{ flexShrink: 0 }}>
           {avatarImage && !imgBroken ? (

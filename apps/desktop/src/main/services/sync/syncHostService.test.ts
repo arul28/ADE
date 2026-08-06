@@ -3082,7 +3082,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       message: string;
       host?: { deviceId?: string; name?: string };
     };
-    expect(revokedPayload.code).toBe("auth_failed");
+    // A revoked device is an unknown device, and an unknown device must look
+    // exactly like a stale secret on the wire — so the handshake never tells a
+    // caller whether a device id exists. Both answer `repair_required`, which
+    // clients read the same way they read `auth_failed`: pair it again.
+    expect(revokedPayload.code).toBe("repair_required");
     // The rejection must be attributed: clients only drop a saved pairing
     // when the rejecting machine's identity matches the one they paired with.
     expect(typeof revokedPayload.host?.deviceId).toBe("string");

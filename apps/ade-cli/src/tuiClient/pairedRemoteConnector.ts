@@ -8,8 +8,10 @@ import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
+  dominantPairedRuntimeFailure,
   MAX_ROUTE_ATTEMPTS,
   orderPairedCandidates,
+  pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
@@ -119,11 +121,7 @@ export class PairedRemoteConnectionUnavailableError extends Error {
     readonly reason: PairedConnectionFailureReason,
     readonly failures: readonly string[],
     message: string,
-    readonly diagnostic?: {
-      correlationId: string;
-      attempts: RemoteRuntimeConnectionAttempt[];
-      omittedAttemptCount?: number;
-    },
+    readonly diagnostic?: PairedRuntimeRouteDiagnostic,
   ) {
     super(message);
     this.name = "PairedRemoteConnectionUnavailableError";
@@ -274,27 +272,31 @@ export async function openPairedCandidate<T>(args: {
       }
     }
   }
-  if (relayAuthError) {
-    throw relayAuthErrorWithDiagnostic(relayAuthError, {
-      correlationId,
-      attempts,
-      ...(attemptRecorder.omittedAttemptCount > 0
-        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
-        : {}),
-    });
+  // Every route is spent. Diagnose once from the recorded attempts and say it
+  // in one sentence, exactly as the desktop does — the per-route hosts and
+  // outcomes stay in `attempts` (and in `failures`) for diagnostics rather than
+  // being dumped at the user, who cannot act on "lan 10.0.0.4: unreachable".
+  const failure = dominantPairedRuntimeFailure(attempts);
+  const diagnostic = {
+    correlationId,
+    attempts,
+    failure,
+    ...(attemptRecorder.omittedAttemptCount > 0
+      ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+      : {}),
+  };
+  // A skipped relay leg only wins when nothing more actionable was found; a
+  // host that rejected the pairing outranks "you aren't signed in".
+  if (relayAuthError && failure === "authentication") {
+    throw relayAuthErrorWithDiagnostic(relayAuthError, diagnostic);
   }
   throw new PairedRemoteConnectionUnavailableError(
     "all_paths_failed",
     failures,
-    `Could not open a paired ADE runtime connection to ${args.target.name}. ${failures
-      .slice(0, 4)
-      .join(" | ")}`,
-    {
-      correlationId,
-      attempts,
-      ...(attemptRecorder.omittedAttemptCount > 0
-        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
-        : {}),
-    },
+    pairedRuntimeFailureMessage(
+      failure,
+      credentials.hostIdentity.name || args.target.name,
+    ),
+    diagnostic,
   );
 }

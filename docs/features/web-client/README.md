@@ -110,6 +110,15 @@ Browser sync client:
   after 75 seconds without inbound traffic; returning to a visible stale tab
   bypasses accumulated backoff. Relay application close codes are translated
   into stable offline/capacity/retry messages instead of exposing raw reasons.
+  A rejected hello is classified from the host's structured `hello_error.code`,
+  and only a genuine pairing rejection is allowed to reach the `auth_failed`
+  status that `WebMachineSessionManager` reads as "invalidate this
+  environment". `account_session_changed` is transient — surface it and keep
+  reconnecting. `host_update_required` is not — stop dialing
+  (`shouldReconnect = false`) but keep the pairing and show the host's own
+  message, so the displayed fix is "update ADE on that machine" rather than
+  "pair again". See
+  [the `hello_error` code table](../sync-and-multi-device/README.md#hello_error-codes-are-the-contract-the-message-is-not).
 - `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - typed hosted Relay
   authorization policy. It keeps local pairing provenance separate from
   account ownership, filters Relay routes while signed out, and surfaces the

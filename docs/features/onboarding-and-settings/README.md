@@ -63,7 +63,18 @@ Main process:
   merely because the user later signs in. When product analytics is enabled,
   the account boundary identifies a known user only through a one-way account
   hash with closed enrichment fields; explicit logout rotates the anonymous
-  analytics identity.
+  analytics identity. `accountAuthService` also owns the four-value
+  `sessionState`, the mark-dead-not-delete rejection markers, the attributed
+  `account.session_mutation` audit line, and
+  `accountSessionRetainsMachineOwnership` — see
+  [Account session state](#account-session-state-is-a-tri-state-not-a-boolean).
+  `accountBridge.ts` mirrors `sessionState` onto `AdeAccountStatus` for the
+  renderer, deriving it from the older `sessionReadState` when the runtime does
+  not report one.
+- `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
+  crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
+  the same file-backed credential bucket as the session it describes so the
+  brain, the CLI, and the desktop all see an interrupted rotation.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -222,7 +233,17 @@ Renderer — onboarding:
   login flow (the only one the directory observes, and therefore the only one
   that can end with the single-use pairing grant a re-pair needs) before trying
   again. The copy stays honest about the in-between outcome where the machine
-  rejoined the roster but push delivery has not resumed.
+  rejoined the roster but push delivery has not resumed. "Not signed in" is not
+  one state: `AdeAccountStatus.sessionState` carries the daemon's
+  `active | signed_out | expired | unreadable` tri-state (older runtimes are
+  derived from `sessionReadState`), and `accountSessionState` /
+  `accountSessionNotice` in `renderer/lib/account.ts` are the single place the
+  UI branches on it. `SignInCard`, the Connections account header, and the
+  sidebar avatar label each render the three states distinctly. `expired` says
+  the sign-in expired and keeps a Sign in button; `unreadable` must NOT lead
+  with sign-in — a new session overwrites the stored one — so it leads with the
+  shared `BrainRepairButton` (or a plain retry where no brain can be restarted)
+  and demotes sign-in to "Sign in anyway".
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -721,7 +742,9 @@ banner):
   version clears the cache. On packaged launches with a
   recently installed update, the desktop refreshes the per-user runtime
   service so `ade serve` re-execs the updated bundled CLI and clients
-  do not fall back to an isolated build-mismatch runtime. On Windows,
+  do not fall back to an isolated build-mismatch runtime — now as one explicit
+  four-step transaction rather than a silent side effect of a build-hash
+  mismatch (see `updateTransaction.ts` below). On Windows,
   electron-builder generates the installed `app-update.yml` from the build's
   GitHub publish authority; package smoke requires it to match
   `ADE_RELEASE_REPOSITORY`. The source default remains upstream
@@ -730,6 +753,31 @@ banner):
   Windows release assets remain behind the independent repository-variable
   gates described in
   [desktop-auto-update.md](./desktop-auto-update.md#windows-update-path).
+- `apps/desktop/src/main/services/updates/updateTransaction.ts` —
+  `runUpdateTransaction`, the dependency-injected `swap` → `service` →
+  `restart` → `health` sequence that runs once after a relaunch whose snapshot
+  carries `recentlyInstalled`. Pure: no Electron, no timers. Replacing the app
+  bundle does not touch the background service, so without this the machine
+  keeps running old code until something reinstalls and restarts it — and a
+  failure in that repair was invisible. The first failure stops the sequence and
+  later steps record `skipped`; a dependency that throws becomes a `failed`
+  step, never an unhandled rejection. The typed `UpdateTransactionResult` rides
+  the existing `AutoUpdateSnapshot` over `IPC.updateEvent` / `updateGetState` as
+  `updateTransaction` — no new channel — and `AutoUpdateBanner` renders its
+  one-line `failureMessage` beside the shared **Repair** control. `main.ts` owns
+  the single `ProjectRecoveryService` instance it shares with `registerIpc`, so
+  repair and this restart stay mutually exclusive. Step-by-step copy and the
+  bound dependencies are in
+  [desktop-auto-update.md](./desktop-auto-update.md#applying-an-update-is-one-transaction).
+- `apps/desktop/src/shared/updateVersions.ts` — the one ADE version comparator,
+  shared by main and renderer. Update prompts, "is this machine behind?", and
+  the auto-update state machine all have to agree on what "newer" means, so
+  SemVer-ish ordering (numeric core segments, then prerelease precedence, with a
+  release outranking any prerelease of the same core, and unparseable segments
+  read as `0` rather than throwing) lives here instead of being re-derived per
+  surface. `autoUpdateVersions.ts` re-exports `compareUpdateVersions` (every
+  main-process caller imports it from there) and remains the home for the
+  changelog / GitHub release link builders.
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the primary update control: a small badge in the app shell top bar. Shows
   "Checking for updates" / "Downloading vX.Y.Z (NN%)" / "Install update
@@ -1000,6 +1048,75 @@ Onboarding and settings follow a simple rule:
 - show the fastest path first
 - defer advanced or heavy configuration to the feature surface that
   owns it
+
+## Account session state is a tri-state, not a boolean
+
+"Not signed in" was one word for three different situations, and treating them
+alike is how a perfectly good session gets destroyed. `AccountAuthStatus`
+therefore carries `sessionState`, mirrored onto the desktop as
+`AdeAccountStatus.sessionState`:
+
+| State | What actually happened | What the surface must say |
+| --- | --- | --- |
+| `active` | Signed in. | — |
+| `signed_out` | No session on this machine. | Offer sign-in. |
+| `expired` | A session exists and the issuer definitively rejected its grant. | Say the sign-in expired, and offer sign-in. |
+| `unreadable` | The credential store could not be read on this attempt. | Say nothing changed and offer **repair/retry**. Sign-in must be demoted. |
+
+The `unreadable` row is the whole point. A new sign-in **overwrites** the stored
+session, so inviting one over a session that is merely unreadable is how the
+user destroys something valid. The desktop's `SignInCard`, the Connections
+account header, and the sidebar avatar label each render the three
+not-signed-in states distinctly; the branch logic lives once in
+`accountSessionState` / `accountSessionNotice`
+(`apps/desktop/src/renderer/lib/account.ts`), and the `unreadable` copy leads
+with the shared `BrainRepairButton` (or a plain retry where there is no brain to
+restart) with sign-in demoted to "Sign in anyway". The CLI's `account-auth` text
+formatter makes the same three distinctions rather than printing one
+"Not signed in — local use does not require an account." for all of them.
+
+Older runtimes that predate `sessionState` are derived from the existing
+`sessionReadState`, so a mixed-version pair degrades to the old behaviour
+instead of mis-labelling.
+
+**A rejected grant is marked dead, not deleted.** The stored record keeps
+`rejectedAt` / `needsReauth` / `rejectedReason` in place. Deleting it makes
+every process on the machine silently forget an account the user never signed
+out of — and takes the host's relay tunnel and its account-directory row down
+with it, which is what removed every remote route to a still-owned machine.
+`needsReauth` alone condemns a record, so a marker written by an older or newer
+peer without a parsable timestamp is still honoured; the next successful sign-in
+overwrites it.
+
+**Ownership and usability are different questions.**
+`accountSessionRetainsMachineOwnership(status)` answers "is this still their
+machine" — true for `active`, `expired`, and `unreadable`; false only for a
+deliberate `signed_out`. Reachability a paired device already has must survive a
+token accident; anything that needs a live token still gates on `signedIn`. See
+[remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
+
+**Every mutation is logged.** The incident this came from had an empty
+`account.*` log: the deletion that erased the session for every process on the
+machine left no trace. Each write, rotation, rejection, and sign-out now emits
+one attributed `account.session_mutation` line naming its `action`
+(`persist`, `rotate`, `delete`, `mark_dead`, `sign_out`, and the three
+`rotation_journal_*` actions), `reason`, `pid`, `source`
+(`brain` | `cli` | `desktop`, derived by `deriveAccountSessionMutationSource`
+and overridable with `ADE_ACCOUNT_SESSION_SOURCE`), and the
+`tokenGeneration` it acted on — a truncated SHA-256 of the refresh token, so a
+grant can be followed across processes with no token material in any log file
+or journal entry.
+
+**Rotation is crash-safe.** `accountSessionRotationJournal.ts` records that a
+refresh exchange *started* against a specific token generation and clears it
+once the replacement is durable. A surviving entry means the stored token may
+already have been consumed by a process that died before it could persist the
+replacement, so the `invalid_grant` that follows is not definitive. The waits
+around this are ordered deliberately: the peer-rotation wait
+(`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is the credential store's own
+`CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s margin, because a wait shorter
+than the lock timeout could expire while the winning peer is still legitimately
+queued behind the lock — and the loser would then declare a live session dead.
 
 ## Gotchas
 

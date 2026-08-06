@@ -57,6 +57,7 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
+  type PairedRuntimeRouteDiagnostic,
 } from "./pairedRuntimeErrors";
 import {
   getSshHostKeyTrustForTarget,
@@ -121,6 +122,27 @@ function capLastError(message: string): string {
   return `${message.slice(0, MAX_LAST_ERROR_CHARS - 1)}…`;
 }
 
+/**
+ * Route diagnostics travel with the error, not inside the message. `failure`
+ * is what the headline was written from, and it is what the UI keys recovery
+ * actions off — the message text is never parsed.
+ */
+function diagnosticFields(
+  diagnostic: PairedRuntimeRouteDiagnostic,
+): Pick<
+  RemoteRuntimeConnectErrorInfo,
+  "correlationId" | "attempts" | "omittedAttemptCount" | "failure"
+> {
+  return {
+    correlationId: diagnostic.correlationId,
+    attempts: diagnostic.attempts,
+    ...(diagnostic.omittedAttemptCount != null
+      ? { omittedAttemptCount: diagnostic.omittedAttemptCount }
+      : {}),
+    ...(diagnostic.failure ? { failure: diagnostic.failure } : {}),
+  };
+}
+
 function errorInfo(
   error: unknown,
   messageOverride?: string,
@@ -143,6 +165,7 @@ function errorInfo(
     return {
       kind: "auth_required",
       message,
+      ...(error.diagnostic ? diagnosticFields(error.diagnostic) : {}),
     };
   }
   if (
@@ -152,11 +175,7 @@ function errorInfo(
     return {
       kind: "generic",
       message,
-      correlationId: error.diagnostic.correlationId,
-      attempts: error.diagnostic.attempts,
-      ...(error.diagnostic.omittedAttemptCount != null
-        ? { omittedAttemptCount: error.diagnostic.omittedAttemptCount }
-        : {}),
+      ...diagnosticFields(error.diagnostic),
     };
   }
   return {
@@ -1063,9 +1082,10 @@ export class RemoteConnectionService {
     targetId: string,
     method: string,
     params: Record<string, unknown> = {},
+    options: { retryOnConnectionError?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
     const target = await this.requireTargetForImplicitUse(targetId);
-    return (await this.callMachine(target, method, params)) as T;
+    return (await this.callMachine(target, method, params, options)) as T;
   }
 
   dispose(): void {
@@ -1128,7 +1148,7 @@ export class RemoteConnectionService {
     target: RemoteRuntimeTarget,
     method: string,
     params: Record<string, unknown>,
-    options: { retryOnConnectionError?: boolean } = {},
+    options: { retryOnConnectionError?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
     await this.assertAccountOwnershipAuthorized(target);
     this.assertImplicitReconnectAllowed(target.id);

@@ -107,6 +107,40 @@ describe("AccountPage signed-out card", () => {
     expect(window.ade.app.openExternal).toHaveBeenCalledWith(docs.adeRelay);
   });
 
+  it("asks an expired session to sign in again, and says so", () => {
+    render(<SignInCard configured onSignedIn={vi.fn()} sessionState="expired" />);
+
+    expect(screen.getByText("Your ADE sign-in expired — sign in again.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(beginLogin).toHaveBeenCalledTimes(1);
+  });
+
+  // Signing in overwrites the stored session. A session that merely could not
+  // be READ is probably fine, so the card must lead with Repair — offering a
+  // fresh sign-in first is how a user destroys a working session.
+  it("leads with Repair and demotes sign-in when the session can't be read", () => {
+    window.ade.app.restartBackgroundService = vi.fn(async () => undefined);
+    render(<SignInCard configured onSignedIn={vi.fn()} sessionState="unreadable" />);
+
+    expect(
+      screen.getByText(
+        "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in or create account" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in anyway" }));
+    expect(beginLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a retry when this surface cannot restart the background service", () => {
+    render(<SignInCard configured onSignedIn={vi.fn()} sessionState="unreadable" />);
+
+    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
   it("states only that account sign-in is unavailable when it is not configured", () => {
     render(<SignInCard configured={false} onSignedIn={vi.fn()} />);
 

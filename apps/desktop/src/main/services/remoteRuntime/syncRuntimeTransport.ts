@@ -32,7 +32,10 @@ import {
   type ParsedSyncEnvelope,
 } from "../sync/syncProtocol";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
-import { PairedRuntimeRelayAuthRequiredError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeHelloRejectedError,
+  PairedRuntimeRelayAuthRequiredError,
+} from "./pairedRuntimeErrors";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -440,14 +443,30 @@ export async function waitForSyncEnvelope(
   });
 }
 
+/**
+ * The host tells us why it refused in `code`. Keep that code on the thrown
+ * error so callers classify structurally — the message is prose for a human and
+ * changes whenever the copy does.
+ */
 function helloError(payload: unknown): Error {
   const value = payload as Partial<SyncHelloErrorPayload> | null;
   const message = typeof value?.message === "string" && value.message.trim()
     ? value.message.trim()
     : "Sync authentication failed.";
-  return value?.code === "relay_account_required"
-    ? new PairedRuntimeRelayAuthRequiredError(message)
-    : new Error(message);
+  if (value?.code === "relay_account_required") {
+    return new PairedRuntimeRelayAuthRequiredError(message);
+  }
+  const rejectingHost = value?.host?.deviceId?.trim()
+    ? {
+        deviceId: value.host.deviceId.trim(),
+        ...(value.host.name?.trim() ? { name: value.host.name.trim() } : {}),
+      }
+    : null;
+  return new PairedRuntimeHelloRejectedError(
+    message,
+    typeof value?.code === "string" ? value.code : null,
+    rejectingHost,
+  );
 }
 
 export async function openPairedSyncConnection(

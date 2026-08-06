@@ -35,6 +35,7 @@ import {
   type AdoptChannelAead,
 } from "../../../shared/sync/adoptChannelCrypto";
 import type { AdeAccountMachine } from "../../../shared/types/account";
+import type { RemoteRuntimeConnectionAttemptFailure } from "../../../shared/types/remoteRuntime";
 import {
   accountMachineAdoptionRoutes,
   accountMachineDisplayName,
@@ -159,8 +160,30 @@ function formatAccountMachineAdoptionFailure(
   }`;
 }
 
-function classifyAccountMachineAdoptionFailure(reason: string): string {
+/**
+ * Adoption's own message classifier. The canonical one is
+ * `classifyPairedRuntimeFailure` in `pairedRuntimeRoutes.ts` — prefer it for
+ * anything that dials an already-paired machine, since it reads the host's
+ * structured `hello_error.code` before falling back to prose.
+ *
+ * Adoption is deliberately NOT expressed through it: this flow has no hello
+ * code to read, and it orders the prose rules differently on purpose. "Pair it
+ * again" is a first-class outcome here (adoption is the repair), a credential
+ * word outranks a transport word (a token failure mid-dial is an auth problem,
+ * not a dead route), and `cipher` reads as identity. Routing these strings
+ * through the canonical classifier would answer "unknown"/"unreachable"
+ * instead, so the two stay separate until one of them has tests to hold the
+ * merged behavior in place.
+ */
+function classifyAccountMachineAdoptionFailure(
+  reason: string,
+): RemoteRuntimeConnectionAttemptFailure {
   if (/timed? out|timeout/i.test(reason)) return "timeout";
+  // Adoption is how a stale pairing gets repaired, so a host that says the
+  // pairing is the problem is naming the very thing this flow fixes.
+  if (/pair (?:it|this) again|no longer valid|not paired/i.test(reason)) {
+    return "pairing";
+  }
   if (/auth|token|credential|proof|forbidden|unauthorized/i.test(reason)) {
     return "authentication";
   }
@@ -582,6 +605,42 @@ export class DesktopPairedMachineStore {
         [{ endpoint, lastSucceededAt: nowMs }],
       ),
     });
+  }
+
+  /**
+   * Drop an endpoint that provably belongs to a different machine.
+   *
+   * The endpoint set is otherwise append-only: `markEndpointFailed` re-adds the
+   * address it is recording a failure for, and the recently-failing demotion
+   * expires after two minutes. So a neighbour's Tailscale name that once landed
+   * in this record (an mDNS advert keyed on an unverified TXT device id, or a
+   * directory endpoint that never got dialled) would be retried forever. When
+   * the handshake proves the address answers as some *other* host, the only
+   * correct move is to forget it. The record's own endpoint always survives so
+   * a machine can never be left with nothing to dial.
+   */
+  forgetEndpoint(
+    hostDeviceIdOrMachineKey: string,
+    endpointValue: string,
+  ): DesktopPairedMachineCredentials {
+    const machine = this.get(hostDeviceIdOrMachineKey);
+    if (!machine) throw new Error("Paired machine was not found.");
+    const endpoint = normalizeSyncEndpoint(endpointValue);
+    const endpoints = machine.endpoints.filter((value) => value !== endpoint);
+    if (endpoints.length === 0 || endpoints.length === machine.endpoints.length) {
+      return machine;
+    }
+    return this.save(
+      {
+        ...machine,
+        endpoints,
+        relayUrl: machine.relayUrl === endpoint ? null : machine.relayUrl,
+        endpointStates: (machine.endpointStates ?? []).filter(
+          (state) => state.endpoint !== endpoint,
+        ),
+      },
+      { replaceConnectionMetadata: true },
+    );
   }
 
   markEndpointFailed(
@@ -1184,6 +1243,10 @@ export class DesktopPairedMachineStore {
       })),
       omittedAttemptCount: Math.max(0, failures.length - MAX_ROUTE_ATTEMPTS),
     });
+    // Unlike the paired dial loop, adoption's per-route reasons are specific
+    // and actionable in their own right ("update that computer", "try again in
+    // 3 minutes"), so collapsing them into one generic sentence would lose the
+    // instruction. They stay, bounded and joined.
     const visibleFailures = failures.slice(0, MAX_ROUTE_ATTEMPTS)
       .map(formatAccountMachineAdoptionFailure);
     if (failures.length > MAX_ROUTE_ATTEMPTS) {

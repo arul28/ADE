@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 import { ArrowRight } from "@phosphor-icons/react";
 import { SignInCard } from "../account/AccountPage";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { useAccountStatus } from "../../lib/account";
+import { accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { WelcomeVideoGate } from "./WelcomeVideoGate";
 
@@ -77,7 +77,11 @@ function WebLaunchGate({ children }: LaunchGateProps) {
             Checking your ADE account…
           </div>
         ) : (
-          <SignInCard configured={status.configured !== false} onSignedIn={() => undefined} />
+          <SignInCard
+            configured={status.configured !== false}
+            onSignedIn={() => undefined}
+            sessionState={accountSessionState(status)}
+          />
         )}
       </div>
     </div>
@@ -214,7 +218,11 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
             gap: 14,
           }}
         >
-          <SignInCard configured={status.configured !== false} onSignedIn={enterAde} />
+          <SignInCard
+            configured={status.configured !== false}
+            onSignedIn={enterAde}
+            sessionState={accountSessionState(status)}
+          />
           <button
             type="button"
             onClick={enterAde}

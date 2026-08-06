@@ -10,13 +10,16 @@ import {
   shouldIgnoreDevelopmentClerkConfiguration,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
-import type {
-  CredentialStoreReadFailureReason,
-  SyncCredentialStore,
+import {
+  CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
+  type CredentialStoreReadFailureReason,
+  type SyncCredentialStore,
 } from "../credentials/credentialStore";
 import { runWithAbortSignal } from "../sync/abortSignal";
+import { createRotationJournal } from "./accountSessionRotationJournal";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
+export { ACCOUNT_SESSION_ROTATION_JOURNAL_KEY } from "./accountSessionRotationJournal";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const LOGIN_SESSION_TTL_MS = 5 * 60_000;
@@ -32,14 +35,32 @@ const PAIRING_GRANT_TTL_MS = 10 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
 // The desktop and CLI brain can refresh the same rotating Clerk grant from
 // separate processes. Give the winning process enough time to receive and
-// durably compare-and-swap its replacement before a loser deletes the old
-// grant after invalid_grant. This path only runs after a definitive rejection.
-const REFRESH_ROTATION_WAIT_MS = 6_000;
+// durably compare-and-swap its replacement before a loser marks the old grant
+// dead after invalid_grant. This path only runs after a definitive rejection.
+//
+// The window MUST out-wait the credential store's own lock timeout. The winner
+// persists its replacement through that lock, so a wait shorter than the lock
+// timeout can expire while the winner is still legitimately queued — and the
+// loser would then declare a live session dead. Lock timeout plus a margin for
+// the write itself is the floor.
+const REFRESH_ROTATION_WAIT_MARGIN_MS = 5_000;
+export const DEFAULT_REFRESH_ROTATION_WAIT_MS =
+  CREDENTIAL_STORE_LOCK_TIMEOUT_MS + REFRESH_ROTATION_WAIT_MARGIN_MS;
+const REFRESH_ROTATION_WAIT_MS = DEFAULT_REFRESH_ROTATION_WAIT_MS;
 const REFRESH_ROTATION_POLL_MS = 50;
 // Upper bound for the process-wide coalesced token exchange. It is owned by
 // the service, not by any caller, so one caller's abort cannot cancel the
 // refresh other callers are awaiting.
 const SHARED_REFRESH_TIMEOUT_MS = 30_000;
+/**
+ * Headroom the shared exchange needs on top of its own rotation waits.
+ *
+ * The invalid_grant path can spend up to two rotation windows (the second one
+ * only after an interrupted journal). If the shared timeout cut those windows
+ * short, the widened wait would be decorative. Individual callers are never
+ * held hostage by it — each races its own signal and `timeoutMs` at the join.
+ */
+const SHARED_REFRESH_ROTATION_HEADROOM_MS = 15_000;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -90,6 +111,19 @@ export type AccountSessionRecord = {
   authSource?: Exclude<AccountAuthSource, "env-token" | null>;
   suppressEnvCredential?: true;
   oauthConfig?: AccountOAuthConfig;
+  /**
+   * Set when the identity provider definitively rejected this grant. The record
+   * is kept in place rather than deleted: erasing it makes every process on the
+   * machine silently forget an account the user never signed out of, and takes
+   * the host's relay tunnel and directory row down with it. A marked record
+   * renders as "signed out — sign in again" everywhere, and the next successful
+   * sign-in overwrites it.
+   */
+  rejectedAt?: string;
+  /** Companion to `rejectedAt`, for humans reading the credential file. */
+  needsReauth?: true;
+  /** The OAuth error code that condemned the grant, when there was one. */
+  rejectedReason?: string;
 };
 
 export type AccountAnalyticsIdentity = {
@@ -101,6 +135,20 @@ export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
 
 export type AccountIdentityProvider = "github" | "google" | "apple" | "email";
 
+/**
+ * Why `signedIn` is false, for surfaces that need different words for each.
+ *
+ * Additive and optional: every existing consumer keeps reading `signedIn`
+ * alone, and the desktop wire shape is unchanged.
+ * - `active` — signed in.
+ * - `signed_out` — no session on this machine; offer sign-in.
+ * - `expired` — a session exists but the provider rejected its grant. Offer
+ *   sign-in, and say the session expired rather than pretending it never was.
+ * - `unreadable` — the credential store could not be read. Nothing about the
+ *   account changed; do NOT invite the user to sign in over a valid session.
+ */
+export type AccountSessionState = "active" | "signed_out" | "expired" | "unreadable";
+
 export type AccountAuthStatus = {
   signedIn: boolean;
   userId: string | null;
@@ -110,9 +158,24 @@ export type AccountAuthStatus = {
   source?: AccountAuthSource;
   provider?: AccountIdentityProvider | null;
   imageUrl?: string | null;
+  sessionState?: AccountSessionState;
 };
 
 export type AccountSessionReadState = "available" | "missing" | "unreadable";
+
+/** Which process mutated the stored session, for attributed audit logging. */
+export type AccountSessionMutationSource = "brain" | "cli" | "desktop";
+
+/** Every distinct mutation of the machine-shared account session record. */
+export type AccountSessionMutationAction =
+  | "persist"
+  | "rotate"
+  | "delete"
+  | "mark_dead"
+  | "sign_out"
+  | "rotation_journal_begin"
+  | "rotation_journal_clear"
+  | "rotation_journal_interrupted";
 
 /**
  * Which read path produced an "unreadable" session. Coarse and closed so it can
@@ -216,6 +279,12 @@ export type AccountAuthService = {
   getSessionReadState(): AccountSessionReadState;
   /** Why the last read was unreadable, or null when it was not. */
   getSessionReadFailureReason(): AccountSessionReadFailureReason | null;
+  /**
+   * Coarse lifecycle of the persisted session, refreshed by the same reads.
+   * Optional so existing test doubles and remote proxies stay valid; the same
+   * value also rides on `AccountAuthStatus.sessionState`.
+   */
+  getSessionState?(): AccountSessionState;
   getAccessToken(options?: AccountAccessTokenOptions): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
@@ -605,6 +674,11 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
     const claims = decodeAccountClaims(accessToken);
     const storedUserId = readNonEmptyString(parsed.userId);
     if (storedUserId && claims.userId && storedUserId !== claims.userId) return null;
+    // `needsReauth` alone is enough to condemn the record: a marker written by a
+    // future/older peer without a parsable timestamp must still be honored.
+    const rejectedAt = readNonEmptyString(parsed.rejectedAt)
+      ?? (parsed.needsReauth === true ? obtainedAt : null);
+    const rejectedReason = readNonEmptyString(parsed.rejectedReason);
     const storedOAuthConfig = asRecord(parsed.oauthConfig);
     const oauthConfig = normalizeOptionalOAuthConfig({
       present: Object.prototype.hasOwnProperty.call(parsed, "oauthConfig"),
@@ -625,10 +699,43 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       authSource: readAuthSource(parsed.authSource),
       ...(parsed.suppressEnvCredential === true ? { suppressEnvCredential: true } : {}),
       ...(oauthConfig ? { oauthConfig } : {}),
+      ...(rejectedAt ? { rejectedAt, needsReauth: true as const } : {}),
+      ...(rejectedAt && rejectedReason ? { rejectedReason } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Stable, non-reversible identifier for a refresh-token generation.
+ *
+ * Used by the rotation journal and by every audit log line, so an operator can
+ * follow one grant across processes without any token material reaching a log
+ * file or a journal entry.
+ */
+export function accountTokenGeneration(token: string | null | undefined): string | null {
+  const normalized = token?.trim();
+  if (!normalized) return null;
+  return createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 12);
+}
+
+/**
+ * Which process this is, for attributed audit logging.
+ *
+ * The brain is `ade serve`; the desktop is Electron proper (its own child
+ * processes run with ELECTRON_RUN_AS_NODE=1 and are the brain or a CLI);
+ * everything else is an `ade` invocation.
+ */
+export function deriveAccountSessionMutationSource(
+  env: NodeJS.ProcessEnv,
+  argv: readonly string[] = process.argv,
+): AccountSessionMutationSource | null {
+  const explicit = readNonEmptyString(env.ADE_ACCOUNT_SESSION_SOURCE)?.toLowerCase();
+  if (explicit === "brain" || explicit === "cli" || explicit === "desktop") return explicit;
+  if (argv.slice(1).includes("serve")) return "brain";
+  if (process.versions.electron && env.ELECTRON_RUN_AS_NODE !== "1") return "desktop";
+  return "cli";
 }
 
 async function postTokenForm(args: {
@@ -685,6 +792,24 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
     ...(signedIn && record?.provider ? { provider: record.provider } : {}),
     ...(signedIn && record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
   };
+}
+
+/**
+ * Whether this machine is still THIS user's, even though the session cannot be
+ * used right now.
+ *
+ * `signedIn` answers "can I call the API"; this answers "is this still their
+ * machine". The two are only the same for a deliberate sign-out. An expired
+ * grant or an unreadable credential store is an accident, and reading it as a
+ * sign-out is what took every remote route to a paired machine down with a
+ * token problem. Reachability that a paired device already has must survive it;
+ * anything that needs a live token must still gate on `signedIn`.
+ */
+export function accountSessionRetainsMachineOwnership(
+  status: Pick<AccountAuthStatus, "signedIn" | "userId" | "sessionState">,
+): boolean {
+  if (status.signedIn) return Boolean(status.userId?.trim());
+  return status.sessionState === "expired" || status.sessionState === "unreadable";
 }
 
 export function syncAccountAnalyticsIdentity(
@@ -794,6 +919,10 @@ export function createAccountAuthService(args: {
   randomBytes?: (size: number) => Buffer;
   randomUUID?: () => string;
   logger?: AccountAuthLogger;
+  /** Overrides the derived brain/cli/desktop attribution on audit log lines. */
+  sessionMutationSource?: AccountSessionMutationSource | null;
+  /** Overrides `process.pid` on audit log lines and journal entries. */
+  pid?: number;
 }): AccountAuthService {
   const fetchImpl = args.fetchImpl ?? ((input, init) => fetch(input, init));
   const now = args.now ?? Date.now;
@@ -823,6 +952,10 @@ export function createAccountAuthService(args: {
     && args.refreshRotationPollMs > 0
     ? Math.trunc(args.refreshRotationPollMs)
     : REFRESH_ROTATION_POLL_MS;
+  const sharedRefreshTimeoutMs = Math.max(
+    SHARED_REFRESH_TIMEOUT_MS,
+    refreshRotationWaitMs * 2 + SHARED_REFRESH_ROTATION_HEADROOM_MS,
+  );
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
@@ -851,7 +984,50 @@ export function createAccountAuthService(args: {
   };
   let lastObservedSignedIn: boolean | null = null;
   let locallyRejectedSessionRaw: string | null = null;
+  /**
+   * Why the locally-rejected raw record is rejected. A grant the provider
+   * condemned reads as `expired` (offer sign-in, say why); development material
+   * a packaged build refuses reads as plain `signed_out`, exactly as before.
+   */
+  let locallyRejectedSessionState: Extract<AccountSessionState, "expired" | "signed_out"> = "signed_out";
+  /** Whether the last read observed a persisted record marked needs-re-auth. */
+  let storedSessionRejected = false;
   const signedInListeners = new Set<() => void>();
+  const mutationPid = typeof args.pid === "number" && Number.isSafeInteger(args.pid)
+    ? args.pid
+    : process.pid;
+  const mutationSource = args.sessionMutationSource === undefined
+    ? deriveAccountSessionMutationSource(env)
+    : args.sessionMutationSource;
+
+  /**
+   * One attributed line per mutation of the machine-shared session record.
+   *
+   * The 2026-08-05 "randomly signed out" incident had an empty account.* log:
+   * the deletion that erased the session for every process on the machine left
+   * no trace at all. Every write, rotation, rejection and sign-out now names
+   * itself, its reason, its process, and the token generation it acted on.
+   */
+  const logSessionMutation = (entry: {
+    action: AccountSessionMutationAction;
+    reason: string;
+    level?: "info" | "warn";
+    oauthErrorCode?: string | null;
+    tokenGeneration?: string | null;
+    outcome?: string;
+  }): void => {
+    const meta: Record<string, unknown> = {
+      action: entry.action,
+      reason: entry.reason,
+      pid: mutationPid,
+      source: mutationSource,
+      tokenGeneration: entry.tokenGeneration ?? null,
+    };
+    if (entry.oauthErrorCode) meta.oauthErrorCode = entry.oauthErrorCode;
+    if (entry.outcome) meta.outcome = entry.outcome;
+    if (entry.level === "warn") logger.warn("account.session_mutation", meta);
+    else logger.info("account.session_mutation", meta);
+  };
 
   const readRawEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
@@ -901,7 +1077,7 @@ export function createAccountAuthService(args: {
   };
 
   const envCredentialStatus = (inspected: EnvCredential): AccountAuthStatus => {
-    if (envSession) return { ...toStatus(envSession), source: "env-token" };
+    if (envSession) return { ...currentStatus(envSession), source: "env-token" };
     const isAccessToken = inspected.kind === "access_token";
     const accessToken = inspected.kind === "access_token" ? inspected.token : null;
     const expiresAt = accessToken ? accessTokenExpiresAt(accessToken) : null;
@@ -909,7 +1085,7 @@ export function createAccountAuthService(args: {
       ? decodeAccountClaims(accessToken)
       : { userId: null, email: null, name: null, provider: null, imageUrl: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-    return {
+    return withSessionState({
       signedIn: isAccessToken
         && Boolean(claims.userId)
         && Number.isFinite(expiresAtMs)
@@ -921,17 +1097,41 @@ export function createAccountAuthService(args: {
       source: "env-token",
       ...(claims.provider ? { provider: claims.provider } : {}),
       ...(claims.imageUrl ? { imageUrl: claims.imageUrl } : {}),
-    };
+    });
   };
 
-  const persistSession = (record: AccountSessionRecord | null): void => {
+  const rotationJournal = createRotationJournal({
+    credentialStore: args.credentialStore,
+    now,
+    pid: mutationPid,
+    source: mutationSource,
+    log: logSessionMutation,
+  });
+
+  const persistSession = (
+    record: AccountSessionRecord | null,
+    reason: string,
+    action?: AccountSessionMutationAction,
+  ): void => {
     locallyRejectedSessionRaw = null;
+    locallyRejectedSessionState = "signed_out";
+    storedSessionRejected = false;
     if (record) {
       args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
+      // A successful sign-in is the definitive end of any prior rotation: the
+      // journal describes a refresh token that no longer exists.
+      rotationJournal.clear("session_replaced");
     } else {
       args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+      rotationJournal.clear("session_removed");
     }
     lastObservedSignedIn = record != null;
+    logSessionMutation({
+      action: action ?? (record ? "persist" : "delete"),
+      reason,
+      level: record ? "info" : "warn",
+      tokenGeneration: accountTokenGeneration(record?.refreshToken),
+    });
   };
 
   const invalidateStoredSessionIfCurrent = (raw: string): void => {
@@ -952,6 +1152,12 @@ export function createAccountAuthService(args: {
     authEpoch += 1;
     lastObservedSignedIn = false;
     setSessionReadState("missing");
+    logSessionMutation({
+      action: "delete",
+      reason: "development_material_rejected",
+      level: "warn",
+      outcome: args.credentialStore.updateSync ? "erased" : "rejected_locally",
+    });
     warnDevelopmentClerkIgnored();
   };
 
@@ -968,10 +1174,15 @@ export function createAccountAuthService(args: {
       const readStoredSession = (): AccountSessionSnapshot => {
         const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
         const locallyRejected = locallyRejectedSessionRaw != null && stored === locallyRejectedSessionRaw;
-        const session = locallyRejected
-          ? null
-          : parseStoredSession(stored);
-        if (locallyRejected) {
+        const parsed = locallyRejected ? null : parseStoredSession(stored);
+        // A record the provider condemned stays on disk so no process silently
+        // forgets the account, but it is never a usable session: everything
+        // downstream sees "no session", with `expired` as the reason why.
+        const markedDead = parsed?.rejectedAt != null;
+        storedSessionRejected = markedDead
+          || (locallyRejected && locallyRejectedSessionState === "expired");
+        const session = markedDead ? null : parsed;
+        if (locallyRejected || markedDead) {
           setSessionReadState("missing");
         } else if (stored == null) {
           const storeUnreadable = args.credentialStore.getLastReadState?.() === "unreadable";
@@ -1020,31 +1231,76 @@ export function createAccountAuthService(args: {
 
   const readSession = (): AccountSessionRecord | null => readSessionSnapshot().session;
 
-  const deleteStoredSessionIfExact = (raw: string): boolean => {
+  /**
+   * Attach the reason `signedIn: false` is false. Additive only — `signedIn`
+   * keeps its exact previous meaning for every existing consumer.
+   */
+  const withSessionState = (status: AccountAuthStatus): AccountAuthStatus => ({
+    ...status,
+    sessionState: status.signedIn
+      ? "active"
+      : sessionReadState === "unreadable"
+        ? "unreadable"
+        : storedSessionRejected
+          ? "expired"
+          : "signed_out",
+  });
+
+  const currentStatus = (record: AccountSessionRecord | null): AccountAuthStatus =>
+    withSessionState(toStatus(record));
+
+  /**
+   * Mark the exact rejected record needs-re-auth IN PLACE. Never delete it.
+   *
+   * Deleting was the 2026-08-05 incident: one process losing a rotating grant
+   * erased the shared credential, so the desktop, the brain and the CLI all
+   * went from "signed in" to "no account" at once, and the host dropped its
+   * relay tunnel and directory row with it. The record survives instead — every
+   * process renders a deliberate "signed out — sign in again", `getStatus()`
+   * reports `expired`, and the next successful sign-in overwrites the marker.
+   */
+  const markStoredSessionRejectedIfExact = (
+    raw: string,
+    session: AccountSessionRecord,
+    oauthErrorCode: string | null,
+  ): boolean => {
     locallyRejectedSessionRaw = raw;
+    locallyRejectedSessionState = "expired";
+    storedSessionRejected = true;
+    const rejected: AccountSessionRecord = {
+      ...session,
+      rejectedAt: new Date(now()).toISOString(),
+      needsReauth: true,
+      ...(oauthErrorCode ? { rejectedReason: oauthErrorCode } : {}),
+    };
     const updateSync = args.credentialStore.updateSync;
-    if (!updateSync) {
-      // The local process must stop surfacing a definitively rejected grant,
-      // but a store without compare-and-delete cannot safely erase it while a
-      // peer may be rotating the credential.
-      authEpoch += 1;
-      lastObservedSignedIn = false;
-      setSessionReadState("missing");
-      return false;
+    let marked = false;
+    if (updateSync) {
+      // Compare-and-swap on the exact bytes we were rejected for: a replacement
+      // a peer persisted after our read must never be condemned.
+      updateSync.call(args.credentialStore, (values) => {
+        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
+        values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(rejected);
+        marked = true;
+        return true;
+      });
     }
-    let deleted = false;
-    updateSync.call(args.credentialStore, (values) => {
-      if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
-      delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
-      deleted = true;
-      return true;
+    // Without compare-and-swap the marker cannot be written safely, but this
+    // process must still stop serving the dead grant. It is rejected on every
+    // local read instead.
+    authEpoch += 1;
+    lastObservedSignedIn = false;
+    setSessionReadState("missing");
+    rotationJournal.clear("grant_rejected", accountTokenGeneration(session.refreshToken));
+    logSessionMutation({
+      action: "mark_dead",
+      reason: "refresh_grant_rejected",
+      level: "warn",
+      oauthErrorCode,
+      tokenGeneration: accountTokenGeneration(session.refreshToken),
+      outcome: marked ? "marked_needs_reauth" : "rejected_locally",
     });
-    if (deleted) {
-      authEpoch += 1;
-      lastObservedSignedIn = false;
-      setSessionReadState("missing");
-    }
-    return deleted;
+    return marked;
   };
 
   const waitForRefreshRotation = async (
@@ -1107,13 +1363,26 @@ export function createAccountAuthService(args: {
   const persistRefreshedSessionIfCurrent = (
     refreshed: AccountSessionRecord,
     expectedRaw: string,
+    reason: string,
+    /** Generation this exchange journaled, so only our own entry is cleared. */
+    journaledTokenGeneration?: string | null,
   ): boolean => {
     const updateSync = args.credentialStore.updateSync;
     if (!updateSync) {
       if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) !== expectedRaw) {
+        // A peer persisted first, but our exchange is still over — the
+        // generation we journaled is spent either way. Scoped, so a peer's
+        // newer entry survives. Without this the entry outlives the rotation
+        // and makes the next refresh wait on a rotation nobody is running.
+        // Truthiness, not `!== undefined`: an explicit null would clear the
+        // journal UNSCOPED and could delete a peer's newer entry.
+        if (journaledTokenGeneration) {
+          rotationJournal.clear("rotation_superseded", journaledTokenGeneration);
+        }
         return false;
       }
-      persistSession(refreshed);
+      // persistSession clears the journal on the way through.
+      persistSession(refreshed, reason);
       return true;
     }
 
@@ -1124,7 +1393,26 @@ export function createAccountAuthService(args: {
       persisted = true;
       return true;
     });
-    if (persisted) lastObservedSignedIn = true;
+    if (persisted) {
+      lastObservedSignedIn = true;
+      locallyRejectedSessionRaw = null;
+      locallyRejectedSessionState = "signed_out";
+      storedSessionRejected = false;
+    }
+    // The exchange completed either way: our journaled generation is spent, so
+    // its entry has nothing left to protect. A peer's newer entry is untouched.
+    if (journaledTokenGeneration) {
+      rotationJournal.clear(
+        persisted ? "rotation_persisted" : "rotation_superseded",
+        journaledTokenGeneration,
+      );
+    }
+    logSessionMutation({
+      action: "rotate",
+      reason,
+      tokenGeneration: accountTokenGeneration(refreshed.refreshToken),
+      outcome: persisted ? "persisted" : "superseded_by_peer",
+    });
     return persisted;
   };
 
@@ -1348,7 +1636,7 @@ export function createAccountAuthService(args: {
         respondHtml(response, 409, FAILURE_HTML);
         return;
       }
-      persistSession(record);
+      persistSession(record, "loopback_login_completed");
       authEpoch += 1;
       notifySignedIn();
       finishPendingSession(session, "signed_in", null);
@@ -1447,7 +1735,7 @@ export function createAccountAuthService(args: {
       return {
         status: "error",
         message: "ADE account sign-in session id is required.",
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     const session = pendingSessions.get(normalizedSessionId);
@@ -1455,21 +1743,21 @@ export function createAccountAuthService(args: {
       return {
         status: "error",
         message: "ADE account sign-in session was not found.",
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     if (session.expiresAtMs <= now()) expirePendingSession(session);
     if (session.phase === "pending" || session.phase === "exchanging") {
-      return { status: "pending", message: null, authStatus: toStatus(readSession()) };
+      return { status: "pending", message: null, authStatus: currentStatus(readSession()) };
     }
     pendingSessions.delete(normalizedSessionId);
     if (session.phase === "signed_in") {
-      return { status: "signed_in", message: null, authStatus: toStatus(readSession()) };
+      return { status: "signed_in", message: null, authStatus: currentStatus(readSession()) };
     }
     return {
       status: session.phase,
       message: session.message,
-      authStatus: toStatus(readSession()),
+      authStatus: currentStatus(readSession()),
     };
   };
 
@@ -1600,7 +1888,7 @@ export function createAccountAuthService(args: {
           status: "error",
           message: "ADE account device sign-in was cancelled.",
           intervalSec: null,
-          authStatus: toStatus(readSession()),
+          authStatus: currentStatus(readSession()),
         };
       }
       if (session.expiresAtMs <= now()) {
@@ -1609,14 +1897,14 @@ export function createAccountAuthService(args: {
           status: "expired",
           message: "ADE account device sign-in expired.",
           intervalSec: null,
-          authStatus: toStatus(readSession()),
+          authStatus: currentStatus(readSession()),
         };
       }
       return {
         status: "pending",
         message: null,
         intervalSec: session.intervalSec,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     let payload: Record<string, unknown>;
@@ -1628,14 +1916,14 @@ export function createAccountAuthService(args: {
           status: "error",
           message: "ADE account device sign-in was cancelled.",
           intervalSec: null,
-          authStatus: toStatus(readSession()),
+          authStatus: currentStatus(readSession()),
         };
       }
       return {
         status: "pending",
         message: null,
         intervalSec: session.intervalSec,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     if (
@@ -1646,7 +1934,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device sign-in was cancelled.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     if (!response.ok) {
@@ -1660,7 +1948,7 @@ export function createAccountAuthService(args: {
           status: errorCode === "slow_down" || response.status === 429 ? "slow_down" : "pending",
           message: null,
           intervalSec,
-          authStatus: toStatus(readSession()),
+          authStatus: currentStatus(readSession()),
         };
       }
       pendingDeviceSessions.delete(normalizedSessionId);
@@ -1669,7 +1957,7 @@ export function createAccountAuthService(args: {
           status: "expired",
           message: "ADE account device sign-in expired.",
           intervalSec: null,
-          authStatus: toStatus(readSession()),
+          authStatus: currentStatus(readSession()),
         };
       }
       return {
@@ -1679,7 +1967,7 @@ export function createAccountAuthService(args: {
             ? "ADE account device sign-in could not be redeemed."
             : errorCode ?? `ADE account device token request failed (${response.status}).`),
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
 
@@ -1691,7 +1979,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device token response was missing required fields.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     let oauthConfig: AccountOAuthConfig | null;
@@ -1708,7 +1996,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device token response included invalid OAuth context.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     if (
@@ -1721,7 +2009,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device sign-in was cancelled.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     let baseRecord: AccountSessionRecord;
@@ -1738,7 +2026,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: error instanceof Error ? error.message : "ADE account device token could not be accepted.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     // The directory's proof that a human just signed in on THIS machine, for
@@ -1752,7 +2040,7 @@ export function createAccountAuthService(args: {
     const record: AccountSessionRecord = session.suppressEnvCredential
       ? { ...baseRecord, suppressEnvCredential: true }
       : baseRecord;
-    persistSession(record);
+    persistSession(record, "device_login_completed");
     authEpoch += 1;
     notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
@@ -1761,7 +2049,7 @@ export function createAccountAuthService(args: {
       status: "signed_in",
       message: null,
       intervalSec: null,
-      authStatus: toStatus(record),
+      authStatus: currentStatus(record),
     };
   };
 
@@ -1772,7 +2060,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device sign-in session id is required.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     const inFlight = devicePollsInFlight.get(normalizedSessionId);
@@ -1784,7 +2072,7 @@ export function createAccountAuthService(args: {
         status: "error",
         message: "ADE account device sign-in session was not found.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
     if (session.expiresAtMs <= now()) {
@@ -1793,7 +2081,7 @@ export function createAccountAuthService(args: {
         status: "expired",
         message: "ADE account device sign-in expired.",
         intervalSec: null,
-        authStatus: toStatus(readSession()),
+        authStatus: currentStatus(readSession()),
       };
     }
 
@@ -1810,9 +2098,9 @@ export function createAccountAuthService(args: {
 
   const getStatus = (): AccountAuthStatus => {
     const record = readSession();
-    if (record?.suppressEnvCredential) return toStatus(record);
+    if (record?.suppressEnvCredential) return currentStatus(record);
     const envCredential = readAcceptedEnvCredential();
-    return envCredential ? envCredentialStatus(envCredential.inspected) : toStatus(record);
+    return envCredential ? envCredentialStatus(envCredential.inspected) : currentStatus(record);
   };
 
   const getAccessTokenWithSignal = async (
@@ -1867,7 +2155,7 @@ export function createAccountAuthService(args: {
         const envSharedRefresh = new AbortController();
         const envSharedTimer = setTimeout(
           () => envSharedRefresh.abort(new Error("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
-          SHARED_REFRESH_TIMEOUT_MS,
+          sharedRefreshTimeoutMs,
         );
         envSharedTimer.unref?.();
         const envSharedSignal = envSharedRefresh.signal;
@@ -1945,7 +2233,14 @@ export function createAccountAuthService(args: {
     }
 
     if (!record?.accessToken || !record.userId) {
-      throw new Error("ADE is not signed in. Run `ade login` to sign in.");
+      // A session the provider condemned is still on disk. Say it expired
+      // rather than pretending the machine was never signed in — the words
+      // decide whether the user looks for a bug or just signs in again.
+      throw new Error(
+        storedSessionRejected
+          ? "ADE account session expired. Run `ade login` again."
+          : "ADE is not signed in. Run `ade login` to sign in.",
+      );
     }
     const claimedExpiresAt = accessTokenExpiresAt(record.accessToken);
     const expiresAtMs = Date.parse(claimedExpiresAt ?? record.expiresAt);
@@ -1968,7 +2263,7 @@ export function createAccountAuthService(args: {
       const sharedRefresh = new AbortController();
       const sharedRefreshTimer = setTimeout(
         () => sharedRefresh.abort(new Error("The shared account token refresh timed out.")),
-        SHARED_REFRESH_TIMEOUT_MS,
+        sharedRefreshTimeoutMs,
       );
       sharedRefreshTimer.unref?.();
       const sharedSignal = sharedRefresh.signal;
@@ -1985,6 +2280,28 @@ export function createAccountAuthService(args: {
           config = refreshRecord.oauthConfig
             ? normalizeOAuthConfig(refreshRecord.oauthConfig)
             : await resolveOAuthConfig();
+          const tokenGeneration = accountTokenGeneration(refreshRecord.refreshToken) ?? "";
+          // Read the journal BEFORE writing ours: an entry still naming this
+          // exact token generation means some process already started an
+          // exchange against it and never finished. The `invalid_grant` that
+          // follows is then explainable by that interruption, not proof that
+          // the grant is dead, so it must not condemn the session.
+          const priorJournal = rotationJournal.read();
+          const interruptedRotation = priorJournal != null
+            && priorJournal.oldRefreshTokenHash === tokenGeneration;
+          if (interruptedRotation) {
+            logSessionMutation({
+              action: "rotation_journal_interrupted",
+              reason: "unfinished_rotation_observed",
+              level: "warn",
+              tokenGeneration,
+              outcome: `started_at:${priorJournal.startedAt} pid:${priorJournal.pid} source:${priorJournal.source ?? "unknown"}`,
+            });
+          }
+          rotationJournal.write({
+            oldRefreshTokenHash: tokenGeneration,
+            userId: refreshRecord.userId,
+          });
           try {
             token = await postTokenForm({
               fetchImpl,
@@ -2006,16 +2323,45 @@ export function createAccountAuthService(args: {
             }
             // The desktop and brain share this credential. A peer that won a
             // rotating refresh exchange may not have persisted its replacement
-            // by the time Clerk rejects our old token, so briefly poll before
-            // declaring the grant dead.
-            const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
+            // by the time Clerk rejects our old token, so poll before declaring
+            // the grant dead. The window out-waits the credential store's lock
+            // timeout, so a winner still queued for the lock cannot lose.
+            let rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
             if (rotation.kind === "rotated" && attempt === 0) {
               refreshSnapshot = rotation.snapshot;
               continue;
             }
             if (rotation.kind !== "unchanged") return null;
-            const deleted = deleteStoredSessionIfExact(refreshSnapshot.raw);
-            if (!deleted && readSessionSnapshot().raw !== refreshSnapshot.raw) {
+            if (interruptedRotation) {
+              // An interrupted journal makes this rejection ambiguous: the
+              // stored token may already have been spent by the process that
+              // died. Spend one more rotation-wait cycle, then give up for this
+              // attempt WITHOUT condemning the session. Clearing the journal
+              // makes the next refresh definitive, so an actually-dead grant
+              // still reaches the needs-re-auth state one attempt later.
+              rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
+              if (rotation.kind === "rotated" && attempt === 0) {
+                refreshSnapshot = rotation.snapshot;
+                continue;
+              }
+              if (rotation.kind !== "unchanged") return null;
+              rotationJournal.clear("interrupted_rotation_inconclusive", tokenGeneration);
+              logSessionMutation({
+                action: "rotation_journal_interrupted",
+                reason: "invalid_grant_not_definitive",
+                level: "warn",
+                oauthErrorCode: error.oauthErrorCode,
+                tokenGeneration,
+                outcome: "session_preserved",
+              });
+              throw error;
+            }
+            const marked = markStoredSessionRejectedIfExact(
+              refreshSnapshot.raw,
+              refreshSnapshot.session,
+              error.oauthErrorCode,
+            );
+            if (!marked && readSessionSnapshot().raw !== refreshSnapshot.raw) {
               return null;
             }
             throw error;
@@ -2034,7 +2380,12 @@ export function createAccountAuthService(args: {
           { fetchUserinfo: false, obtainedAtMs, signal: sharedSignal },
         );
         if (authEpoch !== epochAtJoin) return null;
-        if (!persistRefreshedSessionIfCurrent(refreshed, refreshSnapshot.raw)) {
+        if (!persistRefreshedSessionIfCurrent(
+          refreshed,
+          refreshSnapshot.raw,
+          "refresh_token_rotated",
+          accountTokenGeneration(refreshSnapshot.session.refreshToken),
+        )) {
           return null;
         }
 
@@ -2060,7 +2411,11 @@ export function createAccountAuthService(args: {
         }
         if (authEpoch !== epochAtJoin) return null;
         const refreshedRaw = JSON.stringify(refreshed);
-        return persistRefreshedSessionIfCurrent(enriched, refreshedRaw)
+        return persistRefreshedSessionIfCurrent(
+          enriched,
+          refreshedRaw,
+          "refresh_profile_enriched",
+        )
           ? enriched
           : readSession();
       })().finally(() => {
@@ -2190,7 +2545,7 @@ export function createAccountAuthService(args: {
     // session, so anything still holding one is holding a stale claim about a
     // user who is no longer here.
     pairingGrant = null;
-    persistSession(null);
+    persistSession(null, "user_signed_out", "sign_out");
     for (const session of pendingSessions.values()) {
       finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
     }
@@ -2234,6 +2589,7 @@ export function createAccountAuthService(args: {
     getStatus,
     getSessionReadState: () => sessionReadState,
     getSessionReadFailureReason: () => sessionReadFailureReason,
+    getSessionState: () => getStatus().sessionState ?? "signed_out",
     getAccessToken,
     createToken,
     cancelLogin,

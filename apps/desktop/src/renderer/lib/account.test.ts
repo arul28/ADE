@@ -180,6 +180,36 @@ describe("account machines cache", () => {
   });
 });
 
+describe("account session state", () => {
+  it("separates a sign-out from an expired session and an unreadable one", async () => {
+    const { accountSessionState } = await import("./account");
+
+    expect(accountSessionState(publishedSignedInStatus)).toBe("active");
+    expect(accountSessionState(staleSignedOutStatus)).toBe("signed_out");
+    expect(
+      accountSessionState({ ...staleSignedOutStatus, sessionState: "expired" }),
+    ).toBe("expired");
+    expect(
+      accountSessionState({ ...staleSignedOutStatus, sessionState: "unreadable" }),
+    ).toBe("unreadable");
+    // Older runtimes report only the read state.
+    expect(
+      accountSessionState({ ...staleSignedOutStatus, sessionReadState: "unreadable" }),
+    ).toBe("unreadable");
+  });
+
+  it("only prompts a fresh sign-in for the state where it is safe", async () => {
+    const { accountSessionNotice } = await import("./account");
+
+    expect(accountSessionNotice("signed_out")).toBeNull();
+    expect(accountSessionNotice("active")).toBeNull();
+    expect(accountSessionNotice("expired")).toBe("Your ADE sign-in expired — sign in again.");
+    expect(accountSessionNotice("unreadable")).toBe(
+      "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+    );
+  });
+});
+
 describe("account avatar presentation", () => {
   it("never uses a GitHub integration avatar while ADE is signed out", async () => {
     const { accountAvatarImage } = await import("./account");

@@ -15,6 +15,7 @@ import type {
   BrainLoopWatchdogBreadcrumb,
 } from "../services/runtime/brainLoopWatchdog";
 import { readBrainLoopWatchdogLastWedge } from "../services/runtime/brainLoopWatchdog";
+import { BRAIN_WATCHDOG_KILL_COMMAND } from "../services/runtime/brainWatchdogCheck";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
@@ -578,13 +579,19 @@ function wedgeRow(
   }
   const timestampMs = Date.parse(wedge.ts);
   const ageMs = Number.isFinite(timestampMs) ? Math.max(0, nowMs - timestampMs) : null;
+  const when = ageMs == null ? wedge.ts : `${compactDuration(ageMs)} ago`;
+  // The external watchdog leaves the same breadcrumb the in-process loop
+  // watchdog does, so this row already covers a watchdog kill — but its
+  // "lastCommand" is the watchdog itself, not a blocking call, and reading
+  // "external-watchdog blocked 4m" suggests the watchdog was the thing stuck.
+  const detail = wedge.lastCommand === BRAIN_WATCHDOG_KILL_COMMAND
+    ? `stopped by the watchdog after ${compactDuration(wedge.blockedMs)} with no heartbeat · ${when}`
+    : `${wedge.lastCommand} blocked ${compactDuration(wedge.blockedMs)} · ${when}`;
   return {
     key: "wedge",
     label: "Wedge history",
     status: ageMs != null && ageMs <= DAY_MS ? "warn" : "ok",
-    detail: `${wedge.lastCommand} blocked ${compactDuration(wedge.blockedMs)} · ${
-      ageMs == null ? wedge.ts : `${compactDuration(ageMs)} ago`
-    }`,
+    detail,
   };
 }
 

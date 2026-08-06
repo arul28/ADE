@@ -127,6 +127,30 @@ describe("AccountMachineDirectoryService", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("reports a provider-rejected session as expired rather than never-signed-in", async () => {
+    const fetchImpl = directoryFetch([]);
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+        sessionState: "expired",
+      }),
+      getSessionReadState: () => "missing",
+      getAccessToken: vi.fn(async () => "should-not-be-read"),
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    await expect(service.listMachines()).resolves.toMatchObject({
+      state: "auth_expired",
+      machines: [],
+    });
+    await expect(service.deleteMachine("mk-studio")).rejects.toThrow(/sign-in expired/i);
+    await expect(service.renameMachine("mk-studio", "Studio")).rejects.toThrow(/sign-in expired/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("still says 'not signed in' for a genuinely absent session", async () => {
     const service = new AccountMachineDirectoryService({
       getStatus: () => ({ signedIn: false, userId: null, email: null, name: null, expiresAt: null }),

@@ -238,7 +238,7 @@ struct SettingsConnectionHeader: View {
       // be reaching a Mac this phone has never paired with.
       return snapshot.accountConnectStageLabel ?? "Connecting to your machine"
     case .unreachable:
-      return "Unable to reach your machine"
+      return "Can\u{2019}t reach your machine"
     case .disconnected:
       // Returning users see where they left off. Brand-new users (no saved
       // machine) get no caption here at all — the pairing onboarding copy
@@ -250,14 +250,15 @@ struct SettingsConnectionHeader: View {
     }
   }
 
+  /// `hostName` is always the machine the current attempt is aimed at — the
+  /// snapshot resolves that before this view sees it, so the copy can never
+  /// name the last-connected machine while reaching a different one.
   private func pendingDescription(hostName: String) -> String {
     switch health.transport {
-    case .connecting:
-      return "Reaching \(hostName)..."
     case .unreachable:
-      return "Tap reconnect to try \(hostName) again, or pair a different machine below."
+      return "Tap reconnect to try \(hostName) again \u{2014} or pair another machine below."
     default:
-      return "Reaching \(hostName)..."
+      return "Reaching \(hostName)\u{2026}"
     }
   }
 }

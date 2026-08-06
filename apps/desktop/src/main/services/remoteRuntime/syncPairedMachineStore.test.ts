@@ -351,6 +351,34 @@ describe("DesktopPairedMachineStore", () => {
       lastSucceededAt: 1_700_000_000_300,
     });
 
+    // A neighbour's address that once landed in this record must be able to
+    // leave it. `markEndpointFailed` re-adds whatever it is recording, so
+    // demotion alone would retry a wrong-machine endpoint forever.
+    const contaminated = store.markEndpointFailed(
+      "mac-studio-host",
+      "ws://macbook-pro-97.example.ts.net:8787",
+      1_700_000_000_400,
+    );
+    expect(contaminated.endpoints).toContain("ws://macbook-pro-97.example.ts.net:8787/");
+    const cleaned = store.forgetEndpoint(
+      "mac-studio-host",
+      "ws://macbook-pro-97.example.ts.net:8787",
+    );
+    expect(cleaned.endpoints).not.toContain("ws://macbook-pro-97.example.ts.net:8787/");
+    expect(cleaned.endpointStates?.map((state) => state.endpoint))
+      .not.toContain("ws://macbook-pro-97.example.ts.net:8787/");
+    expect(cleaned.endpoints).toContain("ws://studio.local:8787/");
+    expect(new DesktopPairedMachineStore().get("mac-studio-host")).toEqual(cleaned);
+    // Forgetting the last endpoint would leave nothing to dial, so it is a
+    // no-op rather than a machine that can never be reached again.
+    const onlyOne = store.forgetEndpoint("mac-studio-host", "ws://studio.local:8787");
+    const stripped = store.save(
+      { ...onlyOne, endpoints: ["ws://studio.local:8787/"] },
+      { replaceConnectionMetadata: true },
+    );
+    expect(store.forgetEndpoint("mac-studio-host", "ws://studio.local:8787").endpoints)
+      .toEqual(stripped.endpoints);
+
     const discovered = store.markEndpointsDiscovered(
       "mac-studio-host",
       ["ws://studio.local:8805"],
