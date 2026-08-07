@@ -1,0 +1,29 @@
+---
+title: "v1.2.57"
+description: "Release notes for ADE v1.2.57 - August 6, 2026"
+---
+
+Settings got reorganized around what you actually do in them, PRs open faster and remember where you left off, automations stop firing on stale schedules, and orchestrator chats get a locked-down, provider-native tool policy.
+
+---
+
+## Settings
+
+- **General is now about the machine, not a junk drawer.** It covers ADE's runtime status, project health, CLI access, and privacy; things like clipboard-paste-into-new-chat and automatic updates moved to the tabs they actually belong to (Appearance, and a combined Updates section under About).
+- Renamed tabs to match what's in them: **Lanes**, **Notifications**, **Diagnostics**, **ADE Stats**.
+
+## Pull requests
+
+- **The GitHub tab redirects and restores selection faster**, with target history tracked per-PR so reopening a PR or lane returns you to the same spot instead of resetting to the top of the list.
+
+## Automations
+
+- **A rule that gets disabled, deleted, or has its schedule edited no longer fires on the old schedule.** Queued schedule triggers are re-validated against the rule's current state right before they run, and stale ones are suppressed and logged instead of executing.
+
+## Orchestration
+
+- **Orchestrator-led chats run under a stricter, provider-native permission profile** shared across Claude, Codex, Cursor, Droid, and OpenCode, closing gaps where a lead or worker session could reach tools the orchestration model didn't intend to expose.
+
+## Chat & lanes
+
+- Fixes to remote shell swapping, cross-machine lane state, and lane/PR settlement bookkeeping.

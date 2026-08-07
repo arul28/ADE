@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.57] - 2026-08-06
+
+### Settings
+
+- General now covers ADE's runtime status, project health, CLI access, and privacy; clipboard-paste-into-new-chat moved to Appearance and Updates moved under About.
+- Renamed tabs: Lanes, Notifications, Diagnostics, ADE Stats.
+
+### Pull requests
+
+- The GitHub tab redirects and restores selection faster, tracking target history per PR.
+
+### Automations
+
+- Queued schedule triggers are re-validated against the rule's current state before running; disabled, deleted, or rescheduled rules no longer fire on stale schedules.
+
+### Orchestration
+
+- Orchestrator-led chats run under a stricter, provider-native permission profile shared across Claude, Codex, Cursor, Droid, and OpenCode.
+
+### Chat & lanes
+
+- Fixes to remote shell swapping, cross-machine lane state, and lane/PR settlement bookkeeping.
+
 ## [1.2.56] - 2026-08-06
 
 ### Connections
@@ -1476,6 +1499,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.57]: https://github.com/arul28/ADE/compare/v1.2.56...v1.2.57
 [1.2.56]: https://github.com/arul28/ADE/compare/v1.2.55...v1.2.56
 [1.2.55]: https://github.com/arul28/ADE/compare/v1.2.54...v1.2.55
 [1.2.54]: https://github.com/arul28/ADE/compare/v1.2.53...v1.2.54
