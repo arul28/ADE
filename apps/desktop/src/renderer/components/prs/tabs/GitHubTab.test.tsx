@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubPrSnapshot, LaneSummary, MergeMethod } from "../../../../shared/types";
+import type { PrRouteSelectionTarget } from "../prsRouteState";
 
 vi.mock("react-resizable-panels", async () => {
   const harness = await import("./GitHubTab.testHarness");
@@ -52,6 +53,7 @@ describe("GitHubTab snapshot lifecycle", () => {
 
   function renderTab(overrides: Partial<{
     selectedPrId: string | null;
+    selectedPrTarget: PrRouteSelectionTarget | null;
     onSelectPr: ReturnType<typeof vi.fn>;
     onRefreshAll: ReturnType<typeof vi.fn>;
     lanes: LaneSummary[];
@@ -163,7 +165,7 @@ describe("GitHubTab snapshot lifecycle", () => {
 
     await user.click(screen.getByRole("button", { name: /^open/i }));
 
-    await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith(null));
+    await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith(null, null));
     expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
   });
 
@@ -411,7 +413,7 @@ describe("GitHubTab snapshot lifecycle", () => {
       expect(screen.getByText("Open PR")).not.toBeNull();
     });
     await waitFor(() => {
-      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("gh:ade-dev/ade#101");
     });
     await waitFor(() => {
       expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-open" });

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildPrsRouteSearch, parsePrsRouteState, readStoredPrsRoute, resolvePrsActiveTab, writeStoredPrsRoute } from "./prsRouteState";
+import {
+  buildPrsRouteSearch,
+  parsePrsRouteState,
+  prRouteCoordinatesEqual,
+  prRouteCoordinatesKey,
+  prRouteTargetsEqual,
+  readStoredPrsRoute,
+  resolvePrsActiveTab,
+  writeStoredPrsRoute,
+} from "./prsRouteState";
 
 describe("prsRouteState", () => {
   beforeEach(() => {
@@ -29,6 +38,8 @@ describe("prsRouteState", () => {
       laneId: null,
       prId: null,
       prNumber: null,
+      repoOwner: null,
+      repoName: null,
       eventId: null,
       threadId: null,
       commitSha: null,
@@ -48,6 +59,8 @@ describe("prsRouteState", () => {
       laneId: "lane-456",
       prId: "pr-789",
       prNumber: null,
+      repoOwner: null,
+      repoName: null,
       eventId: null,
       threadId: null,
       commitSha: null,
@@ -66,6 +79,8 @@ describe("prsRouteState", () => {
       laneId: null,
       prId: "pr-1",
       prNumber: null,
+      repoOwner: null,
+      repoName: null,
       eventId: "evt-99",
       threadId: "thr-12",
       commitSha: "abc123",
@@ -92,6 +107,36 @@ describe("prsRouteState", () => {
     expect(parsed.prNumber).toBe(123);
     expect(parsed.prId).toBeNull();
     expect(parsed.laneId).toBe("lane-1");
+  });
+
+  it("keeps repository coordinates with a PR number handoff", () => {
+    expect(parsePrsRouteState({
+      search: "?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade",
+    })).toMatchObject({
+      prNumber: 123,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+    });
+    expect(buildPrsRouteSearch({
+      activeTab: "normal",
+      selectedPrId: null,
+      selectedPrNumber: 123,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      selectedRebaseItemId: null,
+    })).toBe("?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade");
+  });
+
+  it("uses one case-insensitive canonical coordinate identity", () => {
+    const uppercase = { prNumber: 123, repoOwner: "ADE-DEV", repoName: "ADE" };
+    const lowercase = { prNumber: 123, repoOwner: "ade-dev", repoName: "ade" };
+
+    expect(prRouteCoordinatesKey(uppercase)).toBe("ade-dev/ade#123");
+    expect(prRouteCoordinatesEqual(uppercase, lowercase)).toBe(true);
+    expect(prRouteTargetsEqual(
+      { prId: "pr-123", ...uppercase },
+      { prId: "pr-123", ...lowercase },
+    )).toBe(true);
   });
 
   it("builds normal and workflow route searches with the expected ids", () => {

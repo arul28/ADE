@@ -109,6 +109,7 @@ export function renderGitHubTab(
   Component: React.ComponentType<GitHubTabProps>,
   overrides: Partial<{
     selectedPrId: string | null;
+    selectedPrTarget: GitHubTabProps["selectedPrTarget"];
     onSelectPr: ReturnType<typeof vi.fn>;
     onRefreshAll: ReturnType<typeof vi.fn>;
     lanes: LaneSummary[];
@@ -122,6 +123,7 @@ export function renderGitHubTab(
         lanes={overrides.lanes ?? []}
         mergeMethod={"squash" satisfies MergeMethod}
         selectedPrId={overrides.selectedPrId ?? null}
+        selectedPrTarget={overrides.selectedPrTarget}
         onSelectPr={onSelectPr}
         onRefreshAll={onRefreshAll}
       />

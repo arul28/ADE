@@ -2,7 +2,7 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Stack } from "@phosphor-icons/react";
-import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
+import { buildPrsRouteSearch, parsePrsRouteState, prRouteCoordinatesMatch, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
   LaneSummary,
   MergeMethod,
@@ -114,13 +114,26 @@ export function buildTimelineVisibleEventSearch(args: {
   const tab = args.current.tab === "github" || args.current.tab === "normal" ? args.current.tab : "normal";
   return buildPrsRouteSearch({
     activeTab: tab,
-    selectedPrId: args.prId,
+    selectedPrId: args.current.prId ?? (args.current.prNumber != null ? null : args.prId),
+    selectedPrNumber: args.current.prNumber,
+    repoOwner: args.current.repoOwner,
+    repoName: args.current.repoName,
     selectedRebaseItemId: null,
     eventId: args.eventId,
     threadId: args.current.threadId,
     commitSha: args.current.commitSha,
     detailTab: args.current.detailTab,
   });
+}
+
+export function buildTimelineVisibleEventHash(args: {
+  currentHash: string;
+  nextSearch: string;
+}): string | null {
+  if (!args.currentHash.startsWith("#/prs")) return null;
+  const queryIndex = args.currentHash.indexOf("?");
+  const routePrefix = queryIndex >= 0 ? args.currentHash.slice(0, queryIndex) : args.currentHash;
+  return `${routePrefix}${args.nextSearch}`;
 }
 
 type Props = {
@@ -820,22 +833,43 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
     // Scroll → URL round-trip. Write eventId to the URL (replace) as the user
     // scrolls, so the address bar reflects the current position for sharing.
     const locationSearchRef = useRef(location.search);
+    const locationHashRef = useRef(location.hash);
     const locationPathnameRef = useRef(location.pathname);
     useEffect(() => {
       locationSearchRef.current = location.search;
+      locationHashRef.current = location.hash;
       locationPathnameRef.current = location.pathname;
-    }, [location.pathname, location.search]);
+    }, [location.hash, location.pathname, location.search]);
     const handleVisibleEventChange = useCallback(
       (eventId: string | null) => {
-        const current = parsePrsRouteState({ search: locationSearchRef.current });
+        const current = parsePrsRouteState({
+          search: locationSearchRef.current,
+          hash: locationHashRef.current,
+        });
         if ((current.eventId ?? null) === eventId) return;
-        // Only write URL for PR-scoped tabs with a selected PR.
-        if (current.prId !== pr.id) return;
+        // Only write URL for the selected PR. Coordinate-only routes have no
+        // local id, so match those by repository and GitHub number.
+        const selectedByCoordinates = current.prNumber != null
+          && prRouteCoordinatesMatch(
+            { prNumber: current.prNumber, repoOwner: current.repoOwner, repoName: current.repoName },
+            { prNumber: pr.githubPrNumber, repoOwner: pr.repoOwner, repoName: pr.repoName },
+          );
+        if (current.prId !== pr.id && !selectedByCoordinates) return;
         const nextSearch = buildTimelineVisibleEventSearch({ current, prId: pr.id, eventId });
-        if (nextSearch === locationSearchRef.current) return;
-        void navigate({ pathname: locationPathnameRef.current, search: nextSearch }, { replace: true });
+        const nextHash = buildTimelineVisibleEventHash({
+          currentHash: locationHashRef.current,
+          nextSearch,
+        });
+        if (nextHash
+          ? nextHash === locationHashRef.current
+          : nextSearch === locationSearchRef.current) return;
+        void navigate({
+          pathname: locationPathnameRef.current,
+          search: nextHash ? locationSearchRef.current : nextSearch,
+          ...(nextHash ? { hash: nextHash } : {}),
+        }, { replace: true });
       },
-      [pr.id, navigate],
+      [navigate, pr.githubPrNumber, pr.id, pr.repoName, pr.repoOwner],
     );
 
     const summaryForTimeline = aiSummaryDismissed ? null : aiSummary ?? null;

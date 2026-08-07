@@ -4,6 +4,7 @@ import {
   getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
+  lanePrTagRoutePath,
   lanePrMatchesCurrentBranch,
   lanePrRole,
   planLaneDeleteBatches,
@@ -20,7 +21,11 @@ import {
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
-import { buildLaneSplitColumnsKey, shouldMountGitActionsPane } from "./LanesPage";
+import {
+  buildLaneSplitColumnsKey,
+  shouldMountGitActionsPane,
+  shouldRetryLaneGithubSnapshotForceRefresh,
+} from "./LanesPage";
 import type {
   GitHubPrListItem,
   LaneSummary,
@@ -93,6 +98,34 @@ function makeGitHubPr(overrides: Partial<GitHubPrListItem> = {}): GitHubPrListIt
     ...overrides,
   };
 }
+
+describe("lane GitHub snapshot force refresh", () => {
+  it("retries after a transient forced refresh failure for the same project", () => {
+    expect(shouldRetryLaneGithubSnapshotForceRefresh({
+      currentProjectRoot: "/project",
+      markedProjectRoot: "/project",
+      refreshSucceeded: false,
+      startedProjectRoot: "/project",
+    })).toBe(true);
+    expect(shouldRetryLaneGithubSnapshotForceRefresh({
+      currentProjectRoot: "/project",
+      markedProjectRoot: "/project",
+      refreshSucceeded: true,
+      startedProjectRoot: "/project",
+    })).toBe(false);
+  });
+});
+
+describe("lane PR badge routes", () => {
+  it("opens an unmapped lane PR badge in the GitHub tab by coordinates", () => {
+    expect(lanePrTagRoutePath({
+      linkedPrId: null,
+      githubPrNumber: 224,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    })).toBe("/prs?tab=github&pr=224&repoOwner=arul28&repoName=ADE");
+  });
+});
 
 describe("resolveCreateLaneRequest", () => {
   it("creates an independent lane from the selected primary branch", () => {

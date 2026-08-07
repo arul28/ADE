@@ -72,9 +72,11 @@ const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const TerminalsPage = workRoute.Component;
 const preloadTerminalsPage = workRoute.preload;
-const PRsPage = React.lazy(() =>
+const prsRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
 );
+const PRsPage = prsRoute.Component;
+const preloadPrsPage = prsRoute.preload;
 const ReviewPage = React.lazy(() =>
   import("../review/ReviewPage").then((m) => ({ default: m.ReviewPage }))
 );
@@ -753,6 +755,7 @@ function ProjectTabHost() {
       void preloadTerminalsPage().catch(() => undefined);
       void preloadLanesPage().catch(() => undefined);
       void preloadFilesTab().catch(() => undefined);
+      void preloadPrsPage().catch(() => undefined);
       void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {

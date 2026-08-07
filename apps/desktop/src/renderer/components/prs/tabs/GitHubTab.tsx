@@ -7,13 +7,15 @@ import type {
   LaneSummary,
   MergeMethod,
   PrEventPayload,
-  PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import type { UnmappedAffordance } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
-import type { PrDetailRouteTab } from "../prsRouteState";
+import {
+  type PrDetailRouteTab,
+  type PrRouteSelectionTarget,
+} from "../prsRouteState";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
 import {
   GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT,
@@ -22,9 +24,9 @@ import {
   GITHUB_TAB_HOT_REFRESH_DELAY_MS,
   GITHUB_TAB_REVISIT_CACHE_TTL_MS,
   GITHUB_TAB_SNAPSHOT_FRESH_MS,
-  LINKED_HYDRATION_LIMIT,
   buildSyntheticUnmappedPr,
-  bucketForState,
+  githubCoordKey,
+  selectionTargetForItem,
   formatGitHubSnapshotError,
   initialGitHubFilterSelections,
   matchesFilter,
@@ -56,13 +58,17 @@ import {
 import { GitHubTabView } from "./GitHubTabView";
 import { branchNameFromRef } from "./githubPrBranch";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
+import { useGitHubTabSelection } from "./useGitHubTabSelection";
+import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 
 export type GitHubTabProps = {
   lanes: LaneSummary[];
   mergeMethod: MergeMethod;
   selectedPrId: string | null;
-  onSelectPr: (id: string | null) => void;
+  /** Coordinate fallback for deep links whose ADE row is not local yet. */
+  selectedPrTarget?: PrRouteSelectionTarget | null;
+  onSelectPr: (id: string | null, target: PrRouteSelectionTarget | null) => void;
   selectedDetailTab?: PrDetailRouteTab | null;
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
@@ -84,6 +90,7 @@ export function GitHubTab({
   lanes,
   mergeMethod,
   selectedPrId,
+  selectedPrTarget = null,
   onSelectPr,
   selectedDetailTab,
   onDetailTabChange,
@@ -142,7 +149,7 @@ export function GitHubTab({
   );
   const createLanePreflightRequestIdRef = React.useRef(0);
   const createLanePreflightRequestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
-  const lastHandledSelectedRef = React.useRef<{ prId: string | null; bucket: GitHubFilter | null } | undefined>(undefined);
+  const lastHandledSelectedRef = React.useRef<{ key: string | null; bucket: GitHubFilter | null } | undefined>(undefined);
   const lastSeenRowByCoordRef = React.useRef<Map<string, GitHubPrListItem>>(new Map());
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
   const pendingRestoredSelectedItemIdRef = React.useRef<string | null>(null);
@@ -155,7 +162,6 @@ export function GitHubTab({
   const loadingSnapshotRequestCountRef = React.useRef(0);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const missingLinkedPrHydrationRef = React.useRef<string | null>(null);
-  const visibleLinkedHydrationKeyRef = React.useRef<string>("");
   const filterRef = React.useRef(filter);
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
   const projectRootRef = React.useRef(projectRoot);
@@ -171,9 +177,16 @@ export function GitHubTab({
 
   /* Build a lookup from linkedPrId -> PrSummary for CI/review indicators */
   const prsByIdMap = React.useMemo(() => {
-    const map = new Map<string, PrSummary>();
+    const map = new Map<string, PrWithConflicts>();
     for (const pr of prs) {
       map.set(pr.id, pr);
+    }
+    return map;
+  }, [prs]);
+  const prsByCoordinateMap = React.useMemo(() => {
+    const map = new Map<string, PrWithConflicts>();
+    for (const pr of prs) {
+      map.set(githubCoordKey(pr), pr);
     }
     return map;
   }, [prs]);
@@ -382,7 +395,6 @@ export function GitHubTab({
   const {
     displayedItems,
     filteredItems,
-    hydrationItems,
     listRows,
     filterCounts,
     canLoadOlderHistory,
@@ -394,96 +406,71 @@ export function GitHubTab({
     renderedHydrationItems,
     lastSeenRowByCoordRef,
     currentHistoryPageLimit,
+    prsByCoordinateMap,
+  });
+  useGitHubTargetHistory({
+    displayedItems,
+    loadSnapshot,
+    selectedPrId,
+    selectedPrTarget,
+    snapshot,
   });
   const showListLoadingIndicator = loading || syncing || loadingFilter !== null;
 
-  React.useEffect(() => {
-    if (!snapshot) return;
+  const { selectedItem, selectedTargetResolved } = useGitHubTabSelection({
+    displayedItems,
+    filteredItems,
+    filter,
+    onSelectPr,
+    selectedItemId,
+    selectedPrId,
+    selectedPrTarget,
+    snapshot,
+    setFilter,
+    setSelectedItemId,
+    setSelectedItemIdsByFilter,
+    lastHandledSelectedRef,
+    pendingSelectedItemIdRef,
+    pendingRestoredSelectedItemIdRef,
+    hasInitializedSelectionRef,
+  });
+  const selectedBucketMismatch = Boolean(
+    selectedItem
+    && selectedTargetResolved
+    && !matchesFilter(selectedItem, filter),
+  );
 
-    // Track the selected PR together with its current effective bucket, so a
-    // state transition (open -> merged) is followed even though `selectedPrId`
-    // is unchanged. A manual filter change leaves the selected PR's bucket
-    // untouched, so it never re-triggers the follow below.
-    const linkedItem = selectedPrId
-      ? displayedItems.find((item) => item.linkedPrId === selectedPrId) ?? null
-      : null;
-    const currentBucket = linkedItem ? bucketForState(linkedItem.state) : null;
-    const nextPrId = selectedPrId ?? null;
+  const handleHydrationItemsChange = React.useCallback((items: GitHubPrListItem[]) => {
+    setRenderedHydrationItems((prev) => {
+      if (prev.length === items.length && prev.every((item, index) => item.id === items[index]?.id)) return prev;
+      return items;
+    });
+  }, []);
 
-    const last = lastHandledSelectedRef.current;
-    if (last && last.prId === nextPrId && last.bucket === currentBucket) return;
-    const isNewSelection = !last || last.prId !== nextPrId;
-    const bucketChanged = !isNewSelection && last!.bucket !== currentBucket;
-    lastHandledSelectedRef.current = { prId: nextPrId, bucket: currentBucket };
-
-    if (!selectedPrId || !linkedItem) {
-      pendingSelectedItemIdRef.current = null;
-      return;
+  const selectedLocalPr = React.useMemo((): PrWithConflicts | null => {
+    if (!selectedItem) return null;
+    if (selectedItem.linkedPrId) {
+      const linked = prsByIdMap.get(selectedItem.linkedPrId);
+      if (linked) return linked;
     }
+    // Prefer the local row by GitHub coordinates when a stale snapshot has lost
+    // its link (or carries a foreign machine's link id).
+    return prsByCoordinateMap.get(githubCoordKey(selectedItem)) ?? null;
+  }, [prsByCoordinateMap, prsByIdMap, selectedItem]);
 
-    pendingSelectedItemIdRef.current = linkedItem.id;
-    const linkedFilter = bucketForState(linkedItem.state);
-    setSelectedItemIdsByFilter((prev) => ({ ...prev, [linkedFilter]: linkedItem.id }));
-    // Follow the selection into its bucket on a fresh selection, or when the
-    // already-selected PR transitions to a new bucket (so a merge/close doesn't
-    // strand the user on a now-empty list). Never on a manual filter switch.
-    if ((isNewSelection || bucketChanged) && !matchesFilter(linkedItem, filter)) {
-      setFilter(linkedFilter);
-    }
-    setSelectedItemId(linkedItem.id);
-    hasInitializedSelectionRef.current = true;
-  }, [displayedItems, snapshot, selectedPrId, filter]);
+  const selectedLinkedPr = React.useMemo(
+    (): PrWithConflicts | null => selectedLocalPr
+      ? { ...selectedLocalPr, stack: selectedItem?.stack ?? selectedLocalPr.stack ?? null }
+      : null,
+    [selectedItem?.stack, selectedLocalPr],
+  );
 
-  React.useEffect(() => {
-    if (!snapshot) return;
-    if (pendingSelectedItemIdRef.current) {
-      if (selectedItemId === pendingSelectedItemIdRef.current) {
-        pendingSelectedItemIdRef.current = null;
-      } else {
-        return;
-      }
-    }
-
-    if (selectedItemId && filteredItems.some((item) => item.id === selectedItemId)) return;
-    if (!hasInitializedSelectionRef.current) {
-      const next = filteredItems[0] ?? null;
-      if (next) {
-        hasInitializedSelectionRef.current = true;
-        setSelectedItemId(next.id);
-        setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: next.id }));
-        onSelectPr(next.linkedPrId ?? null);
-      }
-    }
-  }, [snapshot, filter, filteredItems, selectedItemId, onSelectPr]);
-
-  // The row backing the detail pane. Unlike the list highlight, it survives a
-  // state transition that moves the row out of the active filter's bucket, so
-  // the pane never blanks mid-transition. Cleared only when nothing is selected
-  // (`selectedItemId` null) — which is what a manual filter switch to an empty
-  // bucket produces. Falls back to the linked coordinate from PrsContext when
-  // the row itself has momentarily dropped from the list.
-  const selectedItem = React.useMemo((): GitHubPrListItem | null => {
-    if (!selectedItemId) return null;
-    const byId = displayedItems.find((candidate) => candidate.id === selectedItemId) ?? null;
-    if (byId) return byId;
-    if (selectedPrId) return displayedItems.find((candidate) => candidate.linkedPrId === selectedPrId) ?? null;
-    return null;
-  }, [displayedItems, selectedItemId, selectedPrId]);
-
-  // Whether the selected PR still belongs in the active filter. When false the
-  // detail pane shows a slim "now Merged/Closed" banner instead of blanking.
-  const selectedBucketMismatch = Boolean(selectedItem && !matchesFilter(selectedItem, filter));
-
-  React.useEffect(() => {
-    const pending = pendingRestoredSelectedItemIdRef.current;
-    if (!pending || !selectedItem || selectedItem.id !== pending) return;
-    // Restore selection only once the item is actually in the active filter's
-    // list — matching the original filter-scoped restore semantics.
-    if (!matchesFilter(selectedItem, filter)) return;
-    pendingRestoredSelectedItemIdRef.current = null;
-    onSelectPr(selectedItem.linkedPrId ?? null);
-  }, [filter, onSelectPr, selectedItem]);
-  const missingLinkedPrId = selectedItem?.linkedPrId && !prsByIdMap.has(selectedItem.linkedPrId)
+  // A GitHub row can carry a foreign or not-yet-hydrated linkedPrId. Until the
+  // local row arrives, treat it as coordinate-backed rather than manufacturing
+  // a row-backed PR id that cannot be read from this machine.
+  const selectedIsUnmapped = Boolean(selectedItem && !selectedLocalPr);
+  const selectedMappedPrId = selectedLocalPr?.id ?? selectedItem?.linkedPrId ?? null;
+  const missingLinkedPrId = selectedItem?.linkedPrId && !selectedLocalPr
     ? selectedItem.linkedPrId
     : null;
 
@@ -497,83 +484,16 @@ export function GitHubTab({
     void onRefreshAll({ prId: missingLinkedPrId }).catch(() => {});
   }, [missingLinkedPrId, onRefreshAll]);
 
-  React.useEffect(() => {
-    const prIds = hydrationItems
-      .slice(0, LINKED_HYDRATION_LIMIT)
-      .map((item) => item.linkedPrId)
-      .filter((prId): prId is string => Boolean(prId));
-    if (prIds.length === 0) return undefined;
-    const uniquePrIds = [...new Set(prIds)];
-    const key = uniquePrIds.join(",");
-    if (visibleLinkedHydrationKeyRef.current === key) return undefined;
-    visibleLinkedHydrationKeyRef.current = key;
-    const timer = window.setTimeout(() => {
-      void onRefreshAll({ prIds: uniquePrIds }).catch(() => {});
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [hydrationItems, onRefreshAll]);
-
-  const handleHydrationItemsChange = React.useCallback((items: GitHubPrListItem[]) => {
-    setRenderedHydrationItems((prev) => {
-      if (prev.length === items.length && prev.every((item, index) => item.id === items[index]?.id)) return prev;
-      return items;
-    });
-  }, []);
-
-  const selectedLinkedPr = React.useMemo(
-    (): PrWithConflicts | null => {
-      if (!selectedItem?.linkedPrId) return null;
-      const linked = prs.find((pr) => pr.id === selectedItem.linkedPrId);
-      if (linked) {
-        return {
-          ...linked,
-          stack: selectedItem.stack ?? linked.stack ?? null,
-        };
-      }
-      const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
-      return {
-        id: selectedItem.linkedPrId,
-        laneId: selectedItem.linkedLaneId ?? "",
-        projectId: fallbackProjectId,
-        repoOwner: selectedItem.repoOwner,
-        repoName: selectedItem.repoName,
-        githubPrNumber: selectedItem.githubPrNumber,
-        githubUrl: selectedItem.githubUrl,
-        githubNodeId: null,
-        title: selectedItem.title,
-        state: selectedItem.state,
-        baseBranch: selectedItem.baseBranch ?? "",
-        headBranch: selectedItem.headBranch ?? "",
-        checksStatus: "none",
-        reviewStatus: "none",
-        additions: 0,
-        deletions: 0,
-        lastSyncedAt: null,
-        createdAt: selectedItem.createdAt,
-        updatedAt: selectedItem.updatedAt,
-        stack: selectedItem.stack ?? null,
-        conflictAnalysis: null,
-      };
-    },
-    [prs, selectedItem],
-  );
-
-  // For an unmapped selected PR (no linkedPrId) build a referentially-stable
-  // synthetic PR so it can render through the full PrDetailPane. Memoized on the
-  // stable synthetic id so the object identity (and React key) stays constant
-  // across renders while the same PR is selected.
-  const syntheticUnmappedId = selectedItem && !selectedItem.linkedPrId
+  const syntheticUnmappedId = selectedIsUnmapped && selectedItem
     ? syntheticUnmappedPrId(selectedItem)
     : null;
+  const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
   const selectedUnmappedPr = React.useMemo(
     (): PrWithConflicts | null => {
-      if (!selectedItem || selectedItem.linkedPrId) return null;
-      const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
+      if (!selectedItem || !selectedIsUnmapped) return null;
       return buildSyntheticUnmappedPr(selectedItem, fallbackProjectId);
     },
-    // syntheticUnmappedId keys identity; prs[0]?.projectId is captured at build time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [syntheticUnmappedId, selectedItem, prs],
+    [fallbackProjectId, syntheticUnmappedId, selectedItem, selectedIsUnmapped],
   );
   const selectedDisplayPr = selectedLinkedPr ?? selectedUnmappedPr;
 
@@ -704,7 +624,7 @@ export function GitHubTab({
     setSelectedItemId(item.id);
     setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: item.id }));
     pendingRestoredSelectedItemIdRef.current = null;
-    onSelectPr(item.linkedPrId ?? null);
+    onSelectPr(item.linkedPrId ?? null, selectionTargetForItem(item));
     setLinkLaneId("");
   }, [filter, onSelectPr]);
 
@@ -730,14 +650,21 @@ export function GitHubTab({
     setFilter(state);
     setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: selectedItemId, [state]: nextSelectedItemId }));
     setSelectedItemId(nextSelectedItemId);
+    // Clearing an explicit deep link via a filter switch is a deliberate
+    // empty selection. Do not let the snapshot auto-initializer immediately
+    // replace it with the first row in the new bucket.
+    if (!nextSelectedItem && (selectedPrId || selectedPrTarget)) {
+      hasInitializedSelectionRef.current = true;
+    }
     if (nextSelectedItemId && !nextSelectedItem) {
       pendingRestoredSelectedItemIdRef.current = nextSelectedItemId;
     } else {
       pendingRestoredSelectedItemIdRef.current = null;
-      onSelectPr(nextSelectedItem?.linkedPrId ?? null);
+      if (nextSelectedItem) onSelectPr(nextSelectedItem.linkedPrId ?? null, selectionTargetForItem(nextSelectedItem));
+      else onSelectPr(null, null);
     }
     setLinkLaneId("");
-  }, [displayedItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter]);
+  }, [displayedItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter, selectedPrId, selectedPrTarget]);
 
   const handleLink = React.useCallback(async () => {
     if (!selectedItem || !linkLaneId) return;
@@ -768,7 +695,7 @@ export function GitHubTab({
         closeOnGitHub: false,
         archiveLane: false,
       });
-      onSelectPr(null);
+      onSelectPr(null, selectionTargetForItem(item));
       setSelectedItemId(item.id);
       setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: item.id }));
       await Promise.all([
@@ -845,7 +772,10 @@ export function GitHubTab({
           : current);
         setSelectedItemId(createLaneItem.id);
         setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: createLaneItem.id }));
-        onSelectPr(mappedPrId);
+        onSelectPr(mappedPrId, {
+          ...selectionTargetForItem(createLaneItem),
+          prId: mappedPrId,
+        });
       }
       setCreateLaneItem(null);
       setCreateLanePreflight(null);
@@ -925,11 +855,14 @@ export function GitHubTab({
     onOpenRebaseTab,
     initialDetailTab: selectedDetailTab,
     onDetailTabChange,
-    onUnmap: selectedItem.linkedPrId ? () => handleUnlink(selectedItem) : undefined,
-    unmapBusy: Boolean(selectedItem.linkedPrId) && unlinkingPrId === selectedItem.linkedPrId,
-    unmapped: !selectedItem.linkedPrId,
-    githubCoords: selectedItem.linkedPrId ? null : selectedGithubCoords,
-    unmappedAffordance: selectedItem.linkedPrId ? null : unmappedAffordance,
+    onUnmap: !selectedIsUnmapped && selectedMappedPrId
+      ? () => handleUnlink({ ...selectedItem, linkedPrId: selectedMappedPrId })
+      : undefined,
+    unmapBusy: !selectedIsUnmapped && Boolean(selectedMappedPrId) && unlinkingPrId === selectedMappedPrId,
+    unmapped: selectedIsUnmapped,
+    provisional: Boolean(selectedPrTarget && !selectedTargetResolved),
+    githubCoords: selectedIsUnmapped ? selectedGithubCoords : null,
+    unmappedAffordance: selectedIsUnmapped && selectedTargetResolved ? unmappedAffordance : null,
   } : null;
 
   return (

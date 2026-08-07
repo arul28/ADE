@@ -323,6 +323,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       localPath: `/prs${buildPrsRouteSearch({
         activeTab: "normal",
         selectedPrId: pr.id,
+        selectedPrNumber: pr.githubPrNumber,
+        repoOwner: pr.repoOwner,
+        repoName: pr.repoName,
         selectedLaneId: laneId,
         selectedRebaseItemId: null,
       })}`,

@@ -15,9 +15,13 @@ import { SANS_FONT } from "../lanes/laneDesignTokens";
 import {
   buildPrsRouteSearch,
   parsePrsRouteState,
+  prRouteCoordinatesMatch,
+  prRouteSelectionTarget,
+  prRouteTargetsEqual,
   resolvePrsActiveTab,
   writeStoredPrsRoute,
   type PrDetailRouteTab,
+  type PrRouteSelectionTarget,
 } from "./prsRouteState";
 import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 import type { PrSummary } from "../../../shared/types";
@@ -131,6 +135,16 @@ function PRsPageInner() {
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
   const [githubHeaderChrome, setGithubHeaderChrome] = React.useState<GitHubHeaderChromeState | null>(null);
   const lastRouteLocationKeyRef = React.useRef<string | null>(null);
+  const [selectedPrTarget, setSelectedPrTarget] = React.useState<PrRouteSelectionTarget | null>(() => {
+    try {
+      return prRouteSelectionTarget(parsePrsRouteState({
+        search: window.location.search,
+        hash: window.location.hash,
+      }));
+    } catch {
+      return null;
+    }
+  });
   const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
     try {
       return parsePrsRouteState({ search: window.location.search, hash: window.location.hash }).detailTab;
@@ -162,6 +176,11 @@ function PRsPageInner() {
     if (!targeted) setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
+  const handleSelectPr = React.useCallback((id: string | null, target: PrRouteSelectionTarget | null) => {
+    setSelectedPrId(id);
+    setSelectedPrTarget(target ? { ...target, prId: id ?? target.prId } : null);
+  }, [setSelectedPrId]);
+
   const openCreatePr = React.useCallback((props?: Record<string, unknown>) => {
     setCreatePrInitialValues(createInitialValuesFromDialogProps(props));
     setCreatePrOpen(true);
@@ -179,7 +198,13 @@ function PRsPageInner() {
     if (!first) return;
     setActiveTab("normal");
     setSelectedPrId(first.id);
-  }, [handleRefresh, setActiveTab, setSelectedPrId]);
+    setSelectedPrTarget({
+      prId: first.id,
+      prNumber: first.githubPrNumber,
+      repoOwner: first.repoOwner,
+      repoName: first.repoName,
+    });
+  }, [handleRefresh, setActiveTab, setSelectedPrId, setSelectedPrTarget]);
 
   React.useEffect(() => {
     const syncFromLocation = () => {
@@ -204,16 +229,37 @@ function PRsPageInner() {
         setActiveTab(resolved.activeTab);
 
         if (!resolved.isWorkflowRoute) {
-          const hasExplicitPrSelection = Boolean(routeState.prId) || routeState.prNumber != null;
+          const routeTarget = prRouteSelectionTarget(routeState);
+          const hasExplicitPrSelection = routeTarget !== null;
           const prNumberMatch = routeState.prNumber == null
             ? null
-            : prs.find((pr) => pr.githubPrNumber === routeState.prNumber)?.id ?? null;
+            : prs.find((pr) => prRouteCoordinatesMatch(
+              {
+                prNumber: pr.githubPrNumber,
+                repoOwner: pr.repoOwner,
+                repoName: pr.repoName,
+              },
+              routeState,
+            ))?.id ?? null;
+          const localRouteId = routeState.prId && (
+            loading || prs.some((pr) => pr.id === routeState.prId)
+          )
+            ? routeState.prId
+            : null;
           if (hasExplicitPrSelection || locationChanged) {
-            setSelectedPrId(routeState.prId ?? prNumberMatch);
+            // A coordinate route is still valid without an ADE row. Keep the
+            // route target alive, but only hand a local id to PrsContext once
+            // that row is actually present.
+            setSelectedPrId(localRouteId ?? prNumberMatch);
+            setSelectedPrTarget((previous) => (
+              prRouteTargetsEqual(previous, routeTarget) ? previous : routeTarget
+            ));
           }
           if (hasExplicitPrSelection || locationChanged || routeState.detailTab) {
             setSelectedDetailTab(routeState.detailTab);
           }
+        } else {
+          setSelectedPrTarget((previous) => previous === null ? previous : null);
         }
         if (resolved.effectiveWorkflow === "rebase") {
           setSelectedRebaseItemId(routeRebaseItemId);
@@ -237,23 +283,52 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.search, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
+  }, [location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
-    const current = parsePrsRouteState({ search: location.search });
+    const current = parsePrsRouteState({ search: location.search, hash: location.hash });
+    const localSelectedPr = selectedPrId ? prs.find((pr) => pr.id === selectedPrId) ?? null : null;
+    const target = selectedPrTarget ?? (localSelectedPr ? {
+      prId: localSelectedPr.id,
+      prNumber: localSelectedPr.githubPrNumber,
+      repoOwner: localSelectedPr.repoOwner,
+      repoName: localSelectedPr.repoName,
+    } : null);
+    // A route can carry only a local id while the matching ADE row already
+    // provides coordinates. Enrich that partial target once, then serialize
+    // the single resolved target consistently.
+    const routeTarget = target && localSelectedPr ? {
+      ...target,
+      prNumber: target.prNumber ?? localSelectedPr.githubPrNumber,
+      repoOwner: target.repoOwner ?? localSelectedPr.repoOwner,
+      repoName: target.repoName ?? localSelectedPr.repoName,
+    } : target;
+    const hasPrNumber = routeTarget?.prNumber != null;
+    const hasCoordinates = Boolean(routeTarget?.repoOwner && routeTarget.repoName && hasPrNumber);
+    // Coordinate targets deliberately omit a missing local id. This keeps the
+    // route addressable on the GitHub surface instead of sending a foreign or
+    // not-yet-hydrated ADE id back through PrsContext.
+    const routePrId = selectedPrId ?? (hasCoordinates ? null : routeTarget?.prId ?? null);
     // Preserve per-PR deep-link params (eventId/threadId/commitSha) as long as
-    // the URL still points at the currently selected PR. When the PR changes,
-    // stale deep-link params for the old PR get dropped.
+    // the URL still points at the same selected PR, including coordinate-only
+    // routes. When the PR changes, stale deep-link params get dropped.
+    const sameCoordinateTarget = Boolean(
+      routeTarget?.prNumber != null
+      && current.prNumber != null
+      && prRouteCoordinatesMatch(routeTarget, current),
+    );
     const preserveDeepLinks =
-      activeTab === "normal" &&
-      selectedPrId !== null &&
-      current.prId === selectedPrId;
+      activeTab === "normal"
+      && (current.prId === routePrId || sameCoordinateTarget);
     const deepLinks = preserveDeepLinks
       ? { eventId: current.eventId, threadId: current.threadId, commitSha: current.commitSha }
       : { eventId: null, threadId: null, commitSha: null };
     const nextSearch = buildPrsRouteSearch({
       activeTab,
-      selectedPrId,
+      selectedPrId: routePrId,
+      selectedPrNumber: hasPrNumber ? routeTarget?.prNumber ?? null : null,
+      repoOwner: hasCoordinates ? routeTarget?.repoOwner ?? null : null,
+      repoName: hasCoordinates ? routeTarget?.repoName ?? null : null,
       selectedRebaseItemId,
       detailTab: activeTab === "normal" ? selectedDetailTab : null,
       ...deepLinks,
@@ -262,19 +337,24 @@ function PRsPageInner() {
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
   }, [
     activeTab,
+    prs,
     selectedPrId,
+    selectedPrTarget,
     selectedRebaseItemId,
     selectedDetailTab,
     location.pathname,
     location.search,
+    location.hash,
     navigate,
   ]);
 
   React.useEffect(() => {
     if (location.pathname !== "/prs") return;
     if (readCreatePrRouteRequest({ search: location.search, hash: window.location.hash })) return;
-    writeStoredPrsRoute(`${location.pathname}${location.search}`, projectRoot);
-  }, [location.pathname, location.search, projectRoot]);
+    const hash = location.hash ?? "";
+    const hashRoute = hash.startsWith("#/prs") ? hash.slice(1) : null;
+    writeStoredPrsRoute(hashRoute ?? `${location.pathname}${location.search}`, projectRoot);
+  }, [location.hash, location.pathname, location.search, projectRoot]);
 
   const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
@@ -489,7 +569,8 @@ function PRsPageInner() {
             lanes={visibleLanes}
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
-            onSelectPr={setSelectedPrId}
+            selectedPrTarget={selectedPrTarget}
+            onSelectPr={handleSelectPr}
             selectedDetailTab={selectedDetailTab}
             onDetailTabChange={setSelectedDetailTab}
             onRefreshAll={handleRefresh}

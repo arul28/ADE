@@ -9,6 +9,7 @@ import {
   PrDetailTimelineRails,
   buildCommitRailCommits,
   buildTimelineEvents,
+  buildTimelineVisibleEventHash,
   buildTimelineVisibleEventSearch,
 } from "./PrDetailTimelineRails";
 
@@ -77,6 +78,34 @@ describe("buildTimelineVisibleEventSearch", () => {
       prId: "pr-1",
       eventId: "comment-new",
     })).toBe("?tab=normal&prId=pr-1&eventId=comment-new&detailTab=overview");
+  });
+
+  it("keeps coordinate-only routes coordinate-based while replacing the visible event", () => {
+    const current = parsePrsRouteState({
+      search: "?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&detailTab=overview",
+    });
+
+    expect(buildTimelineVisibleEventSearch({
+      current,
+      prId: "gh:ade-dev/ade#123",
+      eventId: "comment-new",
+    })).toBe("?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&eventId=comment-new&detailTab=overview");
+  });
+
+  it("preserves a hash-based coordinate PR route when the visible event changes", () => {
+    const current = parsePrsRouteState({
+      hash: "#/prs?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&eventId=comment-old",
+    });
+    const nextSearch = buildTimelineVisibleEventSearch({
+      current,
+      prId: "gh:ade-dev/ade#123",
+      eventId: "comment-new",
+    });
+
+    expect(buildTimelineVisibleEventHash({
+      currentHash: "#/prs?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&eventId=comment-old",
+      nextSearch,
+    })).toBe("#/prs?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade&eventId=comment-new");
   });
 });
 

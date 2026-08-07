@@ -19,6 +19,7 @@ import {
   primaryButton,
 } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./githubPrBranch";
+import { prRouteCoordinatesEqual, prRouteCoordinatesKey } from "../prsRouteState";
 
 type CreateLaneFromPrBranchApi = {
   preflightCreateLaneFromPrBranch: (
@@ -50,7 +51,11 @@ export function createLaneFromPrBranchArgs(item: GitHubPrListItem): CreateLaneFr
 }
 
 export function createLaneFromPrBranchRequestKey(item: GitHubPrListItem): string {
-  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
+  return prRouteCoordinatesKey({
+    prNumber: Number(item.githubPrNumber),
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+  });
 }
 
 function preflightText(value: unknown): string | null {
@@ -132,9 +137,18 @@ export function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: LaneSum
 }
 
 function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean {
-  return left.repoOwner === right.repoOwner
-    && left.repoName === right.repoName
-    && Number(left.githubPrNumber) === Number(right.githubPrNumber);
+  return prRouteCoordinatesEqual(
+    {
+      prNumber: Number(left.githubPrNumber),
+      repoOwner: left.repoOwner,
+      repoName: left.repoName,
+    },
+    {
+      prNumber: Number(right.githubPrNumber),
+      repoOwner: right.repoOwner,
+      repoName: right.repoName,
+    },
+  );
 }
 
 export function patchSnapshotWithMappedPr(

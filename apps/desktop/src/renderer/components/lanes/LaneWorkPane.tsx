@@ -36,6 +36,9 @@ function LanePullRequestsSection({ lane, prs }: { lane: LaneSummary | null; prs:
               onClick={() => navigate(`/prs${buildPrsRouteSearch({
                 activeTab: "normal",
                 selectedPrId: pr.id,
+                selectedPrNumber: pr.githubPrNumber,
+                repoOwner: pr.repoOwner,
+                repoName: pr.repoName,
                 selectedLaneId: pr.laneId,
                 selectedRebaseItemId: null,
               })}`)}

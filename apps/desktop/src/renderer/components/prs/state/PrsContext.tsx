@@ -31,7 +31,7 @@ import type {
 import type { PrTimelineFilters } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
-import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
+import { hasExplicitPrsRouteState, parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
@@ -314,13 +314,7 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
       search: window.location.search,
       hash: window.location.hash,
     });
-    const hasExplicitRouteState = Boolean(
-      route.tab
-      || route.workflowTab
-      || route.prId
-      || route.laneId
-      || route.detailTab
-    );
+    const hasExplicitRouteState = hasExplicitPrsRouteState(route);
     if (!hasExplicitRouteState && fallback) {
       return {
         activeTab: fallback.activeTab,
@@ -753,6 +747,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       refreshPending.current = mergeRefreshCoreOptions(refreshPending.current, options);
       return;
     }
+    // The normal GitHub list has its own projected snapshot/read-through path and
+    // the runtime poller already reconciles stale rows. Do not start another
+    // fan-out refresh while the user is opening the list; workflow tabs still
+    // need the background refresh because their diagnostics are local-row based.
+    const runBackgroundGithubRefresh =
+      options.githubRefreshMode === "background" && activeTabRef.current !== "normal";
     const warmCacheAgeMs = Date.now() - warmCacheHydratedAtRef.current;
     const warmCacheUsable =
       warmCacheHydratedAtRef.current > 0
@@ -766,11 +766,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       const shouldLoadWorkflowDiagnostics =
         activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
       void applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics })
-        .then(() => options.githubRefreshMode === "background"
+        .then(() => runBackgroundGithubRefresh
           ? refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot }).catch(() => null)
           : null)
         .then(() => {
-          if (options.githubRefreshMode === "background") {
+          if (runBackgroundGithubRefresh) {
             return applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
           }
           return null;
@@ -799,7 +799,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
       warmCacheHydratedAtRef.current = Date.now();
       setRefreshErrorRetryCount(0);
-      if (options.githubRefreshMode === "background") {
+      if (runBackgroundGithubRefresh) {
         void refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot })
           .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
           .then(() => {

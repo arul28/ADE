@@ -44,6 +44,11 @@ import {
   makePreflightResult,
   snapshot,
 } from "./GitHubTab.testFixtures";
+import {
+  buildProvisionalGithubPrItem,
+  findSelectionTargetItem,
+  itemMatchesSelectionTarget,
+} from "./githubTabModel";
 
 describe("GitHubTab rows and mapping", () => {
   beforeEach(() => {
@@ -52,6 +57,37 @@ describe("GitHubTab rows and mapping", () => {
 
   afterEach(() => {
     cleanupGitHubTabTest();
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid provisional PR number %s",
+    (prNumber) => {
+      expect(buildProvisionalGithubPrItem({
+        prNumber,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      })).toBeNull();
+    },
+  );
+
+  it("does not resolve an ambiguous number-only PR route across repositories", () => {
+    const target = {
+      prId: null,
+      prNumber: 224,
+      repoOwner: null,
+      repoName: null,
+    } as const;
+    const repoItem = makeGitHubPr({ githubPrNumber: 224 });
+    const secondRepoItem = makeGitHubPr({
+      id: "repo-pr-224-other",
+      repoOwner: "other-owner",
+      repoName: "other-repo",
+      githubPrNumber: 224,
+    });
+
+    expect(itemMatchesSelectionTarget(repoItem, target)).toBe(true);
+    expect(itemMatchesSelectionTarget(secondRepoItem, target)).toBe(true);
+    expect(findSelectionTargetItem([repoItem, secondRepoItem], target)).toBeNull();
   });
 
   function renderTab(overrides: Parameters<typeof renderGitHubTab>[1] = {}) {
@@ -806,7 +842,12 @@ describe("GitHubTab rows and mapping", () => {
       });
     });
     await waitFor(() => {
-      expect(onSelectPr).toHaveBeenCalledWith("pr-created");
+      expect(onSelectPr).toHaveBeenLastCalledWith("pr-created", {
+        prId: "pr-created",
+        prNumber: 200,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      });
     });
     expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-created" });
     expect(window.ade.lanes.list).toHaveBeenCalledWith({
