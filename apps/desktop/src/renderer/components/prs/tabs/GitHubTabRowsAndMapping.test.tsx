@@ -44,7 +44,11 @@ import {
   makePreflightResult,
   snapshot,
 } from "./GitHubTab.testFixtures";
-import { buildProvisionalGithubPrItem } from "./githubTabModel";
+import {
+  buildProvisionalGithubPrItem,
+  findSelectionTargetItem,
+  itemMatchesSelectionTarget,
+} from "./githubTabModel";
 
 describe("GitHubTab rows and mapping", () => {
   beforeEach(() => {
@@ -65,6 +69,26 @@ describe("GitHubTab rows and mapping", () => {
       })).toBeNull();
     },
   );
+
+  it("does not resolve an ambiguous number-only PR route across repositories", () => {
+    const target = {
+      prId: null,
+      prNumber: 224,
+      repoOwner: null,
+      repoName: null,
+    } as const;
+    const repoItem = makeGitHubPr({ githubPrNumber: 224 });
+    const secondRepoItem = makeGitHubPr({
+      id: "repo-pr-224-other",
+      repoOwner: "other-owner",
+      repoName: "other-repo",
+      githubPrNumber: 224,
+    });
+
+    expect(itemMatchesSelectionTarget(repoItem, target)).toBe(true);
+    expect(itemMatchesSelectionTarget(secondRepoItem, target)).toBe(true);
+    expect(findSelectionTargetItem([repoItem, secondRepoItem], target)).toBeNull();
+  });
 
   function renderTab(overrides: Parameters<typeof renderGitHubTab>[1] = {}) {
     return renderGitHubTab(GitHubTab, overrides);

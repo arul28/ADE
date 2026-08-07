@@ -52,6 +52,7 @@ import {
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
   selectLanePrs,
+  lanePrTagRoutePath,
   selectVisibleLanePrRefreshIds,
   selectLaneTabPrTags,
   shouldApplyLaneIdsDeepLink,
@@ -3338,15 +3339,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   })}`)}
                   onActivate={(_event, selectedPr) => {
                     const target = selectedPr ?? lanePr;
-                    if (target.linkedPrId) {
-                      navigate(`/prs${buildPrsRouteSearch({
-                        activeTab: "normal",
-                        selectedPrId: target.linkedPrId,
-                        selectedPrNumber: target.githubPrNumber,
-                        repoOwner: target.repoOwner,
-                        repoName: target.repoName,
-                        selectedRebaseItemId: null,
-                      })}`);
+                    const prRoute = lanePrTagRoutePath(target);
+                    if (prRoute) {
+                      navigate(prRoute);
                       return;
                     }
                     if (target.githubUrl && isTrustedGitHubUrl(target.githubUrl)) {

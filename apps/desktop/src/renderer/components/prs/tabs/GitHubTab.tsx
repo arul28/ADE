@@ -13,7 +13,6 @@ import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../s
 import type { UnmappedAffordance } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import {
-  prRouteCoordinatesEqual,
   type PrDetailRouteTab,
   type PrRouteSelectionTarget,
 } from "../prsRouteState";
@@ -456,19 +455,8 @@ export function GitHubTab({
     }
     // Prefer the local row by GitHub coordinates when a stale snapshot has lost
     // its link (or carries a foreign machine's link id).
-    return prs.find((pr) => prRouteCoordinatesEqual(
-      {
-        prNumber: pr.githubPrNumber,
-        repoOwner: pr.repoOwner,
-        repoName: pr.repoName,
-      },
-      {
-        prNumber: selectedItem.githubPrNumber,
-        repoOwner: selectedItem.repoOwner,
-        repoName: selectedItem.repoName,
-      },
-    )) ?? null;
-  }, [prs, prsByIdMap, selectedItem]);
+    return prsByCoordinateMap.get(githubCoordKey(selectedItem)) ?? null;
+  }, [prsByCoordinateMap, prsByIdMap, selectedItem]);
 
   const selectedLinkedPr = React.useMemo(
     (): PrWithConflicts | null => selectedLocalPr
@@ -499,15 +487,13 @@ export function GitHubTab({
   const syntheticUnmappedId = selectedIsUnmapped && selectedItem
     ? syntheticUnmappedPrId(selectedItem)
     : null;
+  const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
   const selectedUnmappedPr = React.useMemo(
     (): PrWithConflicts | null => {
       if (!selectedItem || !selectedIsUnmapped) return null;
-      const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
       return buildSyntheticUnmappedPr(selectedItem, fallbackProjectId);
     },
-    // syntheticUnmappedId keys identity; prs[0]?.projectId is captured at build time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [syntheticUnmappedId, selectedItem, selectedIsUnmapped, prs],
+    [fallbackProjectId, syntheticUnmappedId, selectedItem, selectedIsUnmapped],
   );
   const selectedDisplayPr = selectedLinkedPr ?? selectedUnmappedPr;
 

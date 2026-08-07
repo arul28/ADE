@@ -235,7 +235,28 @@ export function itemMatchesSelectionTarget(
     target,
   );
   const idMatches = Boolean(target.prId && itemId === target.prId && coordinatesMatch);
-  return idMatches || (coordinatesMatch && target.prNumber != null);
+  if (idMatches) return true;
+  if (target.prId && itemId !== target.prId) return false;
+  if (target.prNumber == null) return false;
+
+  const hasRepoOwner = Boolean(target.repoOwner?.trim());
+  const hasRepoName = Boolean(target.repoName?.trim());
+  if (hasRepoOwner !== hasRepoName) return false;
+  if (hasRepoOwner && hasRepoName) return coordinatesMatch;
+  // A legacy number-only route is safe to resolve only against ADE's current
+  // repository list. External PR rows may share the same number.
+  return item.scope === "repo" && coordinatesMatch;
+}
+
+export function findSelectionTargetItem(
+  items: GitHubPrListItem[],
+  target: PrRouteSelectionTarget,
+): GitHubPrListItem | null {
+  const matches = items.filter((item) => itemMatchesSelectionTarget(item, target));
+  if (matches.length === 0) return null;
+  const hasCoordinates = Boolean(target.repoOwner?.trim() && target.repoName?.trim());
+  if (target.prId || hasCoordinates) return matches[0] ?? null;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export function selectionTargetKey(

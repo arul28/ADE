@@ -5,7 +5,7 @@ import {
   GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT,
   GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
   GITHUB_TAB_HISTORY_PAGE_INCREMENT,
-  itemMatchesSelectionTarget,
+  findSelectionTargetItem,
   selectionTargetKey,
 } from "./githubTabModel";
 
@@ -53,7 +53,7 @@ export function useGitHubTargetHistory({
       clearRetry();
       return;
     }
-    if (displayedItems.some((item) => itemMatchesSelectionTarget(item, selectedPrTarget))) {
+    if (findSelectionTargetItem(displayedItems, selectedPrTarget)) {
       clearRetry();
       return;
     }
@@ -109,6 +109,13 @@ export function useGitHubTargetHistory({
       }).then((loaded) => {
         if (requestRef.current?.key !== targetKey) return;
         if (!loaded?.history?.includeExternalClosed) {
+          scheduleRetry();
+          return;
+        }
+        // A failed load can resolve with the previous snapshot. If the page
+        // limit did not advance, retry on the backoff timer instead of paging
+        // the same cached response in a tight loop.
+        if (loaded.history.pageLimit < historyPageLimit) {
           scheduleRetry();
           return;
         }

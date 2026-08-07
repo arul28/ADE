@@ -4,7 +4,7 @@ import type { PrRouteSelectionTarget } from "../prsRouteState";
 import {
   buildProvisionalGithubPrItem,
   bucketForState,
-  itemMatchesSelectionTarget,
+  findSelectionTargetItem,
   matchesFilter,
   selectionTargetForItem,
   selectionTargetKey,
@@ -60,7 +60,7 @@ export function useGitHubTabSelection({
     // arrived yet. Resolve by local id first, then by GitHub coordinates (and
     // the stable synthetic id used for unmapped rows).
     const targetItem = selectedPrTarget
-      ? displayedItems.find((item) => itemMatchesSelectionTarget(item, selectedPrTarget)) ?? null
+      ? findSelectionTargetItem(displayedItems, selectedPrTarget)
       : null;
     const linkedItem = targetItem
       ?? (selectedPrId
@@ -153,7 +153,7 @@ export function useGitHubTabSelection({
   const selectedItem = React.useMemo((): GitHubPrListItem | null => {
     if (!selectedPrTarget && !selectedItemId) return null;
     if (selectedPrTarget) {
-      const byTarget = displayedItems.find((candidate) => itemMatchesSelectionTarget(candidate, selectedPrTarget)) ?? null;
+      const byTarget = findSelectionTargetItem(displayedItems, selectedPrTarget);
       if (byTarget) return byTarget;
       // An explicit coordinate target is authoritative; never reuse the prior
       // row while its snapshot/detail is still resolving.
@@ -170,7 +170,7 @@ export function useGitHubTabSelection({
   }, [displayedItems, selectedItemId, selectedPrId, selectedPrTarget]);
 
   const selectedTargetResolved = !selectedPrTarget
-    || displayedItems.some((item) => itemMatchesSelectionTarget(item, selectedPrTarget));
+    || findSelectionTargetItem(displayedItems, selectedPrTarget) !== null;
 
   React.useEffect(() => {
     const pending = pendingRestoredSelectedItemIdRef.current;

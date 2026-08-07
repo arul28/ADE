@@ -12,7 +12,7 @@ import type {
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
 import { isTerminalPrState } from "../../lib/prState";
-import { prRouteCoordinatesMatch } from "../prs/prsRouteState";
+import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteState";
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -56,6 +56,25 @@ export type LaneTabPrTag = {
   author?: string | null;
   stack?: GitHubPrStackMembership | null;
 };
+
+export function lanePrTagRoutePath(
+  target: Pick<LaneTabPrTag, "linkedPrId" | "githubPrNumber" | "repoOwner" | "repoName">,
+): string | null {
+  if (
+    !Number.isInteger(target.githubPrNumber)
+    || target.githubPrNumber <= 0
+    || !target.repoOwner.trim()
+    || !target.repoName.trim()
+  ) return null;
+  return `/prs${buildPrsRouteSearch({
+    activeTab: target.linkedPrId ? "normal" : "github",
+    selectedPrId: target.linkedPrId,
+    selectedPrNumber: target.githubPrNumber,
+    repoOwner: target.repoOwner,
+    repoName: target.repoName,
+    selectedRebaseItemId: null,
+  })}`;
+}
 
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
 export const VISIBLE_LANE_PR_REFRESH_STALE_MS = 15_000;

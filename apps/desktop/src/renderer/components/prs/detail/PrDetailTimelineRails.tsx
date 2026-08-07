@@ -126,6 +126,16 @@ export function buildTimelineVisibleEventSearch(args: {
   });
 }
 
+export function buildTimelineVisibleEventHash(args: {
+  currentHash: string;
+  nextSearch: string;
+}): string | null {
+  if (!args.currentHash.startsWith("#/prs")) return null;
+  const queryIndex = args.currentHash.indexOf("?");
+  const routePrefix = queryIndex >= 0 ? args.currentHash.slice(0, queryIndex) : args.currentHash;
+  return `${routePrefix}${args.nextSearch}`;
+}
+
 type Props = {
   pr: PrWithConflicts;
   detail: PrDetail | null;
@@ -846,8 +856,18 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           );
         if (current.prId !== pr.id && !selectedByCoordinates) return;
         const nextSearch = buildTimelineVisibleEventSearch({ current, prId: pr.id, eventId });
-        if (nextSearch === locationSearchRef.current) return;
-        void navigate({ pathname: locationPathnameRef.current, search: nextSearch }, { replace: true });
+        const nextHash = buildTimelineVisibleEventHash({
+          currentHash: locationHashRef.current,
+          nextSearch,
+        });
+        if (nextHash
+          ? nextHash === locationHashRef.current
+          : nextSearch === locationSearchRef.current) return;
+        void navigate({
+          pathname: locationPathnameRef.current,
+          search: nextHash ? locationSearchRef.current : nextSearch,
+          ...(nextHash ? { hash: nextHash } : {}),
+        }, { replace: true });
       },
       [navigate, pr.githubPrNumber, pr.id, pr.repoName, pr.repoOwner],
     );

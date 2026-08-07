@@ -4,6 +4,7 @@ import {
   getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
+  lanePrTagRoutePath,
   lanePrMatchesCurrentBranch,
   lanePrRole,
   planLaneDeleteBatches,
@@ -112,6 +113,17 @@ describe("lane GitHub snapshot force refresh", () => {
       refreshSucceeded: true,
       startedProjectRoot: "/project",
     })).toBe(false);
+  });
+});
+
+describe("lane PR badge routes", () => {
+  it("opens an unmapped lane PR badge in the GitHub tab by coordinates", () => {
+    expect(lanePrTagRoutePath({
+      linkedPrId: null,
+      githubPrNumber: 224,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    })).toBe("/prs?tab=github&pr=224&repoOwner=arul28&repoName=ADE");
   });
 });
 

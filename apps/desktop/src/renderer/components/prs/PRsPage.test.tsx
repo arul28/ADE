@@ -2,9 +2,13 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { PrSummary } from "../../../shared/types";
+
+const navigateMock = vi.hoisted(() => vi.fn());
+const locationMock = vi.hoisted(() => ({ pathname: "/prs", search: "", hash: "" }));
+const githubTabProps = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
 // Mock the PRs context hook so we can drive { error, prs, loading } directly.
 const usePrsMock = vi.fn();
@@ -15,7 +19,10 @@ vi.mock("./state/PrsContext", () => ({
 
 // Stub the heavy tab subtrees: we only care about the page-level render branch.
 vi.mock("./tabs/GitHubTab", () => ({
-  GitHubTab: () => <div data-testid="github-tab" />,
+  GitHubTab: (props: Record<string, unknown>) => {
+    githubTabProps.current = props;
+    return <div data-testid="github-tab" />;
+  },
 }));
 vi.mock("./tabs/WorkflowsTab", () => ({
   WorkflowsTab: () => <div data-testid="workflows-tab" />,
@@ -26,8 +33,8 @@ vi.mock("./CreatePrModal", () => ({
 
 // Router + store + dialog bus stubs.
 vi.mock("react-router-dom", () => ({
-  useNavigate: () => vi.fn(),
-  useLocation: () => ({ pathname: "/prs", search: "" }),
+  useNavigate: () => navigateMock,
+  useLocation: () => locationMock,
 }));
 vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: any) => unknown) =>
@@ -49,6 +56,9 @@ function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
     id: "pr-1",
     title: "Cached PR",
     githubPrNumber: 42,
+    repoOwner: "ade-dev",
+    repoName: "ade",
+    ...overrides,
   } as unknown as PrSummary;
 }
 
@@ -74,6 +84,12 @@ function baseValue(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
   cleanup();
   usePrsMock.mockReset();
+  navigateMock.mockReset();
+  githubTabProps.current = null;
+  locationMock.pathname = "/prs";
+  locationMock.search = "";
+  locationMock.hash = "";
+  window.history.replaceState(null, "", "/");
 });
 
 describe("PRsPage error gating", () => {
@@ -104,5 +120,49 @@ describe("PRsPage error gating", () => {
 
     fireEvent.click(retry);
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a coordinate-only route with the matching local PR", async () => {
+    const routeSearch = "?tab=normal&pr=42&repoOwner=ade-dev&repoName=ade";
+    locationMock.search = routeSearch;
+    window.history.replaceState(null, "", `/prs${routeSearch}`);
+    const setSelectedPrId = vi.fn();
+    usePrsMock.mockReturnValue(baseValue({
+      prs: [makePr({ id: "local-pr" })],
+      setSelectedPrId,
+    }));
+
+    render(<PRsPage />);
+
+    await waitFor(() => {
+      expect(setSelectedPrId).toHaveBeenCalledWith("local-pr");
+    });
+    expect(githubTabProps.current?.selectedPrTarget).toEqual({
+      prId: null,
+      prNumber: 42,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+    });
+  });
+
+  it("clears a PR target when the route switches to workflows", async () => {
+    const prRouteSearch = "?tab=normal&pr=42&repoOwner=ade-dev&repoName=ade";
+    locationMock.search = prRouteSearch;
+    window.history.replaceState(null, "", `/prs${prRouteSearch}`);
+    usePrsMock.mockReturnValue(baseValue({ prs: [makePr()] }));
+
+    const { rerender } = render(<PRsPage />);
+    await waitFor(() => {
+      expect(githubTabProps.current?.selectedPrTarget).not.toBeNull();
+    });
+
+    const workflowSearch = "?tab=workflows&workflow=integration";
+    locationMock.search = workflowSearch;
+    window.history.replaceState(null, "", `/prs${workflowSearch}`);
+    rerender(<PRsPage />);
+
+    await waitFor(() => {
+      expect(githubTabProps.current?.selectedPrTarget).toBeNull();
+    });
   });
 });

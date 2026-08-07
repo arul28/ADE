@@ -294,19 +294,28 @@ function PRsPageInner() {
       repoOwner: localSelectedPr.repoOwner,
       repoName: localSelectedPr.repoName,
     } : null);
-    const hasPrNumber = target?.prNumber != null;
-    const hasCoordinates = Boolean(target?.repoOwner && target.repoName && hasPrNumber);
+    // A route can carry only a local id while the matching ADE row already
+    // provides coordinates. Enrich that partial target once, then serialize
+    // the single resolved target consistently.
+    const routeTarget = target && localSelectedPr ? {
+      ...target,
+      prNumber: target.prNumber ?? localSelectedPr.githubPrNumber,
+      repoOwner: target.repoOwner ?? localSelectedPr.repoOwner,
+      repoName: target.repoName ?? localSelectedPr.repoName,
+    } : target;
+    const hasPrNumber = routeTarget?.prNumber != null;
+    const hasCoordinates = Boolean(routeTarget?.repoOwner && routeTarget.repoName && hasPrNumber);
     // Coordinate targets deliberately omit a missing local id. This keeps the
     // route addressable on the GitHub surface instead of sending a foreign or
     // not-yet-hydrated ADE id back through PrsContext.
-    const routePrId = selectedPrId ?? (hasCoordinates ? null : target?.prId ?? null);
+    const routePrId = selectedPrId ?? (hasCoordinates ? null : routeTarget?.prId ?? null);
     // Preserve per-PR deep-link params (eventId/threadId/commitSha) as long as
     // the URL still points at the same selected PR, including coordinate-only
     // routes. When the PR changes, stale deep-link params get dropped.
     const sameCoordinateTarget = Boolean(
-      target?.prNumber != null
+      routeTarget?.prNumber != null
       && current.prNumber != null
-      && prRouteCoordinatesMatch(target, current),
+      && prRouteCoordinatesMatch(routeTarget, current),
     );
     const preserveDeepLinks =
       activeTab === "normal"
@@ -317,9 +326,9 @@ function PRsPageInner() {
     const nextSearch = buildPrsRouteSearch({
       activeTab,
       selectedPrId: routePrId,
-      selectedPrNumber: hasPrNumber ? target?.prNumber : localSelectedPr?.githubPrNumber ?? null,
-      repoOwner: hasCoordinates ? target?.repoOwner : localSelectedPr?.repoOwner ?? null,
-      repoName: hasCoordinates ? target?.repoName : localSelectedPr?.repoName ?? null,
+      selectedPrNumber: hasPrNumber ? routeTarget?.prNumber ?? null : null,
+      repoOwner: hasCoordinates ? routeTarget?.repoOwner ?? null : null,
+      repoName: hasCoordinates ? routeTarget?.repoName ?? null : null,
       selectedRebaseItemId,
       detailTab: activeTab === "normal" ? selectedDetailTab : null,
       ...deepLinks,
