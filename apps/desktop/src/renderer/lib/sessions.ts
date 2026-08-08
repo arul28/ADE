@@ -59,6 +59,7 @@ export function chatToolTypeForProvider(provider: AgentChatProvider | string | n
     case "codex": return "codex-chat";
     case "cursor": return "cursor";
     case "droid": return "droid-chat";
+    case "pi": return "pi-chat";
     default: return "opencode-chat";
   }
 }
@@ -96,6 +97,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
+  if (toolType === "pi-chat") return "Pi chat";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "cursor-cli") return "Cursor CLI session";
   if (toolType === "droid") return "Droid CLI session";
@@ -167,6 +169,7 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   "cursor-cli": "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
   aider: "Aider",
   continue: "Continue",
 };
@@ -176,6 +179,7 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["claude", "Claude"],
   ["codex", "Codex"],
   ["opencode", "OpenCode"],
+  ["pi", "Pi"],
 ];
 
 /** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */

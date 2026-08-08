@@ -220,6 +220,10 @@ export function deriveConfiguredModelIds(
   }
 
   addAvailableModelIdsByPrefix(ids, status.availableModelIds, "opencode/");
+  for (const rawId of status.piInstallation?.availableModelIds ?? []) {
+    const id = String(rawId ?? "").trim();
+    if (id.startsWith("pi/")) ids.add(id as ModelId);
+  }
 
   const registryOrdered = MODEL_REGISTRY
     .filter((model) => !model.deprecated && ids.has(model.id))

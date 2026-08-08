@@ -1,6 +1,6 @@
 import type { AgentChatEvent } from "./types";
 
-export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid";
+export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
@@ -23,6 +23,7 @@ const PROVIDER_TINTS: Record<ContextCompactProvider, { ring: string; border: str
   opencode: { ring: "ring-sky-400/25", border: "border-sky-400/30" },
   cursor: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   droid: { ring: "ring-orange-400/25", border: "border-orange-400/30" },
+  pi: { ring: "ring-orange-500/25", border: "border-orange-500/30" },
 };
 
 export function isContextCompactionChatEvent(

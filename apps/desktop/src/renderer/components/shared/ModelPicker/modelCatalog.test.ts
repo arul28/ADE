@@ -13,6 +13,7 @@ import {
   runtimeCatalogProviderIsFresh,
 } from "./runtimeCatalogCache";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
+import { createDynamicPiModelDescriptor } from "../../../../shared/modelRegistry";
 
 describe("mergeSelectorModels", () => {
   beforeEach(() => {
@@ -38,6 +39,62 @@ describe("mergeSelectorModels", () => {
     const model = merged.find((m) => m.id === "opencode/anthropic/claude-sonnet-5");
     expect(model).toBeDefined();
     expect(model?.openCodeProviderId).toBe("anthropic");
+  });
+
+  it("keeps Pi-routed models in their own provider group with provider metadata intact", () => {
+    const descriptor = createDynamicPiModelDescriptor("openai-codex", "gpt-5.4", {
+      profileId: "default",
+      displayName: "GPT-5.4",
+    });
+    const merged = mergeSelectorModels([descriptor.id], undefined, undefined, "available-only");
+    const model = merged.find((entry) => entry.id === descriptor.id);
+    expect(model).toBeDefined();
+    expect(model?.providerRoute).toBe("pi-sdk");
+    expect(model?.piProviderId).toBe("openai-codex");
+    expect(model?.family).toBe("openai");
+  });
+
+  it("keeps Pi profile and upstream provider context readable in catalog subsections", () => {
+    const descriptor = createDynamicPiModelDescriptor("openai-codex", "gpt-5.4", {
+      profileId: "team",
+      displayName: "GPT-5.4",
+    });
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: new Date().toISOString(),
+      groups: [{
+        key: "pi",
+        displayName: "Pi",
+        providers: [{
+          key: "openai-codex",
+          displayName: "OpenAI Codex",
+          badgeColor: "#F97316",
+          modelCount: 1,
+          subsections: [{
+            key: "__piprov__:team:openai-codex",
+            label: "OpenAI Codex · team",
+            models: [{
+              id: descriptor.id,
+              runtimeModelId: "openai-codex/gpt-5.4",
+              provider: "pi",
+              providerKey: "openai-codex",
+              groupKey: "pi",
+              displayName: "GPT-5.4",
+              isDefault: true,
+              isAvailable: true,
+              supportsReasoning: true,
+              supportsTools: true,
+            }],
+          }],
+        }],
+      }],
+    };
+
+    const result = descriptorsFromAgentChatModelCatalog(catalog);
+    expect(result.models[0]).toMatchObject({
+      family: "pi",
+      subProvider: "OpenAI Codex · team",
+      subProviderKey: "__piprov__:team:openai-codex",
+    });
   });
 
   it("does not change the family of non-OpenCode models", () => {

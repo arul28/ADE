@@ -322,10 +322,13 @@ vi.mock("../../utils/codexComputerUse", () => ({
 import {
   createPtyService,
   ensureNodePtySpawnHelperExecutable,
+  isPiExecutableCommand,
   materializeRuntimeCliLaunch,
+  piForkParentIdFromCommand,
   PTY_AI_TITLE_DEBOUNCE_MS,
   PTY_AI_TITLE_TIMEOUT_MS,
   EARLY_CLI_AI_TITLE_DELAY_MS,
+  selectPiStorageSessionCandidate,
 } from "./ptyService";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 
@@ -739,6 +742,48 @@ describe("ptyService", () => {
     expect(linux.command).toBe("/bin/bash");
     expect(linux.env?.ADE_AGENT_SKILLS_DIRS).toMatch(/^\/repo\/lane\/\.cursor\/skills:/);
     expect(linux.env?.ADE_AGENT_SKILLS_DIRS).not.toContain(";");
+  });
+
+  it("recognizes Pi executables across Windows launch forms", () => {
+    expect(isPiExecutableCommand("pi")).toBe(true);
+    expect(isPiExecutableCommand("pi.exe")).toBe(true);
+    expect(isPiExecutableCommand("pi.cmd")).toBe(true);
+    expect(isPiExecutableCommand("C:\\Program Files\\Pi\\pi.bat")).toBe(true);
+    expect(isPiExecutableCommand("pi-wrapper.exe")).toBe(false);
+  });
+
+  describe("Pi native session ownership selection", () => {
+    it("skips a recent pre-existing session file and selects only the new header", () => {
+      const oldFile = "/tmp/pi-sessions/2026-08-08T00-00-00-000Z-old.jsonl";
+      const newFile = "/tmp/pi-sessions/2026-08-08T00-00-01-000Z-new.jsonl";
+      const selected = selectPiStorageSessionCandidate({
+        startedAt: "2026-08-08T00:00:01.100Z",
+        maxStartDeltaMs: 10_000,
+        candidates: [
+          { id: "old", sourcePath: oldFile, createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
+          { id: "new", sourcePath: newFile, createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
+        ],
+        excludedIds: new Set(["old"]),
+        excludedFiles: new Set([oldFile]),
+      });
+
+      expect(selected).toEqual({ id: "new", filePath: newFile });
+    });
+
+    it("never upgrades a fork to its parent session", () => {
+      const parentId = "parent-session";
+      const childId = "child-session";
+      expect(piForkParentIdFromCommand(`pi --fork ${parentId}`)).toBe(parentId);
+      expect(selectPiStorageSessionCandidate({
+        startedAt: "2026-08-08T00:00:01.100Z",
+        maxStartDeltaMs: 10_000,
+        candidates: [
+          { id: parentId, sourcePath: "/tmp/pi-sessions/parent.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
+          { id: childId, sourcePath: "/tmp/pi-sessions/child.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
+        ],
+        excludedIds: new Set([parentId]),
+      })).toEqual({ id: childId, filePath: "/tmp/pi-sessions/child.jsonl" });
+    });
   });
 
   describe("resource attribution roots", () => {

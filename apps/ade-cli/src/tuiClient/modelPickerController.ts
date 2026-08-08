@@ -21,6 +21,7 @@ export function buildModelPickerLayoutInput(args: {
   modelState: Pick<AdeCodeModelState, "modelId" | "reasoningEffort" | "interfaceMode">;
   aiStatus: AiSettingsStatus | null;
   interfaceMode?: AdeCodeInterfaceMode;
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
 }): BuildLayoutInput {
   return {
     models: args.models,
@@ -34,6 +35,7 @@ export function buildModelPickerLayoutInput(args: {
     settingsRows: args.picker.settingsRows ?? [],
     footerFocus: args.picker.footerFocus ?? null,
     laneLabel: args.picker.laneLabel ?? null,
+    refreshingProvider: args.refreshingProvider ?? args.picker.refreshingProvider ?? null,
     query: args.picker.query,
     selection: args.picker.selection,
     providerTabKey: args.picker.providerTabKey ?? null,

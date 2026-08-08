@@ -50,6 +50,7 @@ const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 function providerLabel(provider?: AgentChatProvider | null): string {

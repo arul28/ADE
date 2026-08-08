@@ -117,7 +117,7 @@ function isTerminalChromeLine(raw: string): boolean {
   if (/\bClaude Codev?\d/i.test(line) || /^Claude Code\b/i.test(line)) return true;
   if (/\b(?:for shortcuts|for agents|bypass permissions|auto mode on)\b/i.test(line)) return true;
   if (/^Resume this session with:/i.test(line)) return true;
-  if (/^(?:claude\s+--resume|codex\s+resume|cursor-agent\s+--resume|droid\s+--resume|opencode\s+--(?:continue|session))\b/i.test(line)) return true;
+  if (/^(?:claude\s+--resume|codex\s+resume|cursor-agent\s+--resume|droid\s+--resume|opencode\s+--(?:continue|session)|pi\s+--(?:continue|session))\b/i.test(line)) return true;
   if (/^\[?esc\]?\s+close\b/i.test(line)) return true;
   return false;
 }

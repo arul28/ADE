@@ -1,6 +1,6 @@
 import { scoreModelPickerSearch } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelPickerSearch";
 import { sortModelItems } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelOrdering";
-import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
+import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, AiRuntimeConnectionStatus } from "../../../../../desktop/src/shared/types/config";
 import {
   getModelById,
@@ -27,6 +27,7 @@ const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
   "droid",
   "cursor",
   "opencode",
+  "pi",
   "ollama",
   "lmstudio",
 ];
@@ -39,6 +40,7 @@ function openCodeProviderLabel(providerId: string): string {
 }
 
 function providerSignInHint(provider: AdeCodeProvider): string {
+  if (provider === "pi") return "Open Pi, then run /login";
   return `/login ${provider}`;
 }
 
@@ -47,6 +49,7 @@ function providerModelsCount(status: AiSettingsStatus | null | undefined, provid
   if (provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid") {
     return status.models?.[provider]?.length ?? 0;
   }
+  if (provider === "pi") return status.piInstallation?.availableModelIds.length ?? 0;
   const matchingRuntime = Object.values(status.runtimeConnections ?? {}).filter((connection) => {
     const key = String(connection.provider ?? "").toLowerCase();
     return key === provider || key.includes(provider);
@@ -69,6 +72,7 @@ function runtimeReady(connection: AiRuntimeConnectionStatus | null | undefined):
 export function modelPickerProviderAuthStatus(
   status: AiSettingsStatus | null | undefined,
   provider: AdeCodeProvider,
+  interfaceMode: AdeCodeInterfaceMode = "chat",
 ): ModelPickerAuthStatus {
   if (!status) return "unknown";
   if (provider === "claude") {
@@ -92,6 +96,15 @@ export function modelPickerProviderAuthStatus(
     }
     return "unavailable";
   }
+  if (provider === "pi") {
+    const connection = status.providerConnections?.pi;
+    const sdkAvailable = status.piInstallation?.sdkAvailable === true;
+    const cliAvailable = status.piInstallation?.cliAvailable === true;
+    const runtimeUsable = sdkAvailable || (interfaceMode === "cli" && cliAvailable);
+    if (runtimeUsable && (connection?.runtimeAvailable || connection?.authAvailable || (status.piInstallation?.availableModelIds.length ?? 0) > 0)) return "ready";
+    if (connection || status.piInstallation) return "unavailable";
+    return "unknown";
+  }
   if (provider === "opencode") {
     if ((status.opencodeProviders ?? []).some((entry) => entry.connected) || status.opencodeBinaryInstalled === true) return "ready";
     if (status.opencodeBinaryInstalled === false || status.opencodeInventoryError) return "unavailable";
@@ -112,7 +125,7 @@ export function modelPickerProviderAuthStatus(
 
 function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): AdeCodeProvider {
   const normalized = groupKey.trim().toLowerCase();
-  if (normalized === "claude" || normalized === "codex" || normalized === "opencode" || normalized === "cursor" || normalized === "droid") {
+  if (normalized === "claude" || normalized === "codex" || normalized === "opencode" || normalized === "cursor" || normalized === "droid" || normalized === "pi") {
     return normalized;
   }
   if (normalized === "ollama" || normalized === "lmstudio") return normalized;
@@ -133,6 +146,7 @@ function entriesFromCatalog(
   favoritesSet: Set<string>,
   aiStatus?: AiSettingsStatus | null,
   activeReasoningEffort?: string | null,
+  interfaceMode: AdeCodeInterfaceMode = "chat",
 ): ModelPickerEntry[] {
   const entries: ModelPickerEntry[] = [];
   const seen = new Set<string>();
@@ -143,13 +157,17 @@ function entriesFromCatalog(
           if (seen.has(model.id)) continue;
           seen.add(model.id);
           const family = providerFromCatalogGroup(String(model.groupKey || group.key), model.family);
-          const authStatus = modelPickerProviderAuthStatus(aiStatus, family);
-          const catalogSubProvider = family === "cursor" || family === "droid"
+          const authStatus = modelPickerProviderAuthStatus(aiStatus, family, interfaceMode);
+          const catalogSubProvider = family === "pi"
+            ? subsection.label || model.providerName || provider.displayName || providerLabel(family)
+            : family === "cursor" || family === "droid"
             ? subsection.label || model.providerName || provider.displayName || undefined
             : family === "claude" || family === "codex"
               ? providerLabel(family)
               : model.providerName || provider.displayName || subsection.label || undefined;
-          const catalogSubProviderKey = family === "cursor" || family === "droid"
+          const catalogSubProviderKey = family === "pi"
+            ? subsection.key || model.providerId || provider.key || family
+            : family === "cursor" || family === "droid"
             ? subsection.key || model.providerId || provider.key || undefined
             : family === "claude" || family === "codex"
               ? family
@@ -180,10 +198,11 @@ function entryFromDescriptor(
   favoritesSet: Set<string>,
   aiStatus?: AiSettingsStatus | null,
   activeReasoningEffort?: string | null,
+  interfaceMode: AdeCodeInterfaceMode = "chat",
 ): ModelPickerEntry {
   const registryProvider = resolveProviderGroupForModel(descriptor);
   const provider = normalizeProvider(registryProvider);
-  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider);
+  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider, interfaceMode);
   return {
     modelId: descriptor.id,
     runtimeModelId: getRuntimeModelRefForDescriptor(descriptor, registryProvider),
@@ -204,10 +223,11 @@ function staticRegistryFallbackEntries(
   favoritesSet: Set<string>,
   aiStatus?: AiSettingsStatus | null,
   activeReasoningEffort?: string | null,
+  interfaceMode: AdeCodeInterfaceMode = "chat",
 ): ModelPickerEntry[] {
   return STATIC_REGISTRY_FALLBACK_PROVIDERS.flatMap((provider) =>
     listModelDescriptorsForProvider(provider).map((descriptor) =>
-      entryFromDescriptor(descriptor, favoritesSet, aiStatus, activeReasoningEffort)
+      entryFromDescriptor(descriptor, favoritesSet, aiStatus, activeReasoningEffort, interfaceMode)
     )
   );
 }
@@ -217,6 +237,7 @@ function entryFromModelInfo(
   favoritesSet: Set<string>,
   aiStatus?: AiSettingsStatus | null,
   activeReasoningEffort?: string | null,
+  interfaceMode: AdeCodeInterfaceMode = "chat",
 ): ModelPickerEntry {
   const modelId = modelInfo.modelId ?? modelInfo.id;
   const descriptor = descriptorFor(modelInfo);
@@ -228,7 +249,7 @@ function entryFromModelInfo(
     ? getRuntimeModelRefForDescriptor(descriptor, registryProvider)
     : modelInfo.id;
   const cursorAvailability = modelInfo.cursorAvailability ?? descriptor?.cursorAvailability;
-  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider);
+  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider, interfaceMode);
   return {
     modelId,
     runtimeModelId,
@@ -263,6 +284,7 @@ export type BuildLayoutInput = {
   settingsRows?: SetupPaneRow[];
   footerFocus?: SetupPaneRowKind | null;
   laneLabel?: string | null;
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   query: string;
   selection: { kind: "favorites" } | { kind: "recents" } | { kind: "provider"; provider: AdeCodeProvider };
   providerTabKey?: string | null;
@@ -291,10 +313,10 @@ function applyInterfaceAvailability(entry: ModelPickerEntry, interfaceMode: AdeC
 export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
   const favoritesSet = new Set(input.favorites);
   const runtimeEntries = input.catalog
-    ? entriesFromCatalog(input.catalog, favoritesSet, input.aiStatus, input.activeReasoningEffort)
-    : input.models.map((m) => entryFromModelInfo(m, favoritesSet, input.aiStatus, input.activeReasoningEffort));
+    ? entriesFromCatalog(input.catalog, favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode)
+    : input.models.map((m) => entryFromModelInfo(m, favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode));
   const entriesById = new Map<string, ModelPickerEntry>();
-  for (const entry of staticRegistryFallbackEntries(favoritesSet, input.aiStatus, input.activeReasoningEffort)) {
+  for (const entry of staticRegistryFallbackEntries(favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode)) {
     entriesById.set(entry.modelId, entry);
   }
   for (const entry of runtimeEntries) {
@@ -323,7 +345,7 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
       kind: "provider" as const,
       provider,
       label: providerLabel(provider),
-      authStatus: modelPickerProviderAuthStatus(input.aiStatus, provider),
+      authStatus: modelPickerProviderAuthStatus(input.aiStatus, provider, input.interfaceMode),
       signInHint: providerSignInHint(provider),
     })),
   ];
@@ -468,6 +490,7 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
     settingsRows: input.settingsRows ?? [],
     footerFocus: input.footerFocus ?? null,
     laneLabel: input.laneLabel ?? null,
+    refreshingProvider: input.refreshingProvider ?? null,
   };
 }
 

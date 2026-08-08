@@ -921,10 +921,10 @@ export type AiFeatureUsageRow = {
 };
 
 export type AiDetectedAuth = {
-  type: "cli-subscription" | "api-key" | "openrouter" | "local";
+  type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
   cli?: "claude" | "codex" | "cursor" | "droid";
   provider?: string;
-  source?: "config" | "env" | "store";
+  source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
   path?: string;
   endpoint?: string;
@@ -940,7 +940,9 @@ export type AiProviderCredentialSource =
   | "cursor-admin-env"
   | "cursor-env"
   | "cursor-api-key-store"
-  | "factory-env";
+  | "factory-env"
+  | "pi-auth-file"
+  | "pi-models-file";
 
 export type AiProviderConnectionSource = {
   kind: "cli" | "local-credentials";
@@ -953,7 +955,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -969,6 +971,7 @@ export type AiProviderConnections = {
   codex: AiProviderConnectionStatus;
   cursor: AiProviderConnectionStatus;
   droid: AiProviderConnectionStatus;
+  pi?: AiProviderConnectionStatus;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -1216,6 +1219,52 @@ export const EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT: AgentToolsCacheSnapshot = {
   fetching: false,
 };
 
+export type AiPiProviderAuthSource =
+  | "stored"
+  | "runtime"
+  | "environment"
+  | "fallback"
+  | "models_json_key"
+  | "models_json_command"
+  | null;
+
+export type AiPiProviderStatus = {
+  id: string;
+  name: string;
+  modelCount: number;
+  availableModelCount: number;
+  configured: boolean;
+  authType: "api-key" | "oauth" | "local" | "unknown" | null;
+  authMethods: Array<"api-key" | "oauth" | "local">;
+  authSource?: AiPiProviderAuthSource;
+  authLabel?: string | null;
+  subscription?: boolean;
+  loginLabel?: string | null;
+  authExpiresAt?: number | null;
+};
+
+export type AiPiInstallationStatus = {
+  installed: boolean;
+  sdkAvailable: boolean;
+  cliAvailable: boolean;
+  cliPath: string | null;
+  packageRoot: string | null;
+  version: string | null;
+  agentDir: string;
+  settingsPath: string;
+  authPath: string;
+  modelsPath: string;
+  modelsStorePath: string;
+  blocker: string | null;
+  providers: AiPiProviderStatus[];
+  availableModelIds: string[];
+  authFileDetected: boolean;
+  modelsFileDetected: boolean;
+  settingsFileDetected: boolean;
+  stale: boolean;
+  error?: string | null;
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1246,6 +1295,7 @@ export type AiSettingsStatus = {
   customModelSlugs?: string[];
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
   modelsDevLastFetchedAt?: number | null;
+  piInstallation?: AiPiInstallationStatus;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -1289,6 +1339,7 @@ export type AiProviderPermissions = {
   cursor?: AgentChatPermissionMode;
   droid?: AgentChatPermissionMode;
   opencode?: AgentChatPermissionMode;
+  pi?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -1447,6 +1498,7 @@ export type AiIntegrationStatus = {
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
+  piInstallation?: AiPiInstallationStatus;
 };
 
 export type ProjectUiConfig = {

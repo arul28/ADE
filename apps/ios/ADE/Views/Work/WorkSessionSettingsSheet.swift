@@ -355,6 +355,13 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     case "agi": return "Droid orchestrator mode."
     default: return "Switch this session to \(mode.capitalized)."
     }
+  case "pi":
+    switch mode {
+    case "default", "plan", "read-only": return "Read-only Pi tools; review changes before enabling access."
+    case "edit": return "Allow Pi to edit and write files."
+    case "full-auto": return "Allow Pi's full native tool set without prompts."
+    default: return "Switch this session to \(mode.capitalized)."
+    }
   default:
     return "Switch this session to \(mode.capitalized)."
   }

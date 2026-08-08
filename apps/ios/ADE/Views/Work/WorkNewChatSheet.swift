@@ -66,6 +66,13 @@ struct WorkNewChatSheet: View {
         tint: providerTint("codex")
       ),
       WorkProviderOption(
+        id: "pi",
+        title: "Pi",
+        subtitle: "Pi-native models and sessions",
+        icon: providerIcon("pi"),
+        tint: providerTint("pi")
+      ),
+      WorkProviderOption(
         id: "cursor",
         title: "Cursor",
         subtitle: "Cursor-native chat sessions",
@@ -468,6 +475,12 @@ struct WorkNewChatSheet: View {
     }
     do {
       busy = true
+      let piMetadata = workResolvedPiModelMetadata(
+        modelId: selectedModelId,
+        profileId: selectedModel?.piProfileId,
+        providerId: selectedModel?.piProviderId,
+        piModelId: selectedModel?.piModelId
+      )
       let summary = try await syncService.createChatSession(
         laneId: selectedLaneId,
         provider: provider,
@@ -476,7 +489,10 @@ struct WorkNewChatSheet: View {
           guard !selectedReasoningEffort.isEmpty else { return nil }
           guard workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) else { return nil }
           return selectedReasoningEffort
-        }()
+        }(),
+        piProfileId: piMetadata?.profileId,
+        piProviderId: piMetadata?.providerId,
+        piModelId: piMetadata?.modelId
       )
       await onCreated(WorkDraftChatSession(summary: summary, initialMessage: openingMessage))
       dismiss()

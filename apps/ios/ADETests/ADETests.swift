@@ -1381,6 +1381,10 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.title), ["Agent", "Plan", "Ask", "Full auto"])
     XCTAssertEqual(workRuntimeModeLabel(provider: "cursor", mode: "full-auto"), "Full auto")
     XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.id), ["default", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.title), ["Read-only", "Edit access", "Full access"])
+    XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "default"), "Read-only")
+    XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "full-auto"), "Full access")
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
     XCTAssertEqual(claudeAuto.permissionMode, "auto")
@@ -1418,6 +1422,20 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidAgi.droidPermissionMode, "agi")
     XCTAssertEqual(workDroidRuntimeMode(droidPermissionMode: "agi", permissionMode: "plan"), "agi")
     XCTAssertEqual(workDroidModeFromPermissionMode("edit"), "auto-low")
+
+    let piReadOnly = workRuntimeWireFields(provider: "pi", mode: "default")
+    XCTAssertEqual(piReadOnly.permissionMode, "default")
+    XCTAssertNil(piReadOnly.claudePermissionMode)
+    XCTAssertNil(piReadOnly.opencodePermissionMode)
+
+    let piEdit = workRuntimeWireFields(provider: "pi", mode: "edit")
+    XCTAssertEqual(piEdit.permissionMode, "edit")
+    XCTAssertEqual(workInitialRuntimeMode(makeAgentChatSessionSummary(
+      provider: "pi",
+      model: "pi/work/openai-codex/gpt-5.4",
+      status: "active",
+      permissionMode: "full-auto"
+    )), "full-auto")
   }
 
   func testResolvedWorkArchivedSessionIdsKeepsLocalOverrideForKnownChat() {
@@ -19369,6 +19387,229 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workResolveCliProvider(for: "gpt-5.5", provider: "codex"), "codex")
     XCTAssertEqual(workResolveCliProvider(for: "auto", provider: "cursor"), "cursor")
     XCTAssertEqual(workResolveCliProvider(for: "opencode/anthropic/claude-sonnet-5", provider: "opencode"), "opencode")
+    let piModelId = "pi/work/openai-codex/gpt-5.4"
+    XCTAssertEqual(workModelCatalogGroupKey(for: piModelId, currentProvider: "claude"), "pi")
+    XCTAssertEqual(workResolveCliProvider(for: piModelId, provider: "pi"), "pi")
+    XCTAssertEqual(workComposerRuntimeProvider(forModelId: piModelId, currentProvider: "pi"), "pi")
+    XCTAssertEqual(workNormalizedChatProvider("pi"), "pi")
+    XCTAssertEqual(workNormalizedChatProvider("pi/work/openai-codex"), "pi")
+    XCTAssertEqual(providerFamilyKey("openai-codex"), "codex")
+    XCTAssertEqual(providerLabel("pi"), "Pi")
+    XCTAssertEqual(defaultWorkChatTitle(provider: "pi"), "Pi chat")
+    XCTAssertEqual(toolTypeForProvider("pi"), "pi-chat")
+    XCTAssertEqual(shortProviderLabel("pi-chat"), "Pi")
+    XCTAssertEqual(workChatSurfaceProviderName("pi"), "Pi")
+    XCTAssertEqual(workPiModelMetadata(for: piModelId), WorkPiModelMetadata(
+      profileId: "work",
+      providerId: "openai-codex",
+      modelId: "gpt-5.4"
+    ))
+    XCTAssertEqual(workPiModelMetadata(for: "pi/work/openai-codex/gpt-5.4%2Fpreview"), WorkPiModelMetadata(
+      profileId: "work",
+      providerId: "openai-codex",
+      modelId: "gpt-5.4/preview"
+    ))
+  }
+
+  func testPiHostCatalogKeepsCanonicalAndRuntimeModelMetadata() {
+    let canonicalId = "pi/work/openai-codex/gpt-5.4"
+    let runtimeModelId = "openai-codex/gpt-5.4"
+    let model = AgentChatModelCatalogModel(
+      id: canonicalId,
+      runtimeModelId: runtimeModelId,
+      provider: "pi",
+      providerKey: "openai-codex",
+      groupKey: "pi",
+      displayName: "GPT-5.4",
+      description: "Pi-routed Codex model",
+      isDefault: true,
+      reasoningEfforts: [
+        AgentChatModelReasoningEffort(effort: "medium", description: "Balanced")
+      ],
+      defaultReasoningEffort: "medium",
+      serviceTiers: nil,
+      aliases: nil,
+      maxThinkingTokens: nil,
+      modelId: runtimeModelId,
+      family: "openai-codex",
+      supportsReasoning: true,
+      supportsTools: true,
+      cursorAvailability: nil,
+      color: nil,
+      isAvailable: true,
+      connected: true,
+      requiresConfiguration: false,
+      sourceRuntime: "pi",
+      providerId: "openai-codex",
+      providerName: "OpenAI Codex",
+      stale: false,
+      piProfileId: "work",
+      piProviderId: "openai-codex",
+      piModelId: "gpt-5.4"
+    )
+    let catalog = AgentChatModelCatalog(
+      groups: [
+        AgentChatModelCatalogGroup(
+          key: "pi",
+          displayName: "Pi",
+          providers: [
+            AgentChatModelCatalogProvider(
+              key: "openai-codex",
+              displayName: "OpenAI Codex",
+              badgeColor: "#10A37F",
+              modelCount: 1,
+              subsections: [
+                AgentChatModelCatalogSubsection(
+                  key: "__piprov__:work:openai-codex",
+                  label: "OpenAI Codex · work",
+                  models: [model]
+                )
+              ]
+            )
+          ]
+        )
+      ],
+      fetchedAt: "2026-08-08T00:00:00.000Z",
+      stale: false
+    )
+
+    let groups = workModelCatalogGroups(
+      hostCatalog: catalog,
+      currentModelId: canonicalId,
+      currentProvider: "pi"
+    )
+    let option = groups
+      .first(where: { $0.key == "pi" })?
+      .providers
+      .first(where: { $0.key == workPiProviderSectionKey(profileId: "work", providerId: "openai-codex") })?
+      .models
+      .first
+
+    XCTAssertEqual(option?.id, canonicalId)
+    XCTAssertEqual(option?.runtimeModelId, runtimeModelId)
+    XCTAssertEqual(option?.piProfileId, "work")
+    XCTAssertEqual(option?.piProviderId, "openai-codex")
+    XCTAssertEqual(option?.piModelId, "gpt-5.4")
+    XCTAssertEqual(option?.provider, "pi")
+    XCTAssertEqual(option.flatMap { workPiModelContextLabel(for: $0) }, "OpenAI Codex · work")
+    XCTAssertEqual(workModelRowLogoProvider(for: option!, catalogGroupKey: "pi"), "codex")
+
+    let dynamicGroups = workModelCatalogGroups(
+      availableModelsByProvider: [
+        "pi": [
+          AgentChatModelInfo(
+            id: canonicalId,
+            displayName: "GPT-5.4",
+            description: "GPT-5.4 (Pi SDK)",
+            isDefault: true,
+            reasoningEfforts: nil,
+            serviceTiers: nil,
+            maxThinkingTokens: nil,
+            modelId: canonicalId,
+            family: "pi",
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+        ],
+      ],
+      currentModelId: canonicalId,
+      currentProvider: "pi"
+    )
+    let dynamicOption = dynamicGroups
+      .first(where: { $0.key == "pi" })?
+      .providers
+      .first(where: { $0.key == workPiProviderSectionKey(profileId: "work", providerId: "openai-codex") })?
+      .models
+      .first
+    XCTAssertEqual(dynamicOption?.id, canonicalId)
+    XCTAssertEqual(dynamicOption?.runtimeModelId, runtimeModelId)
+    XCTAssertEqual(dynamicOption?.provider, "pi")
+    XCTAssertEqual(dynamicOption?.piModelId, "gpt-5.4")
+  }
+
+  func testPiHostCatalogKeepsProfilesInDistinctReadablePickerTabs() {
+    func model(profile: String) -> AgentChatModelCatalogModel {
+      let canonicalId = "pi/\(profile)/openai-codex/gpt-5.4"
+      return AgentChatModelCatalogModel(
+        id: canonicalId,
+        runtimeModelId: "openai-codex/gpt-5.4",
+        provider: "pi",
+        providerKey: "openai-codex",
+        groupKey: "pi",
+        displayName: "GPT-5.4",
+        description: nil,
+        isDefault: false,
+        reasoningEfforts: nil,
+        defaultReasoningEffort: nil,
+        serviceTiers: nil,
+        aliases: nil,
+        maxThinkingTokens: nil,
+        modelId: "openai-codex/gpt-5.4",
+        family: "openai-codex",
+        supportsReasoning: true,
+        supportsTools: true,
+        cursorAvailability: nil,
+        color: nil,
+        isAvailable: true,
+        connected: true,
+        requiresConfiguration: false,
+        sourceRuntime: "pi",
+        providerId: "openai-codex",
+        providerName: "OpenAI Codex",
+        stale: false,
+        piProfileId: profile,
+        piProviderId: "openai-codex",
+        piModelId: "gpt-5.4"
+      )
+    }
+
+    let catalog = AgentChatModelCatalog(
+      groups: [
+        AgentChatModelCatalogGroup(
+          key: "pi",
+          displayName: "Pi",
+          providers: [
+            AgentChatModelCatalogProvider(
+              key: "openai-codex",
+              displayName: "OpenAI Codex",
+              badgeColor: "#10A37F",
+              modelCount: 2,
+              subsections: [
+                AgentChatModelCatalogSubsection(
+                  key: workPiProviderSectionKey(profileId: "work", providerId: "openai-codex"),
+                  label: "OpenAI Codex · work",
+                  models: [model(profile: "work")]
+                ),
+                AgentChatModelCatalogSubsection(
+                  key: workPiProviderSectionKey(profileId: "personal", providerId: "openai-codex"),
+                  label: "OpenAI Codex · personal",
+                  models: [model(profile: "personal")]
+                ),
+              ]
+            ),
+          ]
+        ),
+      ],
+      fetchedAt: "2026-08-08T00:00:00.000Z",
+      stale: false
+    )
+
+    let piGroup = workModelCatalogGroups(
+      hostCatalog: catalog,
+      currentModelId: "",
+      currentProvider: "pi"
+    ).first(where: { $0.key == "pi" })
+
+    XCTAssertEqual(
+      piGroup?.providers.map(\.key),
+      [
+        workPiProviderSectionKey(profileId: "work", providerId: "openai-codex"),
+        workPiProviderSectionKey(profileId: "personal", providerId: "openai-codex"),
+      ]
+    )
+    XCTAssertEqual(piGroup?.providers.map(\.displayName), ["OpenAI Codex · work", "OpenAI Codex · personal"])
+    XCTAssertEqual(piGroup?.providers.compactMap { $0.models.first?.piProfileId }, ["work", "personal"])
   }
 
   func testWorkModelCatalogTreatsCodexRuntimeAndRegistryIdsAsSameModel() {
@@ -19405,6 +19646,26 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workModelIdsEquivalent("openai/gpt-5.5", "gpt-5.5"))
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.5"), "GPT-5.5")
     XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
+  }
+
+  func testPiModelDisplayIncludesProfileAndUpstreamProvider() {
+    let canonicalId = "pi/work/openai-codex/gpt-5.4"
+    XCTAssertEqual(
+      prettyWorkChatModelName(canonicalId),
+      "GPT-5.4 · OpenAI Codex · work"
+    )
+    XCTAssertEqual(
+      workPiModelDisplayName(WorkPiModelMetadata(
+        profileId: "personal",
+        providerId: "anthropic",
+        modelId: "claude-opus-5"
+      )),
+      "Claude Opus 5 · Anthropic · personal"
+    )
+    XCTAssertEqual(
+      workPiProviderSectionKey(profileId: "team/work", providerId: "openai-codex"),
+      "__piprov__:team%2Fwork:openai-codex"
+    )
   }
 
   func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {

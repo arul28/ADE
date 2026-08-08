@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-private let workImportSessionProviders = ["all", "claude", "codex", "cursor", "droid", "opencode"]
+private let workImportSessionProviders = ["all", "claude", "codex", "cursor", "droid", "pi", "opencode"]
 
 private struct WorkPendingExternalSessionImport: Identifiable {
   let session: ExternalSessionSummary
@@ -991,6 +991,7 @@ private func workImportToolType(provider: String) -> String {
   // Cursor session as a CLI terminal, matching the desktop import mapping.
   case "cursor": return "cursor-cli"
   case "droid": return "droid"
+  case "pi": return "pi"
   case "opencode": return "opencode"
   default: return provider
   }

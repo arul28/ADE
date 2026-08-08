@@ -26,6 +26,7 @@ vi.mock("@lobehub/icons", () => {
     Codex: brand(),
     Cursor: brand(),
     Gemini: brand(),
+    GithubCopilot: brand(),
     Google: brand(),
     Grok: brand(),
     Groq: brand(),
@@ -53,6 +54,7 @@ function buildStatus(
     opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
     opencodeProvidersStale?: boolean;
     modelsDevLastFetchedAt?: number | null;
+    piInstallation?: AiSettingsStatus["piInstallation"];
   },
 ): AiSettingsStatus {
   const claudeBinaryPresent = options?.claudeBinaryPresent ?? claudeRuntimeAvailable;
@@ -175,6 +177,19 @@ function buildStatus(
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
         sources: [],
       },
+      ...(options?.piInstallation ? {
+        pi: {
+          provider: "pi",
+          authAvailable: options.piInstallation.providers.some((provider) => provider.configured),
+          runtimeDetected: options.piInstallation.sdkAvailable || options.piInstallation.cliAvailable,
+          runtimeAvailable: options.piInstallation.availableModelIds.length > 0,
+          usageAvailable: false,
+          path: options.piInstallation.cliPath ?? options.piInstallation.packageRoot,
+          blocker: options.piInstallation.blocker,
+          lastCheckedAt: "2026-03-17T19:00:00.000Z",
+          sources: [],
+        },
+      } : {}),
     },
     apiKeyStore: {
       secureStorageAvailable: true,
@@ -186,6 +201,7 @@ function buildStatus(
     opencodeProviders: options?.opencodeProviders ?? [],
     ...(options?.opencodeProvidersStale != null ? { opencodeProvidersStale: options.opencodeProvidersStale } : {}),
     ...(options?.modelsDevLastFetchedAt !== undefined ? { modelsDevLastFetchedAt: options.modelsDevLastFetchedAt } : {}),
+    ...(options?.piInstallation ? { piInstallation: options.piInstallation } : {}),
   } as AiSettingsStatus;
 }
 
@@ -264,6 +280,7 @@ describe("ProvidersSection", () => {
       },
       app: {
         openExternal: vi.fn().mockResolvedValue(undefined),
+        openPath: vi.fn().mockResolvedValue(undefined),
       },
     } as any;
   });
@@ -508,6 +525,63 @@ describe("ProvidersSection", () => {
     // Hated status chrome is gone.
     expect(screen.queryByText(/managed by ADE/i)).toBeNull();
     expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
+  });
+
+  it("renders the Pi card with connected providers and opens Pi settings files", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      piInstallation: {
+        installed: true,
+        sdkAvailable: true,
+        cliAvailable: true,
+        cliPath: "/Users/example/.local/bin/pi",
+        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+        version: "0.84.0",
+        agentDir: "/Users/example/.pi/agent",
+        settingsPath: "/Users/example/.pi/agent/settings.json",
+        authPath: "/Users/example/.pi/agent/auth.json",
+        modelsPath: "/Users/example/.pi/agent/models.json",
+        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+        blocker: null,
+        providers: [
+          {
+            id: "openai-codex",
+            name: "OpenAI Codex",
+            modelCount: 7,
+            availableModelCount: 7,
+            configured: true,
+            authType: "oauth",
+            authMethods: ["oauth"],
+            authSource: "stored",
+            authLabel: "OAuth",
+            subscription: true,
+          },
+        ],
+        availableModelIds: ["pi/openai-codex/gpt-5.4"],
+        authFileDetected: true,
+        modelsFileDetected: false,
+        settingsFileDetected: true,
+        stale: false,
+      },
+    }));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue([]);
+
+    renderProvidersSection();
+
+    expect(await screen.findByText("Pi")).toBeTruthy();
+    expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
+    expect(screen.getByText(/Version 0.84.0/)).toBeTruthy();
+    expect(screen.getByText("Configured providers")).toBeTruthy();
+    expect(screen.getByText("OpenAI Codex")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open settings.json" })).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Open settings.json" }).click();
+    });
+    expect(window.ade.app.openPath).toHaveBeenCalledWith("/Users/example/.pi/agent/settings.json");
   });
 
   it("collapses the OpenCode group to an install card when the binary is missing", async () => {

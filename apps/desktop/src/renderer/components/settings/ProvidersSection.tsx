@@ -4,6 +4,8 @@ import type {
   AiConfig,
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiPiInstallationStatus,
+  AiPiProviderStatus,
   AiProviderConnectionStatus,
   AiSettingsStatus,
   ProjectConfigSnapshot,
@@ -32,7 +34,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { PiLogo, ProviderLogo } from "../shared/ProviderLogos";
 import {
   COLORS,
   MONO_FONT,
@@ -42,11 +44,13 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
+import { openExternalUrl } from "../../lib/openExternal";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
 import { ClaudeLoginPromptButton, revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
+import { PiLoginPromptButton } from "../work/PiLoginPromptButton";
 import {
   OpenCodeProviderDetailModal,
   type ApiKeySource,
@@ -441,6 +445,8 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
   if (localSource.source === "cursor-api-key-store") return "Cursor API key is stored in ADE encrypted storage.";
   if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
+  if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
+  if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
   return null;
 }
 
@@ -479,6 +485,61 @@ function formatLocalModelLabel(modelId: string): string {
     return tail.length ? `${tail} (${brand})` : String(modelId ?? "").trim();
   }
   return String(modelId ?? "").trim();
+}
+
+function getPiTone(
+  connection: AiProviderConnectionStatus | null | undefined,
+  installation: AiPiInstallationStatus | null | undefined,
+): { color: string; label: string } {
+  if (!installation?.installed && !connection?.runtimeDetected) {
+    return { color: COLORS.textDim, label: "Not detected" };
+  }
+  if (installation?.installed && !installation.sdkAvailable) {
+    return { color: COLORS.warning, label: "SDK needed" };
+  }
+  if (connection?.runtimeAvailable) {
+    return { color: COLORS.success, label: "Ready" };
+  }
+  if (installation?.sdkAvailable && connection?.authAvailable) {
+    return { color: COLORS.warning, label: "Configured" };
+  }
+  if (installation?.sdkAvailable || installation?.cliAvailable) {
+    return { color: COLORS.warning, label: "Sign-in required" };
+  }
+  return { color: COLORS.danger, label: "Unavailable" };
+}
+
+function buildPiMessage(
+  connection: AiProviderConnectionStatus | null | undefined,
+  installation: AiPiInstallationStatus | null | undefined,
+): string {
+  if (!installation) {
+    return "Checking Pi installation and provider inventory.";
+  }
+  const configuredProviders = installation.providers.filter((provider) => provider.configured).length;
+  const availableModels = installation.availableModelIds.length;
+  if (connection?.runtimeAvailable) {
+    const version = installation.version ? `Pi ${installation.version}` : "Pi";
+    return `${version} is installed. ${availableModels} model${availableModels === 1 ? " is" : "s are"} available across ${configuredProviders} configured provider${configuredProviders === 1 ? "" : "s"}.`;
+  }
+  if (connection?.blocker) {
+    return connection.blocker;
+  }
+  if (installation.installed && !installation.sdkAvailable) {
+    return installation.blocker
+      ?? "Pi CLI is available, but ADE's Pi SDK package is missing. Install @earendil-works/pi-coding-agent or set ADE_PI_PACKAGE_ROOT.";
+  }
+  if (!installation.installed) {
+    return "Pi is not installed for this user yet. Install @earendil-works/pi-coding-agent, then use Refresh. Pi keeps its own credentials and profile.";
+  }
+  return "Pi is installed, but no configured providers or available models were detected yet.";
+}
+
+function piProviderAuthSummary(provider: AiPiProviderStatus): string {
+  if (provider.authType === "oauth") return provider.subscription ? "OAuth subscription" : "OAuth";
+  if (provider.authType === "api-key") return "API key";
+  if (provider.authType === "local") return "Local endpoint";
+  return provider.authMethods.length ? provider.authMethods.join(" / ") : "No auth";
 }
 
 function buildLocalProviderDrafts(
@@ -627,9 +688,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   const providerConnections = status?.providerConnections;
+  const piInstallation = status?.piInstallation ?? null;
+  const piConnection = providerConnections?.pi ?? null;
   // Keep provider cards neutral while the status payload is unavailable. A
   // failed first probe must not be presented as a real "Binary Missing" state.
   const isInitialCheckInFlight = status == null;
+  const piStatusLoadFailed = isInitialCheckInFlight && !loading && statusLoadError !== null;
   const opencodeStatusKnown = status !== null;
   const opencodeStatusLoadFailed = !opencodeStatusKnown && !loading && statusLoadError !== null;
   const opencodeInstalled = status?.opencodeBinaryInstalled !== false;
@@ -638,11 +702,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
 
   const apiKeySources = useMemo(() => {
     const map = new Map<string, ApiKeySource>();
+    const sourceForKey = (source: string | undefined): ApiKeySource | null =>
+      source === "store" || source === "env" || source === "config" ? source : null;
     for (const entry of detectedAuth) {
-      if (entry.type === "api-key" && entry.provider && entry.source) {
-        map.set(entry.provider.toLowerCase(), entry.source);
-      } else if (entry.type === "openrouter" && entry.source) {
-        map.set("openrouter", entry.source);
+      const source = sourceForKey(entry.source);
+      if (entry.type === "api-key" && entry.provider && source) {
+        map.set(entry.provider.toLowerCase(), source);
+      } else if (entry.type === "openrouter" && source) {
+        map.set("openrouter", source);
       }
     }
     return map;
@@ -1281,6 +1348,128 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
               {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
               {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+            </section>
+          );
+        })()}
+
+        {(() => {
+          const tone = piStatusLoadFailed
+            ? { color: COLORS.danger, label: "Unavailable" }
+            : isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getPiTone(piConnection, piInstallation);
+          const message = piStatusLoadFailed
+            ? `Could not load Pi status: ${statusLoadError}`
+            : isInitialCheckInFlight
+            ? "Checking Pi installation and provider inventory."
+            : buildPiMessage(piConnection, piInstallation);
+          const configuredProviders = piInstallation?.providers.filter((provider) => provider.configured) ?? [];
+          return (
+            <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <PiLogo size={26} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Pi</div>
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
+                      Uses Pi’s installed SDK package and redacted auth status from its native profile.
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
+                  {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : piConnection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : piConnection?.authAvailable || piConnection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
+                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
+              {piStatusLoadFailed ? (
+                <button type="button" style={outlineButton({ height: 28, marginTop: 8 })} onClick={() => void refreshStatus({ force: true })}>
+                  Retry Pi status
+                </button>
+              ) : null}
+              {piInstallation?.error ? (
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning, marginTop: 4 }}>
+                  Inventory fallback: {piInstallation.error}
+                </div>
+              ) : null}
+              {piInstallation?.version ? (
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, marginTop: 4 }}>
+                  Version {piInstallation.version}{piInstallation.stale ? " · cached" : ""}
+                </div>
+              ) : null}
+              {piConnection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{piConnection.path}</code> : null}
+
+              {configuredProviders.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                    Configured providers
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8 }}>
+                    {configuredProviders.map((provider) => (
+                      <div key={provider.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 10, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                            <ProviderLogo family={provider.id} size={18} />
+                            <span style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {provider.name}
+                            </span>
+                          </div>
+                          {provider.availableModelCount > 0 ? (
+                            <ConnectedTag />
+                          ) : (
+                            <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.warning, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                              No models
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                          {provider.availableModelCount || provider.modelCount} model{(provider.availableModelCount || provider.modelCount) === 1 ? "" : "s"}
+                          {provider.availableModelCount > 0 && provider.modelCount > provider.availableModelCount ? ` · ${provider.modelCount} known` : ""}
+                        </div>
+                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                          {piProviderAuthSummary(provider)}{provider.authLabel ? ` · ${provider.authLabel}` : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {piInstallation ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+                  <PiLoginPromptButton
+                    visible={piInstallation.cliAvailable}
+                    onRevealTerminal={(terminal) => revealTerminalSessionInWork(navigate, terminal)}
+                  />
+                  {!piInstallation.cliAvailable ? (
+                    <>
+                      <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning }}>
+                        Install the Pi CLI to use Pi’s native /login flow.
+                      </span>
+                      <button type="button" style={outlineButton({ height: 28 })} onClick={() => openExternalUrl("https://github.com/earendil-works/pi")}>Pi docs</button>
+                    </>
+                  ) : null}
+                  {piInstallation.settingsFileDetected ? (
+                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.settingsPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
+                      Open settings.json
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>settings.json not found</span>
+                  )}
+                  {piInstallation.authFileDetected ? (
+                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.authPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
+                      Open auth.json
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>auth.json not found</span>
+                  )}
+                  {piInstallation.modelsFileDetected ? (
+                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.modelsPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
+                      Open models.json
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>models.json not found</span>
+                  )}
+                </div>
+              ) : null}
             </section>
           );
         })()}

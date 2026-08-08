@@ -3,10 +3,15 @@ import {
   createDynamicDroidCliModelDescriptor,
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
+  createDynamicPiModelDescriptor,
+  classifyWorkerExecutionPath,
   decodeOpenCodeRegistryId,
+  decodePiRegistryId,
   droidCliLineGroupFromModelId,
   droidCliLineGroupLabel,
   encodeOpenCodeRegistryId,
+  encodePiRegistryId,
+  formatPiProviderLabel,
   ensureOpenCodeBaseURL,
   getAvailableModels,
   getDefaultModelDescriptor,
@@ -15,8 +20,10 @@ import {
   getRuntimeModelRefForDescriptor,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
+  replaceDynamicPiModelDescriptors,
   resolveModelAlias,
   resolveCursorCliModelVariant,
+  resolveCliProviderForModel,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   resolveModelSlug,
@@ -50,6 +57,64 @@ describe("modelRegistry", () => {
     expect(d.id).toBe(id);
     expect(d.openCodeProviderId).toBe("lmstudio");
     expect(d.openCodeModelId).toBe("openai/gpt-oss-20b");
+  });
+
+  it("round-trips Pi registry ids and preserves the upstream provider", () => {
+    const id = encodePiRegistryId("default", "openai-codex", "gpt-5.4");
+    expect(id).toBe("pi/default/openai-codex/gpt-5.4");
+    expect(decodePiRegistryId(id)).toEqual({
+      profileId: "default",
+      providerId: "openai-codex",
+      modelId: "gpt-5.4",
+    });
+    const descriptor = createDynamicPiModelDescriptor("openai-codex", "gpt-5.4", {
+      profileId: "default",
+      displayName: "GPT-5.4",
+    });
+    expect(descriptor.id).toBe(id);
+    expect(descriptor.providerRoute).toBe("pi-sdk");
+    expect(resolveCliProviderForModel(descriptor)).toBe("pi");
+    expect(classifyWorkerExecutionPath(descriptor)).toBe("api");
+    expect(descriptor.piProviderId).toBe("openai-codex");
+    expect(descriptor.piModelId).toBe("gpt-5.4");
+    expect(descriptor.family).toBe("openai");
+  });
+
+  it("rejects ambiguous or incomplete Pi registry components", () => {
+    expect(() => encodePiRegistryId("default", "", "gpt-5.4")).toThrow("Pi provider id is required");
+    expect(() => encodePiRegistryId("default", "openai/codex", "gpt-5.4")).toThrow("cannot contain");
+    expect(() => encodePiRegistryId("default", "openai-codex", "")).toThrow("Pi model id is required");
+  });
+
+  it("matches provider-scoped Pi OAuth only to its upstream provider", () => {
+    const openAiPi = createDynamicPiModelDescriptor("openai-codex", "gpt-5.4", {
+      profileId: "team",
+      displayName: "Team GPT-5.4",
+    });
+    const anthropicPi = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-4-6", {
+      profileId: "team",
+      displayName: "Team Claude Sonnet",
+    });
+    // Keep the registry's dynamic map isolated from other tests while proving
+    // that one provider's OAuth does not unlock another provider's Pi rows.
+    replaceDynamicPiModelDescriptors([openAiPi, anthropicPi]);
+    try {
+      const anthropicAuth = getAvailableModels([{ type: "oauth", provider: "anthropic" }]);
+      expect(anthropicAuth.map((model) => model.id)).toContain(anthropicPi.id);
+      expect(anthropicAuth.map((model) => model.id)).not.toContain(openAiPi.id);
+
+      const openAiAuth = getAvailableModels([{ type: "oauth", provider: "openai-codex" }]);
+      expect(openAiAuth.map((model) => model.id)).toContain(openAiPi.id);
+      expect(openAiAuth.map((model) => model.id)).not.toContain(anthropicPi.id);
+    } finally {
+      replaceDynamicPiModelDescriptors([]);
+    }
+  });
+
+  it("humanizes Pi provider ids without losing branded names", () => {
+    expect(formatPiProviderLabel("openai-codex")).toBe("OpenAI Codex");
+    expect(formatPiProviderLabel("google-gemini-cli")).toBe("Google Gemini CLI");
+    expect(formatPiProviderLabel("custom-provider")).toBe("Custom Provider");
   });
 
   it("canonicalizes persisted OpenCode Anthropic aliases before launch", () => {

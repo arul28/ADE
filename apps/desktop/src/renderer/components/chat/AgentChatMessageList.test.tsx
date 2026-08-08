@@ -34,6 +34,7 @@ vi.mock("@lobehub/icons", () => {
     Codex: brand(),
     Cursor: brand(),
     OpenCode: brand(),
+    GithubCopilot: brand(),
   };
 });
 

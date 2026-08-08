@@ -30,6 +30,7 @@ export function terminalSessionResumeProvider(session: ChatTerminalSession | nul
   if (toolType.startsWith("cursor")) return "cursor";
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
+  if (toolType.startsWith("pi")) return "pi";
   if (toolType.startsWith("claude")) return "claude";
   return null;
 }
@@ -50,7 +51,7 @@ export function isTerminalSessionResumable(session: ChatTerminalSession | null |
 /** Narrow a terminal session's derived provider to an AgentChatProvider (CLI terminals are always one of the five). */
 function terminalSummaryProvider(session: ChatTerminalSession): AgentChatSessionSummary["provider"] {
   const provider = terminalSessionProvider(session);
-  return provider === "codex" || provider === "claude" || provider === "opencode" || provider === "cursor" || provider === "droid"
+  return provider === "codex" || provider === "claude" || provider === "opencode" || provider === "cursor" || provider === "droid" || provider === "pi"
     ? provider
     : "claude";
 }

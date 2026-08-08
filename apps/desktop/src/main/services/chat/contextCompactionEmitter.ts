@@ -29,6 +29,8 @@ function resolveCompactionProvider(session: AgentChatSession): ContextCompactPro
       return "cursor";
     case "droid":
       return "droid";
+    case "pi":
+      return "pi";
     default:
       return undefined;
   }

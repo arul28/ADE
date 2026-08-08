@@ -29,6 +29,7 @@ const PROVIDER_LABELS: Record<ExternalSessionSummary["provider"], string> = {
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 const CONTINUE_CLI_DESCRIPTION =

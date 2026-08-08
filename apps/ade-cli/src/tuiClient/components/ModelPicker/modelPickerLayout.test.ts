@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
+import type { AiSettingsStatus } from "../../../../../desktop/src/shared/types/config";
 import { buildModelPickerLayoutInput, modelPickerRefreshProvider } from "../../modelPickerController";
 import type { AdeCodeModelState, ModelPickerRightPaneContent } from "../../types";
-import { buildModelPickerLayout, defaultSelectionFor } from "./modelPickerLayout";
+import { buildModelPickerLayout, defaultSelectionFor, modelPickerProviderAuthStatus } from "./modelPickerLayout";
 
 function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): AgentChatModelInfo {
   return {
@@ -39,6 +40,11 @@ describe("buildModelPickerLayout", () => {
     expect(layout.railEntries[0]?.kind).toBe("favorites");
     expect(layout.railEntries[1]?.kind).toBe("recents");
     expect(layout.railEntries.some((entry) => entry.kind === "provider")).toBe(true);
+    const piRail = layout.railEntries.find((entry) => entry.kind === "provider" && entry.provider === "pi");
+    expect(piRail?.kind).toBe("provider");
+    if (piRail?.kind === "provider") {
+      expect(piRail.signInHint).toBe("Open Pi, then run /login");
+    }
   });
 
   it("scopes the entry list to the selected provider", () => {
@@ -53,6 +59,21 @@ describe("buildModelPickerLayout", () => {
       searchMode: false,
     });
     expect(layout.entries.every((entry) => entry.family === "codex")).toBe(true);
+  });
+
+  it("keeps provider refresh state visible while a dynamic catalog is loading", () => {
+    const layout = buildModelPickerLayout({
+      models: [],
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "pi" },
+      focusedIndex: 0,
+      searchMode: false,
+      refreshingProvider: "pi",
+    });
+    expect(layout.refreshingProvider).toBe("pi");
   });
 
   it("gates Cursor model availability on the interface mode", () => {
@@ -83,6 +104,16 @@ describe("buildModelPickerLayout", () => {
     expect(build("chat")).toEqual({ sdkOnly: true, cliOnly: false });
     // CLI interface: the mirror image.
     expect(build("cli")).toEqual({ sdkOnly: false, cliOnly: true });
+  });
+
+  it("keeps configured CLI-only Pi available only in CLI mode", () => {
+    const status = {
+      providerConnections: { pi: { authAvailable: true, runtimeAvailable: false } },
+      piInstallation: { sdkAvailable: false, cliAvailable: true, availableModelIds: [] },
+    } as unknown as AiSettingsStatus;
+
+    expect(modelPickerProviderAuthStatus(status, "pi", "chat")).toBe("unavailable");
+    expect(modelPickerProviderAuthStatus(status, "pi", "cli")).toBe("ready");
   });
 
   it("shows static Anthropic rows immediately before the runtime catalog warms", () => {
@@ -149,6 +180,109 @@ describe("buildModelPickerLayout", () => {
     });
     expect(layout.entries.some((entry) => entry.modelId === "anthropic/claude-sonnet-5")).toBe(true);
     expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
+  });
+
+  it("keeps Pi profile subsections distinct and searchable", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: "2026-05-29T00:00:00.000Z",
+      groups: [{
+        key: "pi",
+        displayName: "Pi",
+        providers: [{
+          key: "openai-codex",
+          displayName: "OpenAI Codex",
+          badgeColor: "#F97316",
+          modelCount: 2,
+          subsections: [
+            {
+              key: "__piprov__:default:openai-codex",
+              label: "OpenAI Codex",
+              models: [{
+                id: "pi/default/openai-codex/gpt-5.4",
+                runtimeModelId: "openai-codex/gpt-5.4",
+                provider: "pi",
+                providerKey: "openai-codex",
+                groupKey: "pi",
+                family: "openai",
+                providerId: "openai-codex",
+                providerName: "OpenAI Codex",
+                displayName: "GPT-5.4",
+                isDefault: true,
+                isAvailable: true,
+              }],
+            },
+            {
+              key: "__piprov__:team:openai-codex",
+              label: "OpenAI Codex · team",
+              models: [{
+                id: "pi/team/openai-codex/gpt-5.5",
+                runtimeModelId: "openai-codex/gpt-5.5",
+                provider: "pi",
+                providerKey: "openai-codex",
+                groupKey: "pi",
+                family: "openai",
+                providerId: "openai-codex",
+                providerName: "OpenAI Codex",
+                displayName: "GPT-5.5",
+                isDefault: false,
+                isAvailable: true,
+              }],
+            },
+          ],
+        }],
+      }],
+    };
+
+    const baseInput = {
+      models: [],
+      catalog,
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      focusedIndex: 0,
+      searchMode: false,
+    };
+    const layout = buildModelPickerLayout({
+      ...baseInput,
+      query: "",
+      selection: { kind: "provider", provider: "pi" },
+    });
+
+    expect(layout.providerTabs).toEqual([
+      { key: "__piprov__:default:openai-codex", label: "OpenAI Codex" },
+      { key: "__piprov__:team:openai-codex", label: "OpenAI Codex · team" },
+    ]);
+    expect(layout.entries).toHaveLength(1);
+    expect(layout.entries[0]).toMatchObject({
+      modelId: "pi/default/openai-codex/gpt-5.4",
+      subProvider: "OpenAI Codex",
+      subProviderKey: "__piprov__:default:openai-codex",
+    });
+
+    const teamLayout = buildModelPickerLayout({
+      ...baseInput,
+      query: "",
+      providerTabKey: "__piprov__:team:openai-codex",
+      selection: { kind: "provider", provider: "pi" },
+    });
+    expect(teamLayout.entries).toHaveLength(1);
+    expect(teamLayout.entries[0]).toMatchObject({
+      modelId: "pi/team/openai-codex/gpt-5.5",
+      subProvider: "OpenAI Codex · team",
+      subProviderKey: "__piprov__:team:openai-codex",
+    });
+
+    const searchLayout = buildModelPickerLayout({
+      ...baseInput,
+      query: "team",
+      searchMode: true,
+      selection: { kind: "provider", provider: "pi" },
+    });
+    expect(searchLayout.entries.find((entry) => entry.modelId === "pi/team/openai-codex/gpt-5.5")).toMatchObject({
+      modelId: "pi/team/openai-codex/gpt-5.5",
+      subProvider: "OpenAI Codex · team",
+      subProviderKey: "__piprov__:team:openai-codex",
+    });
   });
 
   it("orders recents by insertion order", () => {
@@ -299,6 +433,7 @@ describe("modelPickerController", () => {
     expect(modelPickerRefreshProvider("droid")).toBe("droid");
     expect(modelPickerRefreshProvider("lmstudio")).toBe("lmstudio");
     expect(modelPickerRefreshProvider("ollama")).toBe("ollama");
+    expect(modelPickerRefreshProvider("pi")).toBe("pi");
     expect(modelPickerRefreshProvider("codex")).toBeNull();
     expect(modelPickerRefreshProvider("claude")).toBeNull();
   });
@@ -325,6 +460,7 @@ describe("modelPickerController", () => {
       recents: ["anthropic/claude-sonnet-5"],
       modelState,
       aiStatus: null,
+      refreshingProvider: "pi",
     })).toMatchObject({
       query: "sonnet",
       searchMode: true,
@@ -336,6 +472,7 @@ describe("modelPickerController", () => {
       activeReasoningEffort: "medium",
       interfaceMode: "chat",
       laneLabel: "purpose-lane",
+      refreshingProvider: "pi",
     });
   });
 });

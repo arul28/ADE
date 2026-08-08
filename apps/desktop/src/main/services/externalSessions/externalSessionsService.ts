@@ -27,6 +27,7 @@ import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
+import { discoverPiSessions } from "./discoverPi";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
@@ -108,7 +109,7 @@ type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
   enforceLaneScopeCwd?: string | null;
 };
 
-const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
+const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode", "pi"];
 const UUID_EXTERNAL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
 const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
@@ -149,6 +150,13 @@ const PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapa
     forkIntoDifferentCwd: false,
     importToChat: false,
   },
+  pi: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
 };
 
 type ImportedSessionRef = NonNullable<ExternalSessionSummary["importedSessionRef"]>;
@@ -159,6 +167,7 @@ const CHAT_SESSION_TOOL_TYPES = new Set<TerminalToolType>([
   "opencode-chat",
   "cursor",
   "droid-chat",
+  "pi-chat",
 ]);
 
 function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
@@ -463,6 +472,10 @@ async function forkCommandFor(args: {
     return `${buildTrackedCliResumeCommand(forkMetadata, args.overrides)} --fork`;
   }
 
+  if (args.provider === "pi") {
+    return commandArrayToLine(["pi", "--fork", validateExternalSessionId("pi", args.targetId)]);
+  }
+
   throw new Error("Cursor sessions cannot be forked.");
 }
 
@@ -587,6 +600,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     cursor: discoverCursorSessions,
     droid: discoverDroidSessions,
     opencode: discoverOpenCodeSessions,
+    pi: discoverPiSessions,
   };
 
   const list = async (rawArgs: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
@@ -878,10 +892,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       } else if (provider === "droid" || provider === "codex") {
         metadataTargetId = null;
         runCwd = laneCwd;
-      } else if (provider === "opencode") {
-        if (!sourceCwd) throw new Error("OpenCode fork import requires the source session cwd.");
+      } else if (provider === "opencode" || provider === "pi") {
+        if (!sourceCwd) throw new Error(`${provider === "pi" ? "Pi" : "OpenCode"} fork import requires the source session cwd.`);
         if (!pathsEqual(realishPath(sourceCwd), realishPath(laneCwd))) {
-          throw new Error("OpenCode sessions cannot be copied into a different lane folder.");
+          throw new Error(`${provider === "pi" ? "Pi" : "OpenCode"} sessions cannot be copied into a different lane folder.`);
         }
         metadataTargetId = null;
         runCwd = sourceCwd;

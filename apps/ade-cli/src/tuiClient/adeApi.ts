@@ -372,6 +372,7 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "opencode-chat",
   "cursor",
   "droid-chat",
+  "pi-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
@@ -380,6 +381,7 @@ const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
   "cursor",
   "droid",
   "opencode",
+  "pi",
 ]);
 
 /**
@@ -400,6 +402,7 @@ export function trackedCliTerminalProvider(session: ChatTerminalSession): AdeCod
   if (toolType.startsWith("cursor")) return "cursor";
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
+  if (toolType.startsWith("pi")) return "pi";
   if (toolType.startsWith("claude")) return "claude";
   const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
   return resumeCommand && /\bclaude\b/.test(resumeCommand) ? "claude" : null;
@@ -454,8 +457,8 @@ export async function signalTerminal(
   await connection.action("terminal", "signal", { terminalId, signal });
 }
 
-/** The five provider CLIs the TUI can launch as a tracked terminal session. */
-export type CliTerminalProvider = Extract<AdeCodeProvider, "claude" | "codex" | "cursor" | "droid" | "opencode">;
+/** Provider CLIs the TUI can launch as tracked terminal sessions. */
+export type CliTerminalProvider = Extract<AdeCodeProvider, "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi">;
 
 export type StartCliTerminalSessionResult = {
   provider: string;
@@ -686,7 +689,7 @@ export async function getAvailableModels(
     // IDs such as `claude-opus-4-6-fast`, not a separate service-tier toggle.
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
-    activateRuntime: provider === "cursor" || provider === "droid",
+    activateRuntime: provider === "cursor" || provider === "droid" || provider === "pi",
     ...(provider === "cursor" ? { cursorSource } : {}),
   });
 }

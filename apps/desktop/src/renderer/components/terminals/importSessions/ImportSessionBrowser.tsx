@@ -36,10 +36,11 @@ const PROVIDER_FILTERS: Array<{ id: ExternalSessionProvider | "all"; label: stri
   { id: "cursor", label: "Cursor" },
   { id: "droid", label: "Droid" },
   { id: "opencode", label: "OpenCode" },
+  { id: "pi", label: "Pi" },
 ];
 
 /** Every provider we scan when no specific filter is applied. */
-const ALL_PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
+const ALL_PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode", "pi"];
 
 type ProviderFilter = ExternalSessionProvider | "all";
 

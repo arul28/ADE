@@ -11,6 +11,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   droid: "Droid",
   factory: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
   ade: "ADE",
   agent: "Agent",
 };
@@ -34,6 +35,7 @@ const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 export function providerDisplayLabel(

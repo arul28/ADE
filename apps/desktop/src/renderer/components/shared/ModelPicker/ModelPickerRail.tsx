@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useRef } from "react";
 import { Star, Clock } from "@phosphor-icons/react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
@@ -32,6 +32,26 @@ export const ModelPickerRail = memo(function ModelPickerRail({
   onSelect,
   providerAuthStatus,
 }: ModelPickerRailProps) {
+  const buttonRefs = useRef(new Map<RailSelection, HTMLButtonElement>());
+  const handleRailKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? Math.max(0, entries.length - 1)
+        : Math.min(
+            Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
+            Math.max(0, entries.length - 1),
+          );
+    const next = entries[nextIndex];
+    if (!next) return;
+    const nextKey = entryKey(next);
+    onSelect(nextKey);
+    buttonRefs.current.get(nextKey)?.focus();
+  }, [entries, onSelect]);
+
   return (
     <div
       role="tablist"
@@ -58,6 +78,13 @@ export const ModelPickerRail = memo(function ModelPickerRail({
             authStatus={dot}
             onSelect={onSelect}
             showDivider={showDivider}
+            index={index}
+            tabIndex={isSelected ? 0 : -1}
+            onKeyDown={handleRailKeyDown}
+            refCallback={(node) => {
+              if (node) buttonRefs.current.set(key, node);
+              else buttonRefs.current.delete(key);
+            }}
           />
         );
       })}
@@ -72,6 +99,10 @@ const RailButton = memo(function RailButton({
   authStatus,
   onSelect,
   showDivider,
+  index,
+  tabIndex,
+  onKeyDown,
+  refCallback,
 }: {
   entry: RailEntry;
   selectionKey: RailSelection;
@@ -79,6 +110,10 @@ const RailButton = memo(function RailButton({
   authStatus: AuthStatus;
   onSelect: (selection: RailSelection) => void;
   showDivider: boolean;
+  index: number;
+  tabIndex: 0 | -1;
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => void;
+  refCallback: (node: HTMLButtonElement | null) => void;
 }) {
   const handleClick = useCallback(() => onSelect(selectionKey), [onSelect, selectionKey]);
 
@@ -109,13 +144,17 @@ const RailButton = memo(function RailButton({
     <>
       {showDivider ? <div className="my-0.5 h-px bg-white/[0.05]" aria-hidden /> : null}
       <button
+        ref={refCallback}
         type="button"
         role="tab"
         aria-selected={isSelected}
+        aria-controls="model-picker-model-list"
+        tabIndex={tabIndex}
         aria-label={label}
         title={label}
         data-rail-selection={selectionKey}
         onClick={handleClick}
+        onKeyDown={(event) => onKeyDown(event, index)}
         className={cn(
           "relative inline-flex aspect-square w-full items-center justify-center rounded-md transition-colors duration-100",
           isSelected

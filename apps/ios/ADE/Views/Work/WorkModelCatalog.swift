@@ -13,8 +13,9 @@ struct WorkModelOption: Identifiable, Hashable {
   /// Short one-line pitch — "Fastest · cheapest" / "Best for deep reasoning".
   let tagline: String
   /// Provider family key that maps to a `providerAssetName` logo + tint
-  /// (e.g. "claude" for the CLAUDE brand avatar). For OpenCode-routed
-  /// models this is still the upstream family so the logo stays brand-true.
+  /// (e.g. "claude" for the CLAUDE brand avatar). Routed runtimes such as Pi
+  /// intentionally keep their runtime identity here; the upstream provider is
+  /// retained separately in the Pi metadata fields below.
   let provider: String
   /// Reasoning efforts supplied by the paired desktop host. Empty means the
   /// host did not advertise a selectable reasoning control for this model.
@@ -24,6 +25,12 @@ struct WorkModelOption: Identifiable, Hashable {
   let serviceTiers: [String]
   let cursorAvailability: CursorModelAvailability?
   let isAvailable: Bool
+  /// Runtime model reference and native Pi identity supplied by the host.
+  /// These are optional so older hosts and non-Pi models remain compatible.
+  let runtimeModelId: String?
+  let piProfileId: String?
+  let piProviderId: String?
+  let piModelId: String?
 
   init(
     id: String,
@@ -35,7 +42,11 @@ struct WorkModelOption: Identifiable, Hashable {
     defaultReasoningEffort: String? = nil,
     serviceTiers: [String] = [],
     cursorAvailability: CursorModelAvailability? = nil,
-    isAvailable: Bool = true
+    isAvailable: Bool = true,
+    runtimeModelId: String? = nil,
+    piProfileId: String? = nil,
+    piProviderId: String? = nil,
+    piModelId: String? = nil
   ) {
     self.id = id
     self.displayName = displayName
@@ -47,7 +58,66 @@ struct WorkModelOption: Identifiable, Hashable {
     self.serviceTiers = serviceTiers
     self.cursorAvailability = cursorAvailability
     self.isAvailable = isAvailable
+    self.runtimeModelId = runtimeModelId
+    self.piProfileId = piProfileId
+    self.piProviderId = piProviderId
+    self.piModelId = piModelId
   }
+}
+
+/// Native Pi model identity carried by ADE's canonical model id:
+/// `pi/<profile>/<provider>/<encoded-model>`.
+///
+/// Pi's profile and model components are percent-encoded by the desktop
+/// registry. The provider component is intentionally left readable in the
+/// canonical id, but decoding it as well keeps this helper tolerant of older
+/// or hand-authored catalog payloads.
+struct WorkPiModelMetadata: Equatable, Hashable {
+  let profileId: String
+  let providerId: String
+  let modelId: String
+}
+
+func workPiModelMetadata(for rawModelId: String) -> WorkPiModelMetadata? {
+  let trimmed = rawModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+  guard parts.count >= 4, parts[0].lowercased() == "pi" else { return nil }
+
+  func decoded(_ value: String) -> String {
+    value.removingPercentEncoding ?? value
+  }
+
+  let profileId = decoded(String(parts[1]))
+  let providerId = decoded(String(parts[2]))
+  let modelId = decoded(parts.dropFirst(3).map(String.init).joined(separator: "/"))
+  guard !profileId.isEmpty, !providerId.isEmpty, !modelId.isEmpty else { return nil }
+  return WorkPiModelMetadata(profileId: profileId, providerId: providerId, modelId: modelId)
+}
+
+/// Resolve explicit Pi metadata when the host provided it, falling back to
+/// the canonical id. This keeps native provider/model references intact across
+/// both new and older catalog payloads.
+func workResolvedPiModelMetadata(
+  modelId: String,
+  profileId: String? = nil,
+  providerId: String? = nil,
+  piModelId: String? = nil
+) -> WorkPiModelMetadata? {
+  let parsed = workPiModelMetadata(for: modelId)
+  func nonEmpty(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+  }
+  guard let resolvedProfile = nonEmpty(profileId) ?? parsed?.profileId,
+        let resolvedProvider = nonEmpty(providerId) ?? parsed?.providerId,
+        let resolvedModel = nonEmpty(piModelId) ?? parsed?.modelId else {
+    return nil
+  }
+  return WorkPiModelMetadata(
+    profileId: resolvedProfile,
+    providerId: resolvedProvider,
+    modelId: resolvedModel
+  )
 }
 
 extension WorkModelOption {
@@ -135,6 +205,7 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "codex": return "codex"
   case "cursor": return "cursor"
   case "droid": return "droid"
+  case "pi": return "pi"
   default: return "opencode"
   }
 }
@@ -206,7 +277,7 @@ struct WorkModelProvider: Identifiable, Hashable {
 /// the desktop `ModelCatalogPanel` group layout.
 struct WorkModelCatalogGroup: Identifiable, Hashable {
   var id: String { key }
-  /// Runtime key: "claude" | "codex" | "cursor" | "opencode".
+  /// Runtime key: "claude" | "codex" | "cursor" | "droid" | "pi" | "opencode".
   let key: String
   let displayName: String
   let providers: [WorkModelProvider]
@@ -228,7 +299,7 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-private let workModelGroupOrder = ["claude", "codex", "cursor", "droid", "opencode", "ollama", "lmstudio"]
+private let workModelGroupOrder = ["claude", "codex", "pi", "cursor", "droid", "opencode", "ollama", "lmstudio"]
 
 private func workClaudeOpus5ReasoningEfforts() -> [AgentChatModelReasoningEffort] {
   [
@@ -656,13 +727,49 @@ func workModelCatalogGroups(
   currentProvider: String
 ) -> [WorkModelCatalogGroup] {
   let groups = hostCatalog.groups.map { group in
-    WorkModelCatalogGroup(
-      key: group.key,
-      displayName: group.displayName,
-      providers: group.providers.map { provider in
+    let isPiGroup = group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pi"
+    let providers: [WorkModelProvider]
+    if isPiGroup {
+      // A Pi subsection carries the profile/provider identity. Flattening all
+      // subsections into one provider makes two profiles with the same
+      // upstream provider indistinguishable in the mobile picker.
+      providers = group.providers.flatMap { provider in
+        if provider.subsections.isEmpty {
+          return []
+        }
+        return provider.subsections.compactMap { subsection -> WorkModelProvider? in
+          let models = workDeduplicatedModelOptions(
+            subsection.models.map { model in
+              workCatalogModelOption(
+                from: model,
+                topLevelProvider: group.key,
+                providerKey: provider.key
+              )
+            }
+          )
+          guard !models.isEmpty else { return nil }
+          let sectionKey = workPiProviderSectionKey(
+            subsection: subsection,
+            providerKey: provider.key,
+            models: models
+          )
+          return WorkModelProvider(
+            key: sectionKey,
+            displayName: workPiProviderSectionLabel(
+              key: sectionKey,
+              fallbackLabel: subsection.label,
+              providerKey: provider.key,
+              models: models
+            ),
+            models: models
+          )
+        }
+      }
+    } else {
+      providers = group.providers.map { provider in
         let models = provider.subsections
           .flatMap(\.models)
-	          .map { model in
+          .map { model in
             workCatalogModelOption(
               from: model,
               topLevelProvider: group.key,
@@ -679,7 +786,12 @@ func workModelCatalogGroups(
           )
         )
       }
-	      .filter { !$0.models.isEmpty }
+    }
+
+    WorkModelCatalogGroup(
+      key: group.key,
+      displayName: group.displayName,
+      providers: providers.filter { !$0.models.isEmpty }
     )
   }
   .filter { !$0.providers.isEmpty }
@@ -696,6 +808,19 @@ private func workCatalogModelOption(
   topLevelProvider: String,
   providerKey: String
 ) -> WorkModelOption {
+  let piMetadata = workResolvedPiModelMetadata(
+    modelId: model.id,
+    profileId: model.piProfileId,
+    providerId: model.piProviderId,
+    piModelId: model.piModelId
+  ) ?? model.modelId.flatMap {
+    workResolvedPiModelMetadata(
+      modelId: $0,
+      profileId: model.piProfileId,
+      providerId: model.piProviderId,
+      piModelId: model.piModelId
+    )
+  }
   let reasoningModelId = workCanonicalCodexRegistryId(for: model.id)
     ?? workCanonicalCodexRegistryId(for: model.runtimeModelId)
     ?? model.id
@@ -736,7 +861,11 @@ private func workCatalogModelOption(
     ),
     serviceTiers: model.serviceTiers ?? [],
     cursorAvailability: model.cursorAvailability,
-    isAvailable: model.isAvailable
+    isAvailable: model.isAvailable,
+    runtimeModelId: model.runtimeModelId,
+    piProfileId: piMetadata?.profileId,
+    piProviderId: piMetadata?.providerId,
+    piModelId: piMetadata?.modelId
   )
 }
 
@@ -967,6 +1096,15 @@ private func workProviderDisplayName(
   providerKey: String,
   curatedGroups: [WorkModelCatalogGroup]
 ) -> String {
+  if groupKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pi" {
+    if let parts = workPiProviderSectionParts(providerKey) {
+      let providerLabel = workPiProviderLabel(parts.providerId)
+      return parts.profileId.caseInsensitiveCompare("default") == .orderedSame
+        ? providerLabel
+        : "\(providerLabel) · \(parts.profileId)"
+    }
+    return workPiProviderLabel(providerKey)
+  }
   if let curated = curatedGroups
     .first(where: { $0.key == groupKey })?
     .providers
@@ -988,6 +1126,126 @@ private func workProviderDisplayName(
   case "cursor": return "Cursor"
   case "factory": return "Droid Core"
   default: return providerKey.capitalized
+  }
+}
+
+/// Human-readable upstream provider labels used inside the Pi rail. Keep the
+/// runtime rail branded as Pi while making a provider tab such as
+/// `openai-codex` immediately understandable.
+private let workPiProviderSectionPrefix = "__piprov__:"
+
+private let workPiProviderSectionAllowedCharacters: CharacterSet = {
+  CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+}()
+
+private func workPiEncodedSectionComponent(_ value: String) -> String {
+  value.addingPercentEncoding(withAllowedCharacters: workPiProviderSectionAllowedCharacters) ?? value
+}
+
+private func workPiDecodedSectionComponent(_ value: Substring) -> String {
+  String(value).removingPercentEncoding ?? String(value)
+}
+
+func workPiProviderSectionKey(profileId: String, providerId: String) -> String {
+  "\(workPiProviderSectionPrefix)\(workPiEncodedSectionComponent(profileId)):\(workPiEncodedSectionComponent(providerId))"
+}
+
+private func workPiProviderSectionParts(_ key: String) -> (profileId: String, providerId: String)? {
+  guard key.hasPrefix(workPiProviderSectionPrefix) else { return nil }
+  let body = key.dropFirst(workPiProviderSectionPrefix.count)
+  let parts = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+  guard parts.count == 2 else { return nil }
+  let profileId = workPiDecodedSectionComponent(parts[0])
+  let providerId = workPiDecodedSectionComponent(parts[1])
+  guard !profileId.isEmpty, !providerId.isEmpty else { return nil }
+  return (profileId: profileId, providerId: providerId)
+}
+
+private func workPiProviderSectionKey(
+  subsection: AgentChatModelCatalogSubsection,
+  providerKey: String,
+  models: [WorkModelOption]
+) -> String {
+  if workPiProviderSectionParts(subsection.key) != nil {
+    return subsection.key
+  }
+  if let metadata = models.compactMap({
+    workResolvedPiModelMetadata(
+      modelId: $0.id,
+      profileId: $0.piProfileId,
+      providerId: $0.piProviderId,
+      piModelId: $0.piModelId
+    )
+  }).first {
+    return workPiProviderSectionKey(profileId: metadata.profileId, providerId: metadata.providerId)
+  }
+  // Older hosts may send a non-profiled Pi subsection. Keep it distinct per
+  // upstream provider instead of allowing duplicate SwiftUI ids.
+  return "\(providerKey):\(subsection.key)"
+}
+
+private func workPiProviderSectionLabel(
+  key: String,
+  fallbackLabel: String,
+  providerKey: String,
+  models: [WorkModelOption]
+) -> String {
+  if let parts = workPiProviderSectionParts(key) {
+    let providerLabel = workPiProviderLabel(parts.providerId)
+    return parts.profileId.caseInsensitiveCompare("default") == .orderedSame
+      ? providerLabel
+      : "\(providerLabel) · \(parts.profileId)"
+  }
+  if let metadata = models.compactMap({
+    workResolvedPiModelMetadata(
+      modelId: $0.id,
+      profileId: $0.piProfileId,
+      providerId: $0.piProviderId,
+      piModelId: $0.piModelId
+    )
+  }).first {
+    let providerLabel = workPiProviderLabel(metadata.providerId)
+    return metadata.profileId.caseInsensitiveCompare("default") == .orderedSame
+      ? providerLabel
+      : "\(providerLabel) · \(metadata.profileId)"
+  }
+  let fallback = fallbackLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+  return fallback.isEmpty || fallback.caseInsensitiveCompare("models") == .orderedSame
+    ? workPiProviderLabel(providerKey)
+    : fallback
+}
+
+func workPiModelContextLabel(for model: WorkModelOption) -> String? {
+  guard let metadata = workResolvedPiModelMetadata(
+    modelId: model.id,
+    profileId: model.piProfileId,
+    providerId: model.piProviderId,
+    piModelId: model.piModelId
+  ) else { return nil }
+  return "\(workPiProviderLabel(metadata.providerId)) · \(metadata.profileId)"
+}
+
+func workPiProviderLabel(_ provider: String) -> String {
+  let normalized = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  switch normalized {
+  case "anthropic": return "Anthropic"
+  case "openai": return "OpenAI"
+  case "openai-codex": return "OpenAI Codex"
+  case "google": return "Google"
+  case "google-gemini-cli": return "Google Gemini CLI"
+  case "google-antigravity": return "Google Antigravity"
+  case "mistral": return "Mistral"
+  case "deepseek": return "DeepSeek"
+  case "github-copilot": return "GitHub Copilot"
+  case "xai": return "xAI"
+  case "groq": return "Groq"
+  default:
+    return normalized
+      .replacingOccurrences(of: "-", with: " ")
+      .replacingOccurrences(of: "_", with: " ")
+      .split(separator: " ")
+      .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+      .joined(separator: " ")
   }
 }
 
@@ -1020,6 +1278,23 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
   let normalizedFamily = model.family?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
 
   switch topLevelProvider {
+  case "pi":
+    if let metadata = workResolvedPiModelMetadata(
+      modelId: model.id,
+      profileId: model.piProfileId,
+      providerId: model.piProviderId,
+      piModelId: model.piModelId
+    ) ?? model.modelId.flatMap({
+      workResolvedPiModelMetadata(
+        modelId: $0,
+        profileId: model.piProfileId,
+        providerId: model.piProviderId,
+        piModelId: model.piModelId
+      )
+    }) {
+      return workPiProviderSectionKey(profileId: metadata.profileId, providerId: metadata.providerId)
+    }
+    return normalizedFamily.isEmpty ? "pi" : normalizedFamily
   case "claude":
     return "anthropic"
   case "codex":
@@ -1084,6 +1359,7 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
 private func workModelBrandKey(topLevelProvider: String, providerKey: String) -> String {
   if topLevelProvider == "claude" { return "claude" }
   if topLevelProvider == "codex" { return "codex" }
+  if topLevelProvider == "pi" { return "pi" }
 
   switch providerKey {
   case "anthropic": return "claude"
@@ -1098,6 +1374,19 @@ private func workDynamicModelOption(
   providerKey: String,
   curated: WorkModelOption?
 ) -> WorkModelOption {
+  let piMetadata = workResolvedPiModelMetadata(
+    modelId: model.id,
+    profileId: model.piProfileId,
+    providerId: model.piProviderId,
+    piModelId: model.piModelId
+  ) ?? model.modelId.flatMap {
+    workResolvedPiModelMetadata(
+      modelId: $0,
+      profileId: model.piProfileId,
+      providerId: model.piProviderId,
+      piModelId: model.piModelId
+    )
+  }
   let reasoningModelId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
     ?? model.id
   let displayName = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1128,7 +1417,9 @@ private func workDynamicModelOption(
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id, curated: curated),
     tagline: tagline,
-    provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
+    provider: topLevelProvider.lowercased() == "pi"
+      ? "pi"
+      : (curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey)),
     reasoningEfforts: workVisibleReasoningEfforts(
       modelId: reasoningModelId,
       advertised: model.reasoningEfforts,
@@ -1140,7 +1431,13 @@ private func workDynamicModelOption(
       fallback: curated?.defaultReasoningEffort
     ),
     serviceTiers: model.serviceTiers ?? curated?.serviceTiers ?? [],
-    cursorAvailability: model.cursorAvailability
+    cursorAvailability: model.cursorAvailability,
+    runtimeModelId: topLevelProvider.lowercased() == "pi"
+      ? piMetadata.map { "\($0.providerId)/\($0.modelId)" } ?? model.modelId
+      : model.modelId,
+    piProfileId: piMetadata?.profileId,
+    piProviderId: piMetadata?.providerId,
+    piModelId: piMetadata?.modelId
   )
 }
 
@@ -1226,17 +1523,33 @@ private func injectCurrentWorkModelIfNeeded(
     if !alreadyPresent {
       let providerLower = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
-      let providerKey = providerLower.isEmpty ? "other" : providerLower
+      let piMetadata = workResolvedPiModelMetadata(modelId: currentModelId)
+      let providerKey = targetGroupKey == "pi"
+        ? (piMetadata.map { workPiProviderSectionKey(profileId: $0.profileId, providerId: $0.providerId) }
+          ?? (providerLower.isEmpty ? "pi" : providerLower))
+        : (providerLower.isEmpty ? "other" : providerLower)
       let injected = WorkModelOption(
         id: currentModelId,
         displayName: currentModelId,
         tier: .balanced,
         tagline: "In use on the paired machine",
-        provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey)
+        provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey),
+        runtimeModelId: targetGroupKey == "pi" ? currentModelId : nil,
+        piProfileId: piMetadata?.profileId,
+        piProviderId: piMetadata?.providerId,
+        piModelId: piMetadata?.modelId
       )
       if let groupIndex = groups.firstIndex(where: { $0.key == targetGroupKey }) {
         let providers = groups[groupIndex].providers
-        let providerIndex = providers.firstIndex(where: { $0.key == providerKey }) ?? providers.startIndex
+        let providerIndex = providers.firstIndex(where: { $0.key == providerKey })
+          ?? (targetGroupKey == "pi" && piMetadata != nil
+            ? providers.firstIndex(where: { provider in
+              workPiProviderSectionParts(provider.key).map {
+                $0.profileId == piMetadata?.profileId && $0.providerId == piMetadata?.providerId
+              } ?? false
+            })
+            : nil)
+          ?? providers.startIndex
         if !providers.isEmpty {
           var rebuilt = providers
           let targetProvider = rebuilt[providerIndex]
@@ -1274,6 +1587,12 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   let provider = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let modelId = currentModelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
+  // Pi is a routed runtime, not an upstream provider. Check its canonical
+  // namespace before model-name heuristics so `pi/.../gpt...` never becomes
+  // Codex and `pi/.../claude...` never becomes Claude.
+  if provider == "pi" || modelId.hasPrefix("pi/") {
+    return "pi"
+  }
   if provider == "lmstudio" || modelId.hasPrefix("opencode/lmstudio/") {
     return "lmstudio"
   }

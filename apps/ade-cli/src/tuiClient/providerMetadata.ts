@@ -8,6 +8,7 @@ export const TUI_PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string
   { value: "cursor", label: "Cursor" },
   { value: "droid", label: "Droid" },
   { value: "opencode", label: "OpenCode" },
+  { value: "pi", label: "Pi" },
   { value: "ollama", label: "Ollama" },
   { value: "lmstudio", label: "LM Studio" },
 ];
@@ -20,6 +21,7 @@ const PROVIDER_FAMILY_LABELS: Record<AdeCodeProvider, string> = {
   opencode: "OpenCode",
   cursor: "Cursor",
   droid: "Droid",
+  pi: "Pi",
   ollama: "Ollama",
   lmstudio: "LM Studio",
 };
@@ -39,6 +41,7 @@ export const PROVIDER_TOKEN_LABELS: Record<string, string> = {
   together: "Together",
   openrouter: "OpenRouter",
   opencode: "OpenCode",
+  pi: "Pi",
   droid: "Droid",
   factory: "Droid",
   cursor: "Cursor",
@@ -91,7 +94,7 @@ export function titleCaseProviderName(value: string): string {
 }
 
 export function refreshProviderForModelPicker(provider: AdeCodeProvider): AgentChatModelCatalogRefreshProvider | null {
-  return provider === "opencode" || provider === "cursor" || provider === "droid" || provider === "lmstudio" || provider === "ollama"
+  return provider === "opencode" || provider === "pi" || provider === "cursor" || provider === "droid" || provider === "lmstudio" || provider === "ollama"
     ? provider
     : null;
 }

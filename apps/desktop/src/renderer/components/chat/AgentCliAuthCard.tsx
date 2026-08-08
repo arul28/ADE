@@ -77,6 +77,7 @@ function CommandCopyButton({ command, label }: { command: string; label: string 
 
 function ShellRunButton({
   command,
+  initialInput,
   label,
   laneId,
   chatSessionId,
@@ -85,6 +86,7 @@ function ShellRunButton({
   onLaunched,
 }: {
   command: string;
+  initialInput?: string;
   label: string;
   laneId?: string | null;
   chatSessionId?: string | null;
@@ -118,6 +120,7 @@ function ShellRunButton({
         tracked: true,
         toolType: "shell",
         startupCommand: command,
+        ...(initialInput ? { initialInput, initialInputDelayMs: 1_200 } : {}),
       });
     })()
       .then((created) => {
@@ -132,7 +135,7 @@ function ShellRunButton({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setRunning(false));
-  }, [chatSessionId, command, disabled, label, laneId, onLaunched, onRevealTerminal]);
+  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal]);
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -305,7 +308,8 @@ export function AgentCliAuthCard({
                 </code>
                 <ShellRunButton
                   command={agentCli.authCommand}
-                  label={agentCli.agent === "claude" ? "Log in to Claude" : "Run auth"}
+                  {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
+                  label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
                   laneId={laneId}
                   chatSessionId={chatSessionId}
                   accent={accent}

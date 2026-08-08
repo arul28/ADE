@@ -72,6 +72,8 @@ struct WorkModelPickerSheet: View {
   @State private var fallbackLoginLanes: [LaneSummary] = []
   @State private var claudeLoginBusy = false
   @State private var claudeLoginError: String?
+  @State private var piLoginBusy = false
+  @State private var piLoginError: String?
 
   private var catalog: [WorkModelCatalogGroup] {
     if let liveCatalog {
@@ -135,6 +137,10 @@ struct WorkModelPickerSheet: View {
       ?? candidateLanes.first
   }
 
+  private var piLoginLane: LaneSummary? {
+    claudeLoginLane
+  }
+
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
@@ -183,7 +189,10 @@ struct WorkModelPickerSheet: View {
               },
               onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
               isClaudeLoginBusy: claudeLoginBusy,
-              claudeLoginError: claudeLoginError
+              claudeLoginError: claudeLoginError,
+              onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
+              isPiLoginBusy: piLoginBusy,
+              piLoginError: piLoginError
             )
           }
           Divider().overlay(ADEColor.glassBorder)
@@ -443,15 +452,18 @@ struct WorkModelPickerSheet: View {
 
   @ViewBuilder
   private var catalogEmptyState: some View {
+    let piSelected = providerFamilyKey(currentProvider) == "pi"
     VStack(spacing: 12) {
       Spacer(minLength: 24)
-      Image(systemName: "tray")
+      Image(systemName: piSelected ? "terminal.fill" : "tray")
         .font(.title3.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text("No models are currently available.")
+        .foregroundStyle(piSelected ? providerTint("pi") : ADEColor.textMuted)
+      Text(piSelected ? "No Pi models are available yet." : "No models are currently available.")
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
-      Text("Connect a provider on the paired machine or load a local model provider, then reopen the picker.")
+      Text(piSelected
+        ? "Use Pi’s native /login or configure a Pi provider on the paired machine, then reopen the picker."
+        : "Connect a provider on the paired machine or load a local model provider, then reopen the picker.")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
@@ -493,7 +505,7 @@ struct WorkModelPickerSheet: View {
   private func refreshCatalog(for groupKey: String) async {
     let refreshProvider: String?
     switch groupKey {
-    case "opencode", "cursor", "droid", "lmstudio", "ollama":
+    case "opencode", "cursor", "droid", "pi", "lmstudio", "ollama":
       refreshProvider = groupKey
     default:
       refreshProvider = nil
@@ -562,6 +574,33 @@ struct WorkModelPickerSheet: View {
       dismiss()
     } catch {
       claudeLoginError = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func openPiLoginTerminal() async {
+    guard !piLoginBusy else { return }
+    piLoginBusy = true
+    piLoginError = nil
+    defer { piLoginBusy = false }
+
+    do {
+      if piLoginLane == nil {
+        fallbackLoginLanes = try await syncService.fetchLanes(includeArchived: false)
+      }
+      guard let lane = piLoginLane else {
+        piLoginError = "No active lane is available."
+        return
+      }
+      // Pi owns its OAuth/device-code exchange. ADE only opens the native Pi
+      // CLI and sends `/login` through the paired PTY; credentials stay in
+      // the user's Pi profile on the desktop.
+      let result = try await syncService.startPiLoginTerminal(laneId: lane.id)
+      let sessionId = result.session?.id ?? result.sessionId
+      syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: sessionId)
+      dismiss()
+    } catch {
+      piLoginError = error.localizedDescription
     }
   }
 
@@ -824,6 +863,9 @@ struct ModelPickerContentPane: View {
   let onClaudeLogin: (() -> Void)?
   let isClaudeLoginBusy: Bool
   let claudeLoginError: String?
+  let onPiLogin: (() -> Void)?
+  let isPiLoginBusy: Bool
+  let piLoginError: String?
 
   private var favoritesSet: Set<String> { Set(favorites) }
 
@@ -851,12 +893,26 @@ struct ModelPickerContentPane: View {
     return rows.contains { !$0.isAvailable && providerFamilyKey($0.provider) == "claude" }
   }
 
+  private var showsPiLoginAction: Bool {
+    guard onPiLogin != nil else { return false }
+    let rows = groupedRows.flatMap(\.models)
+    if case .providerGroup(let key, _) = selection, key == "pi" {
+      return rows.contains { !$0.isAvailable }
+    }
+    return rows.contains {
+      !$0.isAvailable && (providerFamilyKey($0.provider) == "pi" || $0.id.lowercased().hasPrefix("pi/"))
+    }
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
       providerTabStrip
       if showsClaudeLoginAction {
         claudeLoginBanner
+      }
+      if showsPiLoginAction {
+        piLoginBanner
       }
       Divider().overlay(ADEColor.glassBorder)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
@@ -889,7 +945,9 @@ struct ModelPickerContentPane: View {
                     onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
                     onToggleFavorite: { onToggleFavorite(model.id) },
                     onClaudeLogin: onClaudeLogin,
-                    isClaudeLoginBusy: isClaudeLoginBusy
+                    isClaudeLoginBusy: isClaudeLoginBusy,
+                    onPiLogin: onPiLogin,
+                    isPiLoginBusy: isPiLoginBusy
                   )
                 }
               }
@@ -1008,6 +1066,71 @@ struct ModelPickerContentPane: View {
   }
 
   @ViewBuilder
+  private var piLoginBanner: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: "terminal.fill")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(providerTint("pi"))
+          .frame(width: 24, height: 24)
+          .background(providerTint("pi").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Pi is signed out")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Open Pi’s native login flow on the paired machine. ADE never stores Pi credentials.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 8)
+        Button {
+          onPiLogin?()
+        } label: {
+          HStack(spacing: 6) {
+            if isPiLoginBusy {
+              ProgressView()
+                .controlSize(.small)
+                .tint(ADEColor.textPrimary)
+            } else {
+              Image(systemName: "arrow.right.circle.fill")
+                .font(.caption.weight(.bold))
+            }
+            Text("Open Pi /login")
+              .font(.caption.weight(.bold))
+              .lineLimit(1)
+          }
+          .foregroundStyle(ADEColor.textPrimary)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 7)
+          .background(providerTint("pi").opacity(0.22), in: Capsule())
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(isPiLoginBusy)
+        .accessibilityLabel("Open Pi native login")
+      }
+      if let piLoginError, !piLoginError.isEmpty {
+        Text(piLoginError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(10)
+    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(providerTint("pi").opacity(0.32), lineWidth: 0.7)
+    )
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
+  }
+
+  @ViewBuilder
   private var header: some View {
     ZStack {
       HStack(spacing: 7) {
@@ -1102,7 +1225,7 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites: return "star"
     case .recents: return "clock"
-    case .providerGroup: return "cpu"
+    case .providerGroup(let key, _): return providerFamilyKey(key) == "pi" ? "terminal.fill" : "cpu"
     }
   }
 
@@ -1111,7 +1234,8 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites: return "No favorites yet."
     case .recents: return "No recent models."
-    case .providerGroup: return "No models in this provider."
+    case .providerGroup(let key, _):
+      return providerFamilyKey(key) == "pi" ? "No Pi models are available." : "No models in this provider."
     }
   }
 
@@ -1124,7 +1248,10 @@ struct ModelPickerContentPane: View {
       return "Tap the star on any model to pin it here. Favorites sync between desktop, TUI, and mobile."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
-    case .providerGroup:
+    case .providerGroup(let key, _):
+      if providerFamilyKey(key) == "pi" {
+        return "Use Pi’s native /login or configure a local Pi provider on the paired machine, then refresh."
+      }
       return "Sign in to this provider on the paired machine to load its models."
     }
   }
@@ -1152,6 +1279,8 @@ struct ModelPickerListRow: View {
   let onToggleFavorite: () -> Void
   let onClaudeLogin: (() -> Void)?
   let isClaudeLoginBusy: Bool
+  let onPiLogin: (() -> Void)?
+  let isPiLoginBusy: Bool
 
   private var isHighlighted: Bool {
     isSelected
@@ -1172,6 +1301,16 @@ struct ModelPickerListRow: View {
 
   private var showsClaudeLoginAction: Bool {
     !model.isAvailable && providerFamilyKey(model.provider) == "claude" && onClaudeLogin != nil
+  }
+
+  private var showsPiLoginAction: Bool {
+    !model.isAvailable
+      && (providerFamilyKey(model.provider) == "pi" || model.id.lowercased().hasPrefix("pi/"))
+      && onPiLogin != nil
+  }
+
+  private var piContextLabel: String? {
+    workPiModelContextLabel(for: model)
   }
 
   var body: some View {
@@ -1212,6 +1351,10 @@ struct ModelPickerListRow: View {
         claudeLoginButton
           .padding(.top, style == .detailed ? 7 : 5)
       }
+      if showsPiLoginAction {
+        piLoginButton
+          .padding(.top, style == .detailed ? 7 : 5)
+      }
     }
     .padding(.horizontal, style == .compact ? 10 : 11)
     .padding(.vertical, style == .compact ? 7 : 8)
@@ -1245,10 +1388,16 @@ struct ModelPickerListRow: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
+        if let piContextLabel {
+          Text(piContextLabel)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
       Spacer(minLength: 4)
     }
-    .accessibilityLabel("\(model.displayName)\(isSelected ? ". Selected." : "")")
+    .accessibilityLabel(modelAccessibilityLabel)
   }
 
   @ViewBuilder
@@ -1265,11 +1414,28 @@ struct ModelPickerListRow: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
+        if let piContextLabel {
+          Text(piContextLabel)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
       Spacer(minLength: 6)
       favoriteButton
     }
-    .accessibilityLabel("\(model.displayName)\(isSelected ? ". Selected." : "")")
+    .accessibilityLabel(modelAccessibilityLabel)
+  }
+
+  private var modelAccessibilityLabel: String {
+    [
+      model.displayName,
+      piContextLabel,
+      model.isAvailable ? "Available" : "Unavailable",
+      isSelected ? "Selected" : nil,
+    ]
+      .compactMap { $0 }
+      .joined(separator: ". ")
   }
 
   @ViewBuilder
@@ -1302,6 +1468,38 @@ struct ModelPickerListRow: View {
     .buttonStyle(.plain)
     .disabled(isClaudeLoginBusy)
     .accessibilityLabel("Login to Claude")
+  }
+
+  @ViewBuilder
+  private var piLoginButton: some View {
+    Button {
+      onPiLogin?()
+    } label: {
+      HStack(spacing: 6) {
+        if isPiLoginBusy {
+          ProgressView()
+            .controlSize(.small)
+            .tint(ADEColor.textPrimary)
+        } else {
+          Image(systemName: "terminal.fill")
+            .font(.caption.weight(.semibold))
+        }
+        Text("Open Pi /login")
+          .font(.caption.weight(.bold))
+          .lineLimit(1)
+      }
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background(providerTint("pi").opacity(0.18), in: Capsule())
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(isPiLoginBusy)
+    .accessibilityLabel("Open Pi native login")
   }
 
   @ViewBuilder
@@ -1430,6 +1628,12 @@ struct ModelPickerCurrentModelBar: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+        if let model, let piContextLabel = workPiModelContextLabel(for: model) {
+          Text(piContextLabel)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
 
       Spacer(minLength: 6)
@@ -1458,7 +1662,16 @@ struct ModelPickerCurrentModelBar: View {
       )
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Current model \(model?.displayName ?? "none"), reasoning \(reasoningLabel), \(fastModeAccessibilityLabel)")
+    .accessibilityLabel(
+      [
+        "Current model \(model?.displayName ?? "none")",
+        model.flatMap(workPiModelContextLabel(for:)),
+        "reasoning \(reasoningLabel)",
+        fastModeAccessibilityLabel,
+      ]
+      .compactMap { $0 }
+      .joined(separator: ", ")
+    )
   }
 
   private var fastModeStatusLabel: String {

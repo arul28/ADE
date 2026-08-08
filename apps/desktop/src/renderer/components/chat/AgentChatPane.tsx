@@ -1603,7 +1603,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode";
+type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
@@ -2847,6 +2847,7 @@ function chatToolTypeForProvider(provider: string | null | undefined): TerminalT
     case "claude": return "claude-chat";
     case "cursor": return "cursor";
     case "droid": return "droid-chat";
+    case "pi": return "pi-chat";
     default: return "opencode-chat";
   }
 }
@@ -5468,8 +5469,10 @@ export function AgentChatPane({
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
   }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
-    () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
-    [aiStatus],
+    () => (aiStatus
+      ? familiesFromStatus(aiStatus, { allowCliOnlyModels: workDraftKind === "cli" })
+      : undefined),
+    [aiStatus, workDraftKind],
   );
   const cursorCloudModelIds = useMemo(
     () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),

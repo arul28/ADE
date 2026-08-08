@@ -18,7 +18,8 @@ export type ProviderFamily =
   | "ollama"
   | "lmstudio"
   | "cursor"
-  | "factory";
+  | "factory"
+  | "pi";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
@@ -78,6 +79,10 @@ export type ModelDescriptor = {
   openCodeModelId?: string;
   /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
   customProxy?: boolean;
+  /** Pi dynamic inventory identity; the underlying family remains available for branding. */
+  piProfileId?: string;
+  piProviderId?: string;
+  piModelId?: string;
   /** Cursor models can be available through local CLI, Cursor SDK/API chat, or both. */
   cursorAvailability?: CursorModelAvailability;
   /** Concrete Cursor CLI ids reachable from an abstract picker row. */
@@ -96,7 +101,7 @@ export type DynamicLocalModelDescriptorOptions = {
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
-export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "droid";
+export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
 
 /** Select a valid reasoning tier without duplicating fallback policy in each UI. */
 export function selectSupportedReasoningEffort(args: {
@@ -115,7 +120,7 @@ export function selectSupportedReasoningEffort(args: {
 }
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
-  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid";
+  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid" || value === "pi";
 }
 
 export function modelSupportsServiceTier(
@@ -643,6 +648,8 @@ let byAlias = new Map<string, ModelDescriptor>();
 let bySdkModelId = new Map<string, ModelDescriptor>();
 let dynamicOpenCodeById = new Map<string, ModelDescriptor>();
 let dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
+let dynamicPiById = new Map<string, ModelDescriptor>();
+let dynamicPiByAlias = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
@@ -780,6 +787,149 @@ export function createDynamicLocalModelDescriptor(
     harnessProfile: options?.harnessProfile ?? "guarded",
     ...(options?.discoverySource ? { discoverySource: options.discoverySource } : {}),
   };
+}
+
+export type DynamicPiModelDescriptorOptions = {
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+  reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
+  aliases?: string[];
+  color?: string;
+  authTypes?: AuthType[];
+  profileId?: string;
+};
+
+/** Stable ADE id for a Pi-backed model: `pi/<profile>/<provider>/<encoded-model>`. */
+export function encodePiRegistryId(profileId: string, providerId: string, modelId: string): string {
+  const provider = providerId.trim();
+  const model = modelId.trim();
+  if (!provider) throw new Error("Pi provider id is required");
+  if (provider.includes("/")) throw new Error("Pi provider id cannot contain '/'");
+  if (!model) throw new Error("Pi model id is required");
+  return `pi/${encodeURIComponent(profileId.trim() || "default")}/${provider}/${encodeURIComponent(model)}`;
+}
+
+export function decodePiRegistryId(id: string): { profileId: string; providerId: string; modelId: string } | null {
+  const trimmed = id.trim();
+  if (!trimmed.toLowerCase().startsWith("pi/")) return null;
+  const parts = trimmed.slice(3).split("/");
+  if (parts.length < 3) return null;
+  const providerId = parts[1]?.trim() ?? "";
+  const encodedModel = parts.slice(2).join("/");
+  if (!providerId || !encodedModel) return null;
+  try {
+    const profileId = decodeURIComponent(parts[0] ?? "").trim();
+    const modelId = decodeURIComponent(encodedModel).trim();
+    return profileId && modelId ? { profileId, providerId, modelId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Human-readable label for the provider inside a Pi profile. */
+export function formatPiProviderLabel(providerId: string): string {
+  const normalized = providerId.trim().toLowerCase();
+  const known: Record<string, string> = {
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    "openai-codex": "OpenAI Codex",
+    google: "Google",
+    "google-gemini-cli": "Google Gemini CLI",
+    "google-antigravity": "Google Antigravity",
+    mistral: "Mistral",
+    deepseek: "DeepSeek",
+    xai: "xAI",
+    groq: "Groq",
+    together: "Together",
+    openrouter: "OpenRouter",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
+    "github-copilot": "GitHub Copilot",
+  };
+  if (known[normalized]) return known[normalized];
+  return normalized
+    .split(/[-_]+/u)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || providerId.trim();
+}
+
+function piFamilyForProvider(providerId: string): ProviderFamily {
+  const known: Record<string, ProviderFamily> = {
+    anthropic: "anthropic",
+    openai: "openai",
+    "openai-codex": "openai",
+    google: "google",
+    "google-gemini-cli": "google",
+    "google-antigravity": "google",
+    "google-vertex": "google",
+    mistral: "mistral",
+    deepseek: "deepseek",
+    xai: "xai",
+    groq: "groq",
+    together: "together",
+    openrouter: "openrouter",
+    ollama: "ollama",
+    lmstudio: "lmstudio",
+    factory: "factory",
+  };
+  return known[providerId.trim().toLowerCase()] ?? "opencode";
+}
+
+export function createDynamicPiModelDescriptor(
+  providerId: string,
+  modelId: string,
+  options?: DynamicPiModelDescriptorOptions,
+): ModelDescriptor {
+  const provider = providerId.trim();
+  const model = modelId.trim();
+  const profileId = options?.profileId?.trim() || "default";
+  const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
+  return {
+    id: encodePiRegistryId(profileId, provider, model),
+    shortId: model,
+    displayName: options?.displayName?.trim() || formatOpenCodeDisplayName(model),
+    family: piFamilyForProvider(provider),
+    authTypes: options?.authTypes?.length ? [...options.authTypes] : ["oauth", "api-key"],
+    contextWindow: options?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 32_000,
+    capabilities: {
+      tools: options?.capabilities?.tools ?? true,
+      vision: options?.capabilities?.vision ?? false,
+      reasoning: options?.capabilities?.reasoning ?? true,
+      streaming: options?.capabilities?.streaming ?? true,
+    },
+    color: options?.color ?? "#F97316",
+    providerRoute: "pi-sdk",
+    providerModelId: `${provider}/${model}`,
+    piProfileId: profileId,
+    piProviderId: provider,
+    piModelId: model,
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(options?.defaultReasoningEffort ? { defaultReasoningEffort: options.defaultReasoningEffort } : {}),
+    ...(aliases.length ? { aliases } : {}),
+    isCliWrapped: false,
+  };
+}
+
+export function replaceDynamicPiModelDescriptors(descriptors: ModelDescriptor[]): void {
+  dynamicPiById = new Map<string, ModelDescriptor>();
+  dynamicPiByAlias = new Map<string, ModelDescriptor>();
+  for (const descriptor of descriptors) {
+    if (descriptor.providerRoute !== "pi-sdk" || byId.has(descriptor.id)) continue;
+    dynamicPiById.set(descriptor.id, descriptor);
+    for (const alias of descriptor.aliases ?? []) {
+      const normalized = alias.trim().toLowerCase();
+      if (normalized) dynamicPiByAlias.set(normalized, descriptor);
+    }
+  }
+}
+
+export function getDynamicPiModelDescriptors(): ModelDescriptor[] {
+  return [...dynamicPiById.values()];
 }
 
 export type DynamicOpenCodeModelDescriptorOptions = {
@@ -1431,10 +1581,16 @@ export function getModelById(id: string): ModelDescriptor | undefined {
   const normalizedLower = normalized.toLowerCase();
   const cached = byId.get(normalized) ?? byId.get(normalizedLower);
   if (cached) return cached;
-  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower);
+  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower) ?? dynamicPiByAlias.get(normalizedLower);
   if (aliased) return aliased;
   const dynamicOpenCode = dynamicOpenCodeById.get(normalized);
   if (dynamicOpenCode) return dynamicOpenCode;
+  const dynamicPi = dynamicPiById.get(normalized);
+  if (dynamicPi) return dynamicPi;
+  const piDecoded = decodePiRegistryId(normalized);
+  if (piDecoded) {
+    return createDynamicPiModelDescriptor(piDecoded.providerId, piDecoded.modelId, { profileId: piDecoded.profileId });
+  }
   const openCodeDecoded = decodeOpenCodeRegistryId(normalized);
   if (openCodeDecoded) {
     return createDynamicOpenCodeModelDescriptor("", {
@@ -1489,26 +1645,37 @@ export function getAvailableModels(
       if (authType === "cli-subscription") return hasMappedCli(model.family);
       if (authType === "api-key") {
         return hasAuth(
-          (auth) => auth.type === "api-key" && (!auth.provider || auth.provider === model.family)
+          (auth) => auth.type === "api-key"
+            && (!auth.provider
+              || auth.provider === model.family
+              || (model.providerRoute === "pi-sdk" && auth.provider === model.piProviderId)),
         );
       }
       if (authType === "openrouter") return hasAuth((auth) => auth.type === "openrouter");
       if (authType === "local") return hasMappedLocal(model.family);
-      if (authType === "oauth") return hasAuth((auth) => auth.type === "oauth");
+      if (authType === "oauth") {
+        return hasAuth(
+          (auth) => auth.type === "oauth"
+            && (!auth.provider
+              || auth.provider === model.family
+              || (model.providerRoute === "pi-sdk" && auth.provider === model.piProviderId)),
+        );
+      }
       return false;
     });
 
   const staticModels = MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const dynamicPiModels = getDynamicPiModelDescriptors().filter(hasAuthForModel);
   const dynamicOpenCodeLocals = getDynamicOpenCodeModelDescriptors().filter(
     (model) => model.authTypes.includes("local") && hasAuthForModel(model),
   );
-  if (!dynamicOpenCodeLocals.length) return staticModels;
+  if (!dynamicPiModels.length && !dynamicOpenCodeLocals.length) return staticModels;
 
   const providersWithDynamicLocals = new Set(dynamicOpenCodeLocals.map((model) => model.family));
   const filteredStatic = staticModels.filter(
     (model) => !(model.authTypes.includes("local") && providersWithDynamicLocals.has(model.family)),
   );
-  return [...filteredStatic, ...dynamicOpenCodeLocals];
+  return [...filteredStatic, ...dynamicOpenCodeLocals, ...dynamicPiModels];
 }
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
@@ -1517,6 +1684,7 @@ export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
     ?? byShortId.get(normalized)
     ?? byAlias.get(normalized)
     ?? dynamicOpenCodeByAlias.get(normalized)
+    ?? dynamicPiByAlias.get(normalized)
     ?? undefined;
 }
 
@@ -1614,7 +1782,8 @@ export function resolveModelIdForProvider(
 
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "cursor" | "droid" | null {
+): "claude" | "codex" | "cursor" | "droid" | "pi" | null {
+  if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (!descriptor.isCliWrapped) return null;
   if (descriptor.family === "cursor") return "cursor";
   if (descriptor.family === "factory") return "droid";
@@ -1630,6 +1799,7 @@ export function resolveCliProviderForModel(
 export function resolveProviderGroupForModel(
   descriptor: ModelDescriptor,
 ): ModelProviderGroup {
+  if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (descriptor.family === "cursor") return "cursor";
   return resolveCliProviderForModel(descriptor) ?? "opencode";
 }
@@ -1653,7 +1823,7 @@ export function getRuntimeModelRefForDescriptor(
   if (provider === "claude") {
     return descriptor.providerModelId;
   }
-  if (provider === "codex" || provider === "cursor" || provider === "droid") {
+  if (provider === "codex" || provider === "cursor" || provider === "droid" || provider === "pi") {
     return descriptor.providerModelId;
   }
   return descriptor.id;
@@ -1662,12 +1832,17 @@ export function getRuntimeModelRefForDescriptor(
 export function classifyWorkerExecutionPath(
   descriptor: ModelDescriptor,
 ): WorkerExecutionPath {
+  // Pi has both a tracked native CLI and an isolated SDK chat runtime. This
+  // helper describes the chat execution path, so keep Pi on the SDK side
+  // even though resolveCliProviderForModel() must route its CLI launches.
+  if (descriptor.providerRoute === "pi-sdk") return "api";
   if (resolveCliProviderForModel(descriptor)) return "cli";
   if (descriptor.authTypes.includes("local")) return "local";
   return "api";
 }
 
 function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
+  if (provider === "pi") return getDynamicPiModelDescriptors();
   return MODEL_REGISTRY.filter((descriptor) => {
     if (descriptor.deprecated) return false;
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
@@ -1782,6 +1957,7 @@ function pickDefaultModelForProvider(
   if (provider === "codex") return pickDefaultCodexModel(models);
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
   if (provider === "droid") return pickDefaultDroidDescriptorFromCliList(models);
+  if (provider === "pi") return models[0];
   return pickDefaultOpenCodeModel(models);
 }
 

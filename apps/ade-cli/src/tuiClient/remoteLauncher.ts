@@ -990,12 +990,12 @@ function terminalToChoice(session: ChatTerminalSession): RemoteSessionChoice {
   };
 }
 
-const TRACKED_CLI_REMOTE_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode"]);
+const TRACKED_CLI_REMOTE_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
 
 function isTerminalSessionLaunchable(session: ChatTerminalSession): boolean {
   const toolType = session.toolType ?? "";
   // Chat-backed terminals surface through the chat session list instead.
-  if (toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor" || toolType === "droid-chat") {
+  if (toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor" || toolType === "droid-chat" || toolType === "pi-chat") {
     return false;
   }
   // Any tracked provider CLI (claude/codex/cursor-cli/droid/opencode) is
@@ -1005,6 +1005,7 @@ function isTerminalSessionLaunchable(session: ChatTerminalSession): boolean {
     || toolType.startsWith("cursor")
     || toolType.startsWith("droid")
     || toolType.startsWith("opencode")
+    || toolType.startsWith("pi")
     || toolType.startsWith("claude")
   ) {
     return true;

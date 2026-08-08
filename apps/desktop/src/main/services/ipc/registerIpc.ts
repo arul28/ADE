@@ -39,6 +39,8 @@ import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope }
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
+import { resolvePiInstallation } from "../ai/piInstallation";
+import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
@@ -3705,7 +3707,7 @@ export function registerIpc({
     const ctx = getCtx();
     const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     const allowedDirs = getAllowedDirs(getCtx);
-    const allowed = allowedDirs.some((dir) => {
+    let allowed = allowedDirs.some((dir) => {
       try {
         resolvePathWithinRoot(dir, normalized);
         return true;
@@ -3713,6 +3715,13 @@ export function registerIpc({
         return false;
       }
     });
+    // Pi keeps its user-owned profile outside the project roots. Permit only
+    // the three known JSON config files, never arbitrary files under ~/.pi.
+    if (!allowed) {
+      const pi = resolvePiInstallation();
+      const piConfigPaths = [pi.settingsPath, pi.authPath, pi.modelsPath].map((value) => path.resolve(value));
+      allowed = piConfigPaths.some((candidate) => pathsEqual(candidate, normalized));
+    }
     if (!allowed) {
       throw new Error("Path is outside allowed directories.");
     }
@@ -4634,6 +4643,7 @@ export function registerIpc({
         opencodeProviders: status.opencodeProviders,
         opencodeProvidersStale: status.opencodeProvidersStale,
         modelsDevLastFetchedAt: status.modelsDevLastFetchedAt,
+        piInstallation: status.piInstallation,
         customProviders: status.customProviders,
         customModelSlugs: status.customModelSlugs,
         apiKeyStore: status.apiKeyStore,
@@ -5664,7 +5674,7 @@ export function registerIpc({
     if (!isRecord(arg)) throw new Error("external session import expects an object payload.");
     const record = arg as Record<string, unknown>;
     const { provider, target, mode } = record;
-    if (provider !== "claude" && provider !== "codex" && provider !== "cursor" && provider !== "droid" && provider !== "opencode") {
+    if (provider !== "claude" && provider !== "codex" && provider !== "cursor" && provider !== "droid" && provider !== "opencode" && provider !== "pi") {
       throw new Error("external session import provider is invalid.");
     }
     if (target !== "cli" && target !== "chat") throw new Error("external session import target must be cli or chat.");

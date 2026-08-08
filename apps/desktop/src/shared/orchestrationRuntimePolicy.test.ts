@@ -27,6 +27,7 @@ const PROVIDER_PROFILE_EXPECTATIONS: Record<AgentChatCliLaunchProvider, Record<s
   cursor: { cursorModeId: "full-auto" },
   droid: { droidPermissionMode: "auto-high" },
   opencode: { opencodePermissionMode: "full-auto" },
+  pi: { permissionMode: "full-auto" },
 };
 
 describe("orchestrationRuntimePolicy", () => {

@@ -178,6 +178,7 @@ function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string):
   if (groupKey === "droid") return "factory";
   if (groupKey === "cursor") return "cursor";
   if (groupKey === "opencode") return "opencode";
+  if (groupKey === "pi") return "pi";
   if (groupKey === "ollama") return "ollama";
   if (groupKey === "lmstudio") return "lmstudio";
   if (fallbackFamily === "ollama" || fallbackFamily === "lmstudio" || fallbackFamily === "cursor" || fallbackFamily === "factory") {
@@ -208,7 +209,7 @@ export function descriptorsFromAgentChatModelCatalog(
           const serviceTiers = model.serviceTiers
             ?.map((entry) => entry.trim().toLowerCase())
             .filter(Boolean);
-          const useSubsectionAsProvider = family === "cursor" || family === "factory";
+          const useSubsectionAsProvider = family === "cursor" || family === "factory" || family === "pi";
           const capabilities = {
             ...base.capabilities,
             ...(typeof model.supportsReasoning === "boolean" ? { reasoning: model.supportsReasoning } : {}),

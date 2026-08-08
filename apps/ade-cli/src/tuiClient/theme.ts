@@ -48,6 +48,7 @@ const CLAUDE = "#D97757";
 const CODEX = "#F0F0F2";
 const CURSOR = "#0EA5E9";
 const OPENCODE = "#F0F0F2";
+const PI = "#F97316";
 const DROID = "#06B6D4";
 const OLLAMA = "#F0F0F2";
 const LMSTUDIO = "#8B5CF6";
@@ -93,6 +94,7 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   cursor: { glyph: "⬢", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
   droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
+  pi: { glyph: "◈", wordmark: "Pi", color: PI, label: "Pi" },
   ollama: { glyph: "◕", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
   lmstudio: { glyph: "≋", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };

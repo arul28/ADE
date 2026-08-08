@@ -81,6 +81,15 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
       action: { kind: "open-external", url: "https://ollama.com/download" },
     },
   },
+  pi: {
+    title: "Connect Pi",
+    body: "Use Pi’s native /login flow or configure a provider in your Pi profile. ADE keeps Pi credentials in Pi’s own profile.",
+    primary: { label: "Log in to Pi", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Pi documentation",
+      action: { kind: "open-external", url: "https://github.com/earendil-works/pi" },
+    },
+  },
 };
 
 function dispatchAction(action: ProviderEmptyStateAction, onOpenSignIn?: () => void): void {
@@ -108,6 +117,7 @@ const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   openai: "OpenAI Codex",
   cursor: "Cursor",
   factory: "Droid",
+  pi: "Pi",
   opencode: "OpenCode",
   lmstudio: "LM Studio",
   ollama: "Ollama",

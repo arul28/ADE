@@ -6,11 +6,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
+  formatPiProviderLabel,
   modelSupportsFastMode,
   resolveCliProviderForModel,
   type AuthType,
@@ -21,6 +23,7 @@ import { cn } from "../../ui/cn";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
+import { ModelPickerEmptyState, ProviderRefreshError } from "./ModelPickerEmptyState";
 import { useModelFavorites } from "./useModelFavorites";
 import { useModelRecents } from "./useModelRecents";
 import { useAuthOnlyFilter } from "./useAuthOnlyFilter";
@@ -28,9 +31,10 @@ import { usePerSurfaceModelDefaults } from "./usePerSurfaceModelDefaults";
 import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
-import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
+import { ProviderSetupBanner } from "./providerEmptyState";
 import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import { refreshProviderForFamily } from "./runtimeCatalogCache";
 
 const MODEL_ROW_ESTIMATED_HEIGHT = 44;
 
@@ -49,6 +53,7 @@ const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   lmstudio: "LM Studio",
   cursor: "Cursor",
   factory: "Droid",
+  pi: "Pi",
 };
 
 // Order matters for rail layout — top-tier providers first, then routers,
@@ -58,19 +63,25 @@ const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = [
   "anthropic",
   "openai",
   "factory",
+  "pi",
   "cursor",
   "opencode",
   "ollama",
   "lmstudio",
 ];
 
-function providerLabel(family: ProviderFamily): string {
-  return PROVIDER_LABELS[family] ?? family;
+function providerLabel(family: ProviderFamily | string): string {
+  return PROVIDER_LABELS[family as ProviderFamily] ?? family;
 }
 
 function modelSubProvider(model: ModelDescriptor): string {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
+  if (isPiRoutedModel(model) && model.piProviderId) {
+    const provider = formatPiProviderLabel(model.piProviderId);
+    const profile = model.piProfileId?.trim();
+    return profile && profile !== "default" ? `${provider} · ${profile}` : provider;
+  }
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
     // Sub-header text used in grouped lists. Already inside the OpenCode rail
     // when this fires, so "via OpenCode" was redundant — show the underlying
@@ -84,17 +95,11 @@ function modelSubProvider(model: ModelDescriptor): string {
 function modelSubProviderKey(model: ModelDescriptor): string {
   const key = (model as ModelDescriptor & { subProviderKey?: string }).subProviderKey;
   if (typeof key === "string" && key.trim().length) return key.trim();
+  if (isPiRoutedModel(model) && model.piProviderId) {
+    return `${model.piProfileId?.trim() || "default"}:${model.piProviderId}`;
+  }
   if (model.providerRoute === "opencode" && model.openCodeProviderId) return model.openCodeProviderId;
   return modelSubProvider(model) || "__default__";
-}
-
-function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
-  if (family === "opencode") return "opencode";
-  if (family === "ollama") return "ollama";
-  if (family === "lmstudio") return "lmstudio";
-  if (family === "cursor") return "cursor";
-  if (family === "factory") return "droid";
-  return null;
 }
 
 function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): string {
@@ -107,7 +112,18 @@ function providerIsReady(status: AuthStatus | undefined): boolean {
   return status === "ok" || status === "limited";
 }
 
+function isPiRoutedModel(model: ModelDescriptor): boolean {
+  return model.providerRoute === "pi-sdk" || model.id.trim().toLowerCase().startsWith("pi/");
+}
+
+/** Picker grouping follows the selected harness; model.family remains the
+ * underlying provider family for capability and logo metadata. */
+function pickerFamilyForModel(model: ModelDescriptor): ProviderFamily {
+  return isPiRoutedModel(model) ? "pi" : model.family;
+}
+
 function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boolean {
+  if (isPiRoutedModel(model)) return true;
   const provider = resolveCliProviderForModel(model);
   return provider === "claude" || provider === "codex" || provider === "droid";
 }
@@ -144,6 +160,7 @@ export type ModelPickerContentProps = {
    */
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
+  refreshErrorProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
@@ -169,6 +186,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onRequestClose,
   onProviderRailSelect,
   refreshingProvider,
+  refreshErrorProvider,
   onOpenSignIn,
   hidePermissionRail = false,
   allowCliOnlyModels = false,
@@ -191,7 +209,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
   const { setDefault: setSurfaceDefault } = usePerSurfaceModelDefaults();
   const hasExternalAuthStatus = Boolean(providerAuthStatus && Object.keys(providerAuthStatus).length > 0);
-  const internalAuth = useProviderAuthStatus({ loadStatus: !hasExternalAuthStatus });
+  const internalAuth = useProviderAuthStatus({
+    loadStatus: !hasExternalAuthStatus,
+    ...(allowCliOnlyModels ? { allowCliOnlyModels: true } : {}),
+  });
 
   const recentSet = useMemo(() => new Set(recents), [recents]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
@@ -245,7 +266,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (registryFilter && !registryFilter(m)) continue;
       if (
         authOnly
-        && !(providerAuthEstablishesModelAvailability(m) && familyIsReady(m.family))
+        && !(providerAuthEstablishesModelAvailability(m) && familyIsReady(pickerFamilyForModel(m)))
       ) {
         continue;
       }
@@ -263,8 +284,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       : ALL_PROVIDER_FAMILIES.filter((family) => family !== "cursor");
     const set = new Set<ProviderFamily>();
     for (const m of expandedModels) {
-      if (m.family === "cursor" && !cursorProviderAvailable()) continue;
-      set.add(m.family);
+      const pickerFamily = pickerFamilyForModel(m);
+      if (pickerFamily === "cursor" && !cursorProviderAvailable()) continue;
+      set.add(pickerFamily);
     }
     // Always include dynamic-only provider families (Cursor, Droid, OpenCode,
     // local runtimes). Their models may not exist until a catalog refresh runs,
@@ -290,7 +312,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     } else {
       const activeModel = expandedModels.find((m) => m.id === value);
       initialSelectionRef.current = activeModel
-        ? `provider:${activeModel.family}`
+        ? `provider:${pickerFamilyForModel(activeModel)}`
         : providersPresent[0]
           ? `provider:${providersPresent[0]}`
           : "favorites";
@@ -320,7 +342,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // While the probe is still in-flight (binaryKnown === false) we don't
       // hide anything — the alternative would flash "Install OpenCode" briefly
       // for users who do have it.
-      if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(m.family)) {
+      if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(pickerFamilyForModel(m))) {
         return false;
       }
       if (!matchesCursorAvailabilityMode(m)) return false;
@@ -328,7 +350,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (modelRequiresConfiguration(m)) return false;
       // Prefer auth-derived gate; fall back to caller-provided `isAvailable` if no auth signal exists.
       if (Object.keys(effectiveAuth).length > 0) {
-        return familyIsReady(m.family);
+        return familyIsReady(pickerFamilyForModel(m));
       }
       return isAvailable(m.id);
     },
@@ -343,8 +365,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       shortName: m.shortId,
       aliases: m.aliases,
       subProvider: modelSubProvider(m) || undefined,
-      family: m.family,
-      providerDisplayName: providerLabel(m.family),
+      family: pickerFamilyForModel(m),
+      providerDisplayName: providerLabel(pickerFamilyForModel(m)),
       isFavorite: favoriteSet.has(m.id),
     }),
     [favoriteSet],
@@ -365,7 +387,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       return pool;
     } else {
       const family = selection.slice("provider:".length) as ProviderFamily;
-      pool = expandedModels.filter((m) => m.family === family).filter(filterAvailable);
+      pool = expandedModels.filter((m) => pickerFamilyForModel(m) === family).filter(filterAvailable);
     }
 
     if (searchActive) {
@@ -404,6 +426,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const activeRefreshProvider = activeProviderFamily ? refreshProviderForFamily(activeProviderFamily) : null;
   const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;
+  const activeProviderRefreshFailed = activeRefreshProvider != null && refreshErrorProvider === activeRefreshProvider;
 
   const providerTabs = useMemo(() => {
     if (!activeProviderFamily) return [];
@@ -431,7 +454,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     setActiveProviderTabKey((current) => {
       if (current && providerTabs.some((tab) => tab.key === current)) return current;
       const activeModel = expandedModels.find((model) => model.id === value);
-      const activeKey = activeModel && activeProviderFamily === activeModel.family
+      const activeKey = activeModel && activeProviderFamily === pickerFamilyForModel(activeModel)
         ? modelSubProviderKey(activeModel)
         : null;
       if (activeKey && providerTabs.some((tab) => tab.key === activeKey)) return activeKey;
@@ -445,6 +468,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, [activeProviderTabKey, candidateModels, providerTabs]);
 
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const focusRowOnNextRenderRef = useRef(false);
   useEffect(() => {
     setFocusedIndex(0);
   }, [activeProviderTabKey, selection, query]);
@@ -481,6 +505,24 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     modelListVirtualizer.scrollToIndex(0, { align: "start" });
   }, [activeProviderTabKey, modelListVirtualizer, selection, query]);
 
+  useLayoutEffect(() => {
+    if (!focusRowOnNextRenderRef.current) return;
+    const model = visibleModels[focusedIndex];
+    if (!model) {
+      focusRowOnNextRenderRef.current = false;
+      return;
+    }
+    const row = listRef.current?.querySelector<HTMLElement>(
+      `#model-picker-row-${encodeURIComponent(model.id)}`,
+    );
+    if (!row) {
+      focusRowOnNextRenderRef.current = false;
+      return;
+    }
+    row.focus();
+    focusRowOnNextRenderRef.current = false;
+  }, [focusedIndex, renderedVirtualRows, visibleModels]);
+
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
       if (!matchesCursorAvailabilityMode(m)) return false;
@@ -490,12 +532,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // a gated Claude/Codex/Droid model available just because its provider
       // family is authed.
       if (modelRequiresConfiguration(m)) return false;
-      if (cursorAvailabilityMode === "cli" && m.family === "cursor" && m.cursorAvailability?.cli === true) {
-        return Object.keys(effectiveAuth).length > 0 ? familyIsReady(m.family) : true;
+      if (cursorAvailabilityMode === "cli" && pickerFamilyForModel(m) === "cursor" && m.cursorAvailability?.cli === true) {
+        return Object.keys(effectiveAuth).length > 0 ? familyIsReady(pickerFamilyForModel(m)) : true;
       }
       if (Object.keys(effectiveAuth).length > 0) {
-        if (providerAuthEstablishesModelAvailability(m)) return familyIsReady(m.family);
-        return familyIsReady(m.family) && isAvailable(m.id);
+        if (providerAuthEstablishesModelAvailability(m)) return familyIsReady(pickerFamilyForModel(m));
+        return familyIsReady(pickerFamilyForModel(m)) && isAvailable(m.id);
       }
       return isAvailable(m.id);
     },
@@ -523,6 +565,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
+        focusRowOnNextRenderRef.current = true;
         setFocusedIndex((i) => {
           const next = Math.min(i + 1, Math.max(0, flatVisibleIds.length - 1));
           modelListVirtualizer.scrollToIndex(next, { align: "auto" });
@@ -532,6 +575,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
+        focusRowOnNextRenderRef.current = true;
         setFocusedIndex((i) => {
           const next = Math.max(0, i - 1);
           modelListVirtualizer.scrollToIndex(next, { align: "auto" });
@@ -544,7 +588,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         const target = visibleModels[focusedIndex];
         if (!target) return;
         if (!isAvailableForUse(target)) {
-          onOpenSignIn?.(target.family);
+          onOpenSignIn?.(pickerFamilyForModel(target), target.authTypes);
           return;
         }
         handleRowSelect(target.id);
@@ -562,6 +606,29 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     ],
   );
 
+  const handleProviderTabKeyDown = useCallback((event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!(event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const tabs = Array.from(
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[data-model-picker-provider-tab]") ?? [],
+    );
+    const currentIndex = tabs.indexOf(event.currentTarget);
+    if (currentIndex < 0 || tabs.length === 0) return;
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : Math.min(
+            Math.max(0, currentIndex + (event.key === "ArrowRight" ? 1 : -1)),
+            tabs.length - 1,
+          );
+    const next = providerTabs[nextIndex];
+    if (!next) return;
+    setActiveProviderTabKey(next.key);
+    tabs[nextIndex]?.focus();
+  }, [providerTabs]);
+
   /**
    * One press on a non-selected row's chip means "use this model, fast" — it
    * commits the selection and turns fast on. On the selected row it is a plain
@@ -576,7 +643,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(model.family, model.authTypes);
+        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
         return;
       }
       recordUsage(modelId);
@@ -629,6 +696,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     && onOpenSignIn != null
     && effectiveAuth[activeProviderFamily] === "unauthed"
     && !activeFamilyNeedsOpencode
+    && !activeProviderRefreshFailed
     && !activeProviderRefreshing;
 
   // Sticky "Currently using" detection — show when active row is not in the visible window.
@@ -736,34 +804,45 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             </button>
           </div>
 
+	          {providerTabs.length > 1 ? (
+	            <div
+              role="group"
+              aria-label={activeProviderFamily === "pi" ? "Pi providers" : "Provider sources"}
+	              className="flex gap-1 overflow-x-auto border-b border-white/[0.05] bg-[#13111A]/95 px-2.5 py-1 backdrop-blur"
+	            >
+	              {providerTabs.map((tab) => {
+	                const active = tab.key === activeProviderTabKey;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    data-model-picker-provider-tab="true"
+                    aria-pressed={active}
+                    tabIndex={active ? 0 : -1}
+                    className={cn(
+                      "h-6 shrink-0 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
+                      active
+                        ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
+                        : "border-white/[0.07] bg-white/[0.02] text-muted-fg/65 hover:border-white/[0.12] hover:text-fg/85",
+                    )}
+                    onClick={() => setActiveProviderTabKey(tab.key)}
+                    onKeyDown={handleProviderTabKeyDown}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
 	          <div
 	            ref={listRef}
-	            role="listbox"
+	            id="model-picker-model-list"
+            role="listbox"
 	            aria-label="Models"
+	            aria-busy={activeProviderRefreshing || undefined}
 	            className="relative flex-1 overflow-y-auto px-1.5 py-1"
 	          >
-	            {providerTabs.length > 1 ? (
-	              <div className="sticky top-0 z-[6] mb-1 flex gap-1 overflow-x-auto border-b border-white/[0.05] bg-[#13111A]/95 px-0.5 pb-1 backdrop-blur">
-	                {providerTabs.map((tab) => {
-	                  const active = tab.key === activeProviderTabKey;
-	                  return (
-	                    <button
-	                      key={tab.key}
-	                      type="button"
-	                      className={cn(
-	                        "h-6 shrink-0 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
-	                        active
-	                          ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
-	                          : "border-white/[0.07] bg-white/[0.02] text-muted-fg/65 hover:border-white/[0.12] hover:text-fg/85",
-	                      )}
-	                      onClick={() => setActiveProviderTabKey(tab.key)}
-	                    >
-	                      {tab.label}
-	                    </button>
-	                  );
-	                })}
-	              </div>
-	            ) : null}
 
 	            {activeOutOfView && activeModel ? (
               <div
@@ -781,14 +860,30 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               <ProviderSetupBanner family={activeProviderFamily} onOpenSignIn={onOpenSignIn} />
             ) : null}
 
+            {activeProviderRefreshFailed && activeRefreshProvider && !isEmpty ? (
+              <ProviderRefreshError
+                provider={activeRefreshProvider}
+                onRetry={activeProviderFamily && onProviderRailSelect
+                  ? () => onProviderRailSelect(activeProviderFamily)
+                  : undefined}
+                getProviderLabel={refreshProviderLabel}
+              />
+            ) : null}
+
             {isEmpty ? (
-              <EmptyState
+              <ModelPickerEmptyState
                 selection={selection}
                 searchActive={searchActive}
                 opencodeBinaryInstalled={opencodeBinaryInstalled}
                 opencodeBinaryKnown={opencodeBinaryKnown}
                 refreshingProvider={activeProviderRefreshing ? activeRefreshProvider : null}
+                refreshErrorProvider={activeProviderRefreshFailed ? activeRefreshProvider : null}
+                onRetryRefresh={activeProviderFamily && onProviderRailSelect
+                  ? () => onProviderRailSelect(activeProviderFamily)
+                  : undefined}
                 providerAuthStatus={effectiveAuth}
+                getProviderLabel={refreshProviderLabel}
+                isProviderReady={providerIsReady}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
@@ -808,8 +903,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                     <div
                       key={virtualRow.key}
                       ref={modelListVirtualizer.measureElement}
-                      data-index={virtualRow.index}
-                      data-focused={isFocused ? "true" : undefined}
+                        data-index={virtualRow.index}
+                        data-focused={isFocused ? "true" : undefined}
                       className={cn(
                         "absolute left-0 top-0 w-full",
                         isFocused && "outline-none ring-1 ring-violet-400/30 rounded-md",
@@ -822,14 +917,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         model={m}
                         isFavorite={isFavorite(m.id)}
                         isActive={isActive}
+                        isFocused={isFocused}
                         isAvailable={isAvailableForUse(m)}
                         onSelect={handleRowSelect}
                         onToggleFavorite={toggleFavorite}
+                        onFocus={() => setFocusedIndex(virtualRow.index)}
                         onCopyId={handleCopyId}
                         onSetSurfaceDefault={handleSetSurfaceDefault}
                         fastModeOn={fastMode && isActive}
                         {...(onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
-                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(m.family, m.authTypes) } : {})}
+                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />
                     </div>
                   );
@@ -848,70 +945,4 @@ function cssEscape(value: string): string {
     return CSS.escape(value);
   }
   return value.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
-}
-
-function EmptyState({
-  selection,
-  searchActive,
-  opencodeBinaryInstalled,
-  opencodeBinaryKnown,
-  refreshingProvider,
-  providerAuthStatus,
-  onOpenSignIn,
-}: {
-  selection: RailSelection;
-  searchActive: boolean;
-  opencodeBinaryInstalled: boolean;
-  opencodeBinaryKnown: boolean;
-  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
-  providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
-}) {
-  if (!searchActive && selection !== "favorites" && selection !== "recents") {
-    const family = selection.slice("provider:".length) as ProviderFamily;
-    if (
-      opencodeBinaryKnown
-      && !opencodeBinaryInstalled
-      && (family === "opencode" || family === "ollama" || family === "lmstudio")
-    ) {
-      return (
-        <ProviderEmptyState
-          mode="opencode-required"
-          family={family}
-          {...(onOpenSignIn ? { onOpenSignIn } : {})}
-        />
-      );
-    }
-    if (refreshingProvider) {
-      const label = refreshProviderLabel(refreshingProvider);
-      return (
-        <div
-          data-empty-state-mode="runtime-loading"
-          data-refresh-provider={refreshingProvider}
-          className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center"
-        >
-          <span className="text-[12px] font-semibold text-fg/80">Checking {label}</span>
-          <span className="max-w-[260px] text-[11px] leading-relaxed text-muted-fg/60">
-            Loading the cached catalog and refreshing it in the background.
-          </span>
-        </div>
-      );
-    }
-    return (
-      <ProviderEmptyState
-        family={family}
-        mode={providerIsReady(providerAuthStatus?.[family]) ? "discovery-empty" : "default"}
-        {...(onOpenSignIn ? { onOpenSignIn } : {})}
-      />
-    );
-  }
-  let body = "No models match this view.";
-  if (searchActive) body = "No models match your search.";
-  else if (selection === "favorites") body = "Star a model to pin it here.";
-  else if (selection === "recents") body = "Models you use will appear here.";
-  return (
-    <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1 px-4 py-6 text-center">
-      <span className="text-[11px] font-medium text-muted-fg/65">{body}</span>
-    </div>
-  );
 }

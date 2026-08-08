@@ -490,7 +490,7 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
     .trimmingCharacters(in: .whitespacesAndNewlines)
   guard !normalized.isEmpty else { return [] }
-  let provider = ["claude", "codex", "cursor", "droid", "opencode"].first {
+  let provider = ["claude", "codex", "cursor", "droid", "opencode", "pi"].first {
     workRegexContains(normalized, pattern: #"\b\#($0)\b"#)
   } ?? (workRegexContains(normalized, pattern: #"\bopen code\b"#) ? "opencode" : nil)
   guard let provider else { return [] }
@@ -824,7 +824,7 @@ struct WorkNewChatScreen: View {
     }
     .onChange(of: provider) { _, newProvider in
       runtimeMode = workDefaultRuntimeMode(provider: newProvider)
-      if !workNewChatModel(modelId, belongsTo: workNormalizedNewChatProvider(newProvider)) {
+      if !workNewChatModel(modelId, belongsTo: workNormalizedChatProvider(newProvider)) {
         modelId = workDefaultNewChatModelId(provider: newProvider)
       }
       if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
@@ -864,7 +864,7 @@ struct WorkNewChatScreen: View {
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
-            ? workNormalizedNewChatProvider(runtimeProvider)
+            ? workNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
           reasoningEffort = pickedReasoning ?? ""
           runtimeMode = workDefaultRuntimeMode(provider: provider)
@@ -1088,6 +1088,12 @@ struct WorkNewChatScreen: View {
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
+    let piMetadata = workResolvedPiModelMetadata(
+      modelId: modelId,
+      profileId: selectedModelOption?.piProfileId,
+      providerId: selectedModelOption?.piProviderId,
+      piModelId: selectedModelOption?.piModelId
+    )
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
 
     // Resolve the target lane. When auto-create is selected we mint a fresh
@@ -1209,6 +1215,9 @@ struct WorkNewChatScreen: View {
         // user's choice (including an explicit OFF) is honored rather than
         // falling back to the host default; nil only when fast mode is N/A.
         codexFastMode: fastModeSupported ? codexFastMode : nil,
+        piProfileId: piMetadata?.profileId,
+        piProviderId: piMetadata?.providerId,
+        piModelId: piMetadata?.modelId,
         permissionMode: wire.permissionMode,
         interactionMode: wire.interactionMode,
         claudePermissionMode: wire.claudePermissionMode,
@@ -1362,10 +1371,10 @@ struct WorkNewChatScreen: View {
        let replacement = workDefaultModelIdForAvailabilityMode(preferredProvider: provider, mode: availabilityMode) {
       modelId = replacement.modelId
       provider = mode == .chat
-        ? workNormalizedNewChatProvider(replacement.provider)
+        ? workNormalizedChatProvider(replacement.provider)
         : workResolveCliProvider(for: replacement.modelId, provider: replacement.provider)
     } else if mode == .chat {
-      provider = workNormalizedNewChatProvider(provider)
+      provider = workNormalizedChatProvider(provider)
       if !workNewChatModel(modelId, belongsTo: provider) {
         modelId = workDefaultNewChatModelId(provider: provider)
       }
@@ -1382,16 +1391,6 @@ struct WorkNewChatScreen: View {
   }
 }
 
-private func workNormalizedNewChatProvider(_ provider: String) -> String {
-  let family = providerFamilyKey(provider)
-  // Droid (Factory) is a first-class in-app chat runtime, and its Droid Core
-  // models (GLM / Kimi / MiniMax) only run under the droid provider — desktop
-  // and the TUI already derive provider from the model's family. Without droid
-  // in this allowlist, picking a Droid Core model silently collapsed the
-  // provider to "claude", sending a GLM model id to the Claude runtime.
-  return ["claude", "codex", "cursor", "opencode", "droid"].contains(family) ? family : "claude"
-}
-
 private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> Bool {
   let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return false }
@@ -1403,17 +1402,18 @@ private func workDefaultNewChatModelId(provider: String) -> String {
   if let defaultModel = workDefaultCatalogModelId(provider: family) {
     return defaultModel
   }
-  switch workNormalizedNewChatProvider(provider) {
+  switch workNormalizedChatProvider(provider) {
   case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-5"
+  case "pi": return ""
   default: return "claude-sonnet-5"
   }
 }
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid"
+  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
@@ -1449,6 +1449,7 @@ private func workCliToolType(provider: String) -> String {
   case "codex": return "codex"
   case "cursor": return "cursor-cli"
   case "opencode": return "opencode"
+  case "pi": return "pi"
   case "droid": return "droid"
   case "shell": return "shell"
   default: return "opencode"

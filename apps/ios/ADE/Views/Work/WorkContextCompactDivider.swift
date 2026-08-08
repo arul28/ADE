@@ -55,6 +55,7 @@ struct WorkContextCompactDivider: View {
     case "codex": return .white.opacity(0.85)
     case "opencode": return .cyan
     case "droid": return .orange
+    case "pi": return .orange
     default: return ADEColor.warning
     }
   }

@@ -11,7 +11,7 @@ import type { OrchestrationContextItem, OrchestrationRole } from "./orchestratio
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SubagentCapability } from "../subagentCapabilities";
 
-export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
+export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
@@ -1003,7 +1003,7 @@ export type AgentChatEvent =
       postTokens?: number;
       tokensRemoved?: number;
       durationMs?: number;
-      provider?: "claude" | "codex" | "opencode" | "cursor" | "droid";
+      provider?: "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
       /** Stable merge key for started→completed pairs that may land on different turns. */
       compactionId?: string;
       /** After the second compaction in a session, surfaces as "(N× this session)" in the pill. */
@@ -1498,6 +1498,12 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  piProfileId?: string | null;
+  piProviderId?: string | null;
+  piModelId?: string | null;
+  /** Native Pi JSONL session pointer used for SDK resume and CLI handoff. */
+  piSessionId?: string | null;
+  piSessionFile?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -1556,6 +1562,11 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  piProfileId?: string | null;
+  piProviderId?: string | null;
+  piModelId?: string | null;
+  piSessionId?: string | null;
+  piSessionFile?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -1920,6 +1931,7 @@ export type AgentChatModelCatalog = {
 
 export type AgentChatModelCatalogRefreshProvider =
   | "opencode"
+  | "pi"
   | "cursor"
   | "droid"
   | "lmstudio"
@@ -1961,6 +1973,11 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  piProfileId?: string | null;
+  piProviderId?: string | null;
+  piModelId?: string | null;
+  piSessionId?: string | null;
+  piSessionFile?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -2027,7 +2044,8 @@ export type AgentChatCliLaunchProvider =
   | "codex"
   | "cursor"
   | "droid"
-  | "opencode";
+  | "opencode"
+  | "pi";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or
