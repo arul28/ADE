@@ -45,7 +45,7 @@ import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
 import { TokenBar } from "./FooterControls";
 import { UsagePane } from "./UsagePane";
-import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
 import { useHoveredHitId } from "../hitTestRegistry";
 import { diffLineKind, type DiffLineKind } from "../format";
@@ -2326,6 +2326,7 @@ function RightPaneComponent({
     activeReasoningEffort?: string | null;
     aiStatus?: AiSettingsStatus | null;
     interfaceMode?: AdeCodeInterfaceMode;
+    refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   };
 }) {
   const { title, hint, branch } = paneTitle(content);
@@ -2497,6 +2498,7 @@ function RightPaneComponent({
             activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
             aiStatus: modelPickerInputs.aiStatus,
             interfaceMode: modelPickerInputs.interfaceMode,
+            refreshingProvider: modelPickerInputs.refreshingProvider,
             settingsRows: content.settingsRows,
             footerFocus: content.footerFocus ?? null,
             laneLabel: content.laneLabel ?? null,

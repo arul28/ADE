@@ -2904,6 +2904,7 @@ async function buildAiSettingsStatus(
     opencodeBinarySource: status.opencodeBinarySource,
     opencodeInventoryError: status.opencodeInventoryError,
     opencodeProviders: status.opencodeProviders,
+    piInstallation: status.piInstallation,
     apiKeyStore: status.apiKeyStore,
     features: AI_SETTINGS_FEATURE_KEYS.map((feature) => ({
       feature,

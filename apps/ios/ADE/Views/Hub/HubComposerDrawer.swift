@@ -806,6 +806,12 @@ struct HubInlineComposer: View {
     let targetProjectId = project.id
     let targetProjectRootPath = project.rootPath
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
+    let piMetadata = workResolvedPiModelMetadata(
+      modelId: modelId,
+      profileId: selectedModelOption?.piProfileId,
+      providerId: selectedModelOption?.piProviderId,
+      piModelId: selectedModelOption?.piModelId
+    )
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
 
     // Resolve the target lane. Auto-create mints a fresh lane in the TARGET
@@ -885,6 +891,9 @@ struct HubInlineComposer: View {
           // Send an explicit true/false when fast mode applies so the user's
           // choice (including an explicit OFF) is honored; nil only when N/A.
           codexFastMode: fastModeSupported ? codexFastMode : nil,
+          piProfileId: piMetadata?.profileId,
+          piProviderId: piMetadata?.providerId,
+          piModelId: piMetadata?.modelId,
           permissionMode: wire.permissionMode,
           interactionMode: wire.interactionMode,
           claudePermissionMode: wire.claudePermissionMode,
@@ -1171,11 +1180,10 @@ struct HubInlineComposer: View {
 // MARK: - File-private helpers (mirror the private new-chat-screen helpers)
 
 /// Collapse a free-form provider key to a chat-capable runtime family, matching
-/// the new-chat screen so a picked Droid Core model stays on the droid runtime
-/// instead of silently routing to Claude.
+/// the new-chat screen so routed Pi and Droid models stay on their native
+/// runtimes instead of silently routing to Claude.
 private func hubNormalizedChatProvider(_ provider: String) -> String {
-  let family = providerFamilyKey(provider)
-  return ["claude", "codex", "cursor", "opencode", "droid"].contains(family) ? family : "claude"
+  workNormalizedChatProvider(provider)
 }
 
 private func hubChatModelBelongs(_ modelId: String, to provider: String) -> Bool {
@@ -1193,6 +1201,7 @@ private func hubDefaultChatModelId(provider: String) -> String {
   case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-5"
+  case "pi": return ""
   default: return "claude-sonnet-5"
   }
 }
@@ -1201,7 +1210,7 @@ private func hubDefaultChatModelId(provider: String) -> String {
 /// screen's `workCliSupportsReasoningSelection`).
 private func hubCliSupportsReasoning(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid"
+  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
 }
 
 /// Derive a short CLI session title from the opener (mirrors the new-chat

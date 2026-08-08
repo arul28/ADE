@@ -19,9 +19,9 @@ import {
 import { parseCommandLine } from "../../shared/shell";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
-const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
+const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
 const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
-const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode)\s+.+)$/i;
+const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+.+)$/i;
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
 
@@ -146,6 +146,7 @@ function toolFromCommand(raw: string): TerminalToolType | null {
   if (normalized.startsWith("cursor-agent ")) return "cursor-cli";
   if (normalized.startsWith("droid ")) return "droid";
   if (normalized.startsWith("opencode ")) return "opencode";
+  if (/^pi(?:\s|$)/.test(normalized)) return "pi";
   return null;
 }
 
@@ -155,6 +156,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "cursor-cli") return "cursor";
   if (toolType === "droid") return "droid";
   if (toolType === "opencode" || toolType === "opencode-orchestrated" || toolType === "opencode-chat") return "opencode";
+  if (toolType === "pi" || toolType === "pi-chat") return "pi";
   return null;
 }
 
@@ -228,6 +230,14 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return "plan";
   }
 
+  if (provider === "pi") {
+    const tools = extractCliFlagValue(normalized, "--tools")?.split(",").map((entry) => entry.trim()) ?? [];
+    if (tools.includes("bash")) return "full-auto";
+    if (tools.includes("edit") || tools.includes("write")) return "edit";
+    if (tools.length > 0) return "plan";
+    return "default";
+  }
+
   if (provider === "opencode") {
     if (
       normalized.includes("opencode_config_content=")
@@ -270,7 +280,8 @@ export function parseTrackedCliLaunchConfig(
           const variant = extractOpenCodeVariant(normalized);
           return variant?.toLowerCase() === "fast" ? null : variant;
         })()
-      : (extractCliFlagValue(normalized, "--effort") ?? extractCliFlagValue(normalized, "--reasoning-effort")));
+      : (extractCliFlagValue(normalized, provider === "pi" ? "--thinking" : "--effort")
+        ?? extractCliFlagValue(normalized, "--reasoning-effort")));
   const fastMode = provider === "codex"
     ? extractFastMode(normalized)
     : provider === "claude"
@@ -374,7 +385,9 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
-  const match = command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i);
+  const match = (provider === "pi"
+    ? command.match(/^pi\b.*?(?:--session(?:=|\s+)([^\s]+)|--continue\b|-c\b|-r\b)(?:\s|$)/i)
+    : command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i));
   if (!match) return undefined;
   const raw = match[1] ?? match[2];
   if (raw == null) return null;
@@ -451,6 +464,7 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
   if (toolType === "droid") return "droid --resume";
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
+  if (toolType === "pi") return "pi --continue";
   return null;
 }
 

@@ -1593,7 +1593,7 @@ export type SyncRunQuickCommandArgs = {
   tracked?: boolean;
 };
 
-export type SyncCliLaunchProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "shell";
+export type SyncCliLaunchProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "shell";
 
 export type SyncStartCliSessionArgs = {
   laneId: string;

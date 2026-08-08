@@ -16,6 +16,8 @@ type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 
 type ProviderStatusSnapshot = {
   availableProviders?: { claude?: unknown; codex?: unknown; cursor?: unknown; droid?: unknown };
+  providerConnections?: { pi?: { authAvailable?: boolean; runtimeAvailable?: boolean } };
+  piInstallation?: { sdkAvailable?: boolean; cliAvailable?: boolean; availableModelIds?: string[] };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
   opencodeBinaryInstalled?: unknown;
 };
@@ -65,7 +67,10 @@ function isClaudeOk(value: unknown): boolean {
   return false;
 }
 
-export function familiesFromStatus(status: ProviderStatusSnapshot): AuthStatusMap {
+export function familiesFromStatus(
+  status: ProviderStatusSnapshot,
+  options?: { allowCliOnlyModels?: boolean },
+): AuthStatusMap {
   const out: AuthStatusMap = {};
   out.anthropic = isClaudeOk(status.availableProviders?.claude) ? "ok" : "unauthed";
   out.openai = status.availableProviders?.codex === true ? "ok" : "unauthed";
@@ -75,6 +80,16 @@ export function familiesFromStatus(status: ProviderStatusSnapshot): AuthStatusMa
   const opencodeAny =
     Array.isArray(status.opencodeProviders) && status.opencodeProviders.some((p) => p.connected);
   if (opencodeAny) out.opencode = "ok";
+  const pi = status.providerConnections?.pi;
+  const piSdkAvailable = status.piInstallation?.sdkAvailable === true;
+  const piCliAvailable = status.piInstallation?.cliAvailable === true;
+  const piRuntimeUsable = piSdkAvailable || (options?.allowCliOnlyModels === true && piCliAvailable);
+  const piHasModels = (status.piInstallation?.availableModelIds?.length ?? 0) > 0;
+  if (piRuntimeUsable && (pi?.runtimeAvailable === true || pi?.authAvailable === true || piHasModels)) {
+    out.pi = "ok";
+  } else if (status.piInstallation || pi) {
+    out.pi = "unauthed";
+  }
 
   return out;
 }
@@ -107,7 +122,7 @@ function probeBinary(scopeKey: string): Promise<boolean | null> {
   return request;
 }
 
-export function useProviderAuthStatus(options?: { loadStatus?: boolean }): {
+export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCliOnlyModels?: boolean }): {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
   /** True once we have a definitive answer for opencodeBinaryInstalled (cheap probe done). */
@@ -125,7 +140,7 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean }): {
   );
   const cachedStatus = peekAiStatusCached(projectRoot);
   const [status, setStatus] = useState<AuthStatusMap>(() => (
-    cachedStatus ? familiesFromStatus(cachedStatus) : EMPTY_AUTH_STATUS
+    cachedStatus ? familiesFromStatus(cachedStatus, options) : EMPTY_AUTH_STATUS
   ));
   const [loaded, setLoaded] = useState(cachedStatus != null);
   const [binary, setBinary] = useState<ProviderBinarySnapshot>(() => (
@@ -163,7 +178,7 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean }): {
 
     const applyStatus = (nextStatus: ProviderStatusSnapshot) => {
       if (!active) return;
-      const nextAuthStatus = familiesFromStatus(nextStatus);
+      const nextAuthStatus = familiesFromStatus(nextStatus, options);
       setStatus((current) => authStatusMapsEqual(current, nextAuthStatus) ? current : nextAuthStatus);
       setLoaded(true);
       if (typeof nextStatus.opencodeBinaryInstalled === "boolean") {
@@ -207,7 +222,7 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean }): {
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
     };
-  }, [options?.loadStatus, projectRoot]);
+  }, [options?.allowCliOnlyModels, options?.loadStatus, projectRoot]);
 
   return {
     status,

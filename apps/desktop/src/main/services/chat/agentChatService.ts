@@ -315,6 +315,7 @@ import type {
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
   AgentChatOpenCodePermissionMode,
+  AgentChatPermissionMode,
   CodexPlanState,
   CodexModerationMetadata,
   AgentChatMcpToolSource,
@@ -390,6 +391,8 @@ import {
 import {
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
+  getDynamicPiModelDescriptors,
+  replaceDynamicPiModelDescriptors,
   getModelById,
   getAvailableModels as getRegistryModels,
   getLocalProviderDefaultEndpoint,
@@ -408,6 +411,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
+import { piToolsForPermissionMode } from "../../../shared/cliLaunch";
 import {
   buildProviderGroupBlocks,
   createModelOrderMap,
@@ -534,6 +538,20 @@ import {
   type DroidSdkPooled,
 } from "./droidSdkPool";
 import {
+  acquirePiSdkConnection,
+  isPiSdkPooledAlive,
+  releasePiSdkConnection,
+  type PiSdkPooled,
+} from "./piSdkPool";
+import {
+  acquirePiSessionLease,
+  piSessionCreationLeaseTarget,
+  piSessionDirectoryForEnvironment,
+  resolvePiSessionFile,
+  type PiSessionLease,
+} from "./piSessionLease";
+import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "../ai/piInstallation";
+import {
   discoverCursorCliModelDescriptors,
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
@@ -541,6 +559,7 @@ import {
   resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
+import { mapPiSdkEventToChatEvents } from "./piSdkEventMapper";
 import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
@@ -952,6 +971,12 @@ type PersistedChatState = {
   importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
+  /** Pi-native JSONL session pointer for SDK resume and CLI handoff. */
+  piSessionId?: string;
+  piSessionFile?: string;
+  piProfileId?: string;
+  piProviderId?: string;
+  piModelId?: string;
   sdkSessionId?: string;
   forkFromSdkSessionId?: string;
   providerSessionId?: string;
@@ -1114,7 +1139,7 @@ function normalizedPersistedPointer(value: unknown): string | null {
 }
 
 function persistedPointerState(state: Pick<PersistedChatState,
-  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "cursorSdkAgentId" | "cursorCloudAgentId"
+  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "piSessionId" | "piSessionFile" | "cursorSdkAgentId" | "cursorCloudAgentId"
 >): { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null } {
   switch (state.provider) {
     case "codex":
@@ -1127,6 +1152,8 @@ function persistedPointerState(state: Pick<PersistedChatState,
       return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
     case "droid":
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
+    case "pi":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.piSessionId ?? state.piSessionFile) };
     case "cursor":
       return {
         provider: state.provider,
@@ -1746,7 +1773,23 @@ type DroidRuntime = {
   pendingDispatchAck?: { turnId: string; resolve: () => void };
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
+type PiRuntime = {
+  kind: "pi";
+  poolKey: string;
+  poolGeneration: number;
+  sdk: PiSdkPooled;
+  activeTurnId: string | null;
+  busy: boolean;
+  interrupted: boolean;
+  workerFailed: boolean;
+  pendingSteers: QueuedSteer[];
+  modelProviderId: string | null;
+  modelId: string | null;
+  activeCompactionId: string | null;
+  lease: PiSessionLease | null;
+};
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime;
 
 function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: string): void {
   waiter.resolve(denyCursorHook(reason));
@@ -2053,7 +2096,7 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
   if (hasLivePendingInput(managed)) return { ready: false, reason: PENDING_INPUT_SEND_BLOCKED_MESSAGE };
   const rt = managed.runtime;
-  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid") && rt.busy) {
+  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid" || rt.kind === "pi") && rt.busy) {
     return { ready: false, reason: "Turn already active" };
   }
   if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
@@ -2072,6 +2115,7 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "claude") return runtime.approvals.size > 0;
   if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
+  if (runtime.kind === "pi") return false;
   return false;
 }
 
@@ -2129,6 +2173,12 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.activeTurnId
         || runtime.pendingSteers.length > 0
         || runtime.permissionWaiters.size > 0
+      );
+    case "pi":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.pendingSteers.length > 0
       );
     default:
       return false;
@@ -2632,6 +2682,8 @@ type ManagedChatSession = {
    */
   seededProviderSessionId?: string;
   seededDroidSdkSessionId?: string;
+  seededPiSessionId?: string;
+  seededPiSessionFile?: string;
 };
 
 type HandoffArtifacts = {
@@ -2767,6 +2819,7 @@ type ResolvedChatConfig = {
   codexSandboxMode: AgentChatCodexSandbox;
   claudePermissionMode: AgentChatClaudePermissionMode;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  piPermissionMode: AgentChatPermissionMode;
   sessionBudgetUsd: number | null;
   titleGenerationEnabled: boolean;
   titleModelId: string | null;
@@ -3758,6 +3811,7 @@ const CHAT_SESSION_TOOL_TYPES = [
   "opencode-chat",
   "cursor",
   "droid-chat",
+  "pi-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -3778,6 +3832,7 @@ function isSchedulableAgentSession(
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
+  if (toolType === "pi" || toolType === "pi-chat") return "pi";
   if (toolType === "opencode-chat") return "opencode";
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
@@ -3786,6 +3841,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
 }
 
 function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
+  if (provider === "pi") return "pi-chat";
   if (provider === "opencode") return "opencode-chat";
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
@@ -4382,6 +4438,7 @@ function parseAutoLaneIdentity(raw: string): { laneTitle: string | null; branchF
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
+  if (provider === "pi") return "Pi Chat";
   if (provider === "codex") return "Codex Chat";
   if (provider === "claude") return "Claude Chat";
   if (provider === "cursor") return "Cursor Chat";
@@ -4393,7 +4450,7 @@ function handoffProviderLabel(provider: AgentChatProvider): string {
   return providerDisplayLabel(provider, String(provider));
 }
 
-const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat"]);
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat", "Pi Chat"]);
 const DEFAULT_SESSION_TITLES_NORMALIZED = new Set(
   [...DEFAULT_SESSION_TITLES, "OpenCode Chat", "Open Code Chat"]
     .map((title) => title.toLowerCase()),
@@ -4484,6 +4541,7 @@ function extractRuntimeTitle(value: unknown): string | null {
 }
 
 function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string): string {
+  if (provider === "pi") return `chat:pi:${sessionId}`;
   if (provider === "codex") return "chat:codex";
   if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
@@ -4556,6 +4614,11 @@ function resolveModelIdFromStoredValue(
 ): string | undefined {
   const normalized = model.trim().toLowerCase();
   if (!normalized.length) return undefined;
+
+  if (providerHint === "pi") {
+    const piDescriptor = getModelById(model);
+    if (piDescriptor && resolveProviderGroupForModel(piDescriptor) === "pi") return piDescriptor.id;
+  }
 
   if (providerHint === "claude") {
     const resolvedClaudeCliModelId = resolveClaudeCliModelIdFromRuntimeValue(normalized);
@@ -4719,6 +4782,7 @@ function resolveClaudeTurnModelPayload(
 }
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
+  if (provider === "pi") return getDynamicPiModelDescriptors()[0]?.id ?? "pi/default";
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
@@ -5634,7 +5698,7 @@ function droidPermissionModeToLegacyPermissionMode(
 
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -5677,6 +5741,8 @@ function syncLegacyPermissionMode(session: Pick<
     );
   }
 
+  if (session.provider === "pi") return session.permissionMode;
+
   switch (session.opencodePermissionMode) {
     case "plan":
     case "edit":
@@ -5716,6 +5782,8 @@ function applyLegacyPermissionModeToNativeControls(
     session.droidPermissionMode = legacyPermissionModeToDroidPermissionMode(mode);
     return;
   }
+
+  if (session.provider === "pi") return;
 
   session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
 }
@@ -5770,6 +5838,8 @@ function hydrateNativePermissionControls(
     session.droidPermissionMode = session.droidPermissionMode
       ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
+  } else if (session.provider === "pi") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
@@ -5942,6 +6012,12 @@ function toHarnessPermissionMode(
   return "edit";
 }
 
+/**
+ * Pi loads a user-installed package in a separate process. Keep the worker's
+ * environment deliberately small: provider credentials that Pi can resolve
+ * from the environment, ordinary process/terminal settings, and nothing from
+ * ADE's capability-token or agent-control environment.
+ */
 function enforceOrchestrationLockedPermissionMode(
   session: Pick<
     AgentChatSession,
@@ -6583,6 +6659,15 @@ function normalizeSessionNativePermissionControls(
     delete session.codexSandbox;
     delete session.codexConfigSource;
     delete session.opencodePermissionMode;
+  } else if (session.provider === "pi") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
+    delete session.claudePermissionMode;
+    delete session.codexApprovalPolicy;
+    delete session.codexSandbox;
+    delete session.codexConfigSource;
+    delete session.opencodePermissionMode;
+    delete session.droidPermissionMode;
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
@@ -6679,6 +6764,7 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
     || provider === "cursor"
     || provider === "droid"
     || provider === "opencode"
+    || provider === "pi"
     ? "full_tooling"
     : "fallback";
 }
@@ -6712,6 +6798,7 @@ function personalChatUserPromptFallback(
     case "opencode":
     case "cursor":
     case "droid":
+    case "pi":
       return null;
     default:
       return PERSONAL_CHAT_SYSTEM_PROMPT;
@@ -7643,6 +7730,8 @@ export function createAgentChatService(args: {
 
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /** Interrupt arrived while the Pi SDK worker was still being acquired. */
+  const piRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
   const cursorRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
@@ -11017,6 +11106,222 @@ export function createAgentChatService(args: {
     throw new Error(`${descriptor.displayName} is reachable, but no models are currently loaded.`);
   };
 
+  const startPiRuntime = async (managed: ManagedChatSession): Promise<PiRuntime> => {
+    if (piRuntimeSetupInterruptRequested.get(managed)) {
+      piRuntimeSetupInterruptRequested.delete(managed);
+      throw new Error("Pi session interrupted during setup.");
+    }
+    const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
+    if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
+      throw new Error(installation.blocker ?? "Pi SDK is not available. Install Pi or configure ADE_PI_PACKAGE_ROOT.");
+    }
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    const piProfileId = managed.session.piProfileId?.trim() || descriptor?.piProfileId?.trim() || "default";
+    const piProviderId = managed.session.piProviderId?.trim() || descriptor?.piProviderId?.trim() || null;
+    const piModelId = managed.session.piModelId?.trim() || descriptor?.piModelId?.trim() || null;
+    if (piProfileId) managed.session.piProfileId = piProfileId;
+    if (piProviderId) managed.session.piProviderId = piProviderId;
+    if (piModelId) managed.session.piModelId = piModelId;
+    const poolKey = `pi:${projectRoot}:${path.resolve(managed.laneWorktreePath)}:${managed.session.id}:${piProfileId}`;
+    if (managed.runtime?.kind === "pi") {
+      if (managed.runtime.poolKey === poolKey && isPiSdkPooledAlive(managed.runtime.sdk)) return managed.runtime;
+      teardownRuntime(managed, "handle_close");
+    } else if (managed.runtime) {
+      teardownRuntime(managed, "handle_close");
+    }
+    let activeCount = 0;
+    for (const [, session] of managedSessions) if (session.runtime) activeCount++;
+    if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+
+    const runtimeEnv = buildAgentRuntimeEnv(managed);
+    const skillRoots = existingAgentSkillRoots(runtimeEnv);
+    const persisted = readPersistedState(managed.session.id);
+    const sessionFile = managed.session.piSessionFile?.trim() || persisted?.piSessionFile?.trim() || null;
+    const sessionId = managed.session.piSessionId?.trim() || persisted?.piSessionId?.trim() || null;
+    const sessionDir = piSessionDirectoryForEnvironment(runtimeEnv, path.join(layout.cacheDir, "pi", "sessions"));
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const piLeaseIdentity = processRegistry
+      ? {
+          processStartedAt: processRegistry.startedAt,
+          isProcessIdentityLive: (pid: number, startedAt: string) => processRegistry.isProcessIdentityLive(pid, startedAt),
+        }
+      : {};
+    let piLease: PiSessionLease | null = null;
+    let piCreationLease: PiSessionLease | null = null;
+    const existingPiSessionFile = resolvePiSessionFile({
+      cwd: managed.laneWorktreePath,
+      sessionId: sessionId ?? "",
+      sessionFile,
+      sessionDir,
+      env: runtimeEnv,
+    });
+    if (existingPiSessionFile) {
+      piLease = acquirePiSessionLease({
+        sessionFile: existingPiSessionFile,
+        owner: "sdk",
+        ownerId: managed.session.id,
+        ...piLeaseIdentity,
+      });
+    } else {
+      // A new Pi SDK session has no JSONL path until Pi creates its session.
+      // Serialize that first-write window so two ADE runtimes cannot both
+      // create implicit sessions before either one can publish a concrete
+      // header-authoritative file pointer.
+      piCreationLease = acquirePiSessionLease({
+        sessionFile: piSessionCreationLeaseTarget(sessionDir),
+        owner: "sdk",
+        ownerId: managed.session.id,
+        ...piLeaseIdentity,
+      });
+    }
+    const systemPrompt = isPersonalSession(managed.session)
+      ? PERSONAL_CHAT_SYSTEM_PROMPT
+      : buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
+          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+          interactive: true,
+          runtime: "pi-sdk",
+          adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+          orchestrationRole: managed.session.orchestrationRole,
+          orchestrationRunId: managed.session.orchestrationRunId,
+          orchestrationBundlePath: managed.session.orchestrationBundlePath,
+          orchestrationTag: managed.session.orchestrationTag,
+          orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+          orchestrationStepId: managed.session.orchestrationStepId,
+        });
+    const piPermissionMode = toHarnessPermissionMode(managed.session.permissionMode);
+    // Pi's built-in tool registry only contains read, bash, edit, and write.
+    // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
+    const piTools = piToolsForPermissionMode(piPermissionMode);
+    let acquired: Awaited<ReturnType<typeof acquirePiSdkConnection>>;
+    try {
+      acquired = await acquirePiSdkConnection({
+        poolKey,
+        packageRoot: installation.packageRoot,
+      packageEntry: installation.packageEntry,
+      cwd: managed.laneWorktreePath,
+      agentDir: installation.agentDir,
+      sessionDir,
+      tools: piTools,
+      ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
+      thinkingLevel: managed.session.reasoningEffort ?? null,
+      systemPrompt,
+      skillsEnv: skillRoots.length ? { ADE_AGENT_SKILLS_DIRS: skillRoots.join(path.delimiter) } : {},
+      ...(sessionFile || sessionId
+        ? {
+            session: {
+              ...(sessionFile ? { sessionFile } : {}),
+              ...(sessionId ? { sessionId } : {}),
+            },
+          }
+        : {}),
+      baseEnv: runtimeEnv,
+      logger,
+      });
+    } catch (error) {
+      piLease?.release();
+      piCreationLease?.release();
+      throw error;
+    }
+    const workerSessionFile = resolvePiSessionFile({
+      cwd: managed.laneWorktreePath,
+      sessionId: acquired.pooled.sessionId ?? "",
+      sessionFile: acquired.pooled.sessionFile,
+      sessionDir,
+      env: runtimeEnv,
+    });
+    if (!workerSessionFile) {
+      releasePiSdkConnection(poolKey, acquired.generation, () => {
+        piCreationLease?.release();
+        piLease?.release();
+      });
+      throw new Error("Pi SDK worker returned a session outside the authorized native session directory.");
+    }
+    acquired.pooled.sessionFile = workerSessionFile;
+    if (!piLease) {
+      try {
+        piLease = acquirePiSessionLease({
+          sessionFile: workerSessionFile,
+          owner: "sdk",
+          ownerId: managed.session.id,
+          ...piLeaseIdentity,
+        });
+      } catch (error) {
+        releasePiSdkConnection(poolKey, acquired.generation, () => piCreationLease?.release());
+        throw error;
+      }
+    }
+    if (piCreationLease) {
+      piCreationLease.release();
+      piCreationLease = null;
+    }
+    if (piRuntimeSetupInterruptRequested.get(managed)) {
+      piRuntimeSetupInterruptRequested.delete(managed);
+      releasePiSdkConnection(poolKey, acquired.generation, () => {
+        piLease?.release();
+      });
+      throw new Error("Pi session interrupted during setup.");
+    }
+    const runtime: PiRuntime = {
+      kind: "pi",
+      poolKey,
+      poolGeneration: acquired.generation,
+      sdk: acquired.pooled,
+      activeTurnId: null,
+      busy: false,
+      interrupted: false,
+      workerFailed: false,
+      pendingSteers: [],
+      modelProviderId: piProviderId,
+      modelId: piModelId,
+      activeCompactionId: null,
+      lease: piLease,
+    };
+    managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
+    acquired.pooled.bridge.onEvent = (event) => {
+      if (managed.runtime !== runtime) return;
+      const eventRecord = asRecord(event);
+      if (eventRecord?.type === "compaction_start" && !runtime.activeCompactionId) {
+        runtime.activeCompactionId = randomUUID();
+      }
+      const turnId = runtime.activeTurnId ?? undefined;
+      for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) emitChatEvent(managed, mapped);
+      if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
+      if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
+    };
+    acquired.pooled.bridge.onLifecycle = (event) => {
+      if (managed.runtime !== runtime) return;
+      if (event === "ready") {
+        reportProviderRuntimeReady("pi");
+        persistChatState(managed);
+      }
+    };
+    acquired.pooled.bridge.onError = (error, operation) => {
+      if (managed.runtime !== runtime) return;
+      logger.warn("agent_chat.pi_sdk_error", { sessionId: managed.session.id, operation: operation ?? null, error: error.message });
+      if (operation === "worker") {
+        managed.runtimeInvalidated = true;
+        runtime.interrupted = true;
+        runtime.workerFailed = true;
+        if (runtime.activeTurnId) markSessionIdleWithFreshCache(managed);
+        teardownRuntime(managed, "project_close");
+        persistChatState(managed);
+      }
+    };
+    persistChatState(managed);
+    sessionService.setResumeCommand(managed.session.id, `chat:pi:${managed.session.id}`);
+    logger.info("agent_chat.pi_sdk_runtime_ready", {
+      sessionId: managed.session.id,
+      version: acquired.pooled.version,
+      profileId: piProfileId,
+      provider: piProviderId,
+      model: piModelId,
+    });
+    return runtime;
+  };
+
   const startOpenCodeSessionRuntime = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
     const modelId = managed.session.modelId;
     if (!modelId) return "fallthrough";
@@ -11211,6 +11516,11 @@ export function createAgentChatService(args: {
       return "edit" as const;
     })();
 
+    const piPermissionMode = permissions.providers?.pi
+      ?? (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml"
+        ? inProcessMode
+        : "edit");
+
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
@@ -11250,6 +11560,7 @@ export function createAgentChatService(args: {
       codexSandboxMode: sandboxMode,
       claudePermissionMode,
       opencodePermissionMode,
+      piPermissionMode,
       sessionBudgetUsd,
       titleGenerationEnabled,
       titleModelId,
@@ -11609,7 +11920,8 @@ export function createAgentChatService(args: {
         || managed.runtime?.kind === "codex"
         || managed.runtime?.kind === "opencode"
         || managed.runtime?.kind === "cursor"
-        || managed.runtime?.kind === "droid")
+        || managed.runtime?.kind === "droid"
+        || managed.runtime?.kind === "pi")
     ) {
       teardownRuntime(managed, "project_close");
       refreshReconstructionContext(managed);
@@ -11896,6 +12208,23 @@ export function createAgentChatService(args: {
         : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
           ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
           : {}),
+      ...(managed.runtime?.kind === "pi"
+        ? {
+            ...(managed.runtime.sdk.sessionId ? { piSessionId: managed.runtime.sdk.sessionId } : {}),
+            ...(managed.runtime.sdk.sessionFile ? { piSessionFile: managed.runtime.sdk.sessionFile } : {}),
+            ...(managed.session.piProfileId ? { piProfileId: managed.session.piProfileId } : {}),
+            ...(managed.session.piProviderId ? { piProviderId: managed.session.piProviderId } : {}),
+            ...(managed.session.piModelId ? { piModelId: managed.session.piModelId } : {}),
+          }
+        : !managed.runtimeInvalidated && (managed.seededPiSessionId || prevPersisted?.piSessionId || prevPersisted?.piSessionFile)
+          ? {
+              ...(managed.seededPiSessionId || prevPersisted?.piSessionId ? { piSessionId: managed.seededPiSessionId ?? prevPersisted?.piSessionId } : {}),
+              ...(managed.seededPiSessionFile || prevPersisted?.piSessionFile ? { piSessionFile: managed.seededPiSessionFile ?? prevPersisted?.piSessionFile } : {}),
+              ...(prevPersisted?.piProfileId ? { piProfileId: prevPersisted.piProfileId } : {}),
+              ...(prevPersisted?.piProviderId ? { piProviderId: prevPersisted.piProviderId } : {}),
+              ...(prevPersisted?.piModelId ? { piModelId: prevPersisted.piModelId } : {}),
+            }
+          : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
@@ -12097,7 +12426,7 @@ export function createAgentChatService(args: {
       const record = recovered.value as Partial<PersistedChatState>;
       let provider = record.provider;
       if (provider === "unified") provider = "opencode";
-      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid") {
+      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid" && provider !== "pi") {
         return null;
       }
       const laneId = String(record.laneId ?? "").trim();
@@ -12191,6 +12520,21 @@ export function createAgentChatService(args: {
         : undefined;
       const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
         ? record.providerSessionId.trim()
+        : undefined;
+      const piSessionId = typeof record.piSessionId === "string" && record.piSessionId.trim().length
+        ? record.piSessionId.trim()
+        : undefined;
+      const piSessionFile = typeof record.piSessionFile === "string" && record.piSessionFile.trim().length
+        ? record.piSessionFile.trim()
+        : undefined;
+      const piProfileId = typeof record.piProfileId === "string" && record.piProfileId.trim().length
+        ? record.piProfileId.trim()
+        : undefined;
+      const piProviderId = typeof record.piProviderId === "string" && record.piProviderId.trim().length
+        ? record.piProviderId.trim()
+        : undefined;
+      const piModelId = typeof record.piModelId === "string" && record.piModelId.trim().length
+        ? record.piModelId.trim()
         : undefined;
       const claudeBackgroundJobShort = provider === "claude"
         ? normalizeClaudeBackgroundShort(record.claudeBackgroundJobShort)
@@ -12302,6 +12646,11 @@ export function createAgentChatService(args: {
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
+        ...(piSessionId ? { piSessionId } : {}),
+        ...(piSessionFile ? { piSessionFile } : {}),
+        ...(piProfileId ? { piProfileId } : {}),
+        ...(piProviderId ? { piProviderId } : {}),
+        ...(piModelId ? { piModelId } : {}),
         ...(claudeBackgroundJobShort ? { claudeBackgroundJobShort } : {}),
         ...(claudeBackgroundResumeSessionId ? { claudeBackgroundResumeSessionId } : {}),
         ...(claudeBackgroundLogText ? { claudeBackgroundLogText } : {}),
@@ -12420,6 +12769,7 @@ export function createAgentChatService(args: {
       case "codex": return { threadId: candidate.pointer };
       case "claude": return { sdkSessionId: candidate.pointer };
       case "droid": return { droidSdkSessionId: candidate.pointer };
+      case "pi": return { piSessionId: candidate.pointer };
       case "cursor": return { cursorSdkAgentId: candidate.pointer };
       case "opencode": return { providerSessionId: candidate.pointer };
       default: return {};
@@ -16074,7 +16424,7 @@ export function createAgentChatService(args: {
     }
 
     const preserveProviderResumeState =
-      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor") && reasonAllowsPreservation;
+      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi") && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
@@ -16232,6 +16582,18 @@ export function createAgentChatService(args: {
       }
       rt.permissionWaiters.clear();
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "pi") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      cancelQueuedSteers(managed, rt, "interrupted");
+      if (preserveProviderResumeState) persistChatState(managed);
+      if (isPiSdkPooledAlive(rt.sdk)) {
+        void rt.sdk.abort().catch(() => {});
+      }
+      const lease = rt.lease;
+      releasePiSdkConnection(rt.poolKey, rt.poolGeneration, () => lease?.release());
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
@@ -16492,14 +16854,14 @@ export function createAgentChatService(args: {
     const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "opencode"
-        ? DEFAULT_OPENCODE_MODEL_ID
+      ?? (provider === "opencode" || provider === "pi"
+        ? (provider === "pi" ? getDynamicPiModelDescriptors()[0]?.id : DEFAULT_OPENCODE_MODEL_ID)
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : provider === "droid"
             ? DEFAULT_DROID_DESCRIPTOR?.id
           : undefined);
-    const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    const model = provider === "opencode" || provider === "pi" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
     const rowGoal = typeof row.goal === "string" && row.goal.trim().length
       ? row.goal.trim()
@@ -16524,6 +16886,9 @@ export function createAgentChatService(args: {
         ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
         ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
         ...(persisted?.opencodePermissionMode ? { opencodePermissionMode: persisted.opencodePermissionMode } : {}),
+        ...(persisted?.piProfileId ? { piProfileId: persisted.piProfileId } : {}),
+        ...(persisted?.piProviderId ? { piProviderId: persisted.piProviderId } : {}),
+        ...(persisted?.piModelId ? { piModelId: persisted.piModelId } : {}),
         ...(persisted?.cursorModeSnapshot ? { cursorModeSnapshot: persisted.cursorModeSnapshot } : {}),
         ...(persisted?.cursorModeId !== undefined ? { cursorModeId: persisted.cursorModeId } : {}),
         ...(persisted?.cursorConfigValues ? { cursorConfigValues: persisted.cursorConfigValues } : {}),
@@ -21672,6 +22037,135 @@ export function createAgentChatService(args: {
     }
   };
 
+  const runPiTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      laneDirectiveKey?: string | null;
+      onDispatched?: () => void;
+      onBackendDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const setupTurnId = randomUUID();
+    let runtime: PiRuntime;
+    try {
+      runtime = await startPiRuntime(managed);
+      const validation = validateSessionReadyForTurn(managed);
+      if (!validation.ready) throw new Error(validation.reason);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const message = error instanceof Error ? error.message : String(error);
+      reportProviderRuntimeFailure("pi", message);
+      emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId: setupTurnId,
+        status: "failed",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      persistChatState(managed);
+      return;
+    }
+    const turnId = setupTurnId;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    setSessionActive(managed);
+    const attachments = args.attachments ?? [];
+    const displayText = args.displayText?.trim() || args.promptText;
+    emitPreparedUserMessage(managed, {
+      text: args.userText?.trim() || displayText,
+      displayText,
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    try {
+      let prompt = args.promptText;
+      if (managed.pendingReconstructionContext?.trim()) {
+        prompt = `System context (ADE continuity, do not echo verbatim):\n${managed.pendingReconstructionContext.trim()}\n\n${prompt}`;
+        managed.pendingReconstructionContext = null;
+      }
+      if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
+        const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
+        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
+      }
+      const promptBlocks = await buildAgentPromptBlocks(prompt, args.resolvedAttachments ?? []);
+      const promptText = promptBlocks
+        .filter((block): block is { type: "text"; text: string } => block.type === "text")
+        .map((block) => block.text)
+        .join("\n\n");
+      const images = promptBlocks
+        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
+        .map(({ data, mimeType }) => ({ data, mimeType }));
+      args.onDispatched?.();
+      const accepted = runtime.sdk.sendPrompt({
+        prompt: promptText,
+        ...(images.length ? { images } : {}),
+      });
+      args.onBackendDispatched?.();
+      const result = await accepted;
+      const resultRecord = asRecord(result);
+      if (typeof resultRecord?.sessionFile === "string") runtime.sdk.sessionFile = resultRecord.sessionFile;
+      if (typeof resultRecord?.sessionId === "string") runtime.sdk.sessionId = resultRecord.sessionId;
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      markSessionIdleWithFreshCache(managed);
+      reportProviderRuntimeReady("pi");
+      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: runtime.interrupted ? "interrupted" : "completed",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      persistChatState(managed);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const message = error instanceof Error ? error.message : String(error);
+      if (!runtime.workerFailed && (runtime.interrupted || isAbortRelatedError(error))) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "interrupted", model: managed.session.model });
+      } else {
+        reportProviderRuntimeFailure("pi", message);
+        emitChatEvent(managed, { type: "error", message, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "failed", model: managed.session.model });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      }
+      persistChatState(managed);
+    } finally {
+      if (managed.runtime === runtime) {
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.interrupted = false;
+      }
+    }
+    if (!managed.closed && managed.runtime === runtime && runtime.pendingSteers.length) {
+      await deliverNextQueuedSteer(managed, runtime).catch((error) => {
+        logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
+
   // ── Streaming turn for OpenCode runtime ──
 
   const runTurn = async (
@@ -21695,6 +22189,9 @@ export function createAgentChatService(args: {
     if (runtimeKind === "claude" || managed.session.provider === "claude") {
       ensureClaudeSessionRuntime(managed);
       return runClaudeTurn(managed, args);
+    }
+    if (runtimeKind === "pi" || managed.session.provider === "pi") {
+      return runPiTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
@@ -28186,7 +28683,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
@@ -28293,6 +28790,17 @@ export function createAgentChatService(args: {
       });
     } else if (runtime.kind === "droid") {
       await runDroidTurn(managed, {
+        promptText,
+        userText: trimmed,
+        displayText,
+        attachments: nextSteer.attachments,
+        contextAttachments: nextSteer.contextAttachments,
+        resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else if (runtime.kind === "pi") {
+      await runPiTurn(managed, {
         promptText,
         userText: trimmed,
         displayText,
@@ -29242,6 +29750,11 @@ export function createAgentChatService(args: {
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     opencodePermissionMode: requestedOpenCodePermissionModeArg,
+    piProfileId: requestedPiProfileId,
+    piProviderId: requestedPiProviderId,
+    piModelId: requestedPiModelId,
+    piSessionId: requestedPiSessionId,
+    piSessionFile: requestedPiSessionFile,
     droidPermissionMode: requestedDroidPermissionModeArg,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
@@ -29311,7 +29824,9 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : provider === "droid"
               ? DEFAULT_DROID_MODEL
-              : "");
+              : provider === "pi"
+                ? getDynamicPiModelDescriptors()[0]?.id ?? "pi/default"
+                : "");
     const resolvedModelId = requestedModelDescriptor?.id
       ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
@@ -29324,6 +29839,9 @@ export function createAgentChatService(args: {
     }
     if (provider === "droid" && !resolvedModelId) {
       throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
+    }
+    if (provider === "pi" && !resolvedModelId) {
+      throw new Error("Pi chat requires a known model. Refresh the Pi model list and select a model.");
     }
 
     const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
@@ -29371,7 +29889,7 @@ export function createAgentChatService(args: {
         ?? resolvedDescriptor?.defaultReasoningEffort
         ?? DEFAULT_REASONING_EFFORT
       : normalizeReasoningEffort(reasoningEffort);
-    const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid"
+    const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid" || effectiveProvider === "pi"
       ? validateRuntimeReasoningEffortForDescriptor(rawEffort, resolvedDescriptor)
       : validateReasoningEffortForDescriptor(
           effectiveProvider === "claude" ? "claude" : "codex",
@@ -29478,6 +29996,11 @@ export function createAgentChatService(args: {
             ?? "auto-low",
         };
       }
+      if (effectiveProvider === "pi") {
+        return {
+          permissionMode: effectivePermissionMode ?? chatConfig.piPermissionMode,
+        };
+      }
       return {
         opencodePermissionMode: requestedOpenCodePermissionMode
           ?? legacyPermissionModeToOpenCodePermissionMode(effectivePermissionMode)
@@ -29523,6 +30046,21 @@ export function createAgentChatService(args: {
         provider: effectiveProvider,
         model: normalizedModel,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+        ...(effectiveProvider === "pi" && (requestedPiProfileId ?? resolvedDescriptor?.piProfileId)
+          ? { piProfileId: requestedPiProfileId ?? resolvedDescriptor?.piProfileId }
+          : {}),
+        ...(effectiveProvider === "pi" && (requestedPiProviderId ?? resolvedDescriptor?.piProviderId)
+          ? { piProviderId: requestedPiProviderId ?? resolvedDescriptor?.piProviderId }
+          : {}),
+        ...(effectiveProvider === "pi" && (requestedPiModelId ?? resolvedDescriptor?.piModelId)
+          ? { piModelId: requestedPiModelId ?? resolvedDescriptor?.piModelId }
+          : {}),
+        ...(effectiveProvider === "pi" && requestedPiSessionId
+          ? { piSessionId: requestedPiSessionId }
+          : {}),
+        ...(effectiveProvider === "pi" && requestedPiSessionFile
+          ? { piSessionFile: requestedPiSessionFile }
+          : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
@@ -35370,6 +35908,49 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.session.provider === "pi") {
+      if (reasoningEffort !== undefined) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+      const compactMatch = submittedText.match(/^\/compact(?:\s+([\s\S]*))?$/i);
+      if (compactMatch) {
+        const runtime = await startPiRuntime(managed);
+        const validation = validateSessionReadyForTurn(managed);
+        if (!validation.ready) throw new Error(validation.reason);
+        runtime.busy = true;
+        runtime.interrupted = false;
+        onDispatched?.();
+        try {
+          await runtime.sdk.compact({
+            ...(compactMatch[1]?.trim() ? { customInstructions: compactMatch[1].trim() } : {}),
+          });
+          onBackendDispatched?.();
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Pi context compaction completed.",
+          });
+          persistChatState(managed);
+        } finally {
+          if (managed.runtime === runtime) runtime.busy = false;
+        }
+        return;
+      }
+      await runPiTurn(managed, {
+        promptText,
+        userText: submittedText,
+        displayText: visibleText,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata,
+        laneDirectiveKey,
+        onDispatched,
+        onBackendDispatched,
+      });
+      return;
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       const nextReasoningEffort = validateReasoningEffortForDescriptor(
@@ -36020,6 +36601,60 @@ export function createAgentChatService(args: {
       return { steerId, queued: false };
     }
 
+    if (managed.session.provider === "pi") {
+      if (managed.runtime?.kind === "pi" && (managed.runtime.busy || managed.session.status === "active")) {
+        const runtime = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: displayText ?? trimmed,
+          attachments,
+          contextAttachments,
+          metadata,
+          allowPendingInput: options?.allowPendingInput,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) return { steerId, queued: false };
+        const promptBlocks = await buildAgentPromptBlocks(preparedSteer.submittedText, preparedSteer.resolvedAttachments);
+        const promptText = promptBlocks
+          .filter((block): block is { type: "text"; text: string } => block.type === "text")
+          .map((block) => block.text)
+          .join("\n\n");
+        const images = promptBlocks
+          .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
+          .map(({ data, mimeType }) => ({ data, mimeType }));
+        await runtime.sdk.steer(promptText, images);
+        preparedSteer.onDispatched?.();
+        options?.onAcceptedDispatch?.();
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          steerId,
+          turnId: runtime.activeTurnId ?? undefined,
+          deliveryState: "inline",
+        });
+        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
+        persistChatState(managed);
+        return { steerId, queued: false };
+      }
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: displayText ?? trimmed,
+        attachments,
+        contextAttachments,
+        metadata,
+        allowPendingInput: options?.allowPendingInput,
+      });
+      if (!preparedSteer) return { steerId, queued: false };
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
+    }
+
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
@@ -36363,6 +36998,7 @@ export function createAgentChatService(args: {
         managed.session.provider === "opencode"
         || managed.session.provider === "cursor"
         || managed.session.provider === "droid"
+        || managed.session.provider === "pi"
       )
       && !canRouteActiveSendToSteer(managed);
     let markersCleared = false;
@@ -36872,6 +37508,28 @@ export function createAgentChatService(args: {
       return result;
     }
 
+    if (managed.runtime?.kind === "pi") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      rt.pendingSteers.length = 0;
+      try {
+        await rt.sdk.abort();
+      } catch {
+        // ignore
+      }
+      cancelQueuedSteers(managed, rt, "interrupted");
+      persistChatState(managed);
+      return result;
+    }
+
+    if (managed.session.provider === "pi") {
+      piRuntimeSetupInterruptRequested.set(managed, true);
+      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      setSessionIdle(managed);
+      persistChatState(managed);
+      return result;
+    }
+
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
       rt.interrupted = true;
@@ -37223,6 +37881,16 @@ export function createAgentChatService(args: {
       }
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+    } else if (managed.session.provider === "pi") {
+      await startPiRuntime(managed);
+      managed.session.piSessionId = managed.runtime?.kind === "pi" ? managed.runtime.sdk.sessionId ?? managed.session.piSessionId : managed.session.piSessionId;
+      managed.session.piSessionFile = managed.runtime?.kind === "pi" ? managed.runtime.sdk.sessionFile ?? managed.session.piSessionFile : managed.session.piSessionFile;
+      managed.session.piProfileId = persisted?.piProfileId ?? managed.session.piProfileId;
+      managed.session.piProviderId = persisted?.piProviderId ?? managed.session.piProviderId;
+      managed.session.piModelId = persisted?.piModelId ?? managed.session.piModelId;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
+      sessionService.setResumeCommand(sessionId, `chat:pi:${sessionId}`);
     } else if (managed.session.provider === "cursor") {
       await ensureCursorRuntime(managed);
       managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
@@ -38004,6 +38672,8 @@ export function createAgentChatService(args: {
         const permission = runtime.permissionWaiters.keys().next().value;
         return typeof permission === "string" && permission.trim().length ? permission : null;
       }
+      case "pi":
+        return null;
     }
   };
 
@@ -38104,14 +38774,14 @@ export function createAgentChatService(args: {
     const hydratedModelId = liveSession?.modelId
       ?? persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "opencode"
-        ? DEFAULT_OPENCODE_MODEL_ID
+      ?? (provider === "opencode" || provider === "pi"
+        ? (provider === "pi" ? getDynamicPiModelDescriptors()[0]?.id : DEFAULT_OPENCODE_MODEL_ID)
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : provider === "droid"
             ? DEFAULT_DROID_DESCRIPTOR?.id
           : undefined);
-    const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    const model = provider === "opencode" || provider === "pi" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const claudeBackgroundJobShort = provider === "claude"
       ? liveManaged?.claudeBackgroundJobShort ?? persisted?.claudeBackgroundJobShort ?? null
       : null;
@@ -38196,6 +38866,11 @@ export function createAgentChatService(args: {
       ...(liveSession?.opencodePermissionMode || persisted?.opencodePermissionMode
         ? { opencodePermissionMode: liveSession?.opencodePermissionMode ?? persisted?.opencodePermissionMode }
         : {}),
+      ...((liveSession?.piProfileId ?? persisted?.piProfileId) ? { piProfileId: liveSession?.piProfileId ?? persisted?.piProfileId } : {}),
+      ...((liveSession?.piProviderId ?? persisted?.piProviderId) ? { piProviderId: liveSession?.piProviderId ?? persisted?.piProviderId } : {}),
+      ...((liveSession?.piModelId ?? persisted?.piModelId) ? { piModelId: liveSession?.piModelId ?? persisted?.piModelId } : {}),
+      ...((liveSession?.piSessionId ?? persisted?.piSessionId) ? { piSessionId: liveSession?.piSessionId ?? persisted?.piSessionId } : {}),
+      ...((liveSession?.piSessionFile ?? persisted?.piSessionFile) ? { piSessionFile: liveSession?.piSessionFile ?? persisted?.piSessionFile } : {}),
       ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
         ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
         : {}),
@@ -39607,6 +40282,7 @@ export function createAgentChatService(args: {
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
   const MODEL_CATALOG_REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
     "opencode",
+    "pi",
     "cursor",
     "droid",
     "lmstudio",
@@ -39858,6 +40534,31 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (provider === "pi") {
+      try {
+        if (args.activateRuntime) {
+          const inventory = await probePiProfileInventory(resolvePiInstallation());
+          replaceDynamicPiModelDescriptors(piModelDescriptorsFromInventory(inventory));
+        }
+        const models = getDynamicPiModelDescriptors();
+        const preferred = models[0]?.id;
+        return models.map((descriptor) => ({
+          id: descriptor.id,
+          displayName: descriptor.displayName,
+          description: `${descriptor.displayName} (Pi SDK)`,
+          isDefault: descriptor.id === preferred,
+          reasoningEfforts: descriptor.reasoningTiers?.map((tier) => ({ effort: tier, description: `${tier} reasoning` })) ?? [],
+          modelId: descriptor.id,
+          family: "pi",
+          supportsReasoning: descriptor.capabilities.reasoning,
+          supportsTools: descriptor.capabilities.tools,
+          color: descriptor.color,
+        }));
+      } catch {
+        return [];
+      }
+    }
+
     if (provider === "opencode") {
       try {
         const effectiveConfig = projectConfigService.get().effective;
@@ -39972,6 +40673,7 @@ export function createAgentChatService(args: {
     "cursor",
     "droid",
     "opencode",
+    "pi",
   ] as const satisfies readonly AgentChatProvider[];
 
   const getAvailableModels = async ({
@@ -40031,8 +40733,9 @@ export function createAgentChatService(args: {
       shouldRefreshProvider("opencode")
       || shouldRefreshProvider("lmstudio")
       || shouldRefreshProvider("ollama");
+    const shouldRefreshPi = shouldRefreshProvider("pi") || (mode === "cached" && !modelCatalogCache);
 
-    const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid"];
+    const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "pi"];
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
@@ -40042,7 +40745,8 @@ export function createAgentChatService(args: {
               provider,
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
-                || (provider === "droid" && shouldRefreshProvider("droid")),
+                || (provider === "droid" && shouldRefreshProvider("droid"))
+                || (provider === "pi" && shouldRefreshPi),
               ...(provider === "cursor" && catalogArgs?.cursorSource
                 ? { cursorSource: catalogArgs.cursorSource }
                 : {}),
@@ -40113,7 +40817,8 @@ export function createAgentChatService(args: {
           ...(info.cursorCliVariants?.length ? { cursorCliVariants: info.cursorCliVariants } : descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
         };
         descriptors.push(patched);
-        descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
+        const providerKey = provider === "pi" ? patched.piProviderId ?? patched.family : patched.family;
+        descriptorInfo.set(catalogDescriptorInfoKey(provider, providerKey, patched.id), { provider, info });
       }
     }
 
@@ -40169,7 +40874,9 @@ export function createAgentChatService(args: {
             models: subsection.models.map((descriptor) => {
               const entry = descriptorInfo.get(catalogDescriptorInfoKey(group.key, provider.key, descriptor.id));
               const runtimeProvider = entry?.provider ?? resolveProviderGroupForModel(descriptor);
-              const runtimeModelId = entry?.info.id ?? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider);
+              const runtimeModelId = entry?.provider === "pi"
+                ? getRuntimeModelRefForDescriptor(descriptor, "pi")
+                : entry?.info.id ?? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider);
               const providerMeta = descriptor.openCodeProviderId
                 ? opencodeProviderById.get(descriptor.openCodeProviderId)
                 : group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"
@@ -40715,6 +41422,17 @@ export function createAgentChatService(args: {
       managed.session.provider = nextProvider;
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
+      if (nextProvider === "pi") {
+        managed.session.piProfileId = descriptor.piProfileId ?? "default";
+        managed.session.piProviderId = descriptor.piProviderId ?? null;
+        managed.session.piModelId = descriptor.piModelId ?? (descriptor.providerModelId.split("/").slice(1).join("/") || null);
+      } else {
+        delete managed.session.piProfileId;
+        delete managed.session.piProviderId;
+        delete managed.session.piModelId;
+        delete managed.session.piSessionId;
+        delete managed.session.piSessionFile;
+      }
       if (nextProvider === "claude" && !modelSupportsFastMode(descriptor)) {
         delete managed.session.fastMode;
       }
@@ -40794,6 +41512,15 @@ export function createAgentChatService(args: {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
+      if (reasoningEffort !== undefined && managed.runtime?.kind === "pi" && managed.session.reasoningEffort) {
+        await managed.runtime.sdk.setThinking(managed.session.reasoningEffort).catch((error) => {
+          logger.warn("agent_chat.pi_set_thinking_failed", {
+            sessionId,
+            thinkingLevel: managed.session.reasoningEffort,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
@@ -40820,6 +41547,15 @@ export function createAgentChatService(args: {
       if (prev !== next && managed.runtime?.kind === "codex") {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
+      }
+      if (prev !== next && managed.runtime?.kind === "pi" && next) {
+        await managed.runtime.sdk.setThinking(next).catch((error) => {
+          logger.warn("agent_chat.pi_set_thinking_failed", {
+            sessionId,
+            thinkingLevel: next,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
       // A reasoning-only change on the CTO thread must also land in identity
       // modelPreferences, or the next ensured session resurrects the old tier.
@@ -41192,7 +41928,10 @@ export function createAgentChatService(args: {
 
     const localCommands: AgentChatSlashCommand[] = provider === "claude" || provider === "codex"
       ? []
-      : [{ name: "/clear", description: "Clear chat history", source: "local" }];
+      : [
+          { name: "/clear", description: "Clear chat history", source: "local" },
+          ...(provider === "pi" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const, argumentHint: "[instructions]" }] : []),
+        ];
 
     const mergeSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
       const merged = new Map<string, AgentChatSlashCommand>();

@@ -25,7 +25,8 @@ export function isThreadPointerLedgerEntry(value: unknown): value is ThreadPoint
       || record.provider === "claude"
       || record.provider === "opencode"
       || record.provider === "cursor"
-      || record.provider === "droid")
+      || record.provider === "droid"
+      || record.provider === "pi")
     && (record.pointer === null || typeof record.pointer === "string")
     && (record.prevPointer === null || typeof record.prevPointer === "string")
     && typeof record.reason === "string"

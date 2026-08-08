@@ -200,6 +200,7 @@ func workExternalSessionProviderName(_ provider: String) -> String {
   case "cursor": return "Cursor"
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
+  case "pi": return "Pi"
   default:
     let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "Unknown" : trimmed

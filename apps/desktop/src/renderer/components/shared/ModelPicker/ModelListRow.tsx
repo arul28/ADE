@@ -1,7 +1,7 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Star, Lightning } from "@phosphor-icons/react";
-import { modelSupportsFastMode, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import { formatPiProviderLabel, modelSupportsFastMode, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { ModelRowLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
@@ -15,6 +15,11 @@ function isLocalModel(model: ModelDescriptor): boolean {
 function subProviderLabel(model: ModelDescriptor): string | null {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
+  if (model.providerRoute === "pi-sdk" && model.piProviderId) {
+    const label = formatPiProviderLabel(model.piProviderId);
+    const profile = model.piProfileId?.trim();
+    return profile && profile !== "default" ? `${label} · ${profile}` : label;
+  }
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
     // Rows shown inside the OpenCode rail; "via OpenCode" was redundant.
     const id = model.openCodeProviderId;
@@ -34,9 +39,11 @@ export type ModelListRowProps = {
   model: ModelDescriptor;
   isFavorite: boolean;
   isActive: boolean;
+  isFocused?: boolean;
   isAvailable: boolean;
   onSelect: (modelId: string) => void;
   onToggleFavorite: (modelId: string) => void;
+  onFocus?: () => void;
   onCopyId?: (modelId: string) => void;
   onSetSurfaceDefault?: (modelId: string) => void;
   onViewDocs?: (modelId: string) => void;
@@ -78,9 +85,11 @@ export const ModelListRow = memo(function ModelListRow({
   model,
   isFavorite,
   isActive,
+  isFocused = false,
   isAvailable,
   onSelect,
   onToggleFavorite,
+  onFocus,
   onCopyId,
   onSetSurfaceDefault,
   onViewDocs,
@@ -202,11 +211,15 @@ export const ModelListRow = memo(function ModelListRow({
       <ContextMenu.Trigger asChild>
         <div
           role="option"
-          tabIndex={-1}
-          aria-selected={isActive}
+          tabIndex={isFocused ? 0 : -1}
+          id={`model-picker-row-${encodeURIComponent(model.id)}`}
           aria-disabled={!isAvailable || undefined}
+          aria-selected={isActive}
+          aria-current={isFocused ? "true" : undefined}
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}`}
           data-model-id={model.id}
           data-active={isActive ? "true" : undefined}
+          onFocus={onFocus}
           onClick={handleSelect}
           onKeyDown={handleRowKeyDown}
           className={cn(
@@ -220,7 +233,7 @@ export const ModelListRow = memo(function ModelListRow({
         >
           <button
             type="button"
-            tabIndex={-1}
+            tabIndex={isFocused ? 0 : -1}
             aria-label={isFavorite ? "Unfavorite" : "Favorite"}
             aria-pressed={isFavorite}
             onClick={handleToggleFavorite}
@@ -275,7 +288,7 @@ export const ModelListRow = memo(function ModelListRow({
             {inlineReasoningChip?.visible ? (
               <button
                 type="button"
-                tabIndex={-1}
+                tabIndex={isFocused ? 0 : -1}
                 aria-label={`Reasoning effort: ${reasoningChipLabel(inlineReasoningChip.effort, model)}. Click to cycle.`}
                 onClick={handleReasoningChipClick}
                 onKeyDown={handleReasoningChipKeyDown}
@@ -294,7 +307,7 @@ export const ModelListRow = memo(function ModelListRow({
           {showFastChip ? (
             <button
               type="button"
-              tabIndex={0}
+              tabIndex={isFocused ? 0 : -1}
               data-model-picker-fast-toggle="true"
               aria-label={`Fast mode for ${model.displayName}`}
               aria-pressed={fastModeOn}
@@ -327,7 +340,7 @@ export const ModelListRow = memo(function ModelListRow({
           {!isAvailable && onSignIn ? (
             <button
               type="button"
-              tabIndex={-1}
+              tabIndex={isFocused ? 0 : -1}
               onClick={handleSignInClick}
               onKeyDown={handleSignInKeyDown}
               className="ml-1 shrink-0 self-center rounded border border-amber-400/30 bg-amber-400/[0.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-200/85 hover:bg-amber-400/[0.14]"

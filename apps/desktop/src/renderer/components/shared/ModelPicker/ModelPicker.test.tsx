@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import {
   createDynamicCursorCliModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
+  createDynamicPiModelDescriptor,
   type ModelDescriptor,
 } from "../../../../shared/modelRegistry";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
@@ -29,6 +30,7 @@ vi.mock("@lobehub/icons", () => {
     Codex: brand(),
     Cursor: brand(),
     Gemini: brand(),
+    GithubCopilot: brand(),
     Google: brand(),
     Grok: brand(),
     Groq: brand(),
@@ -258,6 +260,11 @@ const OPENCODE_MODEL: ModelDescriptor = {
   isCliWrapped: false,
 };
 
+const PI_MODEL = createDynamicPiModelDescriptor("openai-codex", "gpt-5.4", {
+  profileId: "work",
+  displayName: "GPT-5.4 via Pi",
+});
+
 const MODELS: ModelDescriptor[] = [SONNET, OPUS, GPT];
 
 beforeEach(() => {
@@ -349,7 +356,8 @@ describe("ModelPicker", () => {
     await user.click(trigger);
 
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("listbox", { name: /models/i })).toBeTruthy();
+    const modelList = screen.getByRole("listbox", { name: /models/i });
+    expect(modelList.getAttribute("aria-activedescendant")).toBeNull();
     expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
   });
 
@@ -417,6 +425,30 @@ describe("ModelPicker", () => {
     await user.click(opusRow!);
 
     expect(onChange).toHaveBeenCalledWith(OPUS.id);
+  });
+
+  it("keeps keyboard navigation and focused-row styling with listbox semantics", async () => {
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const modelList = screen.getByRole("listbox", { name: /models/i });
+    const content = document.querySelector('[data-model-picker-content="true"]')!;
+    const rows = within(modelList).getAllByRole("option");
+    const isFocusedRow = (row: HTMLElement) => row.closest('[data-focused="true"]') != null;
+    const initialFocused = rows.find(isFocusedRow);
+    expect(initialFocused).toBeDefined();
+    expect(initialFocused?.tabIndex).toBe(0);
+    expect(initialFocused?.getAttribute("aria-current")).toBe("true");
+
+    fireEvent.keyDown(content, { key: "ArrowDown" });
+
+    const nextFocused = rows.find(isFocusedRow);
+    expect(nextFocused).toBeDefined();
+    expect(nextFocused).not.toBe(initialFocused);
+    expect(nextFocused?.tabIndex).toBe(0);
+    expect(nextFocused?.getAttribute("aria-current")).toBe("true");
   });
 
   it("filters the list by search query", async () => {
@@ -970,7 +1002,7 @@ describe("ModelPicker", () => {
     await user.click(screen.getByRole("button", { name: /Select model/i }));
     await user.click(screen.getByRole("tab", { name: /^OpenAI$/i }));
 
-    const gptRow = await screen.findByRole("option", { name: "GPT-5.4" });
+    const gptRow = await findModelRow(GPT.id);
     expect(gptRow.getAttribute("data-model-id")).toBe(GPT.id);
     expect(gptRow.getAttribute("aria-disabled")).toBeNull();
     await user.click(gptRow);
@@ -1073,6 +1105,98 @@ describe("ModelPicker", () => {
     expect(anthropicApiKeyModel.family).toBe("anthropic");
     expect(onOpenSignIn).toHaveBeenCalledWith("anthropic", ["api-key"]);
     expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps Pi as the selected harness in the rail and empty state", async () => {
+    const user = userEvent.setup();
+    authOnlyState = true;
+    providerAuthStatusInternal = { pi: "unauthed" };
+    const onOpenSignIn = vi.fn();
+    renderPicker({
+      value: PI_MODEL.id,
+      models: [PI_MODEL],
+      availableModelIds: [],
+      onOpenSignIn,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    expect(screen.getByRole("tab", { name: "Pi" })).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "Pi" }));
+    expect(screen.getByText("Connect Pi")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Log in to Pi" }));
+    expect(onOpenSignIn).toHaveBeenCalledWith("pi");
+  });
+
+  it("routes keyboard sign-in for an unavailable Pi row through the Pi harness", async () => {
+    providerAuthStatusInternal = { pi: "unauthed" };
+    const onOpenSignIn = vi.fn();
+    renderPicker({
+      value: PI_MODEL.id,
+      models: [PI_MODEL],
+      availableModelIds: [],
+      onOpenSignIn,
+    });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /Select model/i }));
+    const content = document.querySelector('[data-model-picker-content="true"]')!;
+    fireEvent.keyDown(content, { key: "Enter" });
+    expect(onOpenSignIn).toHaveBeenCalledWith("pi", ["oauth", "api-key"]);
+  });
+
+  it("keeps Pi rows grouped under the Pi rail with profile and provider context", async () => {
+    providerAuthStatusInternal = { pi: "ok" };
+    const { onChange } = renderPicker({
+      value: PI_MODEL.id,
+      models: [PI_MODEL],
+      availableModelIds: [PI_MODEL.id],
+    });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /Select model/i }));
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Pi" }));
+
+    const row = await findModelRow(PI_MODEL.id);
+    expect(row.textContent).toContain("OpenAI Codex · work");
+    await userEvent.setup().click(row);
+    expect(onChange).toHaveBeenCalledWith(PI_MODEL.id);
+  });
+
+  it("keeps cached Pi rows visible and offers retry after catalog refresh failure", async () => {
+    providerAuthStatusInternal = { pi: "unauthed" };
+    const previousAde = window.ade;
+    const modelCatalog = vi.fn(async (args: { mode?: string }) => {
+      if (args.mode === "cached") {
+        return { groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: false };
+      }
+      throw new Error("Pi discovery unavailable");
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+    try {
+      renderPicker({
+        value: PI_MODEL.id,
+        models: [PI_MODEL],
+        availableModelIds: [PI_MODEL.id],
+        onOpenSignIn: vi.fn(),
+      });
+
+      await userEvent.setup().click(screen.getByRole("button", { name: /Select model/i }));
+      await userEvent.setup().click(screen.getByRole("tab", { name: "Pi" }));
+
+      expect(await screen.findByText(/Couldn’t refresh Pi models/)).toBeTruthy();
+      expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+      expect(await findModelRow(PI_MODEL.id)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "pi" });
+    } finally {
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: previousAde,
+      });
+    }
   });
 
   it("dims configuration-gated models and routes their click to sign-in even when the family is authed", async () => {

@@ -297,6 +297,7 @@ const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>([
   "cursor",
   "droid",
   "opencode",
+  "pi",
 ]);
 
 type SyncRemoteCommandServiceArgs = {
@@ -1259,6 +1260,11 @@ async function summarizeChatSessionForRemote(
     ...(session.codexSandbox ? { codexSandbox: session.codexSandbox } : {}),
     ...(session.codexConfigSource ? { codexConfigSource: session.codexConfigSource } : {}),
     ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
+    ...(session.piProfileId ? { piProfileId: session.piProfileId } : {}),
+    ...(session.piProviderId ? { piProviderId: session.piProviderId } : {}),
+    ...(session.piModelId ? { piModelId: session.piModelId } : {}),
+    ...(session.piSessionId ? { piSessionId: session.piSessionId } : {}),
+    ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
@@ -2375,6 +2381,11 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
+  if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
+  if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
+  if ("piModelId" in value) parsed.piModelId = value.piModelId == null ? null : asTrimmedString(value.piModelId) ?? null;
+  if ("piSessionId" in value) parsed.piSessionId = value.piSessionId == null ? null : asTrimmedString(value.piSessionId) ?? null;
+  if ("piSessionFile" in value) parsed.piSessionFile = value.piSessionFile == null ? null : asTrimmedString(value.piSessionFile) ?? null;
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : (asTrimmedString(value.droidPermissionMode) ?? undefined) as AgentChatCreateArgs["droidPermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
@@ -2971,6 +2982,7 @@ function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatMod
     ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
     ...(
       refreshProvider === "opencode"
+      || refreshProvider === "pi"
       || refreshProvider === "cursor"
       || refreshProvider === "droid"
       || refreshProvider === "lmstudio"
@@ -3554,7 +3566,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
-    ...(payload.provider === "opencode" ? { activateRuntime: true } : {}),
+    ...(payload.provider === "opencode" || payload.provider === "pi" ? { activateRuntime: true } : {}),
   });
   const chosen = available[0];
   if (!chosen) {

@@ -145,7 +145,7 @@ const CLAUDE_SESSION_COLUMNS = `
 `;
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
-  return value === "claude" || value === "codex" || value === "cursor" || value === "droid" || value === "opencode";
+  return value === "claude" || value === "codex" || value === "cursor" || value === "droid" || value === "opencode" || value === "pi";
 }
 
 function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
@@ -481,12 +481,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "cursor-cli",
       "droid",
       "opencode",
+      "pi",
       "claude-orchestrated",
       "codex-orchestrated",
       "opencode-orchestrated",
       "codex-chat",
       "claude-chat",
       "opencode-chat",
+      "pi-chat",
       "cursor",
       "droid-chat",
       "aider",

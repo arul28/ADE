@@ -1,4 +1,5 @@
 import type { AdeCodeProvider } from "../../types";
+import type { AgentChatModelCatalogRefreshProvider } from "../../../../../desktop/src/shared/types/chat";
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import type { CursorModelAvailability } from "../../../../../desktop/src/shared/modelRegistry";
 
@@ -48,4 +49,5 @@ export type ModelPickerState = {
   settingsRows: SetupPaneRow[];
   footerFocus: SetupPaneRowKind | null;
   laneLabel?: string | null;
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
 };

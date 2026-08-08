@@ -117,6 +117,12 @@ extension WorkSessionSettingsSheet {
         permissionMode = wire.permissionMode
         cursorModeId = wire.cursorModeId
       }
+    case "pi":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        permissionMode = wire.permissionMode
+      }
     default:
       break
     }

@@ -19,12 +19,12 @@ import {
 import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
-import { decodeOpenCodeRegistryId } from "./modelRegistry";
+import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
 import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 import type { OrchestrationRole } from "./types/orchestration";
 
-export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
+export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
 export type LaunchProfile = CliProvider | "shell";
 export type TrackedCliLaunchCommand = {
   command?: string;
@@ -136,7 +136,7 @@ export function buildPtyContinuationLaunchFields(
   };
 }
 
-export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "shell"] as const satisfies readonly LaunchProfile[];
+export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "pi", "shell"] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
 
 export function sanitizeTrackedCliResumeTargetId(value: string | null | undefined): string | null {
@@ -155,6 +155,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   cursor: "cursor-cli",
   droid: "droid",
   opencode: "opencode",
+  pi: "pi",
   shell: "shell",
 };
 
@@ -165,6 +166,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   cursor: "Cursor Agent CLI",
   droid: "Factory Droid CLI",
   opencode: "OpenCode CLI",
+  pi: "Pi CLI",
   shell: "Shell",
 };
 
@@ -318,6 +320,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   cursor: ["cursor-cli", "cursor"],
   droid: ["droid", "droid-chat"],
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
+  pi: ["pi"],
   shell: ["shell"],
 };
 
@@ -336,6 +339,15 @@ export function validateLaunchProfilePermissionMode(
   const mode = permissionMode ?? "default";
   if (profile === "shell" && mode !== "default") {
     throw new Error(`permissionMode ${mode} is not supported for shell sessions.`);
+  }
+  // Pi does not currently expose ADE's permission presets as native CLI flags.
+  // Keep the selected policy available to its guidance instead of rejecting a
+  // launch or inventing provider-specific switches.
+  if (profile === "pi") {
+    if (mode === "auto" || mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for Pi CLI sessions.`);
+    }
+    return;
   }
   if (mode === "auto" && profile !== "claude") {
     throw new Error("permissionMode auto is only supported for Claude CLI sessions.");
@@ -477,6 +489,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "cursor") return "cursor-agent --model auto";
   if (provider === "droid") return "droid";
   if (provider === "opencode") return "opencode";
+  if (provider === "pi") return "pi";
   return "claude";
 }
 
@@ -717,6 +730,33 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "pi") {
+    const guidance = [
+      buildAdeCliAgentGuidance(skillRoots),
+      `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
+    ].join("\n");
+    const commandArgs = [
+      ...modelToCliFlag(resolvePiCliModelForLaunch(args.model)),
+      ...piThinkingFlags(args.reasoningEffort),
+      ...piToolFlags(permissionMode),
+      "--append-system-prompt",
+      guidance,
+    ];
+    // Keep the guidance off the shell fallback's command line. The direct
+    // command/argv path carries it safely on every platform; the initial user
+    // message rides the PTY so Windows shims cannot rewrite it.
+    const startupArgs = commandArgs.filter(
+      (arg, index, all) => arg !== "--append-system-prompt" && all[index - 1] !== "--append-system-prompt",
+    );
+    return {
+      command: "pi",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["pi", ...startupArgs], { platform: "linux" }),
+      ...(initialPrompt ? { initialInput: initialPrompt, initialInputDelayMs: 750 } : {}),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
@@ -787,6 +827,47 @@ export function resolveCodexCliModelForLaunch(model: string | null | undefined):
   return raw;
 }
 
+/** Pi accepts provider/model, while ADE model refs may be prefixed with `pi/`. */
+export function resolvePiCliModelForLaunch(model: string | null | undefined): string | null {
+  const raw = normalizeCliFlagValue(model);
+  if (!raw) return null;
+  const slash = raw.indexOf("/");
+  if (slash > 0 && raw.slice(0, slash).toLowerCase() === "pi") {
+    const decoded = decodePiRegistryId(raw);
+    if (decoded) return `${decoded.providerId}/${decoded.modelId}`;
+    // Legacy Pi ids may only carry the provider/model suffix. Strip only
+    // ADE's provider prefix and leave encoded model separators untouched.
+    return raw.slice(slash + 1).trim() || null;
+  }
+  return raw;
+}
+
+export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  const mode = permissionMode ?? "default";
+  // Pi's built-in tool names are exactly read, bash, edit, and write. Keep
+  // the allowlist limited to those names; unknown names make Pi reject the
+  // launch instead of merely disabling an optional tool.
+  return mode === "full-auto"
+    ? ["read", "bash", "edit", "write"]
+    : mode === "edit"
+      ? ["read", "edit", "write"]
+      : ["read"];
+}
+
+export function piToolFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  const tools = piToolsForPermissionMode(permissionMode);
+  return ["--tools", tools.join(",")];
+}
+
+export function piThinkingFlags(reasoningEffort: string | null | undefined): string[] {
+  const normalized = normalizeCliFlagValue(reasoningEffort);
+  if (!normalized) return [];
+  const lower = normalized.toLowerCase();
+  const thinking = lower === "ultra" || lower === "ultracode" ? "xhigh" : lower;
+  if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) return [];
+  return ["--thinking", thinking];
+}
+
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
@@ -826,11 +907,18 @@ function claudeSessionSettingsFlags(
   return Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [];
 }
 
-function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
+function workTabCliPrompt(
+  initialPrompt: string | null,
+  skillRoots: readonly string[],
+  additionalGuidance?: string,
+): string {
   const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt));
-  if (!initialPrompt) return preamble;
+  const withAdditionalGuidance = additionalGuidance
+    ? [preamble, "", additionalGuidance].join("\n")
+    : preamble;
+  if (!initialPrompt) return withAdditionalGuidance;
   return [
-    preamble,
+    withAdditionalGuidance,
     "",
     "User prompt:",
     initialPrompt,
@@ -1234,6 +1322,33 @@ export function buildTrackedCliResumeLaunchCommand(
       command: "/bin/bash",
       args: ["-lc", startupCommand],
       startupCommand,
+    };
+  }
+
+  if (metadata.provider === "pi") {
+    const parts = [
+      "pi",
+      ...modelToCliFlag(resolvePiCliModelForLaunch(model)),
+      ...piThinkingFlags(reasoningEffort),
+      ...piToolFlags(permissionMode),
+    ];
+    // Pi's supported native continuation target is a session id/file passed to
+    // --session. When ADE has not captured a concrete id yet, continue the
+    // most recent session instead of silently launching a new one.
+    if (metadata.targetKind === "session" && targetId) parts.push("--session", targetId);
+    else parts.push("--continue");
+    // A bare `pi` command resolves to an npm `.cmd` shim on some Windows
+    // installs. `cmd.exe` rewrites multiline prompts, expands `%NAME%`, and
+    // imposes a command-line length limit, so deliver the resume prompt over
+    // the PTY on Windows just like fresh Pi launches do. POSIX keeps the
+    // prompt in argv where it round-trips intact.
+    const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
+    if (prompt && promptRidesInArgv) parts.push(prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
     };
   }
 

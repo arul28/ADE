@@ -3429,9 +3429,13 @@ private func workTurnModelMetadata(
   let rawModelId = [modelId, model]
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
     .first { !$0.isEmpty }
+  let displayModel = [modelId, model]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first { workPiModelMetadata(for: $0) != nil }
+    ?? rawModel
   return WorkTurnModelMetadata(
     provider: workModelCatalogGroupKey(for: rawModelId ?? rawModel, currentProvider: fallbackProvider),
-    modelLabel: rawModel.isEmpty ? fallbackModelLabel : prettyWorkChatModelName(rawModel),
+    modelLabel: displayModel.isEmpty ? fallbackModelLabel : prettyWorkChatModelName(displayModel),
     modelId: rawModelId ?? fallbackModelId
   )
 }
@@ -3442,6 +3446,22 @@ private func workTurnModelMetadata(
 func prettyWorkChatModelName(_ raw: String) -> String {
   let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Model" }
+  if let piMetadata = workPiModelMetadata(for: trimmed) {
+    return workPiModelDisplayName(piMetadata)
+  }
+  return prettyWorkChatBaseModelName(trimmed)
+}
+
+/// Readable model identity for Pi's routed ids. Keep the runtime visible as
+/// "Pi" in the surrounding UI, while this label carries the upstream provider
+/// and profile so two profiles never look like the same model.
+func workPiModelDisplayName(_ metadata: WorkPiModelMetadata) -> String {
+  let modelLabel = prettyWorkChatBaseModelName(metadata.modelId)
+  let context = "\(workPiProviderLabel(metadata.providerId)) · \(metadata.profileId)"
+  return "\(modelLabel) · \(context)"
+}
+
+private func prettyWorkChatBaseModelName(_ trimmed: String) -> String {
   if let known = workKnownModelDisplayName(trimmed) {
     return known
   }

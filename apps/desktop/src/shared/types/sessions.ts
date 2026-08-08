@@ -23,6 +23,7 @@ export type TerminalToolType =
   | "cursor-cli"
   | "droid"
   | "opencode"
+  | "pi"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated"
@@ -31,6 +32,7 @@ export type TerminalToolType =
   | "opencode-chat"
   | "cursor"
   | "droid-chat"
+  | "pi-chat"
   | "aider"
   | "continue"
   | "other";
@@ -41,6 +43,7 @@ export type TrackedAgentCliToolType =
   | "cursor-cli"
   | "droid"
   | "opencode"
+  | "pi"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -63,6 +66,7 @@ export function isTrackedAgentCliToolType(
     || toolType === "cursor-cli"
     || toolType === "droid"
     || toolType === "opencode"
+    || toolType === "pi"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -118,7 +122,7 @@ export function parseSessionSettleOverride(
   return undefined;
 }
 
-export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
+export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 

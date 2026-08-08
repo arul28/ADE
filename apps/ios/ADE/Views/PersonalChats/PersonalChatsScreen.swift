@@ -238,9 +238,21 @@ private struct PersonalChatRow: View {
 
   private var subtitle: String {
     let preview = summary.lastOutputPreview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return preview.isEmpty
-      ? "\(providerLabel(summary.provider)) · \(prettyWorkChatModelName(summary.model))"
-      : preview
+    return preview.isEmpty ? modelContext : preview
+  }
+
+  private var modelContext: String {
+    let rawModel = summary.modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+      .flatMap { $0.isEmpty ? nil : $0 }
+      ?? summary.model
+    let metadata = workResolvedPiModelMetadata(
+      modelId: rawModel,
+      profileId: summary.piProfileId,
+      providerId: summary.piProviderId,
+      piModelId: summary.piModelId
+    )
+    let modelLabel = metadata.map(workPiModelDisplayName) ?? prettyWorkChatModelName(rawModel)
+    return "\(providerLabel(summary.provider)) · \(modelLabel)"
   }
 
   private var accessibilityStatus: String {
@@ -259,6 +271,7 @@ private struct PersonalChatRow: View {
       accessibilityStatus,
       summary.archivedAt == nil ? nil : "Archived",
       subtitle,
+      subtitle == modelContext ? nil : modelContext,
       relativeTimestamp(summary.lastActivityAt),
     ]
       .compactMap { $0 }
@@ -306,6 +319,12 @@ private struct PersonalChatRow: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(2)
+        if subtitle != modelContext {
+          Text(modelContext)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
 
       Image(systemName: "chevron.right")
@@ -366,7 +385,7 @@ func makePersonalChatSessionStub(_ summary: AgentChatSessionSummary) -> Terminal
     pinned: false,
     manuallyNamed: nil,
     goal: summary.goal,
-    toolType: provider == "cursor" ? "cursor" : "\(provider)-chat",
+    toolType: toolTypeForProvider(provider),
     title: summary.title ?? "Chat",
     status: status,
     startedAt: summary.startedAt,
@@ -398,6 +417,7 @@ struct PersonalChatNewScreen: View {
   @State private var composerHeight: CGFloat = 88
   @State private var composerFocused = true
   @State private var modelPickerPresented = false
+  @State private var selectedModelOption: WorkModelOption?
   @State private var busy = false
   @State private var errorMessage: String?
   @State private var createdSummary: AgentChatSessionSummary?
@@ -474,9 +494,9 @@ struct PersonalChatNewScreen: View {
         commandScope: .personal,
         isBusy: busy,
         onSelect: { option, effort, runtimeProvider, fastMode in
+          selectedModelOption = option
           modelId = option.id
-          let family = providerFamilyKey(runtimeProvider)
-          provider = ["claude", "codex", "cursor", "opencode", "droid"].contains(family) ? family : "claude"
+          provider = workNormalizedChatProvider(runtimeProvider)
           reasoningEffort = effort ?? ""
           codexFastMode = fastMode
           runtimeMode = workDefaultRuntimeMode(provider: provider)
@@ -558,6 +578,12 @@ struct PersonalChatNewScreen: View {
     errorMessage = nil
     defer { busy = false }
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
+    let piMetadata = workResolvedPiModelMetadata(
+      modelId: modelId,
+      profileId: selectedModelOption?.piProfileId,
+      providerId: selectedModelOption?.piProviderId,
+      piModelId: selectedModelOption?.piModelId
+    )
     do {
       let summary = try await syncService.createPersonalChat(
         provider: provider,
@@ -565,6 +591,9 @@ struct PersonalChatNewScreen: View {
         kickoffText: prompt,
         reasoningEffort: reasoningEffort.isEmpty ? nil : reasoningEffort,
         codexFastMode: workComposerSupportsFastMode(modelId: modelId, provider: provider) ? codexFastMode : nil,
+        piProfileId: piMetadata?.profileId,
+        piProviderId: piMetadata?.providerId,
+        piModelId: piMetadata?.modelId,
         permissionMode: wire.permissionMode,
         interactionMode: wire.interactionMode,
         claudePermissionMode: wire.claudePermissionMode,

@@ -31,6 +31,7 @@ export type OrchestrationPermissionProfile = Partial<Pick<
   | "cursorModeId"
   | "droidPermissionMode"
   | "opencodePermissionMode"
+  | "permissionMode"
 >>;
 
 export const ORCHESTRATION_LOCKED_PERMISSION_MODE = "full-auto" satisfies AgentChatPermissionMode;
@@ -485,6 +486,8 @@ export function applyOrchestrationPermissionProfile(
       return {
         opencodePermissionMode: "full-auto" satisfies AgentChatOpenCodePermissionMode,
       };
+    case "pi":
+      return { permissionMode: "full-auto" };
     default:
       return {};
   }

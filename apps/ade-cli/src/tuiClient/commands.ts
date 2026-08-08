@@ -88,7 +88,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },
   { name: "/skills", description: "List agent skills from project, user, and ADE bundled roots", placement: "right", category: "Nav" },
   { name: "/secrets", description: "List project secret names and copy masked values", placement: "right", category: "Nav" },
-  { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex"], category: "Model" },
+  { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex", "pi"], category: "Model" },
   { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/usage", description: "Show Claude and Codex limits plus session usage", placement: "chat", category: "Model" },
   { name: "/insights", description: "Generate Claude session insights through the active SDK session", placement: "chat", providers: ["claude"], category: "Model" },

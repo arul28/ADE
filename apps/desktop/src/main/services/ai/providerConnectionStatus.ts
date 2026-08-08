@@ -12,10 +12,11 @@ import {
   CURSOR_WINDOWS_ARM_BLOCKER,
   isCursorProviderSupported,
 } from "../../../shared/providerPlatformSupport";
+import type { PiInstallation, PiProfileInventory } from "./piInstallation";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor" | "droid",
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi",
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -33,6 +34,10 @@ function createUnavailableStatus(
 
 export async function buildProviderConnections(
   cliStatuses: CliAuthStatus[],
+  options?: {
+    piInstallation?: PiInstallation | null;
+    piInventory?: PiProfileInventory | null;
+  },
 ): Promise<AiProviderConnections> {
   const checkedAt = nowIso();
   const claudeCli = cliStatuses.find((entry) => entry.cli === "claude") ?? null;
@@ -44,6 +49,7 @@ export async function buildProviderConnections(
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
   const cursorRuntimeHealth = getProviderRuntimeHealth("cursor");
+  const piRuntimeHealth = getProviderRuntimeHealth("pi");
 
   const deriveProviderFlags = (
     cli: CliAuthStatus | null,
@@ -328,5 +334,56 @@ export async function buildProviderConnections(
     blocker: droidBlocker,
   };
 
-  return { claude, codex, cursor, droid };
+  const piInstallation = options?.piInstallation ?? null;
+  const piInventory = options?.piInventory ?? null;
+  const piConfiguredProviderCount = piInventory?.providers.filter((provider) => provider.configured).length ?? 0;
+  const piAvailableModelCount = piInventory?.availableModelIds.length ?? 0;
+  const piAuthAvailable = piConfiguredProviderCount > 0;
+  const piRuntimeDetected = Boolean(piInstallation?.sdkAvailable || piInstallation?.cliAvailable);
+  const piRuntimeAvailable = Boolean(piInstallation?.sdkAvailable && piAvailableModelCount > 0);
+  let piBlocker = piInstallation?.blocker ?? null;
+  if (!piBlocker) {
+    if (!piRuntimeDetected) {
+      piBlocker = "Pi is not installed.";
+    } else if (!piAuthAvailable) {
+      piBlocker = "No Pi providers are configured yet. Use Pi /login or edit auth.json/models.json.";
+    } else if (!piRuntimeAvailable) {
+      piBlocker = "Pi is configured, but no Pi models are currently available. Check auth.json or models.json.";
+    }
+  }
+  const pi: AiProviderConnectionStatus | undefined = piInstallation || piInventory
+    ? {
+        ...createUnavailableStatus("pi", checkedAt),
+        authAvailable: piAuthAvailable,
+        runtimeDetected: piRuntimeDetected,
+        runtimeAvailable: piRuntimeAvailable,
+        usageAvailable: false,
+        path: piInstallation?.cliPath ?? piInstallation?.packageRoot ?? null,
+        sources: [
+          {
+            kind: "local-credentials",
+            detected: Boolean(piInventory?.authFileDetected || piInventory?.modelsFileDetected),
+            source: piInventory?.authFileDetected ? "pi-auth-file" : piInventory?.modelsFileDetected ? "pi-models-file" : undefined,
+            authenticated: piAuthAvailable,
+            verified: piAuthAvailable,
+            path: piInventory?.authFileDetected
+              ? piInstallation?.authPath ?? null
+              : piInventory?.modelsFileDetected
+                ? piInstallation?.modelsPath ?? null
+                : null,
+          },
+          {
+            kind: "cli",
+            detected: Boolean(piInstallation?.cliPath),
+            authenticated: piRuntimeAvailable,
+            verified: Boolean(piInstallation?.sdkAvailable),
+            path: piInstallation?.cliPath ?? null,
+          },
+        ],
+        blocker: piBlocker,
+      }
+    : undefined;
+  if (pi) applyRuntimeHealth(pi, piRuntimeHealth);
+
+  return pi ? { claude, codex, cursor, droid, pi } : { claude, codex, cursor, droid };
 }

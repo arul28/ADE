@@ -112,6 +112,7 @@ const PROVIDER_MARKS: Record<string, ProviderMark> = {
   together: { label: "Together", short: "TG", terminal: "T", color: "#22C55E" },
   openrouter: { label: "OpenRouter", short: "OR", terminal: "⇄", color: "#6566F1", svgPath: OPENROUTER_PATH },
   opencode: { label: "OpenCode", short: "OC", terminal: "▣", color: "#F0F0F2", svgPath: OPENCODE_PATH },
+  pi: { label: "Pi", short: "Pi", terminal: "π", color: "#F97316" },
   droid: { label: "Droid", short: "DR", terminal: "✺", color: "#06B6D4", svg: DROID_SVG },
   factory: { label: "Droid", short: "DR", terminal: "✺", color: "#06B6D4", svg: DROID_SVG },
   cursor: { label: "Cursor", short: "CU", terminal: "⬢", color: "#0EA5E9", svg: CURSOR_SVG },
@@ -141,6 +142,7 @@ const ROW_MARKS: Record<string, ProviderMark> = {
   kimiforcoding: PROVIDER_MARKS.kimiforcoding!,
   openrouter: PROVIDER_MARKS.openrouter!,
   opencode: PROVIDER_MARKS.opencode!,
+  pi: PROVIDER_MARKS.pi!,
   droid: PROVIDER_MARKS.droid!,
   factory: PROVIDER_MARKS.factory!,
   cursor: PROVIDER_MARKS.cursor!,
@@ -465,6 +467,7 @@ function SettingsFooter({
 
 function emptyStateLabel(state: ModelPickerState, railEntry: ModelPickerRailEntry | undefined): string {
   if (state.query.trim()) return "No models match your search.";
+  if (state.refreshingProvider) return `Checking ${providerFamilyLabel(state.refreshingProvider)} models…`;
   if (railEntry?.kind === "favorites") return "Star a model to pin it here.";
   if (railEntry?.kind === "recents") return "Models you use will appear here.";
   if (railEntry?.kind === "provider" && railEntry.authStatus === "unavailable") return "Sign in to use this provider.";

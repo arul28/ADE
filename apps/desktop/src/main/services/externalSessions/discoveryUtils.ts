@@ -620,7 +620,7 @@ function recoverExternalSessionCommandName(raw: string | null): string | null {
   return command ? cleanExternalSessionText(command) : null;
 }
 
-function externalSessionMessageFromRecord(record: unknown): ExternalSessionMessage | null {
+export function externalSessionMessageFromRecord(record: unknown): ExternalSessionMessage | null {
   const shape = externalSessionRecordShape(record);
   if (!shape) return null;
   const role = isUserShape(shape) ? "user" : isAssistantShape(shape) ? "assistant" : null;

@@ -116,6 +116,16 @@ describe("familiesFromStatus", () => {
     expect(out.factory).toBe("unauthed");
     expect(out.opencode).toBeUndefined();
   });
+
+  it("keeps a configured CLI-only Pi installation available for CLI pickers", () => {
+    const status = {
+      providerConnections: { pi: { authAvailable: true, runtimeAvailable: false } },
+      piInstallation: { sdkAvailable: false, cliAvailable: true, availableModelIds: [] },
+    };
+
+    expect(familiesFromStatus(status).pi).toBe("unauthed");
+    expect(familiesFromStatus(status, { allowCliOnlyModels: true }).pi).toBe("ok");
+  });
 });
 
 describe("opencodeBinaryInstalledFromStatus", () => {

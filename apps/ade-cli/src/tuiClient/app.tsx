@@ -2464,6 +2464,7 @@ function loginCommandsForProvider(provider: AdeCodeProvider): ProviderLoginComma
   if (provider === "claude") return [{ command: "claude", args: ["auth", "login"], label: "claude auth login" }];
   if (provider === "codex") return [{ command: "codex", args: ["login"], label: "codex login" }];
   if (provider === "opencode") return [{ command: "opencode", args: ["auth", "login"], label: "opencode auth login" }];
+  if (provider === "pi") return [{ command: "pi", args: [], label: "pi (then /login)" }];
   return [];
 }
 
@@ -3377,6 +3378,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
 	  const [modelPickerRecents, setModelPickerRecents] = useState<string[]>([]);
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
+	  const [modelCatalogRefreshingProvider, setModelCatalogRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
   const analyticsAppOpenedRef = useRef(false);
@@ -3536,6 +3538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	  const providerModelsCacheRef = useRef<Map<string, AgentChatModelInfo[]>>(new Map());
 	  const modelCatalogRef = useRef<AgentChatModelCatalog | null>(null);
 		  const modelCatalogProviderRefreshedAtRef = useRef<Map<string, number>>(new Map());
+	  const modelCatalogRefreshSequenceRef = useRef(0);
   const pendingModelCommitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingModelCommitStateRef = useRef<AdeCodeModelState | null>(null);
 
@@ -6805,9 +6808,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       try {
         nextModels = conn ? await getAvailableModels(conn, provider, { interfaceMode }) : registryModelsForProvider(provider);
         providerModelsCacheRef.current.set(cacheKey, nextModels);
-      } catch {
-        nextModels = cached ?? registryModelsForProvider(provider);
-      }
+	      } catch (error) {
+	        nextModels = cached ?? registryModelsForProvider(provider);
+	        if (provider === "pi") {
+	          addNotice(
+	            `Pi model discovery failed; showing cached models. ${error instanceof Error ? error.message : "Check the Pi installation and profile."}`,
+	            "error",
+	          );
+	        }
+	      }
     }
     setModels(nextModels);
     if (options.applyDefault !== false) {
@@ -6824,56 +6833,81 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
     }
 	    return nextModels;
-	  }, []);
+	  }, [addNotice]);
 
 	  const refreshModelCatalog = useCallback(async (options: { refreshProvider?: AgentChatModelCatalogRefreshProvider } = {}) => {
 	    const conn = connectionRef.current;
 	    if (!conn) return modelCatalogRef.current;
-		    if (!options.refreshProvider && modelCatalogRef.current) {
-		      setModelCatalog(modelCatalogRef.current);
-		      return modelCatalogRef.current;
-		    }
-		    const cursorSource = options.refreshProvider === "cursor"
-		      ? cursorSourceForInterfaceMode(modelStateRef.current.interfaceMode)
-		      : undefined;
-		    const refreshCacheKey = options.refreshProvider
-		      ? modelCatalogRefreshCacheKey(options.refreshProvider, cursorSource)
-		      : null;
-		    if (options.refreshProvider && modelCatalogRef.current) {
-		      const refreshedAt = refreshCacheKey ? modelCatalogProviderRefreshedAtRef.current.get(refreshCacheKey) : undefined;
-		      if (refreshedAt && Date.now() - refreshedAt <= modelCatalogClientRefreshTtlMs(options.refreshProvider)) {
-		        setModelCatalog(modelCatalogRef.current);
-		        return modelCatalogRef.current;
-		      }
-		    }
-		    try {
-	      const catalog = await getModelCatalog(conn, {
-	        mode: options.refreshProvider ? "refresh-stale" : "cached",
-	        ...(options.refreshProvider ? { refreshProvider: options.refreshProvider } : {}),
-	        ...(cursorSource ? { cursorSource } : {}),
-	      });
-	      modelCatalogRef.current = catalog;
-		      setModelCatalog(catalog);
-		      if (refreshCacheKey && catalog.stale !== true) {
-		        modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
-		      }
-		      if (options.refreshProvider && catalog.stale === true) {
-	        void getModelCatalog(conn, {
-	          mode: "force",
-	          refreshProvider: options.refreshProvider,
-	          ...(cursorSource ? { cursorSource } : {}),
-		        }).then((freshCatalog) => {
-		          if (connectionRef.current !== conn) return;
-		          modelCatalogRef.current = freshCatalog;
-		          if (refreshCacheKey) modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
-		          setModelCatalog(freshCatalog);
-	        }).catch(() => undefined);
-	      }
-	      return catalog;
-	    } catch {
+	    const refreshProvider = options.refreshProvider;
+	    if (!refreshProvider && modelCatalogRef.current) {
+	      setModelCatalog(modelCatalogRef.current);
 	      return modelCatalogRef.current;
 	    }
-	  }, []);
+
+	    const cursorSource = refreshProvider === "cursor"
+	      ? cursorSourceForInterfaceMode(modelStateRef.current.interfaceMode)
+	      : undefined;
+	    const refreshCacheKey = refreshProvider
+	      ? modelCatalogRefreshCacheKey(refreshProvider, cursorSource)
+	      : null;
+    if (refreshProvider && modelCatalogRef.current) {
+	      const refreshedAt = refreshCacheKey ? modelCatalogProviderRefreshedAtRef.current.get(refreshCacheKey) : undefined;
+	      if (refreshedAt && Date.now() - refreshedAt <= modelCatalogClientRefreshTtlMs(refreshProvider)) {
+	        setModelCatalog(modelCatalogRef.current);
+	        return modelCatalogRef.current;
+	      }
+	    }
+
+	    const refreshSequence = refreshProvider ? ++modelCatalogRefreshSequenceRef.current : null;
+	    const clearRefreshingProvider = () => {
+	      if (refreshSequence !== null && modelCatalogRefreshSequenceRef.current === refreshSequence) {
+	        setModelCatalogRefreshingProvider(null);
+	      }
+	    };
+	    if (refreshProvider) setModelCatalogRefreshingProvider(refreshProvider);
+
+	    try {
+	      const catalog = await getModelCatalog(conn, {
+	        mode: refreshProvider ? "refresh-stale" : "cached",
+	        ...(refreshProvider ? { refreshProvider } : {}),
+	        ...(cursorSource ? { cursorSource } : {}),
+	      });
+      modelCatalogRef.current = catalog;
+	      setModelCatalog(catalog);
+      if (refreshCacheKey && catalog.stale !== true) {
+	        modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
+	      }
+      if (refreshProvider && catalog.stale === true) {
+        void getModelCatalog(conn, {
+          mode: "force",
+          refreshProvider,
+          ...(cursorSource ? { cursorSource } : {}),
+        }).then((freshCatalog) => {
+          if (connectionRef.current !== conn) return;
+          modelCatalogRef.current = freshCatalog;
+          if (refreshCacheKey) modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
+          setModelCatalog(freshCatalog);
+        }).catch((error) => {
+          addNotice(
+            `${providerLabel(refreshProvider)} model refresh failed; showing cached models. ${error instanceof Error ? error.message : "Try refreshing again."}`,
+            "error",
+          );
+        }).finally(clearRefreshingProvider);
+      } else {
+        clearRefreshingProvider();
+      }
+      return catalog;
+    } catch (error) {
+      clearRefreshingProvider();
+      if (refreshProvider) {
+        addNotice(
+          `${providerLabel(refreshProvider)} model refresh failed; showing cached models. ${error instanceof Error ? error.message : "Try refreshing again."}`,
+          "error",
+        );
+      }
+      return modelCatalogRef.current;
+    }
+	  }, [addNotice]);
 
   const openForm = useCallback((content: Extract<RightPaneContent, { kind: "form" }>) => {
     // Cancel any pending feedback-success auto-close so a stale timer can't fire
@@ -7221,7 +7255,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	        recents: modelPickerRecents,
 	        modelState,
 	        aiStatus,
-      }));
+	        refreshingProvider: modelCatalogRefreshingProvider,
+	      }));
       const selection = defaultSelectionFor(
         modelState.modelId,
         modelPickerRecents,
@@ -14120,9 +14155,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         catalog: modelCatalogRef.current ?? modelCatalog,
         favorites: modelPickerFavorites,
         recents: modelPickerRecents,
-        modelState,
-        aiStatus,
-      }));
+	        modelState,
+	        aiStatus,
+	        refreshingProvider: modelCatalogRefreshingProvider,
+	      }));
       const nextTabKey = nextModelPickerProviderTabKey({
         providerTabs: layout.providerTabs,
         providerTabIndex: layout.providerTabIndex,
@@ -15022,8 +15058,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 		        catalog: modelCatalogRef.current ?? modelCatalog,
 		        favorites: modelPickerFavorites,
 		        recents: modelPickerRecents,
-		        modelState,
-		        aiStatus,
+	        modelState,
+	        aiStatus,
+	        refreshingProvider: modelCatalogRefreshingProvider,
 	      }));
       const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
       const lastModelIndex = Math.max(0, layout.entries.length - 1);
@@ -16265,9 +16302,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           catalog: modelCatalogRef.current ?? modelCatalog,
           favorites: modelPickerFavorites,
           recents: modelPickerRecents,
-          modelState,
-          aiStatus,
-        }));
+	          modelState,
+	          aiStatus,
+	          refreshingProvider: modelCatalogRefreshingProvider,
+	        }));
         // Single geometry source: derive every clickable rect from the SAME
         // constants + windowing the render uses (modelPickerGeometry), so a
         // click lands on the row the user sees. Prefer the pane's MEASURED
@@ -16832,9 +16870,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeReasoningEffort: footerReasoningLabel,
     aiStatus,
     interfaceMode: modelState.interfaceMode,
+    refreshingProvider: modelCatalogRefreshingProvider,
   }), [
     aiStatus,
     modelCatalog,
+    modelCatalogRefreshingProvider,
     modelPickerFavorites,
     modelPickerRecents,
     modelState.interfaceMode,

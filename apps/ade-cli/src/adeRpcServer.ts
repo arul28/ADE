@@ -198,7 +198,11 @@ function resolveExecutableOnPath(command: string, env: NodeJS.ProcessEnv = proce
   if (!trimmed) return null;
   const lookup = process.platform === "win32"
     ? { command: "where.exe", args: [trimmed] }
-    : { command: env.SHELL?.trim() || "/bin/sh", args: ["-lc", `command -v ${shellEscapeArg(trimmed)}`] };
+    // `-l` lets a user's shell profile replace PATH (notably on macOS, where
+    // zsh can restore Homebrew's PATH ahead of a lane-provided executable).
+    // Resolution must honor the environment we pass to the PTY, so use a
+    // non-login shell and let the caller supply the already-resolved PATH.
+    : { command: env.SHELL?.trim() || "/bin/sh", args: ["-c", `command -v ${shellEscapeArg(trimmed)}`] };
   const result = spawnSync(lookup.command, lookup.args, {
     encoding: "utf8",
     env,
@@ -327,7 +331,7 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "shell"] },
         permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         title: { type: "string" },
         initialInput: { type: "string" },
@@ -1693,7 +1697,7 @@ function parseCliSessionProvider(value: unknown): LaunchProfile {
   if (!isLaunchProfile(provider)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "provider must be one of claude, codex, cursor, droid, opencode, or shell",
+      "provider must be one of claude, codex, cursor, droid, opencode, pi, or shell",
     );
   }
   return provider;
@@ -2773,7 +2777,7 @@ function scopeBuiltInBrowserAdeActionArgs(
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
-const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode"]);
+const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
 
 function isExternalSessionProviderName(value: string | null): value is ExternalSessionProvider {
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
@@ -2870,7 +2874,7 @@ function scopeExternalSessionsListArgs(
 
 function externalSessionImportUsesSourceRunCwd(provider: ExternalSessionProvider, mode: string): boolean {
   if (mode === "resume") return provider !== "codex";
-  if (mode === "fork") return provider === "opencode";
+  if (mode === "fork") return provider === "opencode" || provider === "pi";
   return false;
 }
 

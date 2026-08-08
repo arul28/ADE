@@ -1,9 +1,21 @@
 import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import type { ProviderFamily } from "../../../../shared/modelRegistry";
+
+export function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
+  if (family === "opencode") return "opencode";
+  if (family === "ollama") return "ollama";
+  if (family === "lmstudio") return "lmstudio";
+  if (family === "cursor") return "cursor";
+  if (family === "pi") return "pi";
+  if (family === "factory") return "droid";
+  return null;
+}
 
 const RUNTIME_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
 const RUNTIME_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
 const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
   "opencode",
+  "pi",
   "cursor",
   "droid",
   "lmstudio",

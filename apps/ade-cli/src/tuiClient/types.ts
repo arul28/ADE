@@ -10,6 +10,7 @@ import type {
   AgentChatEventHistorySnapshot,
   AgentChatContextUsage,
   AgentChatInteractionMode,
+  AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
@@ -89,7 +90,7 @@ export type AdeCodeConnection = {
   close(): Promise<void>;
 };
 
-export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid"> | "ollama" | "lmstudio";
+export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi"> | "ollama" | "lmstudio";
 
 /**
  * How a new chat draft is launched. `chat` creates an SDK chat via
@@ -240,6 +241,8 @@ export type ModelPickerRightPaneContent = {
   settingsRows?: SetupPaneRow[];
   laneId?: string | null;
   laneLabel?: string | null;
+  /** Provider whose model catalog is currently being refreshed, if any. */
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
 };
 
 // Serializable state carried on the feedback form's RightPaneContent. Mirrors

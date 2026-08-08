@@ -26,6 +26,7 @@ import {
   rememberRuntimeCatalog,
   runtimeCatalogProviderIsFresh,
   setRuntimeCatalogRequest,
+  refreshProviderForFamily,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
@@ -106,6 +107,7 @@ export const ModelPicker = memo(function ModelPicker({
   const [open, setOpen] = useState(false);
   const [runtimeCatalog, setRuntimeCatalog] = useState<AgentChatModelCatalog | null>(() => getSharedRuntimeCatalog());
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
+  const [refreshErrorProvider, setRefreshErrorProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
 
   useEffect(() => {
@@ -139,6 +141,7 @@ export const ModelPicker = memo(function ModelPicker({
     if (args.mode === "refresh-stale" && args.refreshProvider && shared) {
       setRuntimeCatalog(shared);
       if (runtimeCatalogProviderIsFresh(args.refreshProvider, cursorFlavor)) {
+        setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
         return { ...shared, stale: false };
       }
     }
@@ -164,9 +167,11 @@ export const ModelPicker = memo(function ModelPicker({
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
         });
         setRuntimeCatalog(visible);
+        if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
         return visible;
       } catch {
         // Keep the last catalog visible; renderer fallbacks cover older runtimes.
+        if (args.refreshProvider) setRefreshErrorProvider(args.refreshProvider);
         return null;
       }
     })();
@@ -183,26 +188,19 @@ export const ModelPicker = memo(function ModelPicker({
   }, [loadRuntimeCatalog, open]);
 
   const handleProviderRailSelect = useCallback((family: ProviderFamily) => {
-    const refreshProvider: AgentChatModelCatalogRefreshProvider | null =
-      family === "opencode"
-        ? "opencode"
-        : family === "ollama"
-          ? "ollama"
-          : family === "lmstudio"
-            ? "lmstudio"
-            : family === "cursor"
-              ? "cursor"
-              : family === "factory"
-                ? "droid"
-                : null;
+    const refreshProvider = refreshProviderForFamily(family);
     if (refreshProvider) {
       void (async () => {
         const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
         const shared = getSharedRuntimeCatalog();
         if (shared) {
           setRuntimeCatalog(shared);
-          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor)) return;
+          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor)) {
+            setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
+            return;
+          }
         }
+        setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
         setRefreshingProvider(refreshProvider);
         try {
           const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
@@ -367,6 +365,7 @@ export const ModelPicker = memo(function ModelPicker({
                 onRequestClose={handleRequestClose}
                 onProviderRailSelect={handleProviderRailSelect}
                 refreshingProvider={refreshingProvider}
+                refreshErrorProvider={refreshErrorProvider}
                 hidePermissionRail={hidePermissionRail}
                 allowCliOnlyModels={allowCliOnlyModels}
                 cursorAvailabilityMode={cursorAvailabilityMode}

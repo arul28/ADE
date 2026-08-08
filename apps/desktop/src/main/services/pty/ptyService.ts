@@ -28,11 +28,20 @@ import {
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
+  acquirePiSessionLease,
+  piSessionCreationLeaseTarget,
+  piSessionDirectoryForEnvironment,
+  listPiSessionFilesForCwd,
+  resolvePiSessionFile,
+  type PiSessionLease,
+} from "../chat/piSessionLease";
+import {
   preferNativeExecutablePath,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
+import { pathsEqual } from "../shared/pathCompare";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -96,11 +105,13 @@ import {
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
 import {
+  commandArrayToLine,
   commandArrayToWindowsShellLine,
   quoteShellArg,
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
+import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -173,7 +184,7 @@ export type NodePtySpawnHelperExecutableResult =
   | { status: "failed"; path?: string; error: string };
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
-const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode"]);
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
   if (!tool || tool === "shell") return false;
@@ -731,6 +742,18 @@ type PtyEntry = {
     exitCode: number | null;
     endedAt: string | null;
   } | null;
+  piSessionLease: PiSessionLease | null;
+  piSessionDir: string | null;
+  piLaunchEnv: NodeJS.ProcessEnv | null;
+  piSessionLeaseIsCreation: boolean;
+  /** Native sessions present before this PTY was spawned. */
+  piPreexistingSessionFiles: ReadonlySet<string>;
+  piPreexistingSessionIds: ReadonlySet<string>;
+  /** `--fork` parent must never be mistaken for the forked child. */
+  piForkParentSessionId: string | null;
+  piSessionLeaseUpgradeInFlight: boolean;
+  piSessionLeaseUpgradeTimer: ReturnType<typeof setTimeout> | null;
+  piSessionLeaseUpgradeAttempts: number;
 };
 
 function isHighSurrogateCodeUnit(codeUnit: number): boolean {
@@ -1107,6 +1130,11 @@ function isOpenCodeCommandName(command: string): boolean {
   return basename === "opencode" || basename === "opencode.exe" || basename === "opencode.cmd" || basename === "opencode.bat";
 }
 
+export function isPiExecutableCommand(command: string): boolean {
+  const basename = command.trim().replace(/^['"]|['"]$/g, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return basename === "pi" || basename === "pi.exe" || basename === "pi.cmd" || basename === "pi.bat";
+}
+
 function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolType | null): string {
   if (!isOpenCodeToolType(toolType) || !isOpenCodeCommandName(command)) return command;
   return resolveOpenCodeBinaryPath() ?? command;
@@ -1135,6 +1163,7 @@ const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
   { toolTypes: ["claude", "claude-orchestrated"], launchCandidates: ["claude"] },
   { toolTypes: ["codex", "codex-orchestrated"], launchCandidates: ["codex"] },
   { toolTypes: ["droid"], launchCandidates: ["droid"] },
+  { toolTypes: ["pi", "pi-chat"], launchCandidates: ["pi"] },
 ];
 
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
@@ -1269,12 +1298,14 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "cursor-cli",
     "droid",
     "opencode",
+    "pi",
     "claude-orchestrated",
     "codex-orchestrated",
     "opencode-orchestrated",
     "codex-chat",
     "claude-chat",
     "opencode-chat",
+    "pi-chat",
     "cursor",
     "droid-chat",
     "aider",
@@ -1295,14 +1326,19 @@ function buildInitialResumeMetadata(args: {
   startupCommand: string;
 }): TerminalResumeMetadata | null {
   const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
+  const parsedResume = parseTrackedCliResumeCommand(args.startupCommand, args.toolType);
   const isClaude = isClaudeTrackedCliToolType(args.toolType);
   const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
   const isCursor = args.toolType === "cursor-cli";
   const isDroid = args.toolType === "droid";
   const isOpenCode = args.toolType === "opencode" || args.toolType === "opencode-orchestrated";
+  const isPi = args.toolType === "pi" || args.toolType === "pi-chat";
 
-  // Extract pre-assigned --session-id from Claude startup command
+  // Extract pre-assigned --session-id from Claude startup command. Other
+  // providers expose their resume target directly in the parsed command.
   const preAssignedId = isClaude ? extractClaudeSessionIdFromCommand(args.startupCommand) : null;
+  const parsedTargetId = parsedResume?.targetId ?? null;
+  const initialTargetId = preAssignedId ?? parsedTargetId;
 
   if (parsedLaunch) {
     let provider: TerminalResumeMetadata["provider"] = "claude";
@@ -1310,16 +1346,17 @@ function buildInitialResumeMetadata(args: {
     else if (isCursor) provider = "cursor";
     else if (isDroid) provider = "droid";
     else if (isOpenCode) provider = "opencode";
+    else if (isPi) provider = "pi";
     return {
       provider,
       targetKind: isCodex ? "thread" : "session",
-      targetId: preAssignedId,
+      targetId: initialTargetId,
       launch: parsedLaunch,
     };
   }
 
   if (isClaude) {
-    return { provider: "claude", targetKind: "session", targetId: preAssignedId, launch: {} };
+    return { provider: "claude", targetKind: "session", targetId: initialTargetId, launch: {} };
   }
   if (isCodex) {
     return { provider: "codex", targetKind: "thread", targetId: null, launch: {} };
@@ -1332,6 +1369,9 @@ function buildInitialResumeMetadata(args: {
   }
   if (isOpenCode) {
     return { provider: "opencode", targetKind: "session", targetId: null, launch: {} };
+  }
+  if (isPi) {
+    return { provider: "pi", targetKind: "session", targetId: null, launch: {} };
   }
   return null;
 }
@@ -1505,6 +1545,21 @@ function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, te
     return /\bfactory droid\b/i.test(visible)
       || /\bdroid\s+(?:session|chat|workspace|permission|autonomy|mode|ready)\b/i.test(visible);
   }
+  if (provider === "pi") {
+    if (
+      normalized.includes("login required")
+      || normalized.includes("authentication required")
+      || normalized.includes("not authenticated")
+      || normalized.includes("please log in")
+      || normalized.includes("sign in")
+      || normalized.includes("api key required")
+      || normalized.includes("no api key")
+      || normalized.includes("provider not configured")
+      || normalized.includes("no provider configured")
+    ) return false;
+    return /\bpi\b.*(?:what do you want|message|thinking|model)/i.test(visible)
+      || /\bpi\s*[›❯]/i.test(visible);
+  }
   if (provider === "opencode") {
     if (
       normalized.includes("login required")
@@ -1536,6 +1591,7 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
   if (provider === "cursor") return "Cursor";
   if (provider === "droid") return "Droid";
   if (provider === "opencode") return "OpenCode";
+  if (provider === "pi") return "Pi";
   return "Agent";
 }
 
@@ -1826,6 +1882,76 @@ function resumeTargetIdForProvider(
     : null;
 }
 
+export type PiStorageSessionCandidate = {
+  id: string;
+  sourcePath?: string | null;
+  createdAt?: number | null;
+  updatedAt?: number | null;
+};
+
+/**
+ * Pick the native Pi session that belongs to a launch.
+ *
+ * Implicit and fork launches begin with a directory creation lease because Pi
+ * does not expose their JSONL path until it writes the header. A timestamp-only
+ * lookup is unsafe: a recent session that predates the launch (or a fork's
+ * parent) can win. The snapshot/parent exclusions are therefore part of the
+ * selector's contract, not a caller-side hint.
+ */
+export function selectPiStorageSessionCandidate(args: {
+  candidates: readonly PiStorageSessionCandidate[];
+  startedAt?: string | null;
+  maxStartDeltaMs?: number;
+  excludedIds?: ReadonlySet<string>;
+  excludedFiles?: ReadonlySet<string>;
+}): { id: string; filePath: string | null } | null {
+  const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+  const hasStartedAt = Number.isFinite(requestedStartedAtMs);
+  let best: { candidate: PiStorageSessionCandidate; score: number; timestamp: number } | null = null;
+
+  for (const candidate of args.candidates) {
+    const id = sanitizeResumeTargetId(candidate.id);
+    if (!id || args.excludedIds?.has(id)) continue;
+    const sourcePath = typeof candidate.sourcePath === "string" && candidate.sourcePath.trim()
+      ? candidate.sourcePath.trim()
+      : null;
+    if (sourcePath && args.excludedFiles) {
+      let excluded = false;
+      for (const excludedFile of args.excludedFiles) {
+        if (pathsEqual(sourcePath, excludedFile)) {
+          excluded = true;
+          break;
+        }
+      }
+      if (excluded) continue;
+    }
+    const timestamp = candidate.createdAt ?? candidate.updatedAt ?? 0;
+    if (!Number.isFinite(timestamp) || timestamp <= 0) continue;
+    const score = hasStartedAt ? Math.abs(timestamp - requestedStartedAtMs) : 0;
+    if (hasStartedAt && typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
+    if (
+      !best
+      || (hasStartedAt ? score < best.score : timestamp > best.timestamp)
+      || (hasStartedAt && score === best.score && timestamp > best.timestamp)
+    ) {
+      best = { candidate, score, timestamp };
+    }
+  }
+
+  if (!best) return null;
+  return {
+    id: sanitizeResumeTargetId(best.candidate.id)!,
+    filePath: typeof best.candidate.sourcePath === "string" && best.candidate.sourcePath.trim()
+      ? best.candidate.sourcePath.trim()
+      : null,
+  };
+}
+
+export function piForkParentIdFromCommand(command: string | null | undefined): string | null {
+  const match = /(?:^|\s)--fork(?:=|\s+)(?:["']?)([^\s"']+)/iu.exec(command ?? "");
+  return sanitizeResumeTargetId(match?.[1] ?? null);
+}
+
 export function createPtyService({
   projectRoot,
   transcriptsDir,
@@ -1902,6 +2028,12 @@ export function createPtyService({
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
+  const piLeaseIdentity = processRegistry
+    ? {
+        processStartedAt: ownerProcessStartedAt,
+        isProcessIdentityLive: (pid: number, startedAt: string) => processRegistry.isProcessIdentityLive(pid, startedAt),
+      }
+    : {};
 
   const getResourceAttribution = (): PtyResourceAttribution => {
     const liveEntries = Array.from(ptys.values()).filter((entry) => !entry.disposed);
@@ -2558,14 +2690,20 @@ export function createPtyService({
   };
 
   const scheduleTranscriptDependentWork = (
-    entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "transcriptRolloverPromise" | "laneWorktreePath" | "boundCwd">,
+    entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "transcriptRolloverPromise" | "laneWorktreePath" | "boundCwd" | "piLaunchEnv">,
     reason: "close" | "dispose" | "orphan-dispose",
   ): void => {
     void Promise.resolve(entry.transcriptRolloverPromise)
       .catch(() => {})
       .then(() => endTranscriptStream(entry.transcriptStream))
       .finally(() => {
-        backfillResumeTargetFromTranscriptBestEffort(entry.sessionId, entry.toolTypeHint, reason, entry.boundCwd);
+        backfillResumeTargetFromTranscriptBestEffort(
+          entry.sessionId,
+          entry.toolTypeHint,
+          reason,
+          entry.boundCwd,
+          entry.piLaunchEnv,
+        );
         summarizeSessionBestEffort(entry.sessionId, {
           laneWorktreePath: entry.laneWorktreePath,
           boundCwd: entry.boundCwd,
@@ -3157,16 +3295,57 @@ export function createPtyService({
     return inferSessionCwdFromTranscriptPath(session.transcriptPath);
   };
 
+  const resolvePiSessionIdFromStorage = async (args: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv | null;
+    startedAt?: string | null;
+    maxStartDeltaMs?: number;
+    excludedIds?: ReadonlySet<string>;
+    excludedFiles?: ReadonlySet<string>;
+  }): Promise<{ id: string; filePath: string | null } | null> => {
+    try {
+      const sessions = await discoverPiSessions({
+        ...(args.env ? { env: args.env } : {}),
+        cwd: args.cwd,
+        scopeRoots: [args.cwd],
+        limit: 200,
+      });
+      return selectPiStorageSessionCandidate({
+        candidates: sessions,
+        ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+        ...(args.maxStartDeltaMs !== undefined ? { maxStartDeltaMs: args.maxStartDeltaMs } : {}),
+        ...(args.excludedIds ? { excludedIds: args.excludedIds } : {}),
+        ...(args.excludedFiles ? { excludedFiles: args.excludedFiles } : {}),
+      });
+    } catch {
+      return null;
+    }
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
     reason: "close" | "dispose" | "orphan-dispose" | "session-list" | "resume-launch",
     sessionCwd?: string | null,
+    sessionEnv?: NodeJS.ProcessEnv | null,
+    knownSession?: TerminalSessionSummary | null,
   ): Promise<boolean> => {
-    const session = sessionService.get(sessionId);
+    const session = knownSession !== undefined ? knownSession : sessionService.get(sessionId);
     if (!session?.tracked) return false;
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
     if (!isTrackedAgentCliToolType(effectiveToolType)) return false;
+    let effectiveSessionEnv = sessionEnv;
+    if (!effectiveSessionEnv && effectiveToolType === "pi") {
+      try {
+        effectiveSessionEnv = {
+          ...process.env,
+          ...((await getLaneRuntimeEnv?.(session.laneId)) ?? {}),
+        };
+      } catch {
+        // Discovery falls back to the current process environment when the
+        // lane runtime env is unavailable.
+      }
+    }
     const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
     if (existingTargetId) {
       const cwd = sessionCwd ?? resolveSessionRunCwd(session);
@@ -3282,6 +3461,31 @@ export function createPtyService({
       }
     }
 
+    if (effectiveToolType === "pi" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
+      const activePiEnvironment = sessionEnv
+        ?? Array.from(ptys.values()).find((entry) => entry.sessionId === sessionId && entry.piLaunchEnv)?.piLaunchEnv;
+      const piSession = await resolvePiSessionIdFromStorage({
+        cwd,
+        env: effectiveSessionEnv ?? activePiEnvironment,
+        startedAt: session.startedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
+      if (piSession) {
+        const resumeCmd = commandArrayToLine(["pi", "--session", piSession.id], { platform: "linux" });
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, resumeCmd);
+        logger.info("pty.resume_target_backfilled", {
+          sessionId,
+          toolType: effectiveToolType,
+          reason,
+          source: "pi-session-jsonl",
+          piSessionId: piSession.id,
+          piSessionFile: piSession.filePath,
+        });
+        return true;
+      }
+    }
+
     if (reason === "session-list") {
       missingResumeTargetBackfillFailures.set(sessionId, {
         toolType: effectiveToolType,
@@ -3297,8 +3501,9 @@ export function createPtyService({
     preferredToolType: TerminalToolType | null,
     reason: "close" | "dispose" | "orphan-dispose",
     sessionCwd?: string | null,
+    sessionEnv?: NodeJS.ProcessEnv | null,
   ): void => {
-    void tryBackfillResumeTarget(sessionId, preferredToolType, reason, sessionCwd).catch((err) => {
+    void tryBackfillResumeTarget(sessionId, preferredToolType, reason, sessionCwd, sessionEnv).catch((err) => {
       logger.warn("pty.resume_target_backfill_failed", {
         sessionId,
         toolType: preferredToolType,
@@ -3613,6 +3818,12 @@ export function createPtyService({
     if (entry.disposed) return;
     flushPendingPtyOutput(entry);
     entry.processOutputData = null;
+    if (entry.piSessionLeaseUpgradeTimer) {
+      clearTimeout(entry.piSessionLeaseUpgradeTimer);
+      entry.piSessionLeaseUpgradeTimer = null;
+    }
+    entry.piSessionLease?.release();
+    entry.piSessionLease = null;
     entry.disposed = true;
     entry.attentionRequested = false;
     sessionService.clearAttentionRequest(entry.sessionId);
@@ -4301,6 +4512,27 @@ export function createPtyService({
       );
       return lastReadyPromptIndex >= 0 && lastReadyPromptIndex > lastBlockerIndex;
     }
+    if (provider === "pi") {
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "api key required",
+        "no api key",
+        "provider not configured",
+        "no provider configured",
+      ]);
+      const lastReadyIndex = lastIndexOfAny(normalized, [
+        "pi",
+        "what do you want",
+        "message",
+        "thinking",
+        "model:",
+      ]);
+      return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
+    }
     if (provider === "opencode") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
         "login required",
@@ -4545,7 +4777,25 @@ export function createPtyService({
     let storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
     if (!storedResumeTargetId && provider !== "cursor" && isTrackedAgentCliToolType(resolvedSession.toolType)) {
       const cwd = resolveSessionRunCwd(resolvedSession);
-      const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
+      let sessionEnv: NodeJS.ProcessEnv | undefined;
+      if (provider === "pi") {
+        try {
+          sessionEnv = {
+            ...process.env,
+            ...((await getLaneRuntimeEnv?.(resolvedSession.laneId)) ?? {}),
+          };
+        } catch {
+          // Discovery falls back to the current process environment when the
+          // lane runtime env is unavailable.
+        }
+      }
+      const backfilled = await tryBackfillResumeTarget(
+        sessionId,
+        resolvedSession.toolType,
+        "resume-launch",
+        cwd,
+        sessionEnv,
+      );
       const updatedSession = backfilled ? sessionService.get(sessionId) : null;
       if (updatedSession) {
         resolvedSession = updatedSession;
@@ -4830,7 +5080,20 @@ export function createPtyService({
       ));
       for (const sessionId of uniqueSessionIds) {
         try {
-          await tryBackfillResumeTarget(sessionId, null, "session-list");
+          const session = sessionService.get(sessionId);
+          let sessionEnv: NodeJS.ProcessEnv | undefined;
+          if (providerFromTool(session?.toolType) === "pi" && session) {
+            try {
+              sessionEnv = {
+                ...process.env,
+                ...((await getLaneRuntimeEnv?.(session.laneId)) ?? {}),
+              };
+            } catch {
+              // Discovery falls back to the current process environment when
+              // the lane runtime env is unavailable.
+            }
+          }
+          await tryBackfillResumeTarget(sessionId, null, "session-list", undefined, sessionEnv, session);
         } catch (err) {
           logger.warn("pty.resume_target_backfill_failed", {
             sessionId,
@@ -4977,6 +5240,13 @@ export function createPtyService({
         : "";
       let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
+      let piSessionLease: PiSessionLease | null = null;
+      let piSessionDirForEntry: string | null = null;
+      let piLaunchEnvForEntry: NodeJS.ProcessEnv | null = null;
+      let piSessionLeaseIsCreation = false;
+      let piPreexistingSessionFiles: ReadonlySet<string> = new Set<string>();
+      let piPreexistingSessionIds: ReadonlySet<string> = new Set<string>();
+      let piForkParentSessionId: string | null = null;
 
       let transcriptStream: fs.WriteStream | null = null;
       let transcriptBytesWritten = 0;
@@ -5158,7 +5428,7 @@ export function createPtyService({
         && isTrackedAgentCliToolType(toolTypeHint)
         && !sanitizeResumeTargetId(existingSession.resumeMetadata?.targetId ?? null);
       if (shouldBackfillResumeTarget) {
-        const backfilled = await tryBackfillResumeTarget(sessionId, toolTypeHint, "resume-launch", cwd);
+        const backfilled = await tryBackfillResumeTarget(sessionId, toolTypeHint, "resume-launch", cwd, launchEnv);
         const updatedSession = backfilled ? sessionService.get(sessionId) : null;
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
@@ -5203,6 +5473,111 @@ export function createPtyService({
       const shellCandidates = resolveShellCandidates(shellMode);
       let launchedDirectCommand = false;
       try {
+        const piResumeTargetId = initialResumeMetadata?.provider === "pi"
+          && initialResumeMetadata.targetKind === "session"
+          ? sanitizeResumeTargetId(initialResumeMetadata.targetId ?? null)
+          : null;
+        if (toolTypeHint === "pi") {
+          const piOwnershipCommands = [
+            initialResumeCommand,
+            startupCommand,
+            directCommand,
+            directArgs.join(" "),
+          ].filter((value): value is string => Boolean(value));
+          const isForkLaunch = piOwnershipCommands.some((command) => /(?:^|\s)--fork(?:=|\s|$)/iu.test(command));
+          const isContinueLaunch = /(?:^|\s)(?:--continue|-c|-r)(?:\s|$)/iu.test(initialResumeCommand ?? "")
+            || /(?:^|\s)(?:--continue|-c|-r)(?:\s|$)/iu.test(startupCommand);
+          const piSessionDir = piSessionDirectoryForEnvironment(launchEnv);
+          piSessionDirForEntry = piSessionDir;
+          piLaunchEnvForEntry = launchEnv;
+          // The synthetic creation lease is the first file in this directory;
+          // create the user-selected Pi session root before publishing it.
+          fs.mkdirSync(piSessionDir, { recursive: true });
+          if (isForkLaunch) {
+            piForkParentSessionId = piForkParentIdFromCommand(piOwnershipCommands.join(" ")) ?? piResumeTargetId;
+          }
+          // Snapshot valid native headers before Pi starts. A recent file that
+          // predates this PTY is not a candidate for the creation lease, even
+          // if its timestamp is closest to ADE's launch time.
+          const preexistingPiSessions = listPiSessionFilesForCwd({
+            cwd,
+            sessionDir: piSessionDir,
+            env: launchEnv,
+          });
+          piPreexistingSessionFiles = new Set(preexistingPiSessions.map((session) => session.filePath));
+          piPreexistingSessionIds = new Set(preexistingPiSessions.map((session) => session.id));
+          if (piResumeTargetId && !isForkLaunch) {
+            const piSessionFile = resolvePiSessionFile({
+              cwd,
+              sessionId: piResumeTargetId,
+              sessionDir: piSessionDir,
+              env: launchEnv,
+            });
+            if (!piSessionFile) {
+              throw new Error(`Pi session '${piResumeTargetId}' was not found in the selected working directory.`);
+            }
+            piSessionLease = acquirePiSessionLease({
+              sessionFile: piSessionFile,
+              owner: "cli",
+              ownerId: ptyId,
+              ...piLeaseIdentity,
+            });
+          } else if (isContinueLaunch && !isForkLaunch) {
+            // Resolve --continue/-c/-r before spawning whenever Pi already has
+            // a concrete latest session. This removes the window where Pi can
+            // begin writing that JSONL before ADE has upgraded its synthetic
+            // directory lease to the adjacent session lease.
+            const latest = await resolvePiSessionIdFromStorage({ cwd, env: launchEnv });
+            if (latest) {
+              const piSessionFile = resolvePiSessionFile({
+                cwd,
+                sessionId: latest.id,
+                sessionFile: latest.filePath,
+                sessionDir: piSessionDir,
+                env: launchEnv,
+              });
+              if (!piSessionFile) {
+                throw new Error("Pi's latest session is outside the authorized native session directory.");
+              }
+              piSessionLease = acquirePiSessionLease({
+                sessionFile: piSessionFile,
+                owner: "cli",
+                ownerId: ptyId,
+                ...piLeaseIdentity,
+              });
+              const piResumeCommand = `pi --session ${latest.id}`;
+              initialResumeCommand = piResumeCommand;
+              startupCommand = withBundledOpenCodeCommandLine(piResumeCommand, toolTypeHint);
+              sessionService.setResumeCommand(sessionId, piResumeCommand);
+              if (directCommand && isPiExecutableCommand(directCommand)) {
+                directArgs = directArgs.filter((arg) => !/^(?:--continue|-c|-r)$/iu.test(arg));
+                directArgs.push("--session", latest.id);
+              }
+            } else {
+              piSessionLeaseIsCreation = true;
+              piSessionLease = acquirePiSessionLease({
+                sessionFile: piSessionCreationLeaseTarget(piSessionDir),
+                owner: "cli",
+                ownerId: ptyId,
+                ...piLeaseIdentity,
+              });
+            }
+          } else {
+            // Fresh, --continue, and --fork launches do not know the native
+            // JSONL path until Pi writes it. Hold a directory creation lease
+            // for the entire PTY lifetime so two ADE launches cannot both
+            // target the implicit "most recent" session at once.
+            const creationTarget = piSessionCreationLeaseTarget(piSessionDir);
+            piSessionLease = acquirePiSessionLease({
+              sessionFile: creationTarget,
+              owner: "cli",
+              ownerId: ptyId,
+              ...piLeaseIdentity,
+            });
+            piSessionLeaseIsCreation = true;
+          }
+          launchEnv.ADE_PI_SESSION_LEASE_PATH = piSessionLease.lockPath;
+        }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
         if (spawnHelperRepair.status === "chmod_applied") {
           logger.info("pty.spawn_helper_chmod_applied", { path: spawnHelperRepair.path });
@@ -5287,6 +5662,11 @@ export function createPtyService({
           resourcesPath: process.resourcesPath ?? "",
           err: String(err),
         });
+        piSessionLease?.release();
+        piSessionLease = null;
+        piSessionDirForEntry = null;
+        piLaunchEnvForEntry = null;
+        piSessionLeaseIsCreation = false;
         for (const cleanupPath of cleanupPaths) {
           try {
             fs.unlinkSync(cleanupPath);
@@ -5392,6 +5772,16 @@ export function createPtyService({
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
         priorEndState,
+        piSessionLease,
+        piSessionDir: piSessionDirForEntry,
+        piLaunchEnv: piLaunchEnvForEntry,
+        piSessionLeaseIsCreation,
+        piPreexistingSessionFiles,
+        piPreexistingSessionIds,
+        piForkParentSessionId,
+        piSessionLeaseUpgradeInFlight: false,
+        piSessionLeaseUpgradeTimer: null,
+        piSessionLeaseUpgradeAttempts: 0,
       };
       ptys.set(ptyId, entry);
       if (chatSessionId) {
@@ -5406,6 +5796,104 @@ export function createPtyService({
       let titleOutputBuffer = "";
       let titleBufferFull = false;
 
+      const schedulePiSessionLeaseUpgrade = (entry: PtyEntry, delayMs: number): void => {
+        if (
+          entry.disposed
+          || entry.toolTypeHint !== "pi"
+          || !entry.piSessionLeaseIsCreation
+          || entry.piSessionLeaseUpgradeTimer
+        ) return;
+        entry.piSessionLeaseUpgradeTimer = setTimeout(() => {
+          entry.piSessionLeaseUpgradeTimer = null;
+          void maybeUpgradePiSessionLease(entry);
+        }, delayMs);
+        entry.piSessionLeaseUpgradeTimer.unref?.();
+      };
+
+      const maybeUpgradePiSessionLease = async (entry: PtyEntry): Promise<void> => {
+        if (
+          entry.disposed
+          || entry.toolTypeHint !== "pi"
+          || !entry.piSessionLeaseIsCreation
+          || entry.piSessionLeaseUpgradeInFlight
+          || !entry.piSessionLease
+          || !entry.piSessionDir
+          || !entry.piLaunchEnv
+        ) return;
+        const creationLease = entry.piSessionLease;
+        entry.piSessionLeaseUpgradeInFlight = true;
+        let candidateFound = false;
+        try {
+          const candidate = await resolvePiSessionIdFromStorage({
+            cwd: entry.boundCwd,
+            env: entry.piLaunchEnv,
+            startedAt: sessionService.get(entry.sessionId)?.startedAt ?? null,
+            maxStartDeltaMs: 10 * 60_000,
+            excludedIds: new Set([
+              ...entry.piPreexistingSessionIds,
+              ...(entry.piForkParentSessionId ? [entry.piForkParentSessionId] : []),
+            ]),
+            excludedFiles: entry.piPreexistingSessionFiles,
+          });
+          if (!candidate) return;
+          candidateFound = true;
+          const sessionFile = resolvePiSessionFile({
+            cwd: entry.boundCwd,
+            sessionId: candidate.id,
+            sessionFile: candidate.filePath,
+            sessionDir: entry.piSessionDir,
+            env: entry.piLaunchEnv,
+          });
+          if (!sessionFile) throw new Error("Pi discovered a session outside the authorized native session directory.");
+          if (entry.disposed || entry.piSessionLease !== creationLease) return;
+          const concreteLease = acquirePiSessionLease({
+            sessionFile,
+            owner: "cli",
+            ownerId: ptyId,
+            ...piLeaseIdentity,
+          });
+          if (entry.disposed || entry.piSessionLease !== creationLease) {
+            concreteLease.release();
+            return;
+          }
+          entry.piSessionLease = concreteLease;
+          entry.piSessionLeaseIsCreation = false;
+          creationLease.release();
+          entry.resumeCommand = `pi --session ${candidate.id}`;
+          entry.resumeCommandIsFallback = false;
+          sessionService.setResumeCommand(entry.sessionId, entry.resumeCommand);
+          logger.info("pty.pi_session_lease_upgraded", {
+            sessionId: entry.sessionId,
+            ptyId,
+            sessionIdFromHeader: candidate.id,
+            sessionFile,
+          });
+        } catch (error) {
+          logger.warn("pty.pi_session_lease_upgrade_failed", {
+            sessionId: entry.sessionId,
+            ptyId,
+            candidateFound,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // Once Pi has selected a concrete native session, failing to own it
+          // is unsafe: leaving the process running would let two ADE writers
+          // mutate the same JSONL. Terminate this launch and let the session
+          // row remain resumable through its native pointer.
+          if (candidateFound && !entry.disposed) {
+            terminatePtyProcessTree(entry, "SIGTERM", logger);
+            closeEntry(ptyId, 1);
+          }
+        } finally {
+          entry.piSessionLeaseUpgradeInFlight = false;
+          if (entry.piSessionLeaseIsCreation && !entry.disposed) {
+            const delays = [250, 1_000, 3_000, 8_000, 20_000, 30_000];
+            const attempt = entry.piSessionLeaseUpgradeAttempts;
+            entry.piSessionLeaseUpgradeAttempts += 1;
+            if (attempt < delays.length) schedulePiSessionLeaseUpgrade(entry, delays[attempt]!);
+          }
+        }
+      };
+
       const processOutputData = (data: string): void => {
         // Late chunks can arrive after closeEntry()/dispose() has flushed the
         // final buffer and emitted ptyExit. Bail out so post-teardown data
@@ -5413,6 +5901,7 @@ export function createPtyService({
         // emit ptyData after ptyExit while transcript summarization is in
         // flight.
         if (entry.disposed) return;
+        void maybeUpgradePiSessionLease(entry);
         resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
         adoptCliRuntimeWindowTitle(entry, data);
@@ -5468,6 +5957,7 @@ export function createPtyService({
         }
       };
       entry.processOutputData = processOutputData;
+      if (entry.piSessionLeaseIsCreation) void maybeUpgradePiSessionLease(entry);
 
       pty.onData((rawData) => {
         if (entry.disposed) return;
@@ -6913,6 +7403,12 @@ export function createPtyService({
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
       flushPendingPtyOutput(entry);
       entry.processOutputData = null;
+      if (entry.piSessionLeaseUpgradeTimer) {
+        clearTimeout(entry.piSessionLeaseUpgradeTimer);
+        entry.piSessionLeaseUpgradeTimer = null;
+      }
+      entry.piSessionLease?.release();
+      entry.piSessionLease = null;
       entry.disposed = true;
       entry.attentionRequested = false;
       sessionService.clearAttentionRequest(entry.sessionId);

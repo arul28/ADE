@@ -102,6 +102,22 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     ],
   },
   {
+    agent: "pi",
+    displayName: "Pi",
+    binaryNames: ["pi"],
+    installCommand: npmGlobalInstallCommand("@earendil-works/pi-coding-agent"),
+    authCommand: "pi",
+    missingErrorPatterns: [
+      /\bpi\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+pi\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bpi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|authentication required|no api key|api key required|no credentials|provider not configured)\b/i,
+      /\b(?:no api key|api key required|no credentials|provider not configured)\b.*\b(?:for|pi|provider)\b/i,
+      /\brun\s+[`'"]?pi\s+\/login[`'"]?/i,
+    ],
+  },
+  {
     agent: "droid",
     displayName: "Factory Droid",
     binaryNames: ["droid"],

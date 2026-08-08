@@ -10704,6 +10704,21 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Open Pi's own interactive login flow on the paired machine. Pi remains
+  /// the credential owner: the phone only asks the host to start its native
+  /// CLI and types `/login` through the tracked PTY.
+  func startPiLoginTerminal(laneId: String) async throws -> StartCliSessionResult {
+    try await startCliSession(
+      laneId: laneId,
+      provider: "pi",
+      permissionMode: "default",
+      title: "Pi login",
+      initialInput: "/login\n",
+      cols: 100,
+      rows: 28
+    )
+  }
+
   func startCliSession(
     laneId: String,
     provider: String,
@@ -11593,6 +11608,9 @@ final class SyncService: ObservableObject {
     reasoningEffort: String? = nil,
     codexFastMode: Bool? = nil,
     sessionProfile: String? = nil,
+    piProfileId: String? = nil,
+    piProviderId: String? = nil,
+    piModelId: String? = nil,
     permissionMode: String? = nil,
     interactionMode: String? = nil,
     claudePermissionMode: String? = nil,
@@ -11616,6 +11634,9 @@ final class SyncService: ObservableObject {
       reasoningEffort: reasoningEffort,
       codexFastMode: codexFastMode,
       sessionProfile: sessionProfile,
+      piProfileId: piProfileId,
+      piProviderId: piProviderId,
+      piModelId: piModelId,
       permissionMode: permissionMode,
       interactionMode: interactionMode,
       claudePermissionMode: claudePermissionMode,
@@ -11678,6 +11699,9 @@ final class SyncService: ObservableObject {
     reasoningEffort: String? = nil,
     codexFastMode: Bool? = nil,
     sessionProfile: String? = nil,
+    piProfileId: String? = nil,
+    piProviderId: String? = nil,
+    piModelId: String? = nil,
     permissionMode: String? = nil,
     interactionMode: String? = nil,
     claudePermissionMode: String? = nil,
@@ -11701,6 +11725,9 @@ final class SyncService: ObservableObject {
       reasoningEffort: reasoningEffort,
       codexFastMode: codexFastMode,
       sessionProfile: sessionProfile,
+      piProfileId: piProfileId,
+      piProviderId: piProviderId,
+      piModelId: piModelId,
       permissionMode: permissionMode,
       interactionMode: interactionMode,
       claudePermissionMode: claudePermissionMode,
@@ -11760,6 +11787,9 @@ final class SyncService: ObservableObject {
     reasoningEffort: String?,
     codexFastMode: Bool?,
     sessionProfile: String?,
+    piProfileId: String?,
+    piProviderId: String?,
+    piModelId: String?,
     permissionMode: String?,
     interactionMode: String?,
     claudePermissionMode: String?,
@@ -11790,6 +11820,15 @@ final class SyncService: ObservableObject {
     }
     if let sessionProfile, !sessionProfile.isEmpty {
       args["sessionProfile"] = sessionProfile
+    }
+    if let piProfileId, !piProfileId.isEmpty {
+      args["piProfileId"] = piProfileId
+    }
+    if let piProviderId, !piProviderId.isEmpty {
+      args["piProviderId"] = piProviderId
+    }
+    if let piModelId, !piModelId.isEmpty {
+      args["piModelId"] = piModelId
     }
     if let permissionMode, !permissionMode.isEmpty {
       args["permissionMode"] = permissionMode
@@ -20711,6 +20750,9 @@ extension SyncService {
     kickoffText: String,
     reasoningEffort: String? = nil,
     codexFastMode: Bool? = nil,
+    piProfileId: String? = nil,
+    piProviderId: String? = nil,
+    piModelId: String? = nil,
     permissionMode: String? = nil,
     interactionMode: String? = nil,
     claudePermissionMode: String? = nil,
@@ -20730,6 +20772,9 @@ extension SyncService {
     ]
     if let reasoningEffort, !reasoningEffort.isEmpty { args["reasoningEffort"] = reasoningEffort }
     if let codexFastMode { args["codexFastMode"] = codexFastMode }
+    if let piProfileId, !piProfileId.isEmpty { args["piProfileId"] = piProfileId }
+    if let piProviderId, !piProviderId.isEmpty { args["piProviderId"] = piProviderId }
+    if let piModelId, !piModelId.isEmpty { args["piModelId"] = piModelId }
     if let permissionMode, !permissionMode.isEmpty { args["permissionMode"] = permissionMode }
     if let interactionMode, !interactionMode.isEmpty { args["interactionMode"] = interactionMode }
     if let claudePermissionMode, !claudePermissionMode.isEmpty { args["claudePermissionMode"] = claudePermissionMode }

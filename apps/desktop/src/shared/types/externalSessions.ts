@@ -1,4 +1,4 @@
-export type ExternalSessionProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
+export type ExternalSessionProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
 
 export interface ExternalSessionCapabilities {
   resumeInPlace: boolean;

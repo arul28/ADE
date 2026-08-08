@@ -237,7 +237,7 @@ function writeJsonLs(key: string, value: unknown): void {
   }
 }
 
-type ResolverPermissionFamily = Extract<ModelProviderGroup, "claude" | "codex" | "opencode" | "cursor" | "droid">;
+type ResolverPermissionFamily = Extract<ModelProviderGroup, "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi">;
 type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
 const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
@@ -246,6 +246,7 @@ const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   opencode: "edit",
   cursor: "default",
   droid: "edit",
+  pi: "default",
 };
 
 function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
@@ -273,6 +274,7 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
       opencode: normalizeResolverPermissionMode(parsed?.opencode) ?? DEFAULT_RESOLVER_PERMISSIONS.opencode,
       cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
       droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,
+      pi: normalizeResolverPermissionMode(parsed?.pi) ?? DEFAULT_RESOLVER_PERMISSIONS.pi,
     };
   } catch {
     return DEFAULT_RESOLVER_PERMISSIONS;

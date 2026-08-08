@@ -57,12 +57,21 @@ export function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelPr
 }
 
 /**
+ * Pi and OpenCode-backed providers share ADE's four tool-permission modes.
+ * The persisted field is still named `opencodePermissionMode` for IPC/session
+ * compatibility, so keep that legacy detail behind one provider-level helper.
+ */
+export function usesToolPermissionModes(provider: AdeCodeProvider): boolean {
+  return provider === "pi" || runtimeProviderForUiProvider(provider) === "opencode";
+}
+
+/**
  * The provider CLI a modelState provider launches as, or null when it has no
  * tracked CLI (Ollama / LM Studio are OpenCode-backed chat only). Gates the
  * Interface=CLI launch path.
  */
 export function cliProviderForModelStateProvider(provider: AdeCodeProvider): CliTerminalProvider | null {
-  return provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || provider === "opencode"
+  return provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || provider === "opencode" || provider === "pi"
     ? provider
     : null;
 }
@@ -395,7 +404,7 @@ export function permissionSummary(modelState: AdeCodeModelState): string {
     if (modelState.claudePermissionMode === "bypassPermissions") return "bypass";
     return "default";
   }
-  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return modelState.opencodePermissionMode;
+  if (usesToolPermissionModes(modelState.provider)) return modelState.opencodePermissionMode;
   if (modelState.provider === "droid") return modelState.droidPermissionMode;
   return cursorModeLabel(modelState.cursorModeId);
 }
@@ -431,7 +440,7 @@ export function modeAccentColor(summary: string): string {
 function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "codex") return CODEX_PRESETS.join(" · ");
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
-  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
+  if (usesToolPermissionModes(modelState.provider)) return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
   return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
@@ -450,7 +459,7 @@ export function applyProviderPermissionMode(modelState: AdeCodeModelState): Part
     if (modelState.claudePermissionMode === "bypassPermissions") return { permissionMode: "full-auto", interactionMode: "default" };
     return { permissionMode: "default", interactionMode: "default" };
   }
-  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return { permissionMode: modelState.opencodePermissionMode };
+  if (usesToolPermissionModes(modelState.provider)) return { permissionMode: modelState.opencodePermissionMode };
   if (modelState.provider === "droid") return { permissionMode: droidPermissionToLegacy(modelState.droidPermissionMode) };
   if (modelState.provider === "cursor") {
     if (modelState.cursorModeId === "plan") return { permissionMode: "plan" };

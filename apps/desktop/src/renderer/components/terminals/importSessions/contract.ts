@@ -80,6 +80,7 @@ const PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 export function providerDisplayName(provider: ExternalSessionProvider): string {
@@ -93,4 +94,5 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   cursor: "cursor-cli",
   droid: "droid",
   opencode: "opencode",
+  pi: "pi",
 };

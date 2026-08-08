@@ -11,6 +11,8 @@ import {
   deriveTrackedCliInitialInputSessionMeta,
   mergeContinuationLaunch,
   resolveCleanShellLaunchFields,
+  resolvePiCliModelForLaunch,
+  piThinkingFlags,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -282,6 +284,7 @@ describe("defaultTrackedCliStartupCommand", () => {
     expect(defaultTrackedCliStartupCommand("cursor")).toBe("cursor-agent --model auto");
     expect(defaultTrackedCliStartupCommand("droid")).toBe("droid");
     expect(defaultTrackedCliStartupCommand("opencode")).toBe("opencode");
+    expect(defaultTrackedCliStartupCommand("pi")).toBe("pi");
   });
 });
 
@@ -405,6 +408,11 @@ describe("resolveCleanShellLaunchFields", () => {
 });
 
 describe("buildTrackedCliStartupCommand", () => {
+  it("preserves Pi's native max thinking level", () => {
+    expect(piThinkingFlags("max")).toEqual(["--thinking", "max"]);
+    expect(piThinkingFlags("ultracode")).toEqual(["--thinking", "xhigh"]);
+  });
+
   describe("claude provider", () => {
     it("adds --dangerously-skip-permissions for full-auto", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "full-auto" });
@@ -873,6 +881,48 @@ describe("buildTrackedCliStartupCommand", () => {
       });
     });
 
+    it("launches Pi with safe model/thinking argv, ADE guidance, and skill environment", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "pi",
+        permissionMode: "full-auto",
+        model: "pi/openai/gpt-5.4",
+        reasoningEffort: "high",
+        initialPrompt: "Run the Pi path.",
+      });
+      expect(launch).toMatchObject({
+        command: "pi",
+        initialInputDelayMs: 750,
+      });
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "--model", "openai/gpt-5.4", "--thinking", "high", "--append-system-prompt",
+      ]));
+      expect(launch.args.join("\n")).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write");
+      expect(launch.initialInput).toBe("Run the Pi path.");
+      expect(launch.args.join("\n")).toContain("ADE permission policy for this Pi session: full-auto");
+      expect(launch.initialInput).not.toContain("--dangerously");
+      expect(launch.args).not.toEqual(expect.arrayContaining(["--permission-mode", "full-auto"]));
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
+    });
+
+    it("keeps Pi launches direct on Windows and preserves encoded model ids", () => {
+      expect(resolvePiCliModelForLaunch(`pi/openrouter/${encodeURIComponent("org/model")}`)).toBe("openrouter/org%2Fmodel");
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand({
+          provider: "pi",
+          permissionMode: "plan",
+          model: `pi/openrouter/${encodeURIComponent("org/model")}`,
+          reasoningEffort: "medium",
+          initialPrompt: "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café",
+        });
+        expect(launch.command).toBe("pi");
+        expect(launch.args.slice(0, 4)).toEqual(["--model", "openrouter/org%2Fmodel", "--thinking", "medium"]);
+        expect(launch.args).toContain("--append-system-prompt");
+        expect(launch.startupCommand).not.toContain("C:\\Program Files");
+        expect(launch.initialInput).toContain("C:\\Program Files\\ADE's $lane %TEMP% & café");
+      });
+    });
+
     it("launches Droid as an interactive CLI with model, reasoning, autonomy, guidance, and prompt", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "droid",
@@ -1137,6 +1187,45 @@ describe("tracked CLI resume helpers", () => {
     expect(launch.startupCommand).not.toContain("ADE_DROID_SETTINGS=\"");
   });
 
+  it("keeps Pi resume launches direct while moving the prompt off Windows argv", () => {
+    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
+    const launch = buildTrackedCliResumeLaunchCommand({
+      provider: "pi",
+      targetKind: "session",
+      targetId: "pi-session-1",
+      launch: { permissionMode: "plan", model: "pi/openai/gpt-5.4", reasoningEffort: "medium" },
+    }, { prompt }, { platform: "win32" });
+
+    expect(launch.command).toBe("pi");
+    expect(launch.args).toEqual([
+      "--model", "openai/gpt-5.4",
+      "--thinking", "medium",
+      "--tools", "read",
+      "--session", "pi-session-1",
+    ]);
+    expect(launch.initialInput).toBe(prompt);
+    expect(launch.initialInputDelayMs).toBe(750);
+    expect(launch.startupCommand).toContain("pi --model \"openai/gpt-5.4\" --thinking medium --tools read --session pi-session-1");
+    expect(launch.startupCommand).not.toContain("Continue in");
+    expect(launch.startupCommand).not.toContain("%TEMP%");
+    expect(launch.startupCommand).not.toContain("powershell");
+    expect(launch.startupCommand).not.toContain("-lc");
+  });
+
+  it("keeps the Pi resume prompt in argv on POSIX", () => {
+    const prompt = "Continue in /repo's $lane\nsecond line";
+    const launch = buildTrackedCliResumeLaunchCommand({
+      provider: "pi",
+      targetKind: "session",
+      targetId: "pi-session-1",
+      launch: { permissionMode: "plan", model: "pi/openai/gpt-5.4", reasoningEffort: "medium" },
+    }, { prompt }, { platform: "darwin" });
+
+    expect(launch.args.at(-1)).toBe(prompt);
+    expect(launch.initialInput).toBeUndefined();
+    expect(launch.initialInputDelayMs).toBeUndefined();
+  });
+
   it("keeps the POSIX Droid resume prompt in argv", () => {
     const prompt = "Continue in /repo's $lane\nsecond line";
     const launch = buildTrackedCliResumeLaunchCommand({
@@ -1194,6 +1283,13 @@ describe("tracked CLI resume helpers", () => {
       targetId: "ses_99",
       launch: { permissionMode: "plan" },
     }, { model: "opencode/opencode/big-pickle" })).toContain("--agent plan --model \"opencode/big-pickle\" --session ses_99");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "pi",
+      targetKind: "session",
+      targetId: "pi-session-1",
+      launch: { permissionMode: "full-auto", model: "pi/anthropic/claude-sonnet-5", reasoningEffort: "high" },
+    })).toBe("pi --model \"anthropic/claude-sonnet-5\" --thinking high --tools read,bash,edit,write --session pi-session-1");
   });
 
   it("preserves Codex native approval and sandbox pairs without escalating access", () => {

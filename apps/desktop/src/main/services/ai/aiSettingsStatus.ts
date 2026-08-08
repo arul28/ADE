@@ -111,6 +111,7 @@ export function getUnavailableAiStatus(): AiSettingsStatus {
     opencodeProviders: [],
     opencodeProvidersStale: false,
     modelsDevLastFetchedAt: null,
+    piInstallation: undefined,
   };
 }
 
@@ -140,6 +141,7 @@ export async function buildAiSettingsStatus(
     opencodeProviders: status.opencodeProviders,
     opencodeProvidersStale: status.opencodeProvidersStale,
     modelsDevLastFetchedAt: status.modelsDevLastFetchedAt,
+    piInstallation: status.piInstallation,
     customProviders: status.customProviders,
     customModelSlugs: status.customModelSlugs,
     apiKeyStore: status.apiKeyStore,

@@ -181,6 +181,8 @@ func workSessionRuntimeLabel(session: TerminalSessionSummary) -> String {
     return "Claude"
   case "codex-chat":
     return "Codex"
+  case "pi-chat":
+    return "Pi"
   case "opencode-chat":
     return "OpenCode"
   case "cursor":

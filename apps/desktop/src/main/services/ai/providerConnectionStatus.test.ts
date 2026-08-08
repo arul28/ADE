@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiProviderConnections } from "../../../shared/types";
+import type { PiInstallation, PiProfileInventory } from "./piInstallation";
 import type { CliAuthStatus } from "./authDetector";
 
 const mockState = vi.hoisted(() => ({
@@ -7,6 +8,8 @@ const mockState = vi.hoisted(() => ({
   readCodexCredentials: vi.fn(),
   isCodexTokenStale: vi.fn(),
   getProviderRuntimeHealth: vi.fn(),
+  resolvePiInstallation: vi.fn(),
+  probePiProfileInventory: vi.fn(),
 }));
 
 vi.mock("./providerCredentialSources", () => ({
@@ -19,7 +22,15 @@ vi.mock("./providerRuntimeHealth", () => ({
   getProviderRuntimeHealth: (...args: unknown[]) => mockState.getProviderRuntimeHealth(...args),
 }));
 
-let buildProviderConnections: (cliStatuses: CliAuthStatus[]) => Promise<AiProviderConnections>;
+vi.mock("./piInstallation", () => ({
+  resolvePiInstallation: (...args: unknown[]) => mockState.resolvePiInstallation(...args),
+  probePiProfileInventory: (...args: unknown[]) => mockState.probePiProfileInventory(...args),
+}));
+
+let buildProviderConnections: (
+  cliStatuses: CliAuthStatus[],
+  options?: { piInstallation?: PiInstallation | null; piInventory?: PiProfileInventory | null },
+) => Promise<AiProviderConnections>;
 
 /** buildProviderConnections expects all CLIs; tests historically passed only claude/codex. */
 function mergeCliStatuses(overrides: CliAuthStatus[]): CliAuthStatus[] {
@@ -41,11 +52,15 @@ beforeEach(async () => {
   mockState.readCodexCredentials.mockReset();
   mockState.isCodexTokenStale.mockReset();
   mockState.getProviderRuntimeHealth.mockReset();
+  mockState.resolvePiInstallation.mockReset();
+  mockState.probePiProfileInventory.mockReset();
 
   mockState.readClaudeCredentials.mockResolvedValue(null);
   mockState.readCodexCredentials.mockResolvedValue(null);
   mockState.isCodexTokenStale.mockReturnValue(false);
   mockState.getProviderRuntimeHealth.mockReturnValue(null);
+  mockState.resolvePiInstallation.mockReturnValue(null);
+  mockState.probePiProfileInventory.mockResolvedValue(null);
 
   ({ buildProviderConnections } = await import("./providerConnectionStatus"));
 });
@@ -366,6 +381,116 @@ describe("buildProviderConnections", () => {
       if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
       else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
+  });
+
+  it("surfaces Pi as a first-class provider when the user package is installed and models are available", async () => {
+    const result = await buildProviderConnections(mergeCliStatuses([]), {
+      piInstallation: {
+        cliPath: "/Users/example/.local/bin/pi",
+        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+        packageEntry: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
+        version: "0.84.0",
+        nodeVersion: process.versions.node,
+        sdkAvailable: true,
+        cliAvailable: true,
+        agentDir: "/Users/example/.pi/agent",
+        settingsPath: "/Users/example/.pi/agent/settings.json",
+        authPath: "/Users/example/.pi/agent/auth.json",
+        modelsPath: "/Users/example/.pi/agent/models.json",
+        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+        blocker: null,
+      },
+      piInventory: {
+        installed: true,
+        sdkAvailable: true,
+        cliAvailable: true,
+        cliPath: "/Users/example/.local/bin/pi",
+        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+        version: "0.84.0",
+        agentDir: "/Users/example/.pi/agent",
+        settingsPath: "/Users/example/.pi/agent/settings.json",
+        authPath: "/Users/example/.pi/agent/auth.json",
+        modelsPath: "/Users/example/.pi/agent/models.json",
+        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+        blocker: null,
+        providers: [
+          {
+            id: "openai-codex",
+            name: "OpenAI Codex",
+            modelCount: 6,
+            availableModelCount: 6,
+            configured: true,
+            authType: "oauth",
+            authMethods: ["oauth"],
+            authSource: "stored",
+            authLabel: "OAuth",
+            subscription: true,
+          },
+        ],
+        availableModelIds: ["pi/openai-codex/gpt-5.4"],
+        stale: false,
+        authFileDetected: true,
+        modelsFileDetected: false,
+        settingsFileDetected: true,
+      },
+    });
+
+    expect(result.pi).toBeDefined();
+    expect(result.pi?.authAvailable).toBe(true);
+    expect(result.pi?.runtimeDetected).toBe(true);
+    expect(result.pi?.runtimeAvailable).toBe(true);
+    expect(result.pi?.path).toBe("/Users/example/.local/bin/pi");
+    expect(result.pi?.sources[0]).toMatchObject({
+      kind: "local-credentials",
+      detected: true,
+      source: "pi-auth-file",
+      path: "/Users/example/.pi/agent/auth.json",
+    });
+  });
+
+  it("reports a Pi configuration blocker when the package is installed but no providers are configured", async () => {
+    const result = await buildProviderConnections(mergeCliStatuses([]), {
+      piInstallation: {
+        cliPath: "/Users/example/.local/bin/pi",
+        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+        packageEntry: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
+        version: "0.84.0",
+        nodeVersion: process.versions.node,
+        sdkAvailable: true,
+        cliAvailable: true,
+        agentDir: "/Users/example/.pi/agent",
+        settingsPath: "/Users/example/.pi/agent/settings.json",
+        authPath: "/Users/example/.pi/agent/auth.json",
+        modelsPath: "/Users/example/.pi/agent/models.json",
+        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+        blocker: null,
+      },
+      piInventory: {
+        installed: true,
+        sdkAvailable: true,
+        cliAvailable: true,
+        cliPath: "/Users/example/.local/bin/pi",
+        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+        version: "0.84.0",
+        agentDir: "/Users/example/.pi/agent",
+        settingsPath: "/Users/example/.pi/agent/settings.json",
+        authPath: "/Users/example/.pi/agent/auth.json",
+        modelsPath: "/Users/example/.pi/agent/models.json",
+        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+        blocker: null,
+        providers: [],
+        availableModelIds: [],
+        stale: false,
+        authFileDetected: false,
+        modelsFileDetected: false,
+        settingsFileDetected: true,
+      },
+    });
+
+    expect(result.pi?.authAvailable).toBe(false);
+    expect(result.pi?.runtimeDetected).toBe(true);
+    expect(result.pi?.runtimeAvailable).toBe(false);
+    expect(result.pi?.blocker).toContain("No Pi providers are configured yet");
   });
   // Cursor is gated out of Windows on ARM because @cursor/sdk publishes no
   // win32-arm64 runtime. Platform/arch are forced here rather than read from the

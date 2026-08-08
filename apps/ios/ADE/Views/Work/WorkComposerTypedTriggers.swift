@@ -232,6 +232,12 @@ enum WorkComposerSlashCatalog {
         ("/explain", "Explain a file or change."),
         ("/review", "Review the current diff."),
       ]
+    case "pi":
+      return [
+        ("/compact", "Compact the native Pi session context."),
+        ("/explain", "Explain a file or change."),
+        ("/review", "Review the current diff."),
+      ]
     default:
       return [
         ("/help", "Show available commands."),

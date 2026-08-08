@@ -6,6 +6,8 @@ import {
   cursorCliLineGroupLabel,
   droidCliLineGroupFromModelId,
   droidCliLineGroupLabel,
+  formatPiProviderLabel,
+  resolveProviderGroupForModel,
   type CursorCliLineGroup,
   type DroidCliLineGroup,
   type ModelDescriptor,
@@ -65,9 +67,12 @@ const PROVIDER_LABELS: Record<string, string> = {
   opencode: "OpenCode (Free)",
   anthropic: "Anthropic",
   openai: "OpenAI",
+  "openai-codex": "OpenAI Codex",
   cursor: "Cursor",
   factory: "Factory Droid",
+  pi: "Pi",
   google: "Google",
+  "github-copilot": "GitHub Copilot",
   deepseek: "DeepSeek",
   mistral: "Mistral",
   xai: "xAI",
@@ -83,9 +88,12 @@ export const PROVIDER_BADGE_COLORS: Record<string, string> = {
   opencode: "#2563EB",
   anthropic: "#D97706",
   openai: "#10A37F",
+  "openai-codex": "#22B88A",
   cursor: "#A78BFA",
   factory: "#6B7280",
+  pi: "#F97316",
   google: "#F59E0B",
+  "github-copilot": "#8B5CF6",
   deepseek: "#3B82F6",
   mistral: "#F97316",
   xai: "#DC2626",
@@ -101,7 +109,9 @@ export const PROVIDER_ORDER: string[] = [
   "opencode",
   "anthropic",
   "openai",
+  "openai-codex",
   "google",
+  "github-copilot",
   "deepseek",
   "mistral",
   "xai",
@@ -112,6 +122,7 @@ export const PROVIDER_ORDER: string[] = [
   "lmstudio",
   "cursor",
   "factory",
+  "pi",
 ];
 
 const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {
@@ -119,6 +130,7 @@ const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {
   codex: 20,
   cursor: 30,
   droid: 35,
+  pi: 38,
   opencode: 40,
   ollama: 50,
   lmstudio: 60,
@@ -129,6 +141,7 @@ export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   codex: "#10A37F",
   cursor: "#A78BFA",
   droid: "#6B7280",
+  pi: "#F97316",
   opencode: "#2563EB",
   ollama: "#71717A",
   lmstudio: "#64748B",
@@ -137,6 +150,24 @@ export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
 const DROID_SECTION_PREFIX = "__droid_line__:";
 const OPENCODE_PROVIDER_PREFIX = "__ocprov__:";
+const PI_PROVIDER_PREFIX = "__piprov__:";
+
+function piSubsectionParts(key: string): { profileId: string; providerId: string } | null {
+  if (!key.startsWith(PI_PROVIDER_PREFIX)) return null;
+  const encoded = key.slice(PI_PROVIDER_PREFIX.length).split(":");
+  try {
+    if (encoded.length >= 2) {
+      return {
+        profileId: decodeURIComponent(encoded[0] || "default") || "default",
+        providerId: decodeURIComponent(encoded.slice(1).join(":")),
+      };
+    }
+    // Keep old cached catalogs readable while new catalogs use profile-aware keys.
+    return { profileId: "default", providerId: decodeURIComponent(encoded[0] ?? "") };
+  } catch {
+    return null;
+  }
+}
 
 export function providerLabel(family: string): string {
   return PROVIDER_LABELS[family] ?? family;
@@ -147,16 +178,10 @@ export function providerBadgeColor(provider: string, models: ModelDescriptor[]):
 }
 
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
-  if (model.family === "cursor") return "cursor";
   if (model.family === "ollama" || model.family === "lmstudio") {
     return model.family;
   }
-  if (model.isCliWrapped) {
-    if (model.family === "anthropic" || model.cliCommand === "claude") return "claude";
-    if (model.family === "openai" || model.cliCommand === "codex") return "codex";
-    if (model.family === "factory" || model.cliCommand === "droid") return "droid";
-  }
-  return "opencode";
+  return resolveProviderGroupForModel(model);
 }
 
 export function providerGroupLabel(group: ProviderGroupKey): string {
@@ -169,6 +194,8 @@ export function providerGroupLabel(group: ProviderGroupKey): string {
       return "Cursor";
     case "droid":
       return "Droid";
+    case "pi":
+      return "Pi";
     case "opencode":
       return "OpenCode";
     case "ollama":
@@ -185,6 +212,10 @@ export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGro
   if (model.family === "factory" && group === "droid") {
     return `${DROID_SECTION_PREFIX}${droidCliLineGroupFromModelId(model.providerModelId)}`;
   }
+  if (group === "pi" && model.piProviderId) {
+    const profileId = model.piProfileId?.trim() || "default";
+    return `${PI_PROVIDER_PREFIX}${encodeURIComponent(profileId)}:${encodeURIComponent(model.piProviderId)}`;
+  }
   if (group === "opencode" && model.openCodeProviderId) {
     return `${OPENCODE_PROVIDER_PREFIX}${model.openCodeProviderId}`;
   }
@@ -193,6 +224,11 @@ export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGro
 
 export function subsectionLabel(family: string, key: string): string {
   if (key === "__default__") return "";
+  const piParts = piSubsectionParts(key);
+  if (piParts) {
+    const provider = formatPiProviderLabel(piParts.providerId);
+    return piParts.profileId === "default" ? provider : `${provider} · ${piParts.profileId}`;
+  }
   if (family === "opencode" && key.startsWith(OPENCODE_PROVIDER_PREFIX)) {
     const pid = key.slice(OPENCODE_PROVIDER_PREFIX.length);
     return providerLabel(pid);
@@ -209,6 +245,7 @@ export function subsectionLabel(family: string, key: string): string {
 }
 
 export function subsectionSortOrder(family: string, key: string): number {
+  if (key.startsWith(PI_PROVIDER_PREFIX)) return PROVIDER_ORDER.length + 1;
   if (family === "opencode" && key.startsWith(OPENCODE_PROVIDER_PREFIX)) {
     const pid = key.slice(OPENCODE_PROVIDER_PREFIX.length);
     const index = PROVIDER_ORDER.indexOf(pid);
@@ -236,6 +273,8 @@ export function matchesQuery(model: ModelDescriptor, query: string): boolean {
     model.shortId,
     model.providerModelId,
     model.openCodeProviderId ?? "",
+    model.piProviderId ?? "",
+    model.piModelId ?? "",
     ...(model.aliases ?? []),
   ]
     .join(" ")
@@ -288,7 +327,9 @@ export function buildProviderGroupBlocks(
     const group = classifyProviderGroup(model);
     const family = group === "opencode" && model.openCodeProviderId
       ? model.openCodeProviderId
-      : model.family;
+      : group === "pi" && model.piProviderId
+        ? model.piProviderId
+        : model.family;
     const subKey = group === "opencode" && model.openCodeProviderId
       ? "__default__"
       : subsectionKeyForModel(model, group);
@@ -341,7 +382,9 @@ export function buildProviderGroupBlocks(
         key: family,
         label: groupKey === "opencode"
           ? opencodeProviderNameById.get(family) ?? providerLabel(family)
-          : providerLabel(family),
+          : groupKey === "pi"
+            ? formatPiProviderLabel(family)
+            : providerLabel(family),
         badgeColor: providerBadgeColor(family, subsections.flatMap((s) => s.models)),
         subsections,
         modelCount,

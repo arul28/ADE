@@ -135,12 +135,20 @@ const DROID_PACK: MarkerPack = {
   working: [ESC_TO_INTERRUPT],
 };
 
+/** Pi's interactive CLI uses the same compact approval/plan vocabulary as its RPC surface. */
+const PI_PACK: MarkerPack = {
+  planning: [/\bplan mode\b/i, /\bplanning\b/i],
+  waitingInput: [NUMBERED_YES_OPTION, YES_NO_PROMPT, /\bapprove\b[^\n]{0,30}\?/i],
+  working: [ESC_TO_INTERRUPT],
+};
+
 const PACKS: Record<TerminalResumeProvider, MarkerPack> = {
   claude: CLAUDE_PACK,
   codex: CODEX_PACK,
   cursor: CURSOR_PACK,
   droid: DROID_PACK,
   opencode: OPENCODE_PACK,
+  pi: PI_PACK,
 };
 
 export type TuiMarkerState = {

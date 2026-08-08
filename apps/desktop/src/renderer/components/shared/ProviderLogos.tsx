@@ -5,6 +5,7 @@ import {
   Codex,
   Cursor,
   Gemini,
+  GithubCopilot,
   Google,
   Grok,
   Groq,
@@ -24,6 +25,7 @@ import {
 import { lobeProviderIconSrc } from "../../lib/lobeProviderIconSrc";
 import { cn } from "../ui/cn";
 import droidMarkSrc from "../../assets/provider-logos/droid.svg";
+import piMarkSrc from "../../assets/provider-logos/pi.svg";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -70,6 +72,10 @@ function LobeStaticMark({ src, size, className }: { src: string; size: number; c
 
 export function DroidLogo({ size = 16, className }: LogoProps) {
   return <LobeStaticMark src={droidMarkSrc} size={size} className={cn("rounded-full", className)} />;
+}
+
+export function PiLogo({ size = 16, className }: LogoProps) {
+  return <LobeStaticMark src={piMarkSrc} size={size} className={className} />;
 }
 
 function CursorSubscriptionModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
@@ -156,6 +162,8 @@ export function ProviderLogo({
       return <Claude.Avatar size={size} className={c} />;
     case "codex":
       return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+    case "openai-codex":
+      return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
     case "openai":
       return <OpenAI size={size} className={c} />;
     case "cursor":
@@ -163,6 +171,8 @@ export function ProviderLogo({
     case "factory":
     case "droid":
       return <DroidLogo size={size} className={className} />;
+    case "pi":
+      return <PiLogo size={size} className={className} />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
@@ -189,9 +199,10 @@ export function ProviderLogo({
     case "kimi-for-coding":
       return <Kimi.Color size={size} className={c} />;
     case "github-copilot":
+    case "githubcopilot":
+      return <GithubCopilot.Avatar size={size} className={c} />;
     case "github":
     case "github-models":
-      // No dedicated GitHub mark in the local set; initials avoid mislabeling as OpenAI.
       return <FallbackInitialLogo family="github" size={size} className={className} />;
     case "gitlab":
     case "gitlab-duo":
@@ -227,6 +238,13 @@ export function ModelRowLogo({
   const fam = String(modelFamily ?? "").toLowerCase();
   const cli = String(cliCommand ?? "").toLowerCase();
   const c = lobeMarkClass(className);
+
+  // Pi is the selected harness even when the model itself belongs to an
+  // underlying provider family (for example openai-codex). Keep the Pi mark on
+  // picker rows so the route is not mistaken for a direct OpenAI chat.
+  if (String(modelId ?? "").trim().toLowerCase().startsWith("pi/")) {
+    return <PiLogo size={size} className={className} />;
+  }
 
   // OpenCode-routed models: route the row logo by their underlying sub-provider
   // (Anthropic, OpenAI, etc.) rather than the generic OpenCode mark so each row

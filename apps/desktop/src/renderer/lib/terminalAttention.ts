@@ -62,6 +62,7 @@ const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
   "cursor-cli",
   "droid",
   "opencode",
+  "pi",
   "claude-orchestrated",
   "codex-orchestrated",
   "opencode-orchestrated",

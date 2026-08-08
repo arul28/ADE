@@ -8,6 +8,7 @@ public enum ADESharedTheme {
     // MARK: - Brand colors (mirror of ADEDesignSystem)
     public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x06 / 255.0) // #D97706
     public static let brandCodex    = Color(red: 0x10 / 255.0, green: 0xA3 / 255.0, blue: 0x7F / 255.0) // #10A37F
+    public static let brandPi       = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0) // #F97316
     public static let brandCursor   = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
     public static let brandOpenCode = Color(red: 0x25 / 255.0, green: 0x63 / 255.0, blue: 0xEB / 255.0) // #2563EB
     public static let brandGoogle   = Color(red: 0xF5 / 255.0, green: 0x9E / 255.0, blue: 0x0B / 255.0) // #F59E0B
@@ -27,6 +28,7 @@ public enum ADESharedTheme {
         switch providerSlug.lowercased() {
         case "claude", "anthropic": return brandClaude
         case "codex", "openai":     return brandCodex
+        case "pi":                   return brandPi
         case "cursor":              return brandCursor
         case "opencode":            return brandOpenCode
         case "google", "gemini":    return brandGoogle
@@ -52,6 +54,7 @@ public enum ADESharedTheme {
         case "cursor":              return "ProviderCursor"
         case "opencode":            return "ProviderOpenCode"
         case "droid", "factory":    return "ProviderDroid"
+        case "pi":                   return nil
         case "github":              return "ProviderGitHub"
         default:                    return nil
         }
@@ -67,6 +70,7 @@ public enum ADESharedTheme {
         case "cursor":              return "Cursor"
         case "opencode":            return "OpenCode"
         case "droid", "factory":    return "Droid"
+        case "pi":                   return "Pi"
         case "google", "gemini":    return "Gemini"
         case "mistral":             return "Mistral"
         case "deepseek":            return "DeepSeek"

@@ -188,7 +188,7 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
 /// Shared provider-display-name mapping for chat-surface card headers, mirroring
 /// the desktop redesign's `chatSurfaceProviderName`:
 ///   claude/anthropic → "Claude", codex/openai → "Codex", cursor → "Cursor",
-///   droid/factory → "Droid", opencode → "OpenCode", else Title-case the source.
+///   droid/factory → "Droid", opencode → "OpenCode", pi → "Pi", else Title-case the source.
 /// Distinct from `providerLabel(_:)` (which says "Anthropic" / "Cursor Composer"
 /// / "OpenAI") so the question/plan header verbs read with the short brand name.
 func workChatSurfaceProviderName(_ source: String?) -> String {
@@ -200,6 +200,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "cursor": return "Cursor"
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
+  case "pi": return "Pi"
   case "ade": return "ADE"
   default:
     return raw

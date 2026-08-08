@@ -11,6 +11,7 @@ import type {
   AiProviderConnections,
   AiRuntimeConnections,
   AiRuntimeConnectionStatus,
+  AiPiInstallationStatus,
   CursorCloudAgentSummary,
   CursorCloudCreateRunRequest,
   CursorCloudCreateRunResult,
@@ -21,6 +22,7 @@ import type {
 } from "../../../shared/types";
 import {
   decodeOpenCodeRegistryId,
+  replaceDynamicPiModelDescriptors,
   getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
@@ -76,6 +78,7 @@ import {
 import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
+import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "./piInstallation";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
@@ -124,10 +127,10 @@ export type AiIntegrationStatus = {
     droid: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
-    type: "cli-subscription" | "api-key" | "openrouter" | "local";
+    type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
     cli?: "claude" | "codex" | "cursor" | "droid";
     provider?: string;
-    source?: "config" | "env" | "store";
+    source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
     path?: string;
     endpoint?: string;
@@ -154,6 +157,7 @@ export type AiIntegrationStatus = {
   customProviders?: AiCustomProviderConfig[];
   /** Effective ai.customModelSlugs — surfaced so the settings UI can do authoritative full-list writes. */
   customModelSlugs?: string[];
+  piInstallation?: AiPiInstallationStatus;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -594,6 +598,39 @@ function redactDetectedAuth(
   return redacted;
 }
 
+function redactPiDetectedAuth(
+  piInstallation: AiPiInstallationStatus | null | undefined,
+): NonNullable<AiIntegrationStatus["detectedAuth"]> {
+  if (!piInstallation?.providers?.length) return [];
+  return piInstallation.providers.flatMap((provider) => {
+    if (!provider.configured || !provider.authType) return [];
+    const source = provider.authSource === "environment"
+      ? "env" as const
+      : provider.authSource === "stored"
+        ? "file" as const
+        : provider.authSource === "models_json_key" || provider.authSource === "models_json_command"
+          ? "config" as const
+          : undefined;
+    const path = provider.authSource === "stored"
+      ? piInstallation.authPath
+      : provider.authSource === "models_json_key" || provider.authSource === "models_json_command"
+        ? piInstallation.modelsPath
+        : undefined;
+    return [{
+      type: provider.authType === "oauth"
+        ? "oauth" as const
+        : provider.authType === "local"
+          ? "local" as const
+          : "api-key" as const,
+      provider: provider.id,
+      ...(source ? { source } : {}),
+      ...(path ? { path } : {}),
+      authenticated: true,
+      verified: true,
+    }];
+  });
+}
+
 function apiProviderLabel(provider: string): string {
   const labels: Record<string, string> = {
     anthropic: "Anthropic",
@@ -611,7 +648,7 @@ function apiProviderLabel(provider: string): string {
   return labels[provider] ?? provider;
 }
 
-function toCliRuntimeConnection(status: NonNullable<AiProviderConnections>[keyof AiProviderConnections]): AiRuntimeConnectionStatus {
+function toCliRuntimeConnection(status: NonNullable<NonNullable<AiProviderConnections>[keyof AiProviderConnections]>): AiRuntimeConnectionStatus {
   const source = status.sources.find((entry) => entry.detected && entry.kind === "local-credentials")?.source;
   return {
     provider: status.provider,
@@ -800,6 +837,7 @@ async function buildRuntimeConnections(args: {
     claude: toCliRuntimeConnection(args.providerConnections.claude),
     codex: toCliRuntimeConnection(args.providerConnections.codex),
     cursor: toCliRuntimeConnection(args.providerConnections.cursor),
+    ...(args.providerConnections.pi ? { pi: toCliRuntimeConnection(args.providerConnections.pi) } : {}),
   };
 
   for (const authEntry of args.auth) {
@@ -937,7 +975,8 @@ export function createAiIntegrationService(args: {
       && (args.providerConnections.claude.authAvailable
         || args.providerConnections.codex.authAvailable
         || args.providerConnections.cursor.authAvailable
-        || args.providerConnections.droid.authAvailable)
+        || args.providerConnections.droid.authAvailable
+        || Boolean(args.providerConnections.pi?.authAvailable))
     ) {
       return "subscription";
     }
@@ -1635,6 +1674,7 @@ export function createAiIntegrationService(args: {
     clearOpenCodeBinaryCache();
     clearOpenCodeInventoryCache();
     replaceDynamicOpenCodeModelDescriptors([]);
+    replaceDynamicPiModelDescriptors([]);
   };
 
   const executeReadOnlyOneShotTask = async (args: {
@@ -1749,11 +1789,17 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
+          const piInstallation = timeSyncPhase("resolve_pi_installation", () => resolvePiInstallation());
+          const piProfileInventory = await timePhase("pi_inventory", () => probePiProfileInventory(piInstallation));
+          replaceDynamicPiModelDescriptors(piModelDescriptorsFromInventory(piProfileInventory));
           // Keep AI status refresh non-interactive. Starting a throwaway Claude
           // Agent SDK runtime here can trigger Claude's OAuth/API-key bootstrap
           // in the browser, even though the user only asked to refresh status.
           // Real Claude chat sessions report runtime health when they start.
-          const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses));
+          const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses, {
+            piInstallation,
+            piInventory: piProfileInventory,
+          }));
           const configuredLocalProviders = timeSyncPhase(
             "read_local_provider_config",
             () => extractConfiguredLocalProviders(projectConfigService.get()),
@@ -1848,7 +1894,11 @@ export function createAiIntegrationService(args: {
             const baseAvailableIds = runtimeFilteredAvailable
               .map((descriptor) => descriptor.id)
               .filter((id) => !opencodeLocalModelIds.has(id));
-            return [...new Set([...baseAvailableIds, ...opencodeInventory.modelIds])];
+            return [...new Set([
+              ...baseAvailableIds,
+              ...opencodeInventory.modelIds,
+              ...piProfileInventory.availableModelIds,
+            ])];
           });
           const models = timeSyncPhase("build_model_lists", () => buildStatusModelLists(runtimeFilteredAvailable, availability));
 
@@ -1856,7 +1906,10 @@ export function createAiIntegrationService(args: {
             mode: timeSyncPhase("derive_mode", () => deriveMode({ snapshot: projectConfigService.get(), auth, providerConnections })),
             availableProviders: availability,
             models,
-            detectedAuth: timeSyncPhase("redact_auth", () => redactDetectedAuth(auth, cliStatuses)),
+            detectedAuth: timeSyncPhase("redact_auth", () => [
+              ...redactDetectedAuth(auth, cliStatuses),
+              ...redactPiDetectedAuth(piProfileInventory),
+            ]),
             providerConnections,
             runtimeConnections,
             availableModelIds: mergedAvailableIds,
@@ -1868,6 +1921,7 @@ export function createAiIntegrationService(args: {
             modelsDevLastFetchedAt: getModelsDevLastFetchedAt(),
             customProviders: effectiveConfig?.ai?.customProviders,
             customModelSlugs: effectiveConfig?.ai?.customModelSlugs,
+            piInstallation: piProfileInventory,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {

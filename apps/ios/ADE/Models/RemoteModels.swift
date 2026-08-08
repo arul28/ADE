@@ -837,6 +837,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var model: String
   var modelId: String?
   var sessionProfile: String?
+  /// Native Pi identity. Older hosts omit these additive fields; the iOS
+  /// picker also derives them from the canonical `pi/...` model id.
+  var piProfileId: String? = nil
+  var piProviderId: String? = nil
+  var piModelId: String? = nil
   var title: String?
   var goal: String?
   var reasoningEffort: String?
@@ -899,6 +904,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.model == rhs.model
       && lhs.modelId == rhs.modelId
       && lhs.sessionProfile == rhs.sessionProfile
+      && lhs.piProfileId == rhs.piProfileId
+      && lhs.piProviderId == rhs.piProviderId
+      && lhs.piModelId == rhs.piModelId
       && lhs.title == rhs.title
       && lhs.goal == rhs.goal
       && lhs.reasoningEffort == rhs.reasoningEffort
@@ -3429,6 +3437,9 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var maxThinkingTokens: Int?
   var modelId: String?
   var family: String?
+  var piProfileId: String? = nil
+  var piProviderId: String? = nil
+  var piModelId: String? = nil
   var supportsReasoning: Bool?
   var supportsTools: Bool?
   var color: String?
@@ -3474,6 +3485,9 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var providerId: String?
   var providerName: String?
   var stale: Bool?
+  var piProfileId: String? = nil
+  var piProviderId: String? = nil
+  var piModelId: String? = nil
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {

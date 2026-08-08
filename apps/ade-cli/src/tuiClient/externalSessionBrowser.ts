@@ -59,6 +59,7 @@ export const EXTERNAL_SESSION_PROVIDER_FILTERS = [
   "cursor",
   "droid",
   "opencode",
+  "pi",
 ] as const;
 
 export type ExternalSessionProviderFilter = (typeof EXTERNAL_SESSION_PROVIDER_FILTERS)[number];
@@ -69,6 +70,7 @@ const PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 export function externalSessionProviderLabel(provider: ExternalSessionProvider | "all"): string {

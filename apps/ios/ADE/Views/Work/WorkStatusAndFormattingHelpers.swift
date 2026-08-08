@@ -237,6 +237,8 @@ func defaultWorkChatTitle(provider: String) -> String {
   switch provider.lowercased() {
   case "codex":
     return "Codex chat"
+  case "pi":
+    return "Pi chat"
   case "opencode":
     return "OpenCode chat"
   case "cursor":
@@ -249,6 +251,7 @@ func defaultWorkChatTitle(provider: String) -> String {
 func toolTypeForProvider(_ provider: String) -> String {
   switch provider.lowercased() {
   case "codex": return "codex-chat"
+  case "pi": return "pi-chat"
   case "opencode": return "opencode-chat"
   case "cursor": return "cursor"
   default: return "claude-chat"
@@ -264,6 +267,7 @@ func providerLabel(_ provider: String) -> String {
   case "opencode": return "OpenCode"
   case "cursor": return "Cursor Composer"
   case "droid", "factory": return "Droid"
+  case "pi": return "Pi"
   case "google": return "Google"
   case "ollama": return "Ollama"
   case "lmstudio": return "LM Studio"
@@ -285,6 +289,7 @@ func shortProviderLabel(_ toolType: String?) -> String {
   }
   if raw.hasPrefix("claude") { return "Claude" }
   if raw.hasPrefix("codex") { return "Codex" }
+  if raw == "pi" || raw.hasPrefix("pi-") || raw.hasPrefix("pi/") { return "Pi" }
   if raw.hasPrefix("opencode") { return "OpenCode" }
   return raw.replacingOccurrences(of: "-", with: " ").capitalized
 }
@@ -311,6 +316,8 @@ func providerIcon(_ provider: String) -> String {
     return "sparkle"
   case "opencode":
     return "hammer.fill"
+  case "pi":
+    return "terminal.fill"
   case "cursor":
     return "cursorarrow"
   case "droid", "factory":
@@ -369,6 +376,8 @@ func workRailLogoProvider(for catalogGroupKey: String) -> String {
     return "droid"
   case "opencode":
     return "opencode"
+  case "pi":
+    return "pi"
   case "ollama":
     return "ollama"
   case "lmstudio":
@@ -448,6 +457,38 @@ func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: Strin
     return "opencode"
   }
 
+  // Pi is a runtime group, but its model rows retain the upstream provider
+  // brand from the canonical `pi/<profile>/<provider>/<model>` id. Keep the
+  // Pi rail distinct while still making OpenAI/Anthropic/Google models easy to
+  // recognize in the detailed row.
+  if group == "pi" || modelId.hasPrefix("pi/") {
+    let piProvider = model.piProviderId
+      ?? workPiModelMetadata(for: model.id)?.providerId
+    if let piProvider {
+      switch providerFamilyKey(piProvider) {
+      case "claude": return "claude"
+      case "codex": return "codex"
+      case "google": return "google"
+      default: break
+      }
+    }
+    let parts = modelId.split(separator: "/", omittingEmptySubsequences: true)
+    if parts.count >= 3 {
+      switch String(parts[2]) {
+      case "anthropic": return "claude"
+      case "openai", "openai-codex": return "codex"
+      case "google", "google-gemini-cli", "google-antigravity": return "google"
+      default: break
+      }
+    }
+    switch providerFamilyKey(model.provider) {
+    case "claude": return "claude"
+    case "codex": return "codex"
+    case "google": return "google"
+    default: return "pi"
+    }
+  }
+
   return model.provider
 }
 
@@ -460,6 +501,8 @@ func providerTint(_ provider: String?) -> Color {
     return .blue
   case "opencode":
     return .teal
+  case "pi":
+    return .orange
   case "cursor":
     return .indigo
   case "droid":
@@ -487,6 +530,12 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "openai" || raw.hasPrefix("codex") {
     return "codex"
   }
+  if raw == "openai-codex" {
+    return "codex"
+  }
+  if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") {
+    return "pi"
+  }
   if raw.hasPrefix("opencode") {
     return "opencode"
   }
@@ -497,6 +546,15 @@ func providerFamilyKey(_ provider: String) -> String {
     return "droid"
   }
   return raw
+}
+
+/// Collapse a free-form provider key to a chat-capable runtime family.
+/// Routed Pi models must stay on Pi rather than falling through to Claude.
+func workNormalizedChatProvider(_ provider: String) -> String {
+  let family = providerFamilyKey(provider)
+  return ["claude", "codex", "cursor", "opencode", "droid", "pi"].contains(family)
+    ? family
+    : "claude"
 }
 
 func sessionSymbol(_ session: TerminalSessionSummary, provider: String?) -> String {
@@ -677,6 +735,12 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
       WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
+  case "pi":
+    return [
+      WorkRuntimeModeOption(id: "default", title: "Read-only"),
+      WorkRuntimeModeOption(id: "edit", title: "Edit access"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
+    ]
   default:
     return []
   }
@@ -724,6 +788,13 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "agi": return "AGI"
     default: return "Auto low"
     }
+  case "pi":
+    switch mode {
+    case "edit": return "Edit access"
+    case "full-auto": return "Full access"
+    case "plan", "read-only", "default": return "Read-only"
+    default: return "Read-only"
+    }
   default:
     return mode.isEmpty ? "Access" : mode.capitalized
   }
@@ -766,6 +837,12 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     case "agi": return ADEColor.purpleAccent
     default: return ADEColor.success
     }
+  case "pi":
+    switch mode {
+    case "full-auto": return ADEColor.danger
+    case "edit": return ADEColor.warning
+    default: return ADEColor.success
+    }
   default:
     return workRuntimeModeTint(mode)
   }
@@ -788,6 +865,7 @@ func workRuntimeModeTint(_ mode: String) -> Color {
 func workDefaultRuntimeMode(provider: String) -> String {
   switch provider.lowercased() {
   case "claude", "codex": return "default"
+  case "pi": return "default"
   case "opencode": return "edit"
   case "cursor": return "default"
   case "droid", "factory": return "auto-low"
@@ -902,6 +980,20 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
     }
+  case "pi":
+    switch mode {
+    case "edit":
+      fields.permissionMode = "edit"
+    case "full-auto":
+      fields.permissionMode = "full-auto"
+    case "plan":
+      fields.permissionMode = "plan"
+    default:
+      // Pi's default SDK tool allowlist is read-only. Keep the generic
+      // permission field so older hosts can apply the same policy without a
+      // provider-specific iOS wire field.
+      fields.permissionMode = "default"
+    }
   default:
     break
   }
@@ -919,13 +1011,17 @@ func modelSupportsReasoning(modelId: String, provider: String) -> Bool {
   case "codex": return true
   case "claude":
     return lower.contains("opus") || lower.contains("sonnet")
+  case "pi":
+    // Pi exposes the complete thinking-level menu through its SDK/CLI runtime;
+    // the picker still limits the visible values to the host-advertised tiers.
+    return true
   default:
     return false
   }
 }
 
 func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
-  switch summary.provider {
+  switch providerFamilyKey(summary.provider) {
   case "claude":
     if summary.interactionMode == "plan" || summary.permissionMode == "plan" {
       return "plan"
@@ -968,6 +1064,12 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
       droidPermissionMode: summary.droidPermissionMode,
       permissionMode: summary.permissionMode
     ) ?? "auto-low"
+  case "pi":
+    switch summary.permissionMode {
+    case "edit": return "edit"
+    case "full-auto": return "full-auto"
+    default: return "default"
+    }
   default:
     return ""
   }

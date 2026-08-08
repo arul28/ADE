@@ -68,6 +68,15 @@ describe("classifyAgentCliError", () => {
     });
   });
 
+  it("recognizes Pi provider credential failures and keeps its native login command", () => {
+    expect(classifyAgentCliError("No API key found for openai", "pi")).toMatchObject({
+      agent: "pi",
+      displayName: "Pi",
+      category: "unauthenticated",
+      authCommand: "pi",
+    });
+  });
+
   it("provides Factory Droid install and interactive authentication recovery", () => {
     expect(classifyAgentCliError("spawn droid ENOENT")).toMatchObject({
       agent: "droid",
