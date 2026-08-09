@@ -184,6 +184,7 @@ export function piUiRequestToPendingInput(
       // option id, which is what Pi expects back.
       allowsFreeform: !hasOptions,
       ...(payload.kind === "secret" ? { isSecret: true } : {}),
+      ...(payload.defaultValue != null ? { defaultAssumption: payload.defaultValue } : {}),
     }],
     allowsFreeform: !hasOptions,
     blocking: true,

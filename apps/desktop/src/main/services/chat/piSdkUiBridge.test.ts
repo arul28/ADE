@@ -141,6 +141,16 @@ describe("extension UI context", () => {
     await expect(confirm).resolves.toBe(false);
   });
 
+  it("keeps an editor's document when the user dismisses the card", async () => {
+    const { bridge, requests } = harness();
+    const ui = createPiExtensionUiContext({ bridge });
+    const editing = (ui.editor as (t: string, p?: string) => Promise<string | undefined>)("Edit", "original text");
+    expect(requests()[0]!.payload.defaultValue).toBe("original text");
+    bridge.resolve(requests()[0]!.requestId, { ok: false });
+    // Cancelling an editor means "leave it as it was", not "discard it".
+    await expect(editing).resolves.toBe("original text");
+  });
+
   it("warns once per unsupported terminal-only API", () => {
     const { bridge, notices } = harness();
     const onUnsupported = vi.fn();

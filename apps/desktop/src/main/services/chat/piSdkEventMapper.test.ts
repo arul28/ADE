@@ -40,6 +40,13 @@ describe("piUiRequestToPendingInput", () => {
     expect(request.questions[0]!.options).toBeUndefined();
   });
 
+  it("carries an editor's starting text onto the card", () => {
+    // A Pi extension's `editor` prefill is the document being edited, so the
+    // card has to surface it rather than dropping it.
+    const request = piUiRequestToPendingInput("req-5", { ...freeform, defaultValue: "existing draft" }, null);
+    expect(request.questions[0]!.defaultAssumption).toBe("existing draft");
+  });
+
   it("marks a secret prompt so the answer is not echoed", () => {
     const request = piUiRequestToPendingInput("req-3", { ...freeform, kind: "secret" }, null);
     expect(request.questions[0]!.isSecret).toBe(true);

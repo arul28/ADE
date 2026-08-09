@@ -268,8 +268,20 @@ export function createPiExtensionUiContext(options: PiExtensionUiContextOptions)
       }, promptOptions(opts));
       return answer === null ? undefined : answer;
     },
-    editor(title: string, prefill?: string): Promise<string | undefined> {
-      return (context.input as (t: string, p?: string) => Promise<string | undefined>)(title, prefill);
+    async editor(title: string, prefill?: string, opts?: unknown): Promise<string | undefined> {
+      // An editor hands the user a document to change, so the prefill is its
+      // starting value — not a placeholder hint. Routing it through `input`
+      // dropped it, and a dismissed card then returned nothing, losing the very
+      // text the extension asked to have edited. Leaving it unchanged is what
+      // "cancel" means for an editor.
+      const answer = await bridge.request({
+        origin: "extension",
+        kind: "text",
+        title: trimmed(title) ?? "Pi extension",
+        message: trimmed(title) ?? "Edit this text.",
+        ...(prefill != null ? { defaultValue: prefill } : {}),
+      }, promptOptions(opts));
+      return answer ?? prefill;
     },
     notify(message: string, type?: string): void {
       const normalized = trimmed(message);

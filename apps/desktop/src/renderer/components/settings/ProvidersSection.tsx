@@ -540,6 +540,8 @@ function buildPiMessage(
 }
 
 type PiSignInFlow = {
+  /** Identifies this attempt, so a superseded start cannot tear down its replacement. */
+  attemptId: number;
   providerId: string;
   /** Kept so a failed flow can be retried with the button the user actually pressed. */
   method: PiLoginMethod | null;
@@ -659,6 +661,7 @@ function PiSignIn({
   /** Pi reports a cancel as a plain failure, so remember that the user asked for it. */
   const cancelledProviderRef = useRef<string | null>(null);
   const lastPromptRequestIdRef = useRef<string | null>(null);
+  const piSignInAttemptCounter = useRef(0);
   const promptFieldId = React.useId();
   const promptLabelId = `${promptFieldId}-label`;
   const { copy, copied } = useCopyToClipboard();
@@ -736,7 +739,8 @@ function PiSignIn({
     setOutcome(null);
     setPromptValue("");
     cancelledProviderRef.current = null;
-    setFlow({ providerId, method: method ?? null, prompt: null, link: null, progress: null });
+    const attemptId = ++piSignInAttemptCounter.current;
+    setFlow({ attemptId, providerId, method: method ?? null, prompt: null, link: null, progress: null });
     try {
       const result = await window.ade.ai.piLoginStart({ providerId, ...(method ? { method } : {}) });
       const cancelled = !result.ok && cancelledProviderRef.current === providerId;
@@ -761,7 +765,7 @@ function PiSignIn({
       // A second sign-in may already own these, so only this attempt's own
       // state is torn down here.
       if (cancelledProviderRef.current === providerId) cancelledProviderRef.current = null;
-      setFlow((current) => (current?.providerId === providerId ? null : current));
+      setFlow((current) => (current?.attemptId === attemptId ? null : current));
     }
   };
 
