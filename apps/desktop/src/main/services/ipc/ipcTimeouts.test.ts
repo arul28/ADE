@@ -16,6 +16,20 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 describe("ipcInvokeTimeoutMs", () => {
+  it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
+    // The flow blocks on a human finishing OAuth in a browser. At the 30s
+    // default the renderer reported failure while the daemon was still signing
+    // in, so in-app sign-in could never complete.
+    const flowBudgetMs = 10 * 60 * 1000;
+
+    expect(ipcInvokeTimeoutMs(IPC.aiPiLoginStart)).toBeGreaterThan(flowBudgetMs);
+    expect(longRunningLocalRuntimeActionTimeoutMs("ai.piLoginStart")).toBeGreaterThan(flowBudgetMs);
+    // The runtime-action route the preload actually prefers, local and remote.
+    const routed = [IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction].map((channel) =>
+      ipcInvokeTimeoutMs(channel, [{ request: { domain: "ai", action: "piLoginStart", args: { providerId: "anthropic" } } }]));
+    for (const timeoutMs of routed) expect(timeoutMs).toBeGreaterThan(flowBudgetMs);
+  });
+
   it("keeps local lane delete IPC alive through cold setup and the daemon action", () => {
     const innerTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("lane.delete")!;
     const outerTimeoutMs = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{

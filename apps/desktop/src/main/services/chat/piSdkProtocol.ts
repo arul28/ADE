@@ -5,7 +5,7 @@
  * the bridge even when the user has not installed Pi.
  */
 
-export const PI_SDK_PROTOCOL_VERSION = 1 as const;
+export const PI_SDK_PROTOCOL_VERSION = 2 as const;
 export const PI_SDK_MIN_NODE = "22.19.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -50,6 +50,20 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
   /** Restrict built-in tools when an integration needs a read-only session. */
   tools?: string[];
   noTools?: "all" | "builtin";
+  /**
+   * Load the user's Pi extensions and bind them to ADE's UI bridge. Off by
+   * default: extensions run arbitrary code, so ADE chat opts in explicitly and
+   * the Pi CLI stays the unrestricted escape hatch.
+   */
+  extensions?: boolean;
+  /** Expose ADE's `ask_user` tool so the model can ask a blocking question. */
+  askUserTool?: boolean;
+  /**
+   * Built-in tools that must clear an ADE approval card before each call.
+   * Empty means the `tools` allowlist is the only gate (the pre-approval
+   * behaviour).
+   */
+  approvalTools?: string[];
 };
 
 export type PiSdkImage = {
@@ -76,8 +90,80 @@ export type PiSdkCompactPayload = {
   customInstructions?: string | null;
 };
 
+/**
+ * Interactive surfaces the worker can drive from inside the Pi SDK.
+ *
+ * Pi hands ADE three different callback-shaped APIs — `AuthInteraction` during
+ * login, custom tool handlers, and an extension's UI context — that all need
+ * the same thing: ask the human something and block until they answer. One
+ * reverse-RPC channel serves all three so the desktop process has a single
+ * place to render cards and a single place to fail them closed.
+ */
+export type PiSdkUiOrigin = "auth" | "tool" | "extension" | "approval";
+/**
+ * `manual_code` is Pi's paste-the-code-from-your-browser step. It is a text
+ * field, but it is kept distinct so the card can say so — and because Pi races
+ * it against its OAuth callback server and aborts it when the callback wins.
+ */
+export type PiSdkUiPromptKind = "text" | "secret" | "select" | "confirm" | "manual_code";
+
+export type PiSdkUiOption = {
+  value: string;
+  label: string;
+  description?: string | null;
+};
+
+export type PiSdkUiRequestPayload = {
+  origin: PiSdkUiOrigin;
+  kind: PiSdkUiPromptKind;
+  /** Card heading. Falls back to a per-origin default in the desktop process. */
+  title?: string | null;
+  message: string;
+  placeholder?: string | null;
+  defaultValue?: string | null;
+  options?: PiSdkUiOption[];
+  /** Provider id, extension id, or tool name — shown so the user knows who is asking. */
+  sourceId?: string | null;
+  detail?: JsonValue;
+};
+
+export type PiSdkUiResponsePayload = {
+  /** False when the user dismissed, the turn was aborted, or the card timed out. */
+  ok: boolean;
+  value?: string | null;
+  error?: string | null;
+};
+
+export type PiSdkUiNoticePayload = {
+  origin: PiSdkUiOrigin;
+  level: "info" | "warn" | "error" | "progress";
+  message: string;
+  sourceId?: string | null;
+  /**
+   * Structured extras the desktop process renders specially — notably
+   * `{ url }` for an OAuth URL and `{ userCode, verificationUri }` for a
+   * device-code grant.
+   */
+  detail?: JsonValue;
+};
+
+export type PiSdkLoginPayload = {
+  providerId: string;
+  /** Provider-specific login method id (`oauth`, `api`, …). Omit for Pi's default. */
+  method?: string | null;
+};
+
+export type PiSdkExtensionInfo = {
+  id: string;
+  name?: string | null;
+  version?: string | null;
+};
+
 export type PiSdkWorkerRequest =
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "init"; requestId: string; payload: PiSdkWorkerInit }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "login"; requestId: string; payload: PiSdkLoginPayload }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "login_cancel"; requestId: string }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "ui_response"; requestId: string; payload: PiSdkUiResponsePayload }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "send"; requestId: string; payload: PiSdkPromptPayload }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "steer"; requestId: string; payload: { prompt: string; images?: PiSdkImage[] } }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "follow_up"; requestId: string; payload: { prompt: string; images?: PiSdkImage[] } }
@@ -99,6 +185,12 @@ export type PiSdkReady = {
   currentModel: JsonValue | null;
   thinkingLevel: string | null;
   availableModels: JsonValue[];
+  /** Extensions actually loaded into this session; empty when opted out. */
+  extensions?: PiSdkExtensionInfo[];
+  /** Why extensions could not be loaded, when the caller asked for them. */
+  extensionsError?: string | null;
+  /** Tools withheld because this Pi build cannot supply a gateable definition. */
+  ungateableTools?: string[];
 };
 
 export type PiSdkLifecycleName =
@@ -124,6 +216,10 @@ export type PiSdkWorkerResponse =
       detail?: JsonValue;
     }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "ready"; ready: PiSdkReady }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "ui_request"; requestId: string; payload: PiSdkUiRequestPayload }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "ui_notice"; payload: PiSdkUiNoticePayload }
+  /** The worker settled this request itself (extension timeout, abort, teardown). */
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "ui_cancel"; requestId: string }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "sdk_event"; event: JsonValue; requestId?: string }
   | {
       protocolVersion: typeof PI_SDK_PROTOCOL_VERSION;
@@ -163,6 +259,60 @@ function isJsonValue(value: unknown, depth = 0): value is JsonValue {
   if (Array.isArray(value)) return value.every((item) => isJsonValue(item, depth + 1));
   if (!isRecord(value)) return false;
   return Object.values(value).every((item) => isJsonValue(item, depth + 1));
+}
+
+const UI_ORIGINS: PiSdkUiOrigin[] = ["auth", "tool", "extension", "approval"];
+const UI_PROMPT_KINDS: PiSdkUiPromptKind[] = ["text", "secret", "select", "confirm", "manual_code"];
+
+function validateUiRequestPayload(payload: unknown): string | null {
+  if (!isRecord(payload)) return "Pi SDK ui_request payload must be an object.";
+  if (!UI_ORIGINS.includes(payload.origin as PiSdkUiOrigin)) return "Pi SDK ui_request origin is invalid.";
+  if (!UI_PROMPT_KINDS.includes(payload.kind as PiSdkUiPromptKind)) return "Pi SDK ui_request kind is invalid.";
+  if (typeof payload.message !== "string") return "Pi SDK ui_request message must be a string.";
+  for (const key of ["title", "placeholder", "defaultValue", "sourceId"] as const) {
+    if (payload[key] != null && typeof payload[key] !== "string") return `Pi SDK ui_request ${key} must be a string or null.`;
+  }
+  if (payload.options !== undefined) {
+    if (!Array.isArray(payload.options)) return "Pi SDK ui_request options must be an array.";
+    for (const option of payload.options) {
+      if (!isRecord(option) || typeof option.value !== "string" || typeof option.label !== "string") {
+        return "Pi SDK ui_request options must contain value and label strings.";
+      }
+      if (option.description != null && typeof option.description !== "string") {
+        return "Pi SDK ui_request option description must be a string or null.";
+      }
+    }
+  }
+  if (payload.detail !== undefined && !isJsonValue(payload.detail)) return "Pi SDK ui_request detail must be JSON-safe.";
+  return null;
+}
+
+/** Shared by the `ready` event and by every result that returns ready data. */
+function validateReadyShape(ready: Record<string, unknown>, label: string): string | null {
+  if (ready.protocolVersion !== PI_SDK_PROTOCOL_VERSION) return `Pi SDK ${label} has an invalid protocol version.`;
+  if (!nonEmptyString(ready.packageRoot) || !nonEmptyString(ready.packageEntry)) return `Pi SDK ${label} is missing package paths.`;
+  if (!("version" in ready) || (ready.version !== null && typeof ready.version !== "string")) return `Pi SDK ${label} version must be a string or null.`;
+  if (!("sessionFile" in ready) || (ready.sessionFile !== null && typeof ready.sessionFile !== "string")) return `Pi SDK ${label} sessionFile must be a string or null.`;
+  if (!("sessionId" in ready) || (ready.sessionId !== null && typeof ready.sessionId !== "string")) return `Pi SDK ${label} sessionId must be a string or null.`;
+  if (!("currentModel" in ready) || (ready.currentModel !== null && !isJsonValue(ready.currentModel))) return `Pi SDK ${label} currentModel must be JSON-safe.`;
+  if (!("thinkingLevel" in ready) || (ready.thinkingLevel !== null && typeof ready.thinkingLevel !== "string")) return `Pi SDK ${label} thinkingLevel must be a string or null.`;
+  if (!Array.isArray(ready.availableModels) || !ready.availableModels.every((model) => isJsonValue(model))) return `Pi SDK ${label} availableModels must be JSON-safe.`;
+  if (ready.extensions !== undefined && !isExtensionInfoList(ready.extensions)) return `Pi SDK ${label} extensions must be a list of {id}.`;
+  if (ready.extensionsError !== undefined && ready.extensionsError !== null && typeof ready.extensionsError !== "string") {
+    return `Pi SDK ${label} extensionsError must be a string or null.`;
+  }
+  if (ready.ungateableTools !== undefined
+    && (!Array.isArray(ready.ungateableTools) || !ready.ungateableTools.every((tool) => nonEmptyString(tool)))) {
+    return `Pi SDK ${label} ungateableTools must be an array of non-empty strings.`;
+  }
+  return null;
+}
+
+function isExtensionInfoList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => isRecord(item)
+    && nonEmptyString(item.id)
+    && (item.name == null || typeof item.name === "string")
+    && (item.version == null || typeof item.version === "string"));
 }
 
 function isPackageLocation(value: Record<string, unknown>): boolean {
@@ -210,6 +360,16 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
     if (payload.inventoryOnly != null && typeof payload.inventoryOnly !== "boolean") {
       return "Pi SDK inventoryOnly must be a boolean.";
     }
+    if (payload.extensions != null && typeof payload.extensions !== "boolean") {
+      return "Pi SDK extensions must be a boolean.";
+    }
+    if (payload.askUserTool != null && typeof payload.askUserTool !== "boolean") {
+      return "Pi SDK askUserTool must be a boolean.";
+    }
+    if (payload.approvalTools != null && (!Array.isArray(payload.approvalTools)
+      || payload.approvalTools.some((tool) => !nonEmptyString(tool)))) {
+      return "Pi SDK approvalTools must be an array of non-empty strings.";
+    }
     if (payload.session != null && !isSessionTarget(payload.session)) return "Pi SDK session target is invalid.";
     return null;
   }
@@ -227,10 +387,17 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
     if (!isRecord(payload) || !isModelRef(payload.modelRef)) return "Pi SDK set_model requires a valid modelRef.";
   } else if (type === "set_thinking") {
     if (!isRecord(payload) || !nonEmptyString(payload.thinkingLevel)) return "Pi SDK set_thinking requires a thinkingLevel.";
+  } else if (type === "login") {
+    if (!isRecord(payload) || !nonEmptyString(payload.providerId)) return "Pi SDK login requires a providerId.";
+    if (payload.method != null && !nonEmptyString(payload.method)) return "Pi SDK login method cannot be empty.";
+  } else if (type === "ui_response") {
+    if (!isRecord(payload) || typeof payload.ok !== "boolean") return "Pi SDK ui_response requires ok.";
+    if (payload.value != null && typeof payload.value !== "string") return "Pi SDK ui_response value must be a string or null.";
+    if (payload.error != null && typeof payload.error !== "string") return "Pi SDK ui_response error must be a string or null.";
   } else if (type === "compact" && payload != null && (!isRecord(payload)
     || (payload.customInstructions != null && typeof payload.customInstructions !== "string"))) {
     return "Pi SDK compact payload is invalid.";
-  } else if (!["init", "abort", "dispose", "models", "auth", "compact"].includes(type)) {
+  } else if (!["init", "abort", "dispose", "models", "auth", "compact", "login", "login_cancel", "ui_response"].includes(type)) {
     return `Unsupported Pi SDK worker request: ${String(type)}.`;
   }
   return null;
@@ -262,15 +429,26 @@ export function validatePiSdkWorkerResponse(raw: unknown): string | null {
 
   if (raw.type === "ready") {
     if (!isRecord(raw.ready)) return "Pi SDK ready response is missing ready data.";
-    const ready = raw.ready;
-    if (ready.protocolVersion !== PI_SDK_PROTOCOL_VERSION) return "Pi SDK ready response has an invalid protocol version.";
-    if (!nonEmptyString(ready.packageRoot) || !nonEmptyString(ready.packageEntry)) return "Pi SDK ready response is missing package paths.";
-    if (!("version" in ready) || (ready.version !== null && typeof ready.version !== "string")) return "Pi SDK ready version must be a string or null.";
-    if (!("sessionFile" in ready) || (ready.sessionFile !== null && typeof ready.sessionFile !== "string")) return "Pi SDK ready sessionFile must be a string or null.";
-    if (!("sessionId" in ready) || (ready.sessionId !== null && typeof ready.sessionId !== "string")) return "Pi SDK ready sessionId must be a string or null.";
-    if (!("currentModel" in ready) || (ready.currentModel !== null && !isJsonValue(ready.currentModel))) return "Pi SDK ready currentModel must be JSON-safe.";
-    if (!("thinkingLevel" in ready) || (ready.thinkingLevel !== null && typeof ready.thinkingLevel !== "string")) return "Pi SDK ready thinkingLevel must be a string or null.";
-    if (!Array.isArray(ready.availableModels) || !ready.availableModels.every((model) => isJsonValue(model))) return "Pi SDK ready availableModels must be JSON-safe.";
+    return validateReadyShape(raw.ready, "ready");
+  }
+
+  if (raw.type === "ui_request") {
+    if (!nonEmptyString(raw.requestId)) return "Pi SDK ui_request is missing requestId.";
+    return validateUiRequestPayload(raw.payload);
+  }
+
+  if (raw.type === "ui_cancel") {
+    return nonEmptyString(raw.requestId) ? null : "Pi SDK ui_cancel is missing requestId.";
+  }
+
+  if (raw.type === "ui_notice") {
+    const payload = raw.payload;
+    if (!isRecord(payload)) return "Pi SDK ui_notice payload must be an object.";
+    if (!UI_ORIGINS.includes(payload.origin as PiSdkUiOrigin)) return "Pi SDK ui_notice origin is invalid.";
+    if (!["info", "warn", "error", "progress"].includes(payload.level as string)) return "Pi SDK ui_notice level is invalid.";
+    if (typeof payload.message !== "string") return "Pi SDK ui_notice message must be a string.";
+    if (payload.sourceId != null && typeof payload.sourceId !== "string") return "Pi SDK ui_notice sourceId must be a string or null.";
+    if (payload.detail !== undefined && !isJsonValue(payload.detail)) return "Pi SDK ui_notice detail must be JSON-safe.";
     return null;
   }
 
@@ -320,14 +498,12 @@ export function validatePiSdkWorkerResult(
 ): string | null {
   if (type === "init" || type === "set_model" || type === "set_thinking") {
     if (!isRecord(result)) return `Pi SDK ${type} result must contain ready session data.`;
-    if (result.protocolVersion !== PI_SDK_PROTOCOL_VERSION) return `Pi SDK ${type} result has an invalid protocol version.`;
-    if (!nonEmptyString(result.packageRoot) || !nonEmptyString(result.packageEntry)) return `Pi SDK ${type} result is missing package paths.`;
-    if (!("version" in result) || (result.version !== null && typeof result.version !== "string")) return `Pi SDK ${type} version must be a string or null.`;
-    if (!("sessionFile" in result) || (result.sessionFile !== null && typeof result.sessionFile !== "string")) return `Pi SDK ${type} sessionFile must be a string or null.`;
-    if (!("sessionId" in result) || (result.sessionId !== null && typeof result.sessionId !== "string")) return `Pi SDK ${type} sessionId must be a string or null.`;
-    if (!("currentModel" in result) || (result.currentModel !== null && !isJsonValue(result.currentModel))) return `Pi SDK ${type} currentModel must be JSON-safe.`;
-    if (!("thinkingLevel" in result) || (result.thinkingLevel !== null && typeof result.thinkingLevel !== "string")) return `Pi SDK ${type} thinkingLevel must be a string or null.`;
-    if (!Array.isArray(result.availableModels) || !result.availableModels.every((model) => isJsonValue(model))) return `Pi SDK ${type} availableModels must be JSON-safe.`;
+    return validateReadyShape(result, `${type} result`);
+  }
+  if (type === "login") {
+    if (!isRecord(result)) return "Pi SDK login result must be an object.";
+    if (typeof result.ok !== "boolean") return "Pi SDK login result must report ok.";
+    if (result.providerId !== undefined && !nonEmptyString(result.providerId)) return "Pi SDK login result providerId must be a non-empty string.";
     return null;
   }
   if (type === "models") {

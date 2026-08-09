@@ -1381,10 +1381,22 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.title), ["Agent", "Plan", "Ask", "Full auto"])
     XCTAssertEqual(workRuntimeModeLabel(provider: "cursor", mode: "full-auto"), "Full auto")
     XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.id), ["default", "edit", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.title), ["Read-only", "Edit access", "Full access"])
-    XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "default"), "Read-only")
+    // Pi chats gate bash/edit/write behind an approval card, so `default` grants
+    // those tools (ask-first) and `plan` is the read-only tier. Labelling
+    // `default` "Read-only" told mobile users a mode that can run bash cannot
+    // touch the workspace.
+    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.id), ["plan", "default", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "pi").map(\.title), ["Read-only", "Ask first", "Edit access", "Full access"])
+    XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "default"), "Ask first")
+    XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "plan"), "Read-only")
     XCTAssertEqual(workRuntimeModeLabel(provider: "pi", mode: "full-auto"), "Full access")
+    XCTAssertEqual(workRuntimeWireFields(provider: "pi", mode: "plan").permissionMode, "plan")
+    XCTAssertEqual(workInitialRuntimeMode(makeAgentChatSessionSummary(
+      provider: "pi",
+      model: "pi/work/openai-codex/gpt-5.4",
+      status: "active",
+      permissionMode: "plan"
+    )), "plan")
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
     XCTAssertEqual(claudeAuto.permissionMode, "auto")
@@ -1423,10 +1435,10 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workDroidRuntimeMode(droidPermissionMode: "agi", permissionMode: "plan"), "agi")
     XCTAssertEqual(workDroidModeFromPermissionMode("edit"), "auto-low")
 
-    let piReadOnly = workRuntimeWireFields(provider: "pi", mode: "default")
-    XCTAssertEqual(piReadOnly.permissionMode, "default")
-    XCTAssertNil(piReadOnly.claudePermissionMode)
-    XCTAssertNil(piReadOnly.opencodePermissionMode)
+    let piAskFirst = workRuntimeWireFields(provider: "pi", mode: "default")
+    XCTAssertEqual(piAskFirst.permissionMode, "default")
+    XCTAssertNil(piAskFirst.claudePermissionMode)
+    XCTAssertNil(piAskFirst.opencodePermissionMode)
 
     let piEdit = workRuntimeWireFields(provider: "pi", mode: "edit")
     XCTAssertEqual(piEdit.permissionMode, "edit")
@@ -23261,6 +23273,198 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(model.questions[1].header, "Help type")
     XCTAssertEqual(model.questions[1].options.count, 4)
     XCTAssertEqual(model.questions[1].options.map(\.value), ["fix_bug", "review", "add_feature", "explore"])
+  }
+
+  /// Pi gates `bash`/`edit`/`write` behind an approval card whose payload is
+  /// `kind: "approval"` with a single option-less question. Claiming it for the
+  /// question card would swap accept / accept-for-session / decline for a text
+  /// field whose every submission goes out as `decision: accept` — an allow the
+  /// user never chose for a command they may have been declining in prose.
+  func testPiToolApprovalRendersAsApprovalCardNotFreeformQuestion() {
+    let detail = """
+    {
+      "request": {
+        "requestId": "pi-gate-1",
+        "itemId": "pi-gate-1",
+        "source": "pi",
+        "kind": "approval",
+        "title": "Run bash?",
+        "description": "rm -rf build",
+        "questions": [
+          {"id": "answer", "header": "Run bash?", "question": "rm -rf build", "allowsFreeform": true}
+        ],
+        "allowsFreeform": true,
+        "blocking": true,
+        "canProceedWithoutAnswer": false
+      }
+    }
+    """
+    XCTAssertNil(
+      pendingWorkQuestionFromApproval(description: "rm -rf build", detail: detail, itemId: "pi-gate-1"),
+      "A Pi tool gate offers nothing to pick, so it must not be claimed by the question card."
+    )
+
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-pi",
+        timestamp: "2026-08-09T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "rm -rf build", detail: detail, itemId: "pi-gate-1", turnId: "turn-1")
+      ),
+    ]
+    guard case .approval(let model) = derivePendingWorkInputs(from: transcript).first else {
+      return XCTFail("Expected the Pi tool gate to surface as an approval card.")
+    }
+    XCTAssertEqual(model.id, "pi-gate-1")
+    XCTAssertEqual(model.description, "rm -rf build")
+    // The card header says which tool is asking; the description alone cannot
+    // tell an `edit` gate from a `write` gate on the same path.
+    XCTAssertEqual(model.title, "Run bash?")
+    XCTAssertEqual(workPendingInputCollapsedSummary(.approval(model)), "Run bash?")
+    XCTAssertEqual(workApprovalCardHeadline(model, fallbackProvider: "pi"), "Pi · Run bash?")
+    // Providers that name no ask (Codex file-change gates, OpenCode permissions)
+    // keep the generic header.
+    XCTAssertEqual(
+      workApprovalCardHeadline(
+        WorkPendingApprovalModel(id: "x", description: "Approve file changes", detail: nil),
+        fallbackProvider: "codex"
+      ),
+      "Codex · Approval"
+    )
+  }
+
+  /// Guards the other half of the same rule: Claude ships its approvals with
+  /// Allow / Allow for Session / Deny as real options, and those must keep
+  /// rendering as a question card — that card is where the controls come from.
+  func testClaudeToolApprovalWithOptionsStaysAQuestionCard() {
+    let detail = """
+    {
+      "request": {
+        "requestId": "claude-gate-1",
+        "source": "claude",
+        "kind": "approval",
+        "title": "Allow Bash?",
+        "description": "npm test",
+        "questions": [
+          {
+            "id": "tool_decision",
+            "header": "Bash",
+            "question": "npm test",
+            "allowsFreeform": true,
+            "options": [
+              {"label": "Allow", "value": "allow", "recommended": true},
+              {"label": "Allow for Session", "value": "allow_session"},
+              {"label": "Deny", "value": "deny"}
+            ]
+          }
+        ]
+      }
+    }
+    """
+    guard let model = pendingWorkQuestionFromApproval(
+      description: "npm test",
+      detail: detail,
+      itemId: "claude-gate-1"
+    ) else {
+      return XCTFail("Claude approvals carry selectable options and must stay question cards.")
+    }
+    XCTAssertEqual(model.questionId, "tool_decision")
+    XCTAssertEqual(model.options.map(\.value), ["allow", "allow_session", "deny"])
+    XCTAssertEqual(model.source, "claude")
+  }
+
+  /// Pi emits BOTH halves of one ask: the SDK's `tool_execution_start` becomes a
+  /// `tool_call` keyed by the tool-call id, while its UI bridge registers the
+  /// gate under a fresh request id and emits the `approval_request`. Only the
+  /// second is answerable — a reply against the tool-call id has no gate to
+  /// resolve and is discarded — and the raw one sorts first, so without this
+  /// dedupe the user is handed the dead card and told "Request 1 of 2".
+  func testPiAskUserDoesNotRenderTwiceFromItsRawToolCall() {
+    let argsText = """
+    {"question":"Which lane first?","header":"Lane","options":[{"label":"Mobile"},{"label":"Desktop"}]}
+    """
+    let approvalDetail = """
+    {
+      "request": {
+        "requestId": "pi-req-1",
+        "itemId": "pi-req-1",
+        "source": "pi",
+        "kind": "structured_question",
+        "title": "Lane",
+        "description": "Which lane first?",
+        "providerMetadata": { "pi": true, "origin": "tool", "sourceId": "ask_user" },
+        "questions": [
+          {
+            "id": "answer",
+            "header": "Lane",
+            "question": "Which lane first?",
+            "allowsFreeform": false,
+            "options": [{"label": "Mobile", "value": "0"}, {"label": "Desktop", "value": "1"}]
+          }
+        ]
+      }
+    }
+    """
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-pi",
+        timestamp: "2026-08-09T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "ask_user", argsText: argsText, itemId: "pi-tool-1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-pi",
+        timestamp: "2026-08-09T00:00:02.000Z",
+        sequence: 2,
+        event: .approvalRequest(description: "Which lane first?", detail: approvalDetail, itemId: "pi-req-1", turnId: "turn-1")
+      ),
+    ]
+
+    let inputs = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(
+      inputs.map(\.itemId),
+      ["pi-req-1"],
+      "The answerable bridge-registered gate must be the only card; the raw tool call is a duplicate of it."
+    )
+    guard case .question(let model)? = inputs.first else {
+      return XCTFail("Expected the surviving card to be the structured question.")
+    }
+    XCTAssertEqual(model.options.map(\.value), ["0", "1"])
+  }
+
+  /// Pi's `ask_user` tool and its extension prompts are real questions and must
+  /// keep the question card, source tint included.
+  func testPiAskUserQuestionStaysAQuestionCard() {
+    let detail = """
+    {
+      "request": {
+        "requestId": "pi-ask-1",
+        "source": "pi",
+        "kind": "structured_question",
+        "title": "Pick a target",
+        "questions": [
+          {
+            "id": "answer",
+            "question": "Which platform first?",
+            "allowsFreeform": false,
+            "options": [{"label": "iOS", "value": "ios"}, {"label": "Web", "value": "web"}]
+          }
+        ]
+      }
+    }
+    """
+    guard let model = pendingWorkQuestionFromApproval(
+      description: "Which platform first?",
+      detail: detail,
+      itemId: "pi-ask-1"
+    ) else {
+      return XCTFail("Expected a Pi structured question to stay a question card.")
+    }
+    XCTAssertEqual(model.source, "pi")
+    // Pi keys its answer by the question id, so it must survive parsing.
+    XCTAssertEqual(model.questionId, "answer")
+    XCTAssertEqual(model.options.map(\.value), ["ios", "web"])
+    XCTAssertEqual(workChatSurfaceProviderName(model.source), "Pi")
   }
 
   func testPendingWorkQuestionFromAskUserToolCallPreservesAllQuestions() {

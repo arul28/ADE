@@ -351,7 +351,17 @@ Browser `window.ade` adapter:
   the runtime's cached cross-client aggregate instead of an empty native stub.
   Where the host registers no descriptor for a settings write, `misc.ts` fails
   loudly rather than echoing a snapshot back: a fallback there would render
-  "Saved" over a write that never happened. Its `cto.*` namespace is wired
+  "Saved" over a write that never happened. Provider sign-in status is the one
+  push channel the web sync protocol cannot carry, so `misc.ts` synthesizes it:
+  both OpenCode OAuth (`opencodeOAuthStatus`) and Pi sign-in (`piAuthStatus`)
+  land in the shared runtime event buffer, which the adapter drains
+  non-destructively through `personalChats.streamEvents` and re-emits onto the
+  adapter bus. The drain is scoped to active flows only — entries are keyed
+  `${kind}:${providerId}` so both flows can run at once, and each kind declares
+  its own terminal states (`connected`/`failed`/`cancelled`/`timeout` for
+  OpenCode, `success`/`error` for Pi) — so there is no perpetual background
+  poll. Pi sign-in has no honest offline fallback shape, so it reports
+  unavailable rather than fabricating a result. Its `cto.*` namespace is wired
   method by method on purpose — the host registers every `cto.*` action as
   viewer-allowed, so completing the namespace mechanically would hand any
   connected browser write access to the Linear credential store; only reads and

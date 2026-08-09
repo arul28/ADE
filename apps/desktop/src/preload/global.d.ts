@@ -239,6 +239,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  PiAuthStatusEvent,
+  PiLoginMethod,
+  PiLoginProvider,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -1025,6 +1028,18 @@ declare global {
         }) => Promise<{ ok: boolean; error?: string }>;
         refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
         onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => () => void;
+        piLoginProviders: () => Promise<PiLoginProvider[]>;
+        piLoginStart: (args: {
+          providerId: string;
+          method?: PiLoginMethod;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        piLoginSubmit: (args: {
+          providerId: string;
+          requestId: string;
+          value: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        piLoginCancel: (args: { providerId: string }) => Promise<void>;
+        onPiAuthStatus: (cb: (event: PiAuthStatusEvent) => void) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;

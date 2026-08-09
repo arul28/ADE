@@ -13,6 +13,10 @@ import type {
 import type {
   AiCustomProviderConfig,
   OpenCodeProviderAuthMethods,
+  PiAuthNotice,
+  PiAuthPrompt,
+  PiLoginMethod,
+  PiLoginProvider,
 } from "../../../shared/types/config";
 import {
   getLocalModelIdTail,
@@ -533,6 +537,502 @@ function buildPiMessage(
     return "Pi is not installed for this user yet. Install @earendil-works/pi-coding-agent, then use Refresh. Pi keeps its own credentials and profile.";
   }
   return "Pi is installed, but no configured providers or available models were detected yet.";
+}
+
+type PiSignInFlow = {
+  /** Identifies this attempt, so a superseded start cannot tear down its replacement. */
+  attemptId: number;
+  providerId: string;
+  /** Kept so a failed flow can be retried with the button the user actually pressed. */
+  method: PiLoginMethod | null;
+  prompt: PiAuthPrompt | null;
+  /** Sticky auth URL / device code the user still has to act on. */
+  link: PiAuthNotice | null;
+  progress: string | null;
+};
+
+/** Cancelling is a choice, not a failure, so it gets its own state instead of an error. */
+type PiSignInOutcome = {
+  providerId: string;
+  method: PiLoginMethod | null;
+  state: "ok" | "cancelled" | "error";
+  error?: string;
+};
+
+/** One provider row: what Pi already has configured, what can be signed into, or both. */
+type PiProviderRow = {
+  id: string;
+  name: string;
+  status: AiPiProviderStatus | null;
+  login: PiLoginProvider | null;
+};
+
+function piLoginMethodLabel(provider: PiLoginProvider, method: PiLoginMethod): string {
+  if (method === "api_key") return "Use an API key";
+  return provider.loginLabel ?? (provider.isSubscription ? "Sign in with your subscription" : "Sign in");
+}
+
+/** Pi only sends options for select prompts; every other kind takes free text. */
+function piChoiceOptions(prompt: PiAuthPrompt | null | undefined): NonNullable<PiAuthPrompt["options"]> {
+  return prompt?.options ?? [];
+}
+
+/** Merges both provider sources by id so a signable, configured provider is one row, not two. */
+function buildPiProviderRows(configured: AiPiProviderStatus[], signable: PiLoginProvider[]): PiProviderRow[] {
+  const rows = new Map<string, PiProviderRow>();
+  for (const status of configured) {
+    rows.set(status.id, { id: status.id, name: status.name, status, login: null });
+  }
+  for (const login of signable) {
+    const existing = rows.get(login.id);
+    if (existing) existing.login = login;
+    else rows.set(login.id, { id: login.id, name: login.name, status: null, login });
+  }
+  return [...rows.values()];
+}
+
+/** Shared shell so a provider looks the same whether it is connected, signable, or both. */
+function PiProviderTile({ provider, children }: { provider: PiProviderRow; children: React.ReactNode }) {
+  const connected = provider.status?.configured ?? provider.login?.configured ?? false;
+  const noModels = connected && provider.status != null && provider.status.availableModelCount === 0;
+  return (
+    <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 10, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <ProviderLogo family={provider.id} size={18} />
+          <span style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {provider.name}
+          </span>
+        </div>
+        {noModels ? (
+          <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.warning, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            No models
+          </span>
+        ) : connected ? <ConnectedTag /> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Pi's own terminal flow, offered next to the in-app one rather than behind a reveal. */
+function PiTerminalFallback({
+  installation,
+  onRevealTerminal,
+}: {
+  installation: AiPiInstallationStatus;
+  onRevealTerminal: (terminal: { terminalId: string; laneId: string }) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {installation.cliAvailable ? (
+        <PiLoginPromptButton visible onRevealTerminal={onRevealTerminal} />
+      ) : (
+        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+          Install Pi to sign in from its terminal.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Runs Pi's own sign-in inside ADE: pick a provider, then answer whatever Pi
+ * asks. Pi writes the credential itself — nothing typed here is kept by ADE.
+ */
+function PiSignIn({
+  installation,
+  onSignedIn,
+  onRevealTerminal,
+}: {
+  installation: AiPiInstallationStatus;
+  onSignedIn: () => void;
+  onRevealTerminal: (terminal: { terminalId: string; laneId: string }) => void;
+}) {
+  const [providers, setProviders] = useState<PiLoginProvider[] | null>(null);
+  const [providersError, setProvidersError] = useState<string | null>(null);
+  const [loadingProviders, setLoadingProviders] = useState(false);
+  const [flow, setFlow] = useState<PiSignInFlow | null>(null);
+  const [promptValue, setPromptValue] = useState("");
+  const [outcome, setOutcome] = useState<PiSignInOutcome | null>(null);
+  const promptInputRef = useRef<HTMLInputElement | null>(null);
+  const firstChoiceRef = useRef<HTMLButtonElement | null>(null);
+  const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+  /** Pi reports a cancel as a plain failure, so remember that the user asked for it. */
+  const cancelledProviderRef = useRef<string | null>(null);
+  const lastPromptRequestIdRef = useRef<string | null>(null);
+  const piSignInAttemptCounter = useRef(0);
+  const promptFieldId = React.useId();
+  const promptLabelId = `${promptFieldId}-label`;
+  const { copy, copied } = useCopyToClipboard();
+
+  const loadProviders = useCallback(async () => {
+    setLoadingProviders(true);
+    try {
+      const listed = await window.ade.ai.piLoginProviders();
+      setProviders(listed);
+      setProvidersError(null);
+    } catch (err) {
+      setProvidersError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingProviders(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!installation.sdkAvailable) return;
+    void loadProviders();
+  }, [installation.sdkAvailable, loadProviders]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.ai.onPiAuthStatus((event) => {
+      setFlow((current) => {
+        if (!current || current.providerId !== event.providerId) return current;
+        if (event.state === "prompt" && event.prompt) return { ...current, prompt: event.prompt };
+        if (event.state !== "pending" || !event.notice) return current;
+        // A URL or device code is the step the user has to act on, so it stays
+        // on screen; plain progress lines replace each other.
+        return event.notice.url || event.notice.userCode
+          ? { ...current, link: event.notice, progress: null }
+          : { ...current, progress: event.notice.message };
+      });
+      // A local runtime delivers each status twice (direct IPC broadcast plus
+      // the buffered relay), and the second copy can land after the user has
+      // started typing. Only a genuinely new prompt clears the field, or the
+      // duplicate would erase a half-entered API key.
+      if (event.state === "prompt" && event.prompt) {
+        setPromptValue((current) => (lastPromptRequestIdRef.current === event.prompt!.requestId ? current : ""));
+        lastPromptRequestIdRef.current = event.prompt.requestId;
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Leaving Settings mid-sign-in would otherwise strand the flow: the worker
+  // keeps waiting for an answer for its full budget, and reopening Settings
+  // cannot adopt it because status events are ignored without a current flow.
+  const activeFlowProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFlowProviderRef.current = flow?.providerId ?? null;
+  }, [flow?.providerId]);
+  useEffect(() => () => {
+    const providerId = activeFlowProviderRef.current;
+    if (providerId) void window.ade.ai.piLoginCancel({ providerId }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!flow?.prompt) return;
+    // A choice prompt unmounts whatever held focus, so hand focus to the first
+    // option rather than letting it fall back to the document.
+    if (piChoiceOptions(flow.prompt).length) firstChoiceRef.current?.focus();
+    else promptInputRef.current?.focus();
+  }, [flow?.prompt]);
+
+  useEffect(() => {
+    // Settling unmounts the flow card, which is where focus was; without this a
+    // keyboard user lands back on the document body instead of the one control
+    // that can recover the failed attempt.
+    if (outcome?.state === "error") retryButtonRef.current?.focus();
+  }, [outcome]);
+
+  const start = async (providerId: string, method?: PiLoginMethod) => {
+    setOutcome(null);
+    setPromptValue("");
+    cancelledProviderRef.current = null;
+    const attemptId = ++piSignInAttemptCounter.current;
+    setFlow({ attemptId, providerId, method: method ?? null, prompt: null, link: null, progress: null });
+    // Every update below runs after an await, by which time "Try again" may have
+    // started a replacement. A superseded attempt must not report its own
+    // outcome or refresh providers on the newer one's behalf.
+    const isCurrentAttempt = () => piSignInAttemptCounter.current === attemptId;
+    try {
+      const result = await window.ade.ai.piLoginStart({ providerId, ...(method ? { method } : {}) });
+      if (!isCurrentAttempt()) return;
+      const cancelled = !result.ok && cancelledProviderRef.current === providerId;
+      setOutcome({
+        providerId,
+        method: method ?? null,
+        state: result.ok ? "ok" : cancelled ? "cancelled" : "error",
+        ...(result.ok || cancelled || !result.error ? {} : { error: result.error }),
+      });
+      if (result.ok) {
+        onSignedIn();
+        void loadProviders();
+      }
+    } catch (err) {
+      if (!isCurrentAttempt()) return;
+      setOutcome({
+        providerId,
+        method: method ?? null,
+        state: "error",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      // A second sign-in may already own these, so only this attempt's own
+      // state is torn down here.
+      if (cancelledProviderRef.current === providerId) cancelledProviderRef.current = null;
+      setFlow((current) => (current?.attemptId === attemptId ? null : current));
+    }
+  };
+
+  const answer = async (value: string) => {
+    const prompt = flow?.prompt;
+    if (!flow || !prompt) return;
+    setFlow((current) => (current ? { ...current, prompt: null } : current));
+    setPromptValue("");
+    const fail = (error: string) =>
+      setOutcome({ providerId: flow.providerId, method: flow.method, state: "error", error });
+    try {
+      // A rejected answer comes back as ok:false rather than a throw, and the
+      // prompt is already gone — without this the user waits out Pi's login
+      // timeout with nothing on screen.
+      const result = await window.ade.ai.piLoginSubmit({
+        providerId: flow.providerId,
+        requestId: prompt.requestId,
+        value,
+      });
+      if (!result.ok) fail(result.error ?? "Pi did not accept that answer.");
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const cancel = () => {
+    if (!flow) return;
+    cancelledProviderRef.current = flow.providerId;
+    void window.ade.ai.piLoginCancel({ providerId: flow.providerId }).catch(() => undefined);
+  };
+
+  const signableProviders = providers ?? [];
+  const providerName = (providerId: string) =>
+    signableProviders.find((provider) => provider.id === providerId)?.name
+    ?? installation.providers.find((provider) => provider.id === providerId)?.name
+    ?? providerId;
+  const providerRows = buildPiProviderRows(
+    installation.providers.filter((provider) => provider.configured),
+    signableProviders,
+  );
+  const prompt = flow?.prompt ?? null;
+  const choiceOptions = piChoiceOptions(prompt);
+  const link = flow?.link ?? null;
+  const userCode = link?.userCode ?? null;
+  const verifyUrl = link?.url ?? link?.verificationUri ?? null;
+
+  if (!installation.sdkAvailable) {
+    return (
+      // The card's own message already states the blocker, so this branch only
+      // has to offer the way out.
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Sign in</div>
+        <PiTerminalFallback installation={installation} onRevealTerminal={onRevealTerminal} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Providers</div>
+        <button type="button" style={outlineButton({ height: 26 })} disabled={loadingProviders} onClick={() => void loadProviders()}>
+          {loadingProviders ? "Loading…" : "Refresh providers"}
+        </button>
+      </div>
+
+      {providersError ? (
+        <div role="alert" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger }}>
+          Could not list Pi providers: {providersError}
+        </div>
+      ) : null}
+
+      {flow ? (
+        <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
+            Signing in to {providerName(flow.providerId)}
+          </div>
+          <div role="status" aria-live="polite" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            {flow.progress ?? "Waiting for Pi…"}
+          </div>
+
+          {userCode ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Code</span>
+              <code style={{ fontSize: 16, fontFamily: MONO_FONT, letterSpacing: "2px", color: COLORS.textPrimary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "4px 10px" }}>
+                {userCode}
+              </code>
+              <button type="button" style={outlineButton({ height: 26 })} onClick={() => void copy(userCode)}>
+                {copied ? "Copied" : "Copy code"}
+              </button>
+            </div>
+          ) : null}
+
+          {verifyUrl ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <code style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, overflowWrap: "anywhere", wordBreak: "break-all", minWidth: 0 }}>
+                {verifyUrl}
+              </code>
+              <button type="button" style={outlineButton({ height: 26 })} onClick={() => openExternalUrl(verifyUrl)}>
+                Open
+              </button>
+            </div>
+          ) : null}
+
+          {prompt ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {/* A label may only point at a form control, so the choice
+                  branch names its button group instead of borrowing htmlFor. */}
+              <label
+                id={promptLabelId}
+                {...(choiceOptions.length ? {} : { htmlFor: promptFieldId })}
+                style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: 1.5 }}
+              >
+                {prompt.message}
+              </label>
+              {choiceOptions.length ? (
+                <div role="group" aria-labelledby={promptLabelId} style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {choiceOptions.map((option, index) => (
+                    <button
+                      key={option.value}
+                      ref={index === 0 ? firstChoiceRef : undefined}
+                      type="button"
+                      style={outlineButton({ height: "auto", minHeight: 28, padding: "6px 10px", flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: 2, textAlign: "left" })}
+                      onClick={() => void answer(option.value)}
+                    >
+                      <span>{option.label}</span>
+                      {option.description ? (
+                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 400, color: COLORS.textDim }}>
+                          {option.description}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <form
+                  style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void answer(promptValue);
+                  }}
+                >
+                  <input
+                    id={promptFieldId}
+                    ref={promptInputRef}
+                    type={prompt.kind === "secret" ? "password" : "text"}
+                    value={promptValue}
+                    placeholder={prompt.placeholder}
+                    autoComplete="off"
+                    onChange={(event) => setPromptValue(event.target.value)}
+                    style={{ flex: "1 1 220px", minWidth: 0, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
+                  />
+                  <button type="submit" style={primaryButton({ height: 28 })} disabled={!promptValue.trim()}>
+                    Continue
+                  </button>
+                </form>
+              )}
+            </div>
+          ) : null}
+
+          <div>
+            <button type="button" style={outlineButton({ height: 26 })} onClick={cancel}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* The live region stays mounted across settles: a status/alert node
+          inserted at the same instant its text appears is announced
+          unreliably. Empty, it leaves the flow so it adds no column gap. The
+          role alone carries urgency — an explicit aria-live would demote an
+          alert back to polite. */}
+      <div
+        role={outcome?.state === "error" ? "alert" : "status"}
+        style={
+          outcome
+            ? {
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                fontSize: 10,
+                fontFamily: MONO_FONT,
+                lineHeight: 1.5,
+                color: outcome.state === "ok" ? COLORS.success : outcome.state === "cancelled" ? COLORS.textMuted : COLORS.danger,
+              }
+            : { position: "absolute", width: 0, height: 0, overflow: "hidden" }
+        }
+      >
+        {outcome ? (
+          <span>
+            {outcome.state === "ok"
+              ? `Signed in to ${providerName(outcome.providerId)}.`
+              : outcome.state === "cancelled"
+                ? "Sign-in cancelled."
+                : `${providerName(outcome.providerId)}: ${outcome.error ?? "Sign-in did not finish."}`}
+          </span>
+        ) : null}
+        {outcome?.state === "error" ? (
+          <button
+            ref={retryButtonRef}
+            type="button"
+            style={outlineButton({ height: 24, fontSize: 11 })}
+            onClick={() => void start(outcome.providerId, outcome.method ?? undefined)}
+          >
+            Try again
+          </button>
+        ) : null}
+      </div>
+
+      {/* Starting a second sign-in cancels the first, so the list steps aside
+          while one is running. */}
+      {!flow && providerRows.length ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 8 }}>
+          {providerRows.map((row) => {
+            const { status, login } = row;
+            const modelCount = status ? status.availableModelCount || status.modelCount : 0;
+            return (
+              <PiProviderTile key={row.id} provider={row}>
+                {status ? (
+                  <>
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      {modelCount} model{modelCount === 1 ? "" : "s"}
+                      {status.availableModelCount > 0 && status.modelCount > status.availableModelCount ? ` · ${status.modelCount} known` : ""}
+                    </div>
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                      {piProviderAuthSummary(status)}{status.authLabel ? ` · ${status.authLabel}` : ""}
+                    </div>
+                  </>
+                ) : null}
+                {login ? (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {login.authTypes.map((method) => (
+                      <button
+                        key={method}
+                        type="button"
+                        style={method === "oauth" ? primaryButton({ height: 28 }) : outlineButton({ height: 28 })}
+                        aria-label={`${piLoginMethodLabel(login, method)} — ${row.name}`}
+                        onClick={() => void start(row.id, method)}
+                      >
+                        {piLoginMethodLabel(login, method)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </PiProviderTile>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {!flow && providers !== null && !signableProviders.length && !providersError ? (
+        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+          {providerRows.length
+            ? "These read their keys from the environment — there is nothing to sign in to here."
+            : "No providers are set up in Pi yet."}
+        </div>
+      ) : null}
+
+      <PiTerminalFallback installation={installation} onRevealTerminal={onRevealTerminal} />
+    </div>
+  );
 }
 
 function piProviderAuthSummary(provider: AiPiProviderStatus): string {
@@ -1361,7 +1861,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             : isInitialCheckInFlight
             ? "Checking Pi installation and provider inventory."
             : buildPiMessage(piConnection, piInstallation);
-          const configuredProviders = piInstallation?.providers.filter((provider) => provider.configured) ?? [];
           return (
             <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -1397,55 +1896,18 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               ) : null}
               {piConnection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{piConnection.path}</code> : null}
 
-              {configuredProviders.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                    Configured providers
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8 }}>
-                    {configuredProviders.map((provider) => (
-                      <div key={provider.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 10, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                            <ProviderLogo family={provider.id} size={18} />
-                            <span style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {provider.name}
-                            </span>
-                          </div>
-                          {provider.availableModelCount > 0 ? (
-                            <ConnectedTag />
-                          ) : (
-                            <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.warning, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                              No models
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                          {provider.availableModelCount || provider.modelCount} model{(provider.availableModelCount || provider.modelCount) === 1 ? "" : "s"}
-                          {provider.availableModelCount > 0 && provider.modelCount > provider.availableModelCount ? ` · ${provider.modelCount} known` : ""}
-                        </div>
-                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                          {piProviderAuthSummary(provider)}{provider.authLabel ? ` · ${provider.authLabel}` : ""}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+              {piInstallation ? (
+                <PiSignIn
+                  installation={piInstallation}
+                  onSignedIn={() => void refreshStatus({ force: true })}
+                  onRevealTerminal={(terminal) => revealTerminalSessionInWork(navigate, terminal)}
+                />
               ) : null}
 
               {piInstallation ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
-                  <PiLoginPromptButton
-                    visible={piInstallation.cliAvailable}
-                    onRevealTerminal={(terminal) => revealTerminalSessionInWork(navigate, terminal)}
-                  />
-                  {!piInstallation.cliAvailable ? (
-                    <>
-                      <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning }}>
-                        Install the Pi CLI to use Pi’s native /login flow.
-                      </span>
-                      <button type="button" style={outlineButton({ height: 28 })} onClick={() => openExternalUrl("https://github.com/earendil-works/pi")}>Pi docs</button>
-                    </>
+                  {!piInstallation.sdkAvailable ? (
+                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => openExternalUrl("https://github.com/earendil-works/pi")}>Pi docs</button>
                   ) : null}
                   {piInstallation.settingsFileDetected ? (
                     <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.settingsPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>

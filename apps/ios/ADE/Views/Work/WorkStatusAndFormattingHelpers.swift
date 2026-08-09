@@ -735,9 +735,15 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
       WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
+  // Pi chats gate bash/edit/write behind an approval card, so `default` is the
+  // ask-first tier and `plan` is the read-only one — the same split desktop's
+  // `piSdkToolPolicyForPermissionMode` applies. A Pi CLI terminal launched with
+  // either mode stays read-only (`piToolsForPermissionMode` has no gate to
+  // offer), so the labels never promise a CLI session more than it can do.
   case "pi":
     return [
-      WorkRuntimeModeOption(id: "default", title: "Read-only"),
+      WorkRuntimeModeOption(id: "plan", title: "Read-only"),
+      WorkRuntimeModeOption(id: "default", title: "Ask first"),
       WorkRuntimeModeOption(id: "edit", title: "Edit access"),
       WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
     ]
@@ -792,8 +798,8 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     switch mode {
     case "edit": return "Edit access"
     case "full-auto": return "Full access"
-    case "plan", "read-only", "default": return "Read-only"
-    default: return "Read-only"
+    case "plan", "read-only": return "Read-only"
+    default: return "Ask first"
     }
   default:
     return mode.isEmpty ? "Access" : mode.capitalized
@@ -841,6 +847,7 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     switch mode {
     case "full-auto": return ADEColor.danger
     case "edit": return ADEColor.warning
+    case "plan", "read-only": return ADEColor.purpleAccent
     default: return ADEColor.success
     }
   default:
@@ -1068,6 +1075,9 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     switch summary.permissionMode {
     case "edit": return "edit"
     case "full-auto": return "full-auto"
+    // A desktop-set plan session must not read back as the ask-first tier;
+    // `plan` is Pi's read-only mode and is selectable on mobile too.
+    case "plan", "read-only": return "plan"
     default: return "default"
     }
   default:

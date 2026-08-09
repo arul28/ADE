@@ -1423,7 +1423,7 @@ export type AgentChatCursorModeSnapshot = {
   availableModelIds?: string[];
   configOptions?: AgentChatCursorConfigOption[];
 };
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {

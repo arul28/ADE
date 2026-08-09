@@ -138,6 +138,10 @@ struct WorkPendingApprovalModel: Identifiable, Equatable {
   let id: String
   let description: String
   let detail: String?
+  /// The ask itself, when the host states one (`detail.request.title`) — e.g.
+  /// Pi's "Run bash?" above a description that is only the command. Without it
+  /// an `edit` and a `write` gate on the same file look identical.
+  var title: String? = nil
 }
 
 struct WorkPendingQuestionOption: Equatable {

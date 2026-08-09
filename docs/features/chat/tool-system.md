@@ -18,6 +18,8 @@ worker to respawn.
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
 | `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` / `editFile.ts` | Primitive file/search tools used by every agent. |
 | `apps/desktop/src/main/services/ai/tools/webFetch.ts` / `webSearch.ts` | Web access tools. |
+| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Pi's custom-tool surface: ADE's `ask_user` tool definition (`createPiAskUserTool`), the per-tool-call approval gate (`createPiApprovalGate`), and the `withPiApproval` wrapper that rebuilds a Pi built-in behind that gate. |
+| `apps/desktop/src/shared/cliLaunch.ts` | `piToolsForPermissionMode` (tracked Pi CLI, allowlist only) and `piSdkToolPolicyForPermissionMode` (Pi chat: allowlist + approval-tool list + an explicit `readOnly` flag). |
 
 ## Tier 1: universal tools
 
@@ -75,6 +77,41 @@ callback. `agentChatService` implements it by:
 Claude SDK sessions use the native `AskUserQuestion` SDK tool, which is plumbed
 through the same pending-input abstraction (see
 [transcript-and-turns](transcript-and-turns.md)).
+
+Pi sessions get an ADE-supplied `ask_user` custom tool (`piSdkUiBridge.ts`),
+injected into every Pi chat including personal chats. It takes a question, an
+optional short header, and optional labelled choices, and resolves through the
+same pending-input path with `source: "pi"`. Declining is a valid outcome, not a
+failure: the tool returns a note telling the model to continue with its best
+judgement and state the assumption it made.
+
+### Pi per-call approval gating
+
+Pi's built-in registry is only `read`, `bash`, `edit`, and `write`, and its
+`tools` option is a flat allowlist. In chat, ADE rebuilds `bash`, `edit`, and
+`write` from Pi's own root-exported definition factories and re-registers them
+through `customTools` under the same names — a custom tool whose name matches a
+built-in replaces it, so the rebuilt tool keeps Pi's schema, prompt text, and
+rendering while gaining an approval card in front of `execute`. A gated `bash`
+still honours the user's configured shell path and command prefix.
+
+Consequences worth knowing:
+
+- ADE's `default` permission mode in a Pi chat means "ask before anything that
+  changes the workspace", not read-only.
+- Only a tool the session actually grants is gated; relying on Pi's allowlist to
+  drop an unrequested wrapper would make the gate depend on resolution order.
+- A Pi build that does not export a tool's factory cannot have it gated, so the
+  tool is **withheld** and reported as `ungateableTools` on the ready payload —
+  never granted ungated.
+- "Allow for this chat" is remembered per tool name for the session's life.
+- A denial throws, because Pi marks a tool call failed only when `execute`
+  throws.
+- Extension-registered tools are outside this gate entirely; see
+  [Chat › Pi UI bridge](README.md#pi-ui-bridge-ask_user-and-extensions).
+
+The full mode-to-policy table lives in
+[Agent Routing › Pi](agent-routing.md#pi).
 
 ## Tier 2: workflow tools
 

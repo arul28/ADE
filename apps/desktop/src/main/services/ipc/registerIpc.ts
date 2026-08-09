@@ -531,6 +531,9 @@ import type {
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
   OpenCodeRuntimeSnapshot,
+  PiAuthStatusEvent,
+  PiLoginMethod,
+  PiLoginProvider,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
   SyncDeviceRecord,
@@ -657,6 +660,14 @@ import {
   startOAuth as startOpenCodeOAuth,
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
+import {
+  addPiAuthStatusListener,
+  cancelPiLogin,
+  listPiLoginProviders,
+  startPiLogin,
+  submitPiLoginPrompt,
+  type PiLoginResult,
+} from "../ai/piAuthService";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
@@ -1940,6 +1951,9 @@ export function registerIpc({
     [IPC.accountRemoveMachine]: new Set(["machineKey"]),
     [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
     [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
+    // A Pi sign-in prompt answer is the credential itself when Pi asks for an
+    // API key, so it must never reach a verbose IPC trace.
+    [IPC.aiPiLoginSubmit]: new Set(["value"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -4847,6 +4861,55 @@ export function registerIpc({
       return result;
     },
   );
+
+  // Broadcast Pi sign-in transitions to all renderer windows. The relay/web
+  // fan-out is registered separately in the adeActions AI domain.
+  addPiAuthStatusListener((event: PiAuthStatusEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC.aiPiAuthStatus, event);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  });
+
+  ipcMain.handle(IPC.aiPiLoginProviders, async (): Promise<PiLoginProvider[]> => {
+    return await listPiLoginProviders();
+  });
+
+  ipcMain.handle(
+    IPC.aiPiLoginStart,
+    async (_event, arg: { providerId: string; method?: PiLoginMethod }): Promise<PiLoginResult> => {
+      const ctx = getCtx();
+      const result = await startPiLogin(arg);
+      if (result.ok) {
+        try {
+          ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+        } catch (error) {
+          // Matches the action-path twin so both halves of one incident are
+          // searchable under a single event name.
+          ctx.logger.warn("ai.pi_auth_cache_invalidation_failed", {
+            provider: arg.providerId,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiPiLoginSubmit,
+    async (
+      _event,
+      arg: { providerId: string; requestId: string; value: string },
+    ): Promise<{ ok: boolean; error?: string }> => submitPiLoginPrompt(arg),
+  );
+
+  ipcMain.handle(IPC.aiPiLoginCancel, async (_event, arg: { providerId: string }): Promise<void> => {
+    cancelPiLogin(arg);
+  });
 
   ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
     const ctx = getCtx();

@@ -46,6 +46,7 @@ import {
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../desktop/src/shared/accountDirectory";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
@@ -2570,6 +2571,28 @@ describe("ADE CLI", () => {
         '["device-session","unexpected"]',
       ]),
     ).toThrow(/account actions accept object input/);
+  });
+
+  it("gives a Pi sign-in the daemon's own transport budget instead of the CLI default", () => {
+    // ai.piLoginStart blocks on a human finishing Pi's OAuth/device-code flow.
+    // The default 10-minute request budget expires inside that window, so the
+    // plan has to carry the shared long-running floor or the CLI reports a
+    // timeout for a sign-in the daemon is still legitimately running.
+    const login = expectExecutePlan(
+      buildCliPlan(["actions", "run", "ai.piLoginStart", "--arg", "providerId=anthropic"]),
+    );
+    expect(login.minTimeoutMs).toBe(PI_LOGIN_IPC_TIMEOUT_MS);
+    expect(login.minTimeoutMs!).toBeGreaterThan(parseCliArgs([]).options.timeoutMs);
+
+    // Everything else keeps the default budget; the floor is table-driven, not
+    // a blanket raise.
+    expect(
+      expectExecutePlan(buildCliPlan(["actions", "run", "ai.piLoginProviders"])).minTimeoutMs,
+    ).toBeUndefined();
+    expect(
+      expectExecutePlan(buildCliPlan(["actions", "run", "git.push", "--arg", "laneId=lane-1"]))
+        .minTimeoutMs,
+    ).toBeUndefined();
   });
 
   it("builds chat create with both model and modelId plus explicit reasoning and fast-mode args", () => {

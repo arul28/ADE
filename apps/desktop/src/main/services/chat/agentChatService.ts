@@ -411,7 +411,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
-import { piToolsForPermissionMode } from "../../../shared/cliLaunch";
+import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
 import {
   buildProviderGroupBlocks,
   createModelOrderMap,
@@ -543,6 +543,7 @@ import {
   releasePiSdkConnection,
   type PiSdkPooled,
 } from "./piSdkPool";
+import type { PiSdkUiRequestPayload } from "./piSdkProtocol";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
@@ -559,7 +560,13 @@ import {
   resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
-import { mapPiSdkEventToChatEvents } from "./piSdkEventMapper";
+import {
+  mapPiSdkEventToChatEvents,
+  piExtensionLoadNotice,
+  piUiNoticeToChatEvents,
+  piUiRequestToPendingInput,
+  piUiResponseFromAnswer,
+} from "./piSdkEventMapper";
 import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
@@ -1787,6 +1794,8 @@ type PiRuntime = {
   modelId: string | null;
   activeCompactionId: string | null;
   lease: PiSessionLease | null;
+  /** Tool/extension policy this worker was built with; a change forces a restart. */
+  toolPolicyKey: string;
 };
 
 type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime;
@@ -11106,6 +11115,38 @@ export function createAgentChatService(args: {
     throw new Error(`${descriptor.displayName} is reachable, but no models are currently loaded.`);
   };
 
+  /**
+   * Render a blocking Pi request as an ADE question card and answer the worker
+   * with whatever the user chooses.
+   *
+   * The worker is holding a Pi callback open, so every path here must end in a
+   * `respondToUi` — including teardown, which `localPendingInputs` drains.
+   */
+  const presentPiUiRequest = (
+    managed: ManagedChatSession,
+    runtime: PiRuntime,
+    requestId: string,
+    payload: PiSdkUiRequestPayload,
+  ): void => {
+    const request = piUiRequestToPendingInput(requestId, payload, runtime.activeTurnId ?? null);
+    let answered = false;
+    managed.localPendingInputs.set(requestId, {
+      request,
+      resolve: (response) => {
+        // The worker holds a Pi callback open against this id, so it must be
+        // answered exactly once no matter which drain site got here first.
+        if (answered) return;
+        answered = true;
+        runtime.sdk.respondToUi(requestId, piUiResponseFromAnswer(payload, response));
+      },
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: payload.message,
+      detail: { pi: true, origin: payload.origin, ...(payload.sourceId ? { sourceId: payload.sourceId } : {}) },
+    });
+  };
+
   const startPiRuntime = async (managed: ManagedChatSession): Promise<PiRuntime> => {
     if (piRuntimeSetupInterruptRequested.get(managed)) {
       piRuntimeSetupInterruptRequested.delete(managed);
@@ -11123,8 +11164,22 @@ export function createAgentChatService(args: {
     if (piProviderId) managed.session.piProviderId = piProviderId;
     if (piModelId) managed.session.piModelId = piModelId;
     const poolKey = `pi:${projectRoot}:${path.resolve(managed.laneWorktreePath)}:${managed.session.id}:${piProfileId}`;
+    // Pi's tool allowlist and extension binding are fixed when the worker is
+    // created, so a session switched from default to plan would keep its write
+    // tools until something else restarted it. Restart on any policy change.
+    const piToolPolicy = piSdkToolPolicyForPermissionMode(managed.session.permissionMode);
+    const piExtensionsEnabled = piChatExtensionsEnabled(managed);
+    const toolPolicyKey = [
+      piToolPolicy.tools.join(","),
+      piToolPolicy.approvalTools.join(","),
+      piExtensionsEnabled ? "ext" : "no-ext",
+    ].join("|");
     if (managed.runtime?.kind === "pi") {
-      if (managed.runtime.poolKey === poolKey && isPiSdkPooledAlive(managed.runtime.sdk)) return managed.runtime;
+      if (managed.runtime.poolKey === poolKey
+        && managed.runtime.toolPolicyKey === toolPolicyKey
+        && isPiSdkPooledAlive(managed.runtime.sdk)) {
+        return managed.runtime;
+      }
       teardownRuntime(managed, "handle_close");
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
@@ -11190,10 +11245,13 @@ export function createAgentChatService(args: {
           orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
           orchestrationStepId: managed.session.orchestrationStepId,
         });
-    const piPermissionMode = toHarnessPermissionMode(managed.session.permissionMode);
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
-    const piTools = piToolsForPermissionMode(piPermissionMode);
+    //
+    // The SDK policy is read from the session's own mode rather than the
+    // collapsed harness mode: in chat ADE can gate each call behind an approval
+    // card, so `default` keeps the write tools available but asks first.
+    const piTools = piToolPolicy.tools;
     let acquired: Awaited<ReturnType<typeof acquirePiSdkConnection>>;
     try {
       acquired = await acquirePiSdkConnection({
@@ -11204,6 +11262,11 @@ export function createAgentChatService(args: {
       agentDir: installation.agentDir,
       sessionDir,
       tools: piTools,
+      ...(piToolPolicy.approvalTools.length ? { approvalTools: piToolPolicy.approvalTools } : {}),
+      // Lets Pi ask the user a question mid-turn, which no tool allowlist can
+      // express. Personal chats get it too — it is how the model checks in.
+      askUserTool: true,
+      ...(piExtensionsEnabled ? { extensions: true } : {}),
       ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
       thinkingLevel: managed.session.reasoningEffort ?? null,
       systemPrompt,
@@ -11277,6 +11340,7 @@ export function createAgentChatService(args: {
       modelId: piModelId,
       activeCompactionId: null,
       lease: piLease,
+      toolPolicyKey,
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -11298,6 +11362,32 @@ export function createAgentChatService(args: {
         persistChatState(managed);
       }
     };
+    acquired.pooled.bridge.onUiRequest = (requestId, payload) => {
+      if (managed.runtime !== runtime) {
+        acquired.pooled.respondToUi(requestId, { ok: false, error: "This Pi session is no longer active." });
+        return;
+      }
+      presentPiUiRequest(managed, runtime, requestId, payload);
+    };
+    acquired.pooled.bridge.onUiCancel = (requestId) => {
+      if (managed.runtime !== runtime) return;
+      const pending = managed.localPendingInputs.get(requestId);
+      if (!pending) return;
+      managed.localPendingInputs.delete(requestId);
+      pending.resolve({ decision: "cancel" });
+      emitPendingInputResolved(managed, {
+        itemId: requestId,
+        decision: "cancel",
+        turnId: pending.request.turnId ?? null,
+        questions: pending.request.questions,
+      });
+    };
+    acquired.pooled.bridge.onUiNotice = (payload) => {
+      if (managed.runtime !== runtime) return;
+      for (const event of piUiNoticeToChatEvents(payload, runtime.activeTurnId ?? undefined)) {
+        emitChatEvent(managed, event);
+      }
+    };
     acquired.pooled.bridge.onError = (error, operation) => {
       if (managed.runtime !== runtime) return;
       logger.warn("agent_chat.pi_sdk_error", { sessionId: managed.session.id, operation: operation ?? null, error: error.message });
@@ -11310,6 +11400,16 @@ export function createAgentChatService(args: {
         persistChatState(managed);
       }
     };
+    // Tell the user which of their extensions are live in this chat, and that
+    // the bridge is narrower than Pi's terminal UI. Only when they opted in —
+    // an unchanged default should not add a notice to every Pi chat.
+    for (const event of piExtensionLoadNotice(
+      piExtensionsEnabled ? acquired.pooled.ready?.extensions : undefined,
+      piExtensionsEnabled ? acquired.pooled.ready?.extensionsError : null,
+      acquired.pooled.ready?.ungateableTools ?? [],
+    )) {
+      emitChatEvent(managed, event);
+    }
     persistChatState(managed);
     sessionService.setResumeCommand(managed.session.id, `chat:pi:${managed.session.id}`);
     logger.info("agent_chat.pi_sdk_runtime_ready", {
@@ -11459,6 +11559,27 @@ export function createAgentChatService(args: {
   const isAutoAllowAskUserEnabled = (): boolean => {
     const chat = projectConfigService.get().effective.ai?.chat;
     return chat?.autoAllowAskUser !== false;
+  };
+
+  /**
+   * Pi extensions load in ADE chat by default, matching `pi` in a terminal.
+   * They are bound to ADE's limited UI bridge rather than Pi's TUI.
+   */
+  const piChatExtensionsEnabled = (managed: ManagedChatSession): boolean => {
+    // A personal chat is not attached to a project worktree, so project-scoped
+    // extensions have no business loading into it.
+    if (isPersonalSession(managed.session)) return false;
+    // Enabling extensions means giving up Pi's `tools` allowlist, because an
+    // extension's tool names are not knowable until after the session exists —
+    // and an extension tool cannot be wrapped in an approval card the way a
+    // built-in can. So extensions load only in the modes that already grant
+    // their tools outright. A read-only mode promises no writes, and an
+    // ask-first mode promises a card before each one; neither promise survives
+    // an ungated tool, and quietly breaking it is worse than not loading the
+    // extension.
+    const policy = piSdkToolPolicyForPermissionMode(managed.session.permissionMode);
+    if (policy.readOnly || policy.approvalTools.length > 0) return false;
+    return projectConfigService.get().effective.ai?.chat?.piExtensionsEnabled !== false;
   };
 
   const isAskUserToolName = (toolName: string | null | undefined): boolean => {
@@ -16392,6 +16513,27 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Cancel Pi cards that are still waiting on the user.
+   *
+   * The worker drains its own side when a turn aborts, but the desktop entry
+   * outlives it: without this the chat keeps rendering a card nobody can answer
+   * and `hasPendingInput` keeps reporting the session as blocked.
+   */
+  const cancelPendingPiInputs = (managed: ManagedChatSession): void => {
+    for (const [itemId, pending] of [...managed.localPendingInputs]) {
+      if (pending.request.source !== "pi") continue;
+      managed.localPendingInputs.delete(itemId);
+      pending.resolve({ decision: "cancel" });
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId: pending.request.turnId ?? null,
+        questions: pending.request.questions,
+      });
+    }
+  };
+
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (
     managed: ManagedChatSession,
@@ -16588,6 +16730,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       rt.interrupted = true;
       cancelQueuedSteers(managed, rt, "interrupted");
+      cancelPendingPiInputs(managed);
       if (preserveProviderResumeState) persistChatState(managed);
       if (isPiSdkPooledAlive(rt.sdk)) {
         void rt.sdk.abort().catch(() => {});
@@ -37518,6 +37661,7 @@ export function createAgentChatService(args: {
         // ignore
       }
       cancelQueuedSteers(managed, rt, "interrupted");
+      cancelPendingPiInputs(managed);
       persistChatState(managed);
       return result;
     }

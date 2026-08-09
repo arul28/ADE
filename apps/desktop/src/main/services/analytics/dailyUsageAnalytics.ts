@@ -23,6 +23,9 @@ export function completedDailyUsageAnalyticsTarget(
 
 function coarseProvider(value: string): string {
   const normalized = value.trim().toLowerCase();
+  // Pi is the harness, so a Pi-routed model reports as Pi rather than as the
+  // upstream provider its id happens to name.
+  if (normalized === "pi" || normalized.startsWith("pi/")) return "pi";
   if (normalized.includes("codex")) return "codex";
   if (normalized.includes("openai")) return "openai";
   if (normalized.includes("claude") || normalized.includes("anthropic")) return "claude";

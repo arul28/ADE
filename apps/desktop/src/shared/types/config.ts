@@ -1265,6 +1265,50 @@ export type AiPiInstallationStatus = {
   error?: string | null;
 };
 
+/** Pi's only two login types. Device code is an event inside an oauth flow. */
+export type PiLoginMethod = "oauth" | "api_key";
+
+/** A Pi provider that can actually be signed into from inside ADE. */
+export type PiLoginProvider = {
+  id: string;
+  name: string;
+  authTypes: PiLoginMethod[];
+  configured: boolean;
+  /** Provider's own wording for the OAuth option, e.g. "Sign in with SuperGrok". */
+  loginLabel?: string;
+  isSubscription?: boolean;
+};
+
+export type PiAuthPromptKind = "text" | "secret" | "select" | "confirm" | "manual_code";
+
+export type PiAuthPrompt = {
+  requestId: string;
+  kind: PiAuthPromptKind;
+  title: string;
+  message: string;
+  placeholder?: string;
+  /** For `select`, `value` is the option id Pi expects back verbatim. */
+  options?: Array<{ value: string; label: string; description?: string }>;
+};
+
+/** Auth URL / device code / progress line Pi emitted mid-flow. */
+export type PiAuthNotice = {
+  level: "info" | "warn" | "error" | "progress";
+  message: string;
+  url?: string;
+  userCode?: string;
+  verificationUri?: string;
+};
+
+/** Never carries a credential: the user's typed secret goes straight to Pi. */
+export type PiAuthStatusEvent = {
+  providerId: string;
+  state: "pending" | "prompt" | "success" | "error";
+  prompt?: PiAuthPrompt;
+  notice?: PiAuthNotice;
+  error?: string;
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1441,6 +1485,13 @@ export type AiChatConfig = {
    * redundant tool-approval prompt. Defaults to true.
    */
   autoAllowAskUser?: boolean;
+  /**
+   * Load the user's own Pi extensions inside ADE chat, bound to ADE's UI
+   * bridge. Defaults to true, matching what `pi` does in a terminal. Turning it
+   * off runs ADE chat with Pi's built-in tools only; the Pi CLI is unaffected
+   * either way.
+   */
+  piExtensionsEnabled?: boolean;
   /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
   scheduledWorkPaused?: boolean;
 };

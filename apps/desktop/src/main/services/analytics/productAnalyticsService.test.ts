@@ -12,6 +12,7 @@ import {
   type ProductAnalyticsCapture,
 } from "../../../shared/types/productAnalytics";
 import { captureAgentTurnSettledAnalytics } from "./agentTurnProductAnalytics";
+import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
@@ -1072,6 +1073,29 @@ function settledEvent(overrides: Partial<AgentChatTurnSettledEvent> = {}): Agent
 }
 
 describe("product analytics producers", () => {
+  it("keeps a Pi turn attributed to Pi instead of dropping it to the catch-all provider", () => {
+    const captures: ProductAnalyticsCapture[] = [];
+    const analytics = settledAnalytics(captures);
+
+    captureAgentTurnSettledAnalytics({
+      analytics,
+      projectId: "project-1",
+      event: settledEvent({ provider: "pi" }),
+    });
+
+    // Pi is a first-class harness; an unlisted value would be sanitized away
+    // and its sessions would be invisible in product analytics.
+    const settled = captures.find((capture) => capture.event === "ade_work_session_completed");
+    expect(settled?.properties).toMatchObject({ feature: "chat", provider: "pi", outcome: "completed" });
+    // Prove it survives the public sanitizer, not just the producer.
+    expect(sanitizeProductAnalyticsProperties("ade_work_session_completed", {
+      feature: "chat",
+      provider: "pi",
+      outcome: "completed",
+      source: "runtime",
+    })).toMatchObject({ provider: "pi" });
+  });
+
   it("maps automation completion and failed chat turns into canonical bounded outcomes", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);

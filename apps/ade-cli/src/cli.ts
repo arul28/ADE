@@ -55,6 +55,7 @@ import {
   readAutomationsEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
+import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -324,6 +325,18 @@ type CliPlan =
        * account action is CTO-only, so it must connect as the machine operator.
        */
       connectRole?: GlobalOptions["role"];
+      /**
+       * Floor for this plan's request timeout, in milliseconds. `--timeout-ms`
+       * (and its 10-minute default) still applies when it is the larger of the
+       * two, so a caller can always ask for more patience but never less than
+       * the daemon's own budget for the action being run.
+       *
+       * Sourced from the shared long-running action table the desktop client
+       * uses, so the CLI cannot report a transport timeout while the daemon is
+       * still legitimately working — `ai.piLoginStart` blocks on a human
+       * finishing Pi's sign-in and is budgeted well past the CLI default.
+       */
+      minTimeoutMs?: number;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -11076,12 +11089,21 @@ function buildActionsPlan(args: string[]): CliPlan {
   }
   if (sub === "run") {
     const target = parseActionRunTarget(args);
+    // Actions the daemon is allowed to spend longer on than the client's
+    // default budget carry their own transport floor, straight from the table
+    // the desktop client reads. Without it `ade actions run ai.piLoginStart`
+    // reports a timeout at 10 minutes while the sign-in it started is still
+    // waiting on the human.
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(
+      `${target.domain}.${target.action}`,
+    );
     return {
       kind: "execute",
       label: "action run",
       ...(target.domain === "chat" && target.action === "createScheduledWork"
         ? { formatter: "scheduled-work-create" as const }
         : {}),
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
       steps: [buildActionRunStep(args, target)],
     };
   }
@@ -21232,10 +21254,16 @@ async function executePlan(
   // A plan may force a specific runtime role for its connection (e.g. `ade
   // logout`, whose signOut account action is CTO-only). Honor it so the caller
   // asserts the operator role and the machine account gate resolves to cto.
-  const connectionOptions =
+  const roledConnectionOptions =
     plan.connectRole
       ? { ...baseConnectionOptions, role: plan.connectRole }
       : baseConnectionOptions;
+  // An explicit --timeout-ms above the floor still wins; the floor only stops
+  // the client from giving up while the daemon is still inside its own budget.
+  const connectionOptions =
+    plan.minTimeoutMs != null && plan.minTimeoutMs > roledConnectionOptions.timeoutMs
+      ? { ...roledConnectionOptions, timeoutMs: plan.minTimeoutMs }
+      : roledConnectionOptions;
   try {
     connection = await createConnection(connectionOptions, {
       autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),

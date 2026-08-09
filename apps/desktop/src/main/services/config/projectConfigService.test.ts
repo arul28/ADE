@@ -508,6 +508,7 @@ describe("projectConfigService - AI mode migration", () => {
             autoTitleRefreshOnComplete: false,
             autoAllowAskUser: false,
             scheduledWorkPaused: true,
+            piExtensionsEnabled: false,
             codexSandbox: "workspace-write",
           },
         },
@@ -535,6 +536,9 @@ describe("projectConfigService - AI mode migration", () => {
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
     expect(snapshot.effective.ai?.chat?.autoAllowAskUser).toBe(false);
     expect(snapshot.effective.ai?.chat?.scheduledWorkPaused).toBe(true);
+    // The opt-out only works if the coercer copies it; a dropped field would
+    // silently read back as undefined and leave extensions enabled.
+    expect(snapshot.effective.ai?.chat?.piExtensionsEnabled).toBe(false);
     expect(snapshot.effective.ai?.chat?.codexSandbox).toBe("workspace-write");
 
     service.save({

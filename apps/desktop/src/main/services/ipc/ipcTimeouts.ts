@@ -5,6 +5,7 @@ import {
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+  PI_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
@@ -13,6 +14,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
+  ai: {
+    piLoginStart: IPC.aiPiLoginStart,
+  },
   lane: {
     create: IPC.lanesCreate,
     createChild: IPC.lanesCreateChild,
@@ -83,6 +87,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer's outcome known through setup and result delivery.
     case IPC.projectSwitchToPath:
       return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
+    // Awaits the user finishing Pi's own sign-in in a browser.
+    case IPC.aiPiLoginStart:
+      return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:

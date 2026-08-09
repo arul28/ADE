@@ -72,6 +72,12 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/droidSdkProtocol.ts` | Worker IPC types: `DroidSdkSessionSettings` (autonomy level, interaction mode, reasoning effort), `DroidSdkReasoningEffort`, `DroidSdkPermissionRequest`/`Decision`, `DroidSdkAskUserRequest`/`Response`, `DroidSdkReady` (handshake with `availableModels`), and `DroidSdkSendPrompt`. |
 | `apps/desktop/src/main/services/chat/droidSdkEventMapper.ts` | Per-session `DroidSdkEventMapperState` + `mapDroidSdkMessageToChatEvents` / `mapDroidSdkRunResultToDoneEvent`. Tracks streaming text/thinking/image item ids, maps tool calls and results, maps `mission_worker_started` / `mission_worker_completed` notifications to provider-neutral subagent lifecycle events keyed by worker session id, surfaces image content as compact generation rows, and reports token usage. Replaces the deleted `droidAcpPool.ts` + `droidAcpEventMapper` path. |
 | `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | SDK-driven model probe (`listDroidModelsFromSdk`) plus the `~/.factory/config.json` custom-proxy merge. Normalizes the generic `opus` row to Opus 5 with its `high` default reasoning effort and Fast capability, while retired factory Claude ids still resolve forward (Sonnet 4.6 -> Sonnet 5, basic Opus 4.7 -> Opus 4.8) before descriptors reach desktop, mobile, or TUI model pickers. Exposes `discoverDroidSdkModelDescriptors` (alias for the legacy `discoverDroidCliModelDescriptors` while callers migrate). |
+| `apps/desktop/src/main/services/chat/piSdkPool.ts` | Pi adapter. Forks `piSdkWorker` per session key, exposes `acquirePiSdkConnection` / `releasePiSdkConnection`, and proxies prompts, model/thinking changes, compaction, inventory reads, `login` / `cancelLogin`, and `respondToUi`. Also routes the reverse-RPC UI channel onto `bridge.onUiRequest` / `onUiNotice` / `onUiCancel`; when no `onUiRequest` handler is installed the pool answers `{ ok: false }` immediately, so an unattended worker fails closed instead of hanging a turn. |
+| `apps/desktop/src/main/services/chat/piSdkWorker.ts` | Node worker that hosts the user's own Pi installation (resolved at runtime, never statically imported). Owns the Pi agent session, the model runtime, `ModelRuntime.login`, tool assembly (`ask_user` plus approval-gated rebuilds of Pi's built-ins), extension binding, and the settings manager that pins `projectTrusted: false`. |
+| `apps/desktop/src/main/services/chat/piSdkProtocol.ts` | Worker IPC types and validators, at protocol version 2. Adds the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames and `login` / `login_cancel` on top of version 1, plus the `extensions` / `askUserTool` / `approvalTools` init flags and the `extensions` / `extensionsError` / `ungateableTools` fields on `PiSdkReady`. Every frame is validated in both directions. |
+| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side bridge from Pi's callback-shaped UI APIs to ADE cards, with no Pi imports of its own. `createPiUiBridge` is the never-rejecting request channel; `createPiAskUserTool` / `createPiApprovalGate` / `withPiApproval` build the `ask_user` tool and the per-call approval wrapper; `createPiAuthInteraction` implements Pi's `AuthInteraction`; `createPiExtensionUiContext` implements `ExtensionUIContext`. |
+| `apps/desktop/src/main/services/chat/piSdkEventMapper.ts` | Pi SDK event → `AgentChatEvent` translation, plus the card helpers: `piUiRequestToPendingInput` (blocking worker request → `PendingInputRequest` with `source: "pi"`), `piUiResponseFromAnswer` (card answer → worker reply, mapping `accept` / `accept_for_session` onto the gate's `allow` / `allow_session` values), `piUiNoticeToChatEvents`, and `piExtensionLoadNotice`. |
+| `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in on a dedicated inventory-only worker: provider enumeration, one flow per provider, prompt/notice fan-out through `addPiAuthStatusListener`, prompt answers, cancellation, and a 10-minute bound. Relays credentials, never retains them. |
 | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | Resolves the OpenCode CLI: PATH first, then the bundled `node_modules/.bin/opencode`. Cache entries are re-validated with `canRunBinaryCandidate` on every lookup so user installs after launch are picked up; missing-binary lookups are intentionally not cached. `clearOpenCodeBinaryCache()` is wired into the AI integration's full cache reset. |
 | `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and tracks both `modelIds` (connected providers only) and `catalogModelIds` (the full browseable catalog). Anthropic rows normalize generic `opus` to Opus 5 with its `high` default reasoning effort and Fast capability; retired Sonnet 4.6 / basic Opus 4.7 ids still resolve to Sonnet 5 / Opus 4.8 so runtime catalogs cannot reintroduce removed picker rows. `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. **Cross-launch persistence:** `persistOpenCodeInventory(projectRoot, providers)` writes each successful probe's provider list (keyed by project root, with `savedAt`) to `opencode-inventory-cache.json` under Electron `userData` (override via `ADE_OPENCODE_INVENTORY_CACHE_FILE`); on a cold start the Settings page reloads that persisted list flagged stale (`opencodeProvidersStale`) so the ~160-provider chip cloud renders immediately instead of blanking until the first live probe (stale-while-revalidate). Writes are best-effort and never break the probe. |
 | `apps/desktop/src/main/services/opencode/openCodeAuthService.ts` | Drives the managed OpenCode server's auth API for subscription connect + API-key seeding, reusing the shared inventory server lease (never spawning its own process). `listAuthMethods` reads `GET /provider/auth`; `startOAuth` authorizes (`POST /provider/{id}/oauth/authorize`), opens the returned URL, and polls `provider.list().connected` every 2s until connected or a 5-min timeout, re-probing inventory on success; `cancelOAuth` stops the poller; `setProviderKey` does `PUT /auth/{id}` and mirrors the key into ADE's `apiKeyStore` so it is re-injected on future launches. One flow per `providerId` at a time (a new start supersedes the prior). Transitions are published through `addOpenCodeOAuthStatusListener` (`pending`/`connected`/`cancelled`/`timeout`/`failed`), a multi-sink fan-out so the same event reaches desktop windows and the remote/web runtime event buffer. Seeded credentials land in ADE's isolated managed OpenCode dir (XDG roots under `userData/opencode-runtime/xdg-v*`), never the user's `~/.local/share/opencode`. |
@@ -750,6 +756,94 @@ See the detail docs for the specifics:
 - [Composer and UI](composer-and-ui.md) -- composer, tasks, file changes,
   terminal drawer, message list.
 
+## Pi UI bridge, `ask_user`, and extensions
+
+Pi asks the human questions from three unrelated places — `AuthInteraction`
+during login, a custom tool's `execute`, and an extension's UI context — and all
+three are plain callbacks that block until they get a value back. `piSdkUiBridge`
+funnels them into one reverse-RPC channel (protocol version 2) so the desktop
+process has a single place to render a card and a single place to fail one
+closed.
+
+The channel carries four frame types: `ui_request` (worker → desktop, blocking),
+`ui_response` (desktop → worker, reusing the request id), `ui_notice` (worker →
+desktop, non-blocking), and `ui_cancel` (worker → desktop, "I settled this
+myself"). Every request carries an `origin` of `auth`, `tool`, `extension`, or
+`approval`, which decides both the card shape and which requests a targeted
+drain affects.
+
+`bridge.request()` never rejects. A dismissed card, an aborted turn, an
+extension's own timeout, a malformed abort signal, or a disposed worker all
+resolve to `null`, so a Pi callback awaiting an answer degrades to "no answer"
+instead of throwing through the SDK's error channel. The desktop side has the
+matching obligation: the worker is holding a Pi callback open, so every path out
+of `presentPiUiRequest` must end in exactly one `respondToUi` — including
+interrupt and teardown, which `cancelPendingPiInputs` drains.
+
+Requests become ordinary ADE pending inputs with `source: "pi"`, so they reuse
+the existing question-card, approval-card, and `respondToInput` machinery rather
+than adding a Pi-specific surface. A request with options becomes a
+`structured_question` whose answer must be a pick (free text would not match the
+option id Pi expects back); one without becomes a free-text `question`; an
+`approval` origin becomes an approval card. A `secret` prompt marks the question
+`isSecret`.
+
+**`ask_user`.** ADE injects an `ask_user` custom tool into every Pi chat,
+including personal chats — it is how the model checks in mid-turn, which no tool
+allowlist can express. The model supplies a question, an optional short header,
+and optional labelled choices; the answer comes back as text. Declining is not
+an error: the tool returns "the user did not answer, continue with your best
+judgement and state the assumption you made."
+
+**Approval gating.** `bash`, `edit`, and `write` are rebuilt from Pi's own
+definition factories and wrapped so each call clears an approval card first. See
+[Agent Routing › Pi](agent-routing.md#pi) for the full mode-to-policy table and
+the `ungateableTools` fallback.
+
+**Extensions.** The user's Pi extensions load in ADE chat by default
+(`ai.chat.piExtensionsEnabled`), matching what `pi` does in a terminal, bound to
+an ADE implementation of Pi's `ExtensionUIContext`:
+
+- `select` / `confirm` / `input` / `editor` become ADE cards. A dismissal, a
+  timeout, and an abort all read as "no answer" — which for `confirm` means
+  deny.
+- `notify` / `setStatus` / `setWorkingMessage` / `setTitle` become thread
+  notices; `progress`-level notices render as activity rather than as a
+  system notice.
+- TUI-only surfaces (widgets, footers, headers, editor hooks, autocomplete,
+  themes) no-op. Anything whose absence the user could notice warns **once** per
+  method, so a chatty extension cannot spam the thread. Purely visual ones are
+  silently ignored.
+
+Three boundaries are deliberate and load-bearing:
+
+- **Repository code never loads.** The worker builds Pi's `SettingsManager`
+  itself with `projectTrusted: false` and passes it to both the resource loader
+  and the session. Pi treats a trusted project as permission to auto-load and
+  execute extensions from the checkout's own `.pi/` directory; ADE opens
+  repositories the user has not vouched for, so only the user's own
+  `~/.pi/agent/extensions` may load. If a Pi build will not let ADE pin that
+  flag, extensions stay **off** rather than loading repository code ADE cannot
+  constrain, and the reason is surfaced as `extensionsError`.
+- **Extensions load only where the mode grants its tools outright** — `edit`
+  and `full-auto`. Enabling them means giving up Pi's flat `tools` allowlist:
+  extension tool names are not knowable until the session exists, so ADE
+  switches to `excludeTools` for the unwanted built-ins and leaves the rest of
+  the namespace alone. An extension tool also cannot be wrapped in an approval
+  card the way a built-in can. A read-only mode promises no writes and an
+  ask-first mode (`default`, `auto`, `config-toml`) promises a card before each
+  one; neither promise survives an ungated tool, so those modes keep the
+  allowlist and forgo extensions. Personal chats also skip them: they are not
+  attached to a project worktree.
+- **Extension-registered tools run outside ADE's permission modes.** This is
+  disclosed, not hidden: when extensions are enabled the chat emits a one-time
+  notice naming what loaded and stating that their own tools are not limited to
+  the chat's tool list. Load failures and `ungateableTools`
+  get their own notices.
+
+Sign-in notices never reach a chat thread — login runs on `piAuthService`'s own
+worker and is rendered by Settings.
+
 ## External chat import
 
 The external-session import flow can turn provider-native Claude and Codex CLI
@@ -1189,6 +1283,11 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
 | `ade.ai.setOpencodeProviderKey` | invoke | Seed a plain API key for a provider (`PUT /auth/{id}`) and mirror it into ADE's key store. Backs the Kimi for Coding membership key and the `alsoOpenCode` key-save path for API/More-Providers rows. Invalidates provider-readiness caches on success. |
 | `ade.ai.refreshModelsDev` | invoke | Force a models.dev metadata refresh now; returns `{ lastFetchedAt }` for the group-header "catalog synced" timestamp. `modelsDevService` also refreshes on boot and every 6h on its own timer. |
 | `ade.ai.opencodeOAuthStatus` | push | Stream of `OpenCodeOAuthStatusEvent` (`pending`/`connected`/`cancelled`/`timeout`/`failed`) so the connect modal updates without polling. |
+| `ade.ai.piLoginProviders` | invoke | List the Pi providers ADE can run an interactive sign-in for (`PiLoginProvider[]`, sorted by name), each carrying its `authTypes` (`oauth` / `api_key`), whether it is already `configured`, and the provider's own OAuth wording. Providers whose API key resolves ambiently are omitted — there is nothing to sign into. |
+| `ade.ai.piLoginStart` | invoke | Run one provider sign-in for `{ providerId, method? }`, resolving only when the flow settles. Because it waits on a human completing an OAuth or device-code grant, it carries its own transport budget: `PI_LOGIN_IPC_TIMEOUT_MS` (11 min) in `ipcTimeouts.ts` and `localRuntimeTimeoutPolicy.ts`, outliving `piAuthService`'s 10-minute bound so the renderer cannot report failure while the daemon is still signing in. Invalidates provider-readiness caches on success. |
+| `ade.ai.piLoginSubmit` | invoke | Answer the prompt Pi is currently blocked on (`{ providerId, requestId, value }`). The answer is relayed to Pi and never retained; `value` is in the IPC redaction set because for an API-key prompt it *is* the credential. A stale `requestId` is rejected rather than applied. |
+| `ade.ai.piLoginCancel` | invoke | Stop the in-flight sign-in for `{ providerId }`, settle any open prompt, and release its worker. Also claims a fresh generation so a start still acquiring its worker is cancelled rather than orphaned. |
+| `ade.ai.piAuthStatus` | push | Stream of `PiAuthStatusEvent` (`pending` / `prompt` / `success` / `error`) carrying Pi's prompts and its auth-URL / device-code / progress notices. Never carries a credential. Broadcast to renderer windows from `registerIpc.ts`; the remote/web fan-out is registered separately by the `ai` ADE action domain, which pushes the same transitions onto each runtime's event buffer. |
 
 ## Fragile and tricky wiring
 
@@ -1509,6 +1608,11 @@ config service):
 - `ai.customModelSlugs` -- extra `providerId/modelId` slugs to surface in
   the picker. Like every `ai.*` field, both keys must be handled in
   `coerceAiConfig` and `mergeAiConfig` (see Fragile and tricky wiring).
+- `ai.chat.piExtensionsEnabled` -- load the user's own Pi extensions inside
+  ADE chat, bound to ADE's UI bridge. Defaults to **true**, matching what `pi`
+  does in a terminal. Turning it off runs ADE chat with Pi's built-in tools
+  only; the Pi CLI is unaffected either way. Plan-mode and personal sessions
+  ignore the flag and never load extensions.
 
 ## Related docs
 

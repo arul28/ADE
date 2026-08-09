@@ -1100,6 +1100,45 @@ describe("adeRpcServer", () => {
     expect(runtime.ptyService.dispose).not.toHaveBeenCalled();
   });
 
+  it("exposes the Pi sign-in actions through ade actions, with the write half gated on cto", async () => {
+    // The CLI has no typed `pi login` command, so `ade actions run ai.piLogin*`
+    // is the only path to it. That makes these four names part of the CLI's
+    // contract: if the registry stops resolving them the escape hatch is gone.
+    const { runtime } = createRuntime();
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(agentHandler, { role: "agent" });
+    const agentActions = await callTool(agentHandler, "list_ade_actions", { domain: "ai" });
+    const agentNames = agentActions.structuredContent.actions.map(
+      (entry: { name: string }) => entry.name,
+    );
+    expect(agentNames).toContain("ai.piLoginProviders");
+    expect(agentNames).not.toContain("ai.piLoginStart");
+
+    // Rejected on the role gate, before the service is reached — an agent can
+    // never spawn a Pi worker waiting on a human that is not there.
+    const denied = await callTool(agentHandler, "run_ade_action", {
+      domain: "ai",
+      action: "piLoginStart",
+      args: { providerId: "anthropic" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied.error)).toMatch(/elevated role/i);
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const ctoNames = (await callTool(ctoHandler, "list_ade_actions", { domain: "ai" }))
+      .structuredContent.actions.map((entry: { name: string }) => entry.name);
+    expect(ctoNames).toEqual(
+      expect.arrayContaining([
+        "ai.piLoginProviders",
+        "ai.piLoginStart",
+        "ai.piLoginSubmit",
+        "ai.piLoginCancel",
+      ]),
+    );
+  });
+
   it("routes app/navigate through the runtime navigation service", async () => {
     const { runtime } = createRuntime();
     const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
