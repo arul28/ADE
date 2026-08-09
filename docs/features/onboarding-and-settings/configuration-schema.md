@@ -291,10 +291,12 @@ continues from its next normal occurrence.
 extensions inside ADE chat, bound to ADE's UI bridge. It **defaults to true**,
 matching what `pi` does in a terminal; only an explicit `false` turns it off,
 which runs ADE chat with Pi's built-in tools only. The Pi CLI is unaffected
-either way. Two session kinds ignore the flag and never load extensions:
-plan-mode sessions (enabling extensions means dropping Pi's flat tool
-allowlist, which would break plan mode's read-only promise) and personal
-chats (no project worktree). Only the user's own `~/.pi/agent/extensions` ever
+either way. The flag is a ceiling, not a switch: extensions load only in the
+modes that grant their tools outright (`edit`, `full-auto`). Read-only
+(`plan`) and ask-first (`default`, `auto`, `config-toml`) sessions ignore it,
+because enabling extensions drops Pi's flat tool allowlist and an extension
+tool cannot be wrapped in an approval card — neither mode's promise would
+survive. Personal chats also skip them (no project worktree). Only the user's own `~/.pi/agent/extensions` ever
 load — the worker pins Pi's `projectTrusted: false`, so a checked-out
 repository's `.pi/extensions` never executes. See
 [Chat › Pi UI bridge](../chat/README.md#pi-ui-bridge-ask_user-and-extensions).

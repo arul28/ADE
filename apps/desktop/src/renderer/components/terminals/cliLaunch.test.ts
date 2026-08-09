@@ -452,6 +452,22 @@ describe("piSdkToolPolicyForPermissionMode", () => {
     expect(() => validateLaunchProfilePermissionMode("pi", "auto")).toThrow(/not supported for Pi/u);
   });
 
+  it("marks exactly the modes that may load extensions, since extension tools cannot be gated", () => {
+    // Chat loads Pi extensions only where the mode grants its tools outright.
+    // A read-only or ask-first mode makes a promise an ungated extension tool
+    // would break, so those must stay identifiable from the policy alone.
+    const grantsOutright = (mode: Parameters<typeof piSdkToolPolicyForPermissionMode>[0]) => {
+      const policy = piSdkToolPolicyForPermissionMode(mode);
+      return !policy.readOnly && policy.approvalTools.length === 0;
+    };
+    expect(grantsOutright("edit")).toBe(true);
+    expect(grantsOutright("full-auto")).toBe(true);
+    expect(grantsOutright("plan")).toBe(false);
+    for (const mode of ["default", "auto", "config-toml"] as const) {
+      expect(grantsOutright(mode)).toBe(false);
+    }
+  });
+
   it("leaves the tracked-terminal mapping stricter, because a CLI has no approval gate", () => {
     expect(piToolsForPermissionMode("default")).toEqual(["read"]);
     expect(piSdkToolPolicyForPermissionMode("default").tools).toContain("bash");

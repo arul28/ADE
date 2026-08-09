@@ -825,17 +825,20 @@ Three boundaries are deliberate and load-bearing:
   `~/.pi/agent/extensions` may load. If a Pi build will not let ADE pin that
   flag, extensions stay **off** rather than loading repository code ADE cannot
   constrain, and the reason is surfaced as `extensionsError`.
-- **Extensions are off in plan mode.** Enabling them means giving up Pi's flat
-  `tools` allowlist — extension tool names are not knowable until the session
-  exists, so ADE switches to `excludeTools` for the unwanted built-ins and
-  leaves the rest of the namespace alone. A plan-mode session promises
-  read-only and an extension tool could write, so plan mode keeps the allowlist
-  and forgoes extensions. Personal chats also skip them: they are not attached
-  to a project worktree.
+- **Extensions load only where the mode grants its tools outright** — `edit`
+  and `full-auto`. Enabling them means giving up Pi's flat `tools` allowlist:
+  extension tool names are not knowable until the session exists, so ADE
+  switches to `excludeTools` for the unwanted built-ins and leaves the rest of
+  the namespace alone. An extension tool also cannot be wrapped in an approval
+  card the way a built-in can. A read-only mode promises no writes and an
+  ask-first mode (`default`, `auto`, `config-toml`) promises a card before each
+  one; neither promise survives an ungated tool, so those modes keep the
+  allowlist and forgo extensions. Personal chats also skip them: they are not
+  attached to a project worktree.
 - **Extension-registered tools run outside ADE's permission modes.** This is
   disclosed, not hidden: when extensions are enabled the chat emits a one-time
-  notice naming what loaded and stating that their own tools run with the
-  extension's permissions, not the chat's. Load failures and `ungateableTools`
+  notice naming what loaded and stating that their own tools are not limited to
+  the chat's tool list. Load failures and `ungateableTools`
   get their own notices.
 
 Sign-in notices never reach a chat thread — login runs on `piAuthService`'s own

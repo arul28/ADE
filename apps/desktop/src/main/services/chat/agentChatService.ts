@@ -11569,11 +11569,16 @@ export function createAgentChatService(args: {
     // A personal chat is not attached to a project worktree, so project-scoped
     // extensions have no business loading into it.
     if (isPersonalSession(managed.session)) return false;
-    // Enabling extensions means giving up the `tools` allowlist, because their
-    // tool names are not known until after the session exists. A plan-mode
-    // session promises read-only, and an extension tool could write — so plan
-    // mode keeps the allowlist and forgoes extensions.
-    if (piSdkToolPolicyForPermissionMode(managed.session.permissionMode).readOnly) return false;
+    // Enabling extensions means giving up Pi's `tools` allowlist, because an
+    // extension's tool names are not knowable until after the session exists —
+    // and an extension tool cannot be wrapped in an approval card the way a
+    // built-in can. So extensions load only in the modes that already grant
+    // their tools outright. A read-only mode promises no writes, and an
+    // ask-first mode promises a card before each one; neither promise survives
+    // an ungated tool, and quietly breaking it is worse than not loading the
+    // extension.
+    const policy = piSdkToolPolicyForPermissionMode(managed.session.permissionMode);
+    if (policy.readOnly || policy.approvalTools.length > 0) return false;
     return projectConfigService.get().effective.ai?.chat?.piExtensionsEnabled !== false;
   };
 

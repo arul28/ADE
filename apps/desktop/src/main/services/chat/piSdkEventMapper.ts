@@ -131,10 +131,10 @@ export function piExtensionLoadNotice(
     events.push({
       type: "system_notice",
       noticeKind: "info",
-      // States the boundary plainly: an extension's own tools are outside
-      // ADE's permission modes, because their names are not knowable until
-      // after the session exists.
-      message: `Pi extensions active: ${names.join(", ")}. Their own tools run with the extension's permissions, not this chat's.`,
+      // Extensions only load in modes that grant their tools outright, but an
+      // extension's own tools are still outside this chat's allowlist, so say
+      // so rather than implying they are bounded by it.
+      message: `Pi extensions active: ${names.join(", ")}. Their own tools aren't limited to this chat's tool list.`,
     });
   }
   if (extensionsError?.trim()) {

@@ -327,7 +327,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // onOpencodeOAuthStatus/onPiAuthStatus subscriptions become live instead of
   // inert. Scoped to active flows to avoid a perpetual background poll.
   const OAUTH_STATUS_POLL_MS = 1_000;
-  const OAUTH_STATUS_MAX_MS = 5 * 60_000;
+  // Must outlive the longest flow it drains. A Pi device-code sign-in is
+  // budgeted at ten minutes host-side, so expiring at five stranded the UI on
+  // "Waiting for Pi…" while prompts and the completion event were still coming.
+  const OAUTH_STATUS_MAX_MS = 11 * 60_000;
   const AUTH_TERMINAL_STATES: Record<string, Set<string>> = {
     opencodeOAuthStatus: new Set(["connected", "failed", "cancelled", "timeout"]),
     piAuthStatus: new Set(["success", "error"]),

@@ -247,6 +247,7 @@ export async function startPiLogin(args: {
         if (timer) clearTimeout(timer);
         pooled.bridge.onUiRequest = null;
         pooled.bridge.onUiNotice = null;
+        pooled.bridge.onUiCancel = null;
         release();
         emit(result.ok
           ? { providerId, state: "success" }
@@ -259,6 +260,13 @@ export async function startPiLogin(args: {
     pooled.bridge.onUiRequest = (requestId, payload) => {
       flow.pendingRequestId = requestId;
       emit({ providerId, state: "prompt", prompt: toPrompt(requestId, payload, providerId) });
+    };
+    // The worker settles its own prompts on timeout or abort. Without this the
+    // card would stay on screen waiting for an answer nothing is listening for.
+    pooled.bridge.onUiCancel = (requestId) => {
+      if (flow.pendingRequestId !== requestId) return;
+      flow.pendingRequestId = null;
+      emit({ providerId, state: "pending" });
     };
     pooled.bridge.onUiNotice = (payload) => {
       emit({ providerId, state: "pending", notice: toNotice(payload) });
