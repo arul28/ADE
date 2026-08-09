@@ -569,6 +569,59 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 0)
   }
 
+  /// A short hop out and back (glancing at the notification shade) should keep
+  /// the live session: replacing it there would cost a reconnect on every
+  /// trivial app switch.
+  @MainActor
+  func testResumeAfterShortBackgroundKeepsTheLiveSession() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    service.completeCapturedRefreshRequestsForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let generation = service.connectionGenerationForTesting()
+    service.setBackgroundedAtForTesting(secondsAgo: 1)
+    await service.handleForegroundTransition()
+
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.connectionState, .connected)
+  }
+
+  /// The ladder used to run to a terminal `unreachable` state escapable only by
+  /// a manual tap, leaving a 30-40s heartbeat as the only retry. Coming to the
+  /// foreground is new information — often a different network entirely — so it
+  /// reopens the budget.
+  @MainActor
+  func testForegroundResetsAnExhaustedReconnectLadder() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    service.completeCapturedRefreshRequestsForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    service.exhaustReconnectAttemptsForTesting()
+    XCTAssertTrue(service.reconnectAttemptsAreExhaustedForTesting())
+
+    await service.handleForegroundTransition()
+
+    XCTAssertFalse(service.reconnectAttemptsAreExhaustedForTesting())
+  }
+
   @MainActor
   func testHelloReducedLoadTransitionRestoresEachChatSubscriptionOnce() async throws {
     let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)

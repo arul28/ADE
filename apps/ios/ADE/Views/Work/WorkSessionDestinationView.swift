@@ -125,17 +125,23 @@ func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steer: Wo
   return false
 }
 
+/// `fallbackTranscript` is an autoclosure because building it means re-parsing
+/// the whole fallback entry page (240-600 KB). The two status guards below
+/// reject every actively-streaming tick without ever reading it, so evaluating
+/// it at the call site did that work ~6-7x/s during a stream and discarded the
+/// result. Order matters here: the cheap checks must come first.
 func workChatShouldPreferFallbackTranscript(
-  fallbackTranscript: [WorkChatEnvelope],
+  fallbackTranscript: @autoclosure () -> [WorkChatEnvelope],
   sessionStatus: String,
   liveTranscript: [WorkChatEnvelope]
 ) -> Bool {
-  guard !fallbackTranscript.isEmpty,
-        sessionStatus != "active",
+  guard sessionStatus != "active",
         !workTranscriptIndicatesActiveTurn(liveTranscript)
   else { return false }
+  let fallback = fallbackTranscript()
+  guard !fallback.isEmpty else { return false }
   guard let liveTail = latestWorkTextEnvelope(in: liveTranscript) else { return true }
-  guard let fallbackTail = latestWorkTextEnvelope(in: fallbackTranscript) else { return false }
+  guard let fallbackTail = latestWorkTextEnvelope(in: fallback) else { return false }
   return fallbackTail.timestamp >= liveTail.timestamp
 }
 
@@ -2546,9 +2552,21 @@ struct WorkSessionDestinationView: View {
       pruneIdleLiveChatEventHistoryIfNeeded(transcriptStatus: transcriptStatus, eventTranscript: liveTranscript)
       return
     }
-    let fallbackTranscript = makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
+    // A full re-parse of the fallback entry array — a page that runs 240-600 KB.
+    // Every live streaming delta ran it on the main actor ~6-7x/s, and on that
+    // path nothing consumed the result: `workChatShouldPreferFallbackTranscript`
+    // short-circuits on an active turn before it reads the transcript, and the
+    // delta-append merge branch below never touches it. Build at most once, and
+    // only when a branch actually asks for it.
+    var memoizedFallbackTranscript: [WorkChatEnvelope]?
+    let fallbackTranscript: () -> [WorkChatEnvelope] = {
+      if let memoizedFallbackTranscript { return memoizedFallbackTranscript }
+      let built = makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
+      memoizedFallbackTranscript = built
+      return built
+    }
     let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallbackTranscript,
+      fallbackTranscript: fallbackTranscript(),
       sessionStatus: transcriptStatus,
       liveTranscript: liveTranscript
     )
@@ -2573,13 +2591,13 @@ struct WorkSessionDestinationView: View {
        !transcript.isEmpty {
       mergedTranscript = preferredWorkTranscript(
         current: transcript,
-        fallback: fallbackTranscript,
+        fallback: fallbackTranscript(),
         eventTranscript: canonicalLiveTranscript
       )
     } else {
       mergedTranscript = preferredWorkTranscript(
         current: [],
-        fallback: fallbackTranscript,
+        fallback: fallbackTranscript(),
         eventTranscript: canonicalLiveTranscript
       )
     }

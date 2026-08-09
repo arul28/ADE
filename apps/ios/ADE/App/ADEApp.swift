@@ -50,6 +50,11 @@ struct ADEApp: App {
         .onChange(of: scenePhase) { _, newPhase in
           if newPhase == .background {
             didEnterBackground = true
+            // Stamp the suspension so the next foreground can tell a glance at
+            // the notification shade from an hour in a pocket. iOS suspends
+            // sockets without a close event, so the gap is the only evidence
+            // available about whether the connection is still real.
+            syncService.handleBackgroundTransition()
             accountService.stopAttentionPolling()
             ProductAnalytics.shared.flush()
             Task { await accountService.updateAttentionAppForeground(false) }
