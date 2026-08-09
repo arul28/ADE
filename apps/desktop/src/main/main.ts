@@ -266,6 +266,11 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import {
+  RENDERER_RECOVERY_DELAY_MS,
+  RENDERER_RECOVERY_WINDOW_MS,
+  createRendererCrashRecoveryBudget,
+} from "./rendererCrashRecovery";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
@@ -782,6 +787,8 @@ async function createWindow(args: {
     });
   });
 
+  const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
+
   win.webContents.on("render-process-gone", (_event, details) => {
     args.logger?.error("window.render_process_gone", {
       windowId: win.id,
@@ -789,6 +796,42 @@ async function createWindow(args: {
       exitCode: details.exitCode,
       url: win.webContents.getURL(),
     });
+
+    const decision = rendererRecoveryBudget.requestAttempt(details.reason, Date.now());
+    if (!decision.recover) {
+      if (decision.cause === "budget-exhausted") {
+        args.logger?.error("window.render_process_recovery_abandoned", {
+          windowId: win.id,
+          reason: details.reason,
+          attempts: decision.attempts,
+          windowMs: RENDERER_RECOVERY_WINDOW_MS,
+        });
+      }
+      return;
+    }
+    const attempt = decision.attempt;
+
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      const recoveryUrl = getRendererUrl();
+      args.logger?.warn("window.render_process_recovering", {
+        windowId: win.id,
+        reason: details.reason,
+        attempt,
+        url: recoveryUrl,
+      });
+      // Load the canonical renderer URL rather than reloading whatever was last
+      // committed: a crash on the load-failure fallback page would otherwise
+      // just reload the error page.
+      win.loadURL(recoveryUrl).catch((error) => {
+        args.logger?.error("window.render_process_recovery_failed", {
+          windowId: win.id,
+          reason: details.reason,
+          attempt,
+          err: toErrorMessage(error),
+        });
+      });
+    }, RENDERER_RECOVERY_DELAY_MS);
   });
 
   win.webContents.on("preload-error", (_event, preloadPath, error) => {

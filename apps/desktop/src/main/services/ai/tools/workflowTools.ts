@@ -24,6 +24,29 @@ function formatToolError(prefix: string, err: unknown): { success: false; error:
   return { success: false, error: `${prefix}: ${err instanceof Error ? err.message : String(err)}` };
 }
 
+/** Characters of `diff_hunk` handed to the model per review thread. */
+const REVIEW_THREAD_DIFF_HUNK_MAX_CHARS = 2_000;
+
+/**
+ * The code a review thread points at, trimmed for the prompt.
+ *
+ * Without this the resolver reads "this leaks a handle" with only a path and a
+ * line number and has to go re-find the code — or worse, guess. GitHub's
+ * `diff_hunk` already carries just the surrounding context, so it is normally a
+ * few hundred bytes; the cap is for the pathological case.
+ *
+ * Trimmed from the FRONT: a diff hunk ends at the commented line, so the tail is
+ * the part the comment is actually about.
+ */
+function reviewThreadDiffHunk(comments: ReadonlyArray<{ diffHunk?: string | null }>): string | null {
+  const hunk = comments.map((comment) => comment.diffHunk ?? "").find((value) => value.trim());
+  if (!hunk) return null;
+  if (hunk.length <= REVIEW_THREAD_DIFF_HUNK_MAX_CHARS) return hunk;
+  const tail = hunk.slice(hunk.length - REVIEW_THREAD_DIFF_HUNK_MAX_CHARS);
+  const fromLineBreak = tail.indexOf("\n");
+  return `...\n${fromLineBreak >= 0 ? tail.slice(fromLineBreak + 1) : tail}`;
+}
+
 export interface WorkflowToolDeps {
   laneService: ReturnType<typeof createLaneService>;
   prService?: ReturnType<typeof createPrService> | null;
@@ -465,6 +488,9 @@ export function createWorkflowTools(
                 path: thread.path,
                 line: thread.line,
                 url: thread.url,
+                // The code the thread is anchored to. Review feedback is not
+                // actionable without it.
+                diffHunk: reviewThreadDiffHunk(thread.comments),
                 comments: thread.comments.map((comment) => ({
                   id: comment.id,
                   author: comment.author,

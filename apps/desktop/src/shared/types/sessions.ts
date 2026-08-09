@@ -603,30 +603,13 @@ export type SessionDeltaSummary = {
   computedAt: string | null;
 };
 
-export type SessionSettlementBlockerCode =
-  | "pending_input"
-  | "turn_failed"
-  | "scheduled_work"
-  | "active_workload"
-  | "unfinished_goal"
-  | "unfinished_plan"
-  | "incomplete_report";
-
-export type SessionSettlementBlocker = {
-  code: SessionSettlementBlockerCode;
-  message: string;
-};
-
-export type AgentSessionSettlementResult =
-  | {
-      ok: true;
-      sessionId: string;
-    }
-  | {
-      ok: false;
-      sessionId: string;
-      blockers: SessionSettlementBlocker[];
-    };
+// Settlement-blocker types lived here to support `session.settleSelfSession`,
+// the action that let an agent file its own Work row. That action was removed
+// in 2026-07 on purpose (see services/adeActions/registry.ts): whether work is
+// finished is a subjective judgment agents are unreliable at, so settlement has
+// only two writers — a human, and the deterministic PR-merge policy, which
+// documents its own blocker bypass. With no caller, the blocker computation was
+// dead weight that read as "settlement consults blockers" when it does not.
 
 export type SessionLifecycleSettings = {
   autoSettleLaneSessionsOnPrMerge: boolean;

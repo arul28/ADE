@@ -1203,6 +1203,134 @@ describe("prMergeAutoSettlementService", () => {
       handledPrIds: [],
     });
   });
+
+  /**
+   * A merged PR with no declared chat links used to sweep the whole lane, and
+   * that sweep deliberately bypasses settlement blockers — so one merge could
+   * file chats that belonged to a different, still-open PR.
+   */
+  function createLaneSweepService(overrides: {
+    sessions: Array<{ id: string; toolType: string }>;
+  }) {
+    const db = createMemoryDb();
+    const settledSessionIds = new Set<string>();
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+      ids.forEach((id) => settledSessionIds.add(id));
+      return ids;
+    });
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => overrides.sessions.map((session) => ({
+          ...session,
+          archivedAt: null,
+          settledAt: settledSessionIds.has(session.id) ? "2026-03-24T12:01:05.000Z" : null,
+        }))),
+        settleSessionsWithOutcome,
+      } as any,
+      emitEvent: vi.fn(),
+    });
+    return { service, settleSessionsWithOutcome };
+  }
+
+  it("does not settle sessions another open PR in the lane claims", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [
+        { id: "chat-merged-work", toolType: "codex-chat" },
+        { id: "chat-other-pr", toolType: "codex-chat" },
+      ],
+    });
+    // The merged PR declares nothing (created via `gh pr create`); the sibling
+    // PR is still open and explicitly owns `chat-other-pr`.
+    const unlinkedPr = createSummary({ id: "pr-unlinked", state: "open" });
+    const siblingPr = createSummary({
+      id: "pr-sibling",
+      githubPrNumber: 102,
+      state: "merged",
+      mergedAt: "2026-03-24T11:00:00.000Z",
+      chatSessionIds: ["chat-other-pr"],
+    });
+
+    await service.processSnapshot({
+      prs: [unlinkedPr, siblingPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...unlinkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        siblingPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-merged-work"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+    expect(settleSessionsWithOutcome).not.toHaveBeenCalledWith(
+      ["chat-other-pr"],
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("settles nothing on an unlinked merge while another PR in the lane is still live", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [{ id: "chat-ambiguous", toolType: "codex-chat" }],
+    });
+    const unlinkedPr = createSummary({ id: "pr-unlinked", state: "open" });
+    const stillOpenPr = createSummary({ id: "pr-open", githubPrNumber: 102, state: "open" });
+
+    await service.processSnapshot({
+      prs: [unlinkedPr, stillOpenPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...unlinkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        stillOpenPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    // Ownership is genuinely ambiguous: the open PR's own merge files the lane.
+    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+  });
+
+  it("still settles exactly the declared sessions when a PR links its chats", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [
+        { id: "chat-linked", toolType: "codex-chat" },
+        { id: "chat-unrelated", toolType: "codex-chat" },
+      ],
+    });
+    const linkedPr = createSummary({ state: "open", chatSessionIds: ["chat-linked"] });
+    const stillOpenPr = createSummary({ id: "pr-open", githubPrNumber: 102, state: "open" });
+
+    await service.processSnapshot({
+      prs: [linkedPr, stillOpenPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...linkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        stillOpenPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    // A declaration is explicit, so a live sibling PR does not suppress it.
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-linked"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

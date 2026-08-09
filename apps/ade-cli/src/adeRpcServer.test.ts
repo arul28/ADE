@@ -495,7 +495,6 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
-      getSettlementBlockers: vi.fn(async () => []),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt, recurring = true }: {
         sessionId: string;
         cron?: string;

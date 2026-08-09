@@ -134,7 +134,6 @@ import {
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
-import type { SessionSettlementBlocker } from "../../../shared/types/sessions";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
 import {
@@ -39474,129 +39473,6 @@ export function createAgentChatService(args: {
     return false;
   };
 
-  const getSettlementBlockers = async (
-    sessionId: string,
-    options: { includeCurrentTurn?: boolean } = {},
-  ): Promise<SessionSettlementBlocker[]> => {
-    const normalizedSessionId = sessionId.trim();
-    const row = sessionService.get(normalizedSessionId);
-    if (!row) return [];
-
-    const chatBacked = isChatToolType(row.toolType);
-    const summary = chatBacked ? await getSessionSummary(normalizedSessionId) : null;
-    const managed = managedSessions.get(normalizedSessionId) ?? null;
-    const blockers: SessionSettlementBlocker[] = [];
-    const add = (code: SessionSettlementBlocker["code"], message: string): void => {
-      if (!blockers.some((blocker) => blocker.code === code)) {
-        blockers.push({ code, message });
-      }
-    };
-
-    if (row.attentionRequestedAt || summary?.awaitingInput || summary?.pendingInputItemId) {
-      add("pending_input", "Resolve the pending input or approval before settling.");
-    }
-    if (row.lastTurnFailedAt) {
-      add("turn_failed", "The latest turn failed; complete or explicitly recover the work before settling.");
-    }
-
-    const scheduledWork = summary?.scheduledWork
-      ?? await listScheduledWork({ sessionId: normalizedSessionId }).catch(() => []);
-    if (scheduledWork.some((item) => item.status !== "completed" && item.status !== "cancelled")) {
-      add("scheduled_work", "Cancel or complete the session's scheduled work before settling.");
-    }
-
-    const runtime = managed?.runtime ?? null;
-    if (options.includeCurrentTurn) {
-      const chatTurnActive = managed?.session.status === "active" || summary?.status === "active";
-      const cliTurnActive = isTrackedAgentCliToolType(row.toolType)
-        && ptyService?.getRuntimeState(normalizedSessionId, row.status) === "running";
-      if (chatTurnActive || cliTurnActive) {
-        add("active_workload", "Wait for the active primary turn to finish before settling.");
-      }
-    }
-    const hasWorkBeyondCurrentTurn = (() => {
-      if (!runtime) return false;
-      switch (runtime.kind) {
-        case "codex":
-          return runtime.manualCompactionPending
-            || runtime.approvals.size > 0
-            || runtime.activeSubagents.size > 0
-            || runtime.pendingPlanFollowups.length > 0;
-        case "claude":
-          return runtime.pendingSteers.length > 0
-            || runtime.approvals.size > 0
-            || runtime.activeSubagents.size > 0
-            || runtime.liveBackgroundTaskIds.size > 0;
-        case "opencode":
-          return runtime.pendingApprovals.size > 0 || runtime.pendingSteers.length > 0;
-        case "cursor":
-          return runtime.activeCloudRunId != null
-            || runtime.pendingSteers.length > 0
-            || runtime.permissionWaiters.size > 0;
-        case "droid":
-          return runtime.pendingSteers.length > 0 || runtime.permissionWaiters.size > 0;
-        default:
-          return false;
-      }
-    })();
-
-    let activeSubagents: AgentChatSubagentSnapshot[] = [];
-    if (chatBacked) {
-      try {
-        activeSubagents = await getTrackedSubagents(normalizedSessionId);
-      } catch {
-        // The resident runtime checks above remain authoritative when a
-        // provider cannot reconstruct historical subagent snapshots.
-      }
-    }
-    if (hasWorkBeyondCurrentTurn || activeSubagents.some((snapshot) => snapshot.status === "running")) {
-      add("active_workload", "Wait for active subagents or background work to finish before settling.");
-    }
-
-    if (summary?.codexGoal && summary.codexGoal.status !== "complete") {
-      add("unfinished_goal", "Mark the active Codex goal complete or clear it before settling.");
-    }
-    if (summary?.claudeGoal) {
-      add("unfinished_goal", "Complete or clear the active Claude goal before settling.");
-    }
-
-    if (chatBacked) try {
-      let latestTodos = managed?.todoItems ?? null;
-      if (!managed) {
-        const transcriptPath = resolveBestTranscriptPathForSessionId(normalizedSessionId);
-        if (transcriptPath) {
-          for (const envelope of parseAgentChatTranscript(
-            readHistoryFileSync(transcriptPath).toString("utf8"),
-          )) {
-            if (
-              envelope.sessionId === normalizedSessionId
-              && envelope.event.type === "todo_update"
-            ) {
-              latestTodos = envelope.event.items;
-            }
-          }
-        }
-      }
-      if (latestTodos?.some((item) => item.status !== "completed")) {
-        add("unfinished_plan", "Complete every remaining plan or task item before settling.");
-      }
-    } catch {
-      // Transcript hydration is best-effort; never invent a blocker without
-      // structured evidence.
-    }
-
-    if (summary?.completion && summary.completion.status !== "completed") {
-      add(
-        "incomplete_report",
-        summary.completion.status === "blocked"
-          ? "The completion report is blocked; resolve the blocker before settling."
-          : "The completion report is partial; finish the remaining work before settling.",
-      );
-    }
-
-    return blockers;
-  };
-
   // Broader than hasActiveWorkloads: a session that's between turns still
   // owns a live agent runtime (Claude SDK client, Codex app-server, etc.) the
   // user expects to keep using after switching away and back. Project context
@@ -44468,7 +44344,6 @@ export function createAgentChatService(args: {
     getSessionSummary,
     ensureSessionSurface,
     hasActiveWorkloads,
-    getSettlementBlockers,
     hasRetainableSessions,
     countActiveForLane,
     disposeForLane,

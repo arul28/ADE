@@ -11,6 +11,13 @@ import type { WorkGridSet } from "../state/appStore";
 
 export const GRID_SESSION_DND_MIME = "application/x-ade-grid-session";
 
+/**
+ * Hard bound on grid-set membership. Every tile renders a full session surface
+ * (chat pane or terminal) with `terminalVisible`, so membership is a direct
+ * multiplier on renderer heap; an uncapped set can OOM the ~4 GB renderer.
+ */
+export const MAX_WORK_GRID_TILES = 6;
+
 function randomId(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -97,6 +104,12 @@ export function addSessionBesideTarget(
   // Detach the dragged session from any set it currently lives in.
   const detached = removeSessionFromGrids(gridSets, sessionId);
   const targetSet = findGridSetForSession(detached, targetSessionId);
+
+  // A full set refuses new members (drops are also blocked at the tile layer;
+  // this keeps membership consistent if a drop slips through).
+  if (targetSet && targetSet.sessionIds.length >= MAX_WORK_GRID_TILES) {
+    return { gridSets: [...gridSets], gridSetId: targetSet.id };
+  }
 
   if (targetSet) {
     const next = detached.map((set) => {

@@ -104,4 +104,79 @@ describe("createWorkflowTools", () => {
     expect(prService.replyToReviewThread).toHaveBeenCalledWith({ prId: "pr-80", threadId: "thread-1", body: "Fixed." });
     expect(prService.resolveReviewThread).toHaveBeenCalledWith({ prId: "pr-80", threadId: "thread-1" });
   });
+
+  /**
+   * The resolver used to receive a review comment with only a path and a line
+   * number, so it reasoned about feedback without ever seeing the code.
+   */
+  function makeReviewThread(comments: Array<Record<string, unknown>>) {
+    return {
+      id: "thread-1",
+      isResolved: false,
+      isOutdated: false,
+      path: "src/prs.ts",
+      line: 18,
+      originalLine: 18,
+      startLine: null,
+      originalStartLine: null,
+      diffSide: "RIGHT",
+      url: "https://example.com/thread/1",
+      createdAt: "2026-03-23T12:00:00.000Z",
+      updatedAt: "2026-03-23T12:00:00.000Z",
+      comments,
+    };
+  }
+
+  it("hands the resolver the diff hunk a review thread is anchored to", async () => {
+    const diffHunk = "@@ -14,6 +14,9 @@ export function upsertRow(\n   const id = row.id;\n+  cache.set(id, row);\n";
+    const { tools } = makeTools({
+      getReviewThreads: vi.fn(async () => [
+        makeReviewThread([
+          { id: "comment-1", author: "reviewer", body: "This never evicts.", url: null, diffHunk },
+        ]),
+      ]),
+    });
+
+    const result = await (tools.prRefreshIssueInventory as any).execute({ prId: "pr-80" });
+
+    expect(result.reviewThreads[0].diffHunk).toBe(diffHunk);
+  });
+
+  it("trims an oversized diff hunk from the front, keeping the commented lines", async () => {
+    const filler = Array.from({ length: 400 }, (_, i) => `-  legacy line ${i}`).join("\n");
+    const tail = "+  const fixed = true;";
+    const { tools } = makeTools({
+      getReviewThreads: vi.fn(async () => [
+        makeReviewThread([
+          { id: "comment-1", author: "reviewer", body: "Look here.", url: null, diffHunk: `@@ -1,9 +1,9 @@\n${filler}\n${tail}` },
+        ]),
+      ]),
+    });
+
+    const result = await (tools.prRefreshIssueInventory as any).execute({ prId: "pr-80" });
+
+    const hunk: string = result.reviewThreads[0].diffHunk;
+    // A diff hunk ends at the commented line, so the tail is what the comment
+    // is about — that is the end that must survive the cap.
+    expect(hunk.endsWith(tail)).toBe(true);
+    expect(hunk.startsWith("...\n")).toBe(true);
+    expect(hunk.length).toBeLessThanOrEqual(2_004);
+    // Never cut mid-line.
+    expect(hunk.split("\n")[1].startsWith("-  legacy line ")).toBe(true);
+  });
+
+  it("reports no diff hunk rather than an empty string when GitHub omits one", async () => {
+    const { tools } = makeTools({
+      getReviewThreads: vi.fn(async () => [
+        makeReviewThread([
+          { id: "comment-1", author: "reviewer", body: "General note.", url: null, diffHunk: null },
+          { id: "comment-2", author: "reviewer", body: "Second.", url: null },
+        ]),
+      ]),
+    });
+
+    const result = await (tools.prRefreshIssueInventory as any).execute({ prId: "pr-80" });
+
+    expect(result.reviewThreads[0].diffHunk).toBeNull();
+  });
 });

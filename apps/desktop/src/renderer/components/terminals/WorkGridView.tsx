@@ -5,7 +5,7 @@ import type { WorkGridSet } from "../../state/appStore";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { detectDropEdge, type DropEdge } from "../ui/paneTreeOps";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
-import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
+import { GRID_SESSION_DND_MIME, MAX_WORK_GRID_TILES } from "../../lib/workGrid";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { primarySessionLabel } from "../../lib/sessions";
 
@@ -156,7 +156,12 @@ export function WorkGridView({
       layoutId={gridSet.layoutId}
       tree={fallbackTree}
       panes={panes}
-      acceptExternalDropMime={GRID_SESSION_DND_MIME}
+      // A full grid stops advertising the drop target: every tile holds a live
+      // session surface, so membership is the renderer's heap bound. Withholding
+      // the mime is the honest affordance — no drop indicator appears.
+      acceptExternalDropMime={
+        members.length >= MAX_WORK_GRID_TILES ? undefined : GRID_SESSION_DND_MIME
+      }
       onExternalDrop={onAddSessionToGrid}
       onLeafDraggedOut={onRemoveFromGrid}
       className={className}
