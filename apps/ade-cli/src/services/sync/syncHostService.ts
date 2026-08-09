@@ -1836,13 +1836,10 @@ function normalizeTerminalInputId(value: unknown): string | null {
 }
 
 /**
- * The chat event as mobile and web peers receive it.
- *
- * The policy itself lives in shared/chatEventCompaction so the wire and the
- * stored transcript cannot drift — they already had, and the same event went
- * out multi-megabyte on live push but came back compacted after reconnect
- * hydration. Every outbound path (live push, replay ring, snapshot backfill)
- * funnels through here, so they now agree byte for byte.
+ * Envelope adapter for the wire. The policy lives in
+ * `shared/chatEventCompaction` — see its header for why the wire and the stored
+ * transcript have to share one. Every outbound path (live push, replay ring,
+ * snapshot backfill) funnels through here.
  */
 export function compactChatEventEnvelopeForSync(
   envelope: AgentChatEventEnvelope,

@@ -10847,7 +10847,7 @@ describe("chat event replay buffer (resumable chat streams)", () => {
       result: {
         output: {
           images: [
-            `[ADE] Inline image data omitted from stored chat history (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
+            `[ADE] Inline image was left out (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
             smallImage,
           ],
           message: "generated two previews",

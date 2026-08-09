@@ -1115,6 +1115,32 @@ describe("summarizeDiffStats", () => {
 
     expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
   });
+
+  /**
+   * The notice became user-facing when phones started receiving the same
+   * compacted events, so its wording changed. The case above pins the old text
+   * that is already written into transcripts on disk; this one pins the new.
+   */
+  it("recognizes a compacted diff preview written with the current wording", () => {
+    const diff = [
+      "[ADE] Large file diff was shortened to keep this chat fast.",
+      "Original size: 120000 bytes.",
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "+ first preview line",
+      "- first removed line",
+      "----- END FIRST PREVIEW -----",
+      "",
+      "[ADE] 87000 bytes were left out.",
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "+ last preview line",
+      "- last removed line",
+      "----- END LAST PREVIEW -----",
+    ].join("\n");
+
+    expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
+  });
 });
 
 describe("readRecord", () => {

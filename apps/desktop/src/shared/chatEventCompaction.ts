@@ -17,7 +17,7 @@ import type { AgentChatEvent } from "./types/chat";
  * one side and forgotten on the other.
  */
 
-export const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
+const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
 const STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES = 16 * 1024;
 const STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES = 64 * 1024;
 const STORED_TOOL_RESULT_MAX_BYTES = 16 * 1024;
@@ -49,7 +49,7 @@ const redactStoredInlineImageDataUrls = (
         return { value: candidate, omittedBytes: 0, changed: false };
       }
       return {
-        value: `[ADE] Inline image data omitted from stored chat history (${bytes} bytes).`,
+        value: `[ADE] Inline image was left out (${bytes} bytes).`,
         omittedBytes: bytes,
         changed: true,
       };
@@ -59,7 +59,7 @@ const redactStoredInlineImageDataUrls = (
     }
     if (depth >= 32) {
       return {
-        value: "[ADE] Deep structured payload omitted from stored chat history.",
+        value: "[ADE] Deeply nested content was left out.",
         omittedBytes: 0,
         changed: true,
       };
@@ -127,7 +127,7 @@ const sliceUtf8FromEnd = (value: string, maxBytes: number): string => {
   return value.slice(value.length - low);
 };
 
-export const compactStoredTextPayload = (
+const compactStoredTextPayload = (
   label: string,
   text: string,
   maxBytes: number,
@@ -136,8 +136,8 @@ export const compactStoredTextPayload = (
   if (originalBytes <= maxBytes) return null;
 
   const prefix = [
-    `[ADE] Large ${label} was shortened for stored chat history.`,
-    `Original size: ${originalBytes} bytes. Full content was not stored.`,
+    `[ADE] Large ${label} was shortened to keep this chat fast.`,
+    `Original size: ${originalBytes} bytes.`,
     "",
     "----- BEGIN FIRST PREVIEW -----",
     "",
@@ -156,7 +156,7 @@ export const compactStoredTextPayload = (
     "",
     "----- END FIRST PREVIEW -----",
     "",
-    `[ADE] ${omittedBytes} bytes omitted from stored chat history.`,
+    `[ADE] ${omittedBytes} bytes were left out.`,
     "",
     "----- BEGIN LAST PREVIEW -----",
     "",
@@ -166,6 +166,38 @@ export const compactStoredTextPayload = (
     originalBytes,
     omittedBytes,
   };
+};
+
+/**
+ * Bound the running-command output the chat runtimes accumulate in memory.
+ *
+ * Exported as a whole operation rather than as its cap: callers that assembled
+ * the label and the byte budget themselves were a third and fourth copy of a
+ * pairing this module exists to own, which is exactly how the two cap tables
+ * drifted apart in the first place.
+ */
+export const compactRunningCommandOutput = (
+  text: string,
+): { text: string; originalBytes: number; omittedBytes: number } | null =>
+  compactStoredTextPayload("command output", text, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+
+/**
+ * Recognize this module's own wrapper by its shape.
+ *
+ * Deliberately not a marker key: every surface that shows an object-shaped tool
+ * result renders it as a JSON dump (desktop card and collapsed preview, the TUI
+ * one-liner, the iOS Result block), so an added key becomes the first line the
+ * user reads. Shape detection also recognizes wrappers already written to disk
+ * by builds that predate this check, which a marker never could.
+ */
+const isCompactedPayloadWrapper = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.summary === "string"
+    && candidate.summary.startsWith("[ADE] Large ")
+    && typeof candidate.preview === "string"
+    && typeof candidate.originalBytes === "number"
+    && typeof candidate.omittedBytes === "number";
 };
 
 const stringifyPayloadForCompaction = (value: unknown): { text: string; structured: boolean } => {
@@ -184,6 +216,21 @@ const compactStoredUnknownPayload = (
   value: unknown,
   maxBytes: number,
 ): { value: unknown; originalBytes: number; omittedBytes: number } | null => {
+  // Already ours: leave it exactly as it is. Compaction has to be idempotent
+  // because the wire applies it to events that came off disk already compacted
+  // (hydration and the replay ring). Re-wrapping is not a harmless no-op — the
+  // wrapper's newline-dense `preview` re-serializes with JSON escaping and comes
+  // out BIGGER than the cap, so each pass grew the payload (16.7 KB → 17.1 KB →
+  // 18.0 KB) while overwriting `originalBytes` with the previous pass's size,
+  // destroying the real one.
+  // Size-bounded: recognizing our own wrapper must not become an escape hatch a
+  // provider payload can trip by coincidence. A genuine wrapper measures a few
+  // percent over its cap, so anything past 2x is not one and gets compacted
+  // normally — the pass after that then sees a real wrapper and skips it.
+  if (isCompactedPayloadWrapper(value)
+    && utf8Bytes(stringifyPayloadForCompaction(value).text) <= maxBytes * 2) {
+    return null;
+  }
   const serialized = stringifyPayloadForCompaction(value);
   const compacted = compactStoredTextPayload(label, serialized.text, maxBytes);
   if (!compacted) return null;
@@ -192,7 +239,7 @@ const compactStoredUnknownPayload = (
   }
   return {
     value: {
-      summary: `[ADE] Large ${label} was shortened for stored chat history.`,
+      summary: `[ADE] Large ${label} was shortened to keep this chat fast.`,
       originalBytes: compacted.originalBytes,
       omittedBytes: compacted.omittedBytes,
       preview: compacted.text,
@@ -200,6 +247,20 @@ const compactStoredUnknownPayload = (
     originalBytes: compacted.originalBytes,
     omittedBytes: compacted.omittedBytes,
   };
+};
+
+const compactStructuredForStorage = (
+  value: unknown,
+): { value: unknown; changed: boolean } => {
+  if (value === undefined) return { value: undefined, changed: false };
+  const redacted = redactStoredInlineImageDataUrls(value);
+  const compacted = compactStoredUnknownPayload(
+    "tool result detail",
+    redacted.value,
+    STORED_TOOL_RESULT_STRUCTURED_MAX_BYTES,
+  );
+  if (!redacted.changed && !compacted) return { value, changed: false };
+  return { value: compacted?.value ?? redacted.value, changed: true };
 };
 
 export const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEvent => {
@@ -228,14 +289,24 @@ export const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEven
     const compacted = compactStoredUnknownPayload("tool result", redacted.value, maxBytes);
     const structured = compactStructuredForStorage(event.structured);
     if (!redacted.changed && !compacted && !structured.changed) return event;
+    // Only restate the result accounting when the result actually changed.
+    // Writing it unconditionally zeroed `resultOriginalBytes` on an event whose
+    // result was untouched and only `structured` was capped — throwing away a
+    // real prior measurement and reporting 0 bytes for a payload that had been
+    // shortened from megabytes.
+    const resultChanged = redacted.changed || compacted != null;
     const originalBytes = redacted.changed
       ? utf8Bytes(stringifyPayloadForCompaction(event.result).text)
       : compacted?.originalBytes ?? 0;
     return {
       ...event,
-      result: compacted?.value ?? redacted.value,
-      resultOriginalBytes: originalBytes,
-      resultOmittedBytes: redacted.omittedBytes + (compacted?.omittedBytes ?? 0),
+      ...(resultChanged
+        ? {
+            result: compacted?.value ?? redacted.value,
+            resultOriginalBytes: originalBytes,
+            resultOmittedBytes: redacted.omittedBytes + (compacted?.omittedBytes ?? 0),
+          }
+        : {}),
       ...(structured.changed ? { structured: structured.value } : {}),
     };
   }
@@ -295,19 +366,6 @@ export const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEven
   }
 
   return event;
-};
-const compactStructuredForStorage = (
-  value: unknown,
-): { value: unknown; changed: boolean } => {
-  if (value === undefined) return { value: undefined, changed: false };
-  const redacted = redactStoredInlineImageDataUrls(value);
-  const compacted = compactStoredUnknownPayload(
-    "tool result detail",
-    redacted.value,
-    STORED_TOOL_RESULT_STRUCTURED_MAX_BYTES,
-  );
-  if (!redacted.changed && !compacted) return { value, changed: false };
-  return { value: compacted?.value ?? redacted.value, changed: true };
 };
 
 /**

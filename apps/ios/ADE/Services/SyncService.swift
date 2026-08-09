@@ -7776,26 +7776,21 @@ final class SyncService: ObservableObject {
     Task { _ = try? await AccountService.shared.freshRelaySession() }
   }
 
-  /// A background long enough that iOS may suspend the socket without ever
-  /// delivering a close event. Below it the socket is probably real and worth
-  /// probing; at or above it, "connected" is not evidence of anything and the
-  /// session is replaced outright rather than trusted.
-  static let suspendedSessionBackgroundGapSeconds: TimeInterval = 10
-
   func handleBackgroundTransition() {
     backgroundedAt = Date()
   }
 
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
-    let backgroundGapSeconds = backgroundedAt.map { Date().timeIntervalSince($0) }
+    let resumeAction = syncForegroundResumeAction(
+      backgroundGapSeconds: backgroundedAt.map { Date().timeIntervalSince($0) }
+    )
     backgroundedAt = nil
     // Coming to the foreground is new information: the user is here, and the
     // network may be a different one entirely. Reset the attempt ladder even
     // from the terminal unreachable state, which otherwise costs the user a
     // manual tap to escape and meanwhile retries only on a 30-40s heartbeat.
     reconnectState.reset()
-    let sessionMayBeSuspended = (backgroundGapSeconds ?? 0) >= Self.suspendedSessionBackgroundGapSeconds
     // Push registration + Live Activity token re-reporting are independent of
     // the connection branch below, so kick them off up front. They no-op when
     // no machine is paired.
@@ -7810,7 +7805,7 @@ final class SyncService: ObservableObject {
     }
     warmRelayCredentialIfDialImminent()
 
-    if sessionMayBeSuspended {
+    if resumeAction == .replaceSession {
       // Mobile operating systems commonly suspend a socket without delivering
       // a close event, so after a long background `canSendLiveRequests()` only
       // proves the socket object still exists. Trusting it meant firing five
@@ -7830,13 +7825,9 @@ final class SyncService: ObservableObject {
       // Short background: the socket is probably real, so take the fast path
       // but stop treating it as proven. The probe runs alongside the refreshes
       // and tears the session down if nothing answers.
-      if backgroundGapSeconds != nil {
+      if resumeAction == .probeSession {
         verifyTransportAliveAfterSilence(
-          NSError(
-            domain: "ADE",
-            code: 24,
-            userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
-          ),
+          syncTransportSilenceRecoveryError(),
           trigger: "foreground_resume"
         )
       }
@@ -16230,12 +16221,6 @@ final class SyncService: ObservableObject {
     capturedOutboundEnvelopesForTesting = []
   }
 
-  /// Backdate the recorded background stamp so a test can exercise a resume
-  /// from a long suspension without actually waiting one out.
-  func setBackgroundedAtForTesting(secondsAgo: TimeInterval) {
-    backgroundedAt = Date().addingTimeInterval(-secondsAgo)
-  }
-
   func exhaustReconnectAttemptsForTesting() {
     while !reconnectState.isExhausted {
       _ = reconnectState.nextDelayNanoseconds()
@@ -17064,7 +17049,11 @@ final class SyncService: ObservableObject {
           syncDecodeChatSubscribeSnapshot(dict)
         }
         guard let snapshot = await snapshotDecodeTask.value else { break }
-        guard isCurrentConnectionGeneration(generation) else { break }
+        // Re-check the subscription too: the decode is a suspension point, and
+        // a project switch during it would otherwise land this snapshot in a
+        // session the user has already left.
+        guard isCurrentConnectionGeneration(generation),
+              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
         recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshot.sessionId)
         clearChatSnapshotWatchdogState(sessionId: snapshot.sessionId)
         let resumed = (dict["resumed"] as? Bool) == true
@@ -17139,7 +17128,10 @@ final class SyncService: ObservableObject {
         guard let envelope = await decodeTask.value else { break }
         // The decode is a suspension point: a teardown + reconnect can complete
         // while it runs, and a stale frame must not mutate the new connection.
-        guard isCurrentConnectionGeneration(generation) else { break }
+        // Same re-check as the snapshot path: the subscription can be dropped
+        // while the decode runs off-actor.
+        guard isCurrentConnectionGeneration(generation),
+              subscribedChatSessionIds.contains(sessionId) else { break }
 
         // Advanced only after a successful decode. Moving it before would
         // burn the watermark on an event that never got applied, losing it
@@ -17227,11 +17219,7 @@ final class SyncService: ObservableObject {
           isConstrained: path?.isConstrained == true
         ) {
           self.verifyTransportAliveAfterSilence(
-            NSError(
-              domain: "ADE",
-              code: 24,
-              userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
-            ),
+            syncTransportSilenceRecoveryError(),
             trigger: "heartbeat_silence"
           )
           continue

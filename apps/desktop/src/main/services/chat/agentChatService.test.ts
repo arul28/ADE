@@ -34176,7 +34176,7 @@ describe("createAgentChatService", () => {
     );
     expect(storedToolResult?.event.type).toBe("tool_result");
     if (storedToolResult?.event.type !== "tool_result") throw new Error("Expected stored tool result");
-    expect(JSON.stringify(storedToolResult.event.result)).toContain("Inline image data omitted");
+    expect(JSON.stringify(storedToolResult.event.result)).toContain("Inline image was left out");
 
     releaseStream();
     await sendPromise;

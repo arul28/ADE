@@ -125,13 +125,13 @@ func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steer: Wo
   return false
 }
 
-/// `fallbackTranscript` is an autoclosure because building it means re-parsing
-/// the whole fallback entry page (240-600 KB). The two status guards below
-/// reject every actively-streaming tick without ever reading it, so evaluating
-/// it at the call site did that work ~6-7x/s during a stream and discarded the
-/// result. Order matters here: the cheap checks must come first.
+/// `fallbackTranscript` is a closure, not a value, because building it means
+/// re-parsing the whole fallback entry page (240-600 KB). The two status guards
+/// below reject every actively-streaming tick without ever reading it, so
+/// passing a built value did that work ~6-7x/s during a stream and threw the
+/// result away. Order matters here: the cheap checks must come first.
 func workChatShouldPreferFallbackTranscript(
-  fallbackTranscript: @autoclosure () -> [WorkChatEnvelope],
+  fallbackTranscript: () -> [WorkChatEnvelope],
   sessionStatus: String,
   liveTranscript: [WorkChatEnvelope]
 ) -> Bool {
@@ -2001,7 +2001,7 @@ struct WorkSessionDestinationView: View {
     }
 
     let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallbackTranscript,
+      fallbackTranscript: { fallbackTranscript },
       sessionStatus: transcriptStatus,
       liveTranscript: eventTranscript
     )
@@ -2566,7 +2566,7 @@ struct WorkSessionDestinationView: View {
       return built
     }
     let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallbackTranscript(),
+      fallbackTranscript: fallbackTranscript,
       sessionStatus: transcriptStatus,
       liveTranscript: liveTranscript
     )

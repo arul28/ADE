@@ -159,8 +159,12 @@ export function WorkGridView({
       // A full grid stops advertising the drop target: every tile holds a live
       // session surface, so membership is the renderer's heap bound. Withholding
       // the mime is the honest affordance — no drop indicator appears.
+      //
+      // Gated on persisted membership, not the resolved tiles: the cap in
+      // `addSessionBesideTarget` counts `sessionIds`, so measuring anything else
+      // here would advertise a drop that then silently no-ops.
       acceptExternalDropMime={
-        members.length >= MAX_WORK_GRID_TILES ? undefined : GRID_SESSION_DND_MIME
+        gridSet.sessionIds.length >= MAX_WORK_GRID_TILES ? undefined : GRID_SESSION_DND_MIME
       }
       onExternalDrop={onAddSessionToGrid}
       onLeafDraggedOut={onRemoveFromGrid}

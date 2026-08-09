@@ -134,9 +134,8 @@ import {
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import {
-  STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES,
   compactChatEventForStorage,
-  compactStoredTextPayload,
+  compactRunningCommandOutput,
 } from "../../../shared/chatEventCompaction";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -24668,7 +24667,7 @@ export function createAgentChatService(args: {
       const turnId = turnIdFromParams ?? state.itemTurnIdByItemId.get(itemId) ?? state.activeTurnId;
       if (state.commandOutputStorageClosedItemIds.has(itemId)) return true;
       const next = `${state.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
-      const compacted = compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+      const compacted = compactRunningCommandOutput(next);
       state.commandOutputByItemId.set(itemId, compacted?.text ?? next);
       evictOldestEntries(state.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
       if (compacted) state.commandOutputStorageClosedItemIds.add(itemId);
@@ -26675,7 +26674,7 @@ export function createAgentChatService(args: {
       const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
       const compacted = storageClosed
         ? null
-        : compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+        : compactRunningCommandOutput(next);
       if (!storageClosed) {
         runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
         evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);

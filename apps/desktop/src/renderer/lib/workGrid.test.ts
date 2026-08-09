@@ -7,11 +7,6 @@ import {
   removeSessionFromGrids,
 } from "./workGrid";
 
-/**
- * Grid membership is a renderer-heap bound, not a preference: every tile renders
- * a full live session surface (`terminalVisible`), so an uncapped set multiplies
- * whole chat panes against a ~4 GB renderer heap.
- */
 function gridSetOf(sessionIds: string[]): WorkGridSet {
   return { id: "grid-1", layoutId: "layout-1", sessionIds };
 }
@@ -68,6 +63,25 @@ describe("work grid membership cap", () => {
 
     expect(result.gridSets).toHaveLength(1);
     expect(result.gridSets[0].sessionIds).toEqual(["chat-a", "chat-b"]);
+  });
+
+  it("still lets a full set be reordered", () => {
+    // The cap must bound membership, not freeze layout. This works because the
+    // dragged session is detached before the cap is checked, which leaves the
+    // set one below the limit — worth pinning, since it reads as an accident of
+    // statement order rather than an intended rule.
+    const full = Array.from({ length: MAX_WORK_GRID_TILES }, (_, i) => `chat-${i}`);
+
+    const result = addSessionBesideTarget([gridSetOf(full)], {
+      sessionId: full[MAX_WORK_GRID_TILES - 1],
+      targetSessionId: full[0],
+      projectKey: "proj",
+      placeAfterTarget: false,
+    });
+
+    expect(result.gridSets[0].sessionIds).toHaveLength(MAX_WORK_GRID_TILES);
+    expect(result.gridSets[0].sessionIds[0]).toBe(full[MAX_WORK_GRID_TILES - 1]);
+    expect([...result.gridSets[0].sessionIds].sort()).toEqual([...full].sort());
   });
 
   it("frees a slot when a member leaves a full set", () => {

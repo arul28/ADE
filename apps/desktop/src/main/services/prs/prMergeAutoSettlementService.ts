@@ -18,6 +18,48 @@ function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: str
   return Number.isFinite(mergedMs) && Number.isFinite(enabledMs) && mergedMs >= enabledMs;
 }
 
+/** Which of a lane's sessions a merged PR is entitled to file. */
+type MergeSettlementScope =
+  /** The PR declared its chats; settle exactly those. */
+  | { kind: "linked"; sessionIds: Set<string> }
+  /** The PR declared none; sweep the lane minus what other PRs claim. */
+  | { kind: "sweep"; claimedByOtherPrs: Set<string> }
+  /** The PR declared none and a sibling is still live; settle nothing. */
+  | { kind: "ambiguous" };
+
+/**
+ * A PR only carries `chatSessionIds` when it was opened or linked through ADE
+ * with a session in hand. PRs created from a terminal (`gh pr create`) or
+ * backfilled by GitHub polling arrive with none, and for those the lane-wide
+ * sweep is the only thing that ever files their work — so it stays.
+ *
+ * But a sweep is a guess, and this path deliberately bypasses settlement
+ * blockers, so it is bounded to lanes where it cannot be wrong: another live PR
+ * in the lane means ownership is genuinely ambiguous and that PR's own merge
+ * should file its work, and a session another PR explicitly claims belongs to
+ * that PR's lifecycle rather than to this merge.
+ *
+ * A declaration always wins: when this PR names its sessions we settle exactly
+ * those, even if a sibling claims them too.
+ */
+function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): MergeSettlementScope {
+  const declared = new Set(
+    (pr.chatSessionIds ?? []).map((sessionId) => String(sessionId ?? "").trim()).filter(Boolean),
+  );
+  if (declared.size > 0) return { kind: "linked", sessionIds: declared };
+
+  const claimedByOtherPrs = new Set<string>();
+  for (const other of snapshot) {
+    if (other.id === pr.id || other.laneId !== pr.laneId) continue;
+    if (other.state === "open" || other.state === "draft") return { kind: "ambiguous" };
+    for (const sessionId of other.chatSessionIds ?? []) {
+      const trimmed = String(sessionId ?? "").trim();
+      if (trimmed) claimedByOtherPrs.add(trimmed);
+    }
+  }
+  return { kind: "sweep", claimedByOtherPrs };
+}
+
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "list" | "settleSessionsWithOutcome">;
@@ -91,40 +133,9 @@ export function createPrMergeAutoSettlementService(args: {
     );
 
     for (const pr of candidates) {
-      const linkedChatSessionIds = new Set(
-        (pr.chatSessionIds ?? []).map((sessionId) => String(sessionId ?? "").trim()).filter(Boolean),
-      );
+      const scope = resolveMergeSettlementScope(pr, prs);
 
-      // A PR only carries `chatSessionIds` when it was opened or linked through
-      // ADE with a session in hand. PRs created from a terminal (`gh pr create`)
-      // or backfilled by GitHub polling arrive with none, and for those the
-      // lane-wide sweep below is the only thing that ever files their work.
-      //
-      // But a sweep is a guess, and this path deliberately bypasses settlement
-      // blockers — so bound the guess to lanes where it cannot be wrong:
-      //   * another live PR in the lane means ownership is genuinely ambiguous,
-      //     so settle nothing and let that PR's own merge file its work;
-      //   * a session another PR explicitly claims belongs to that PR's
-      //     lifecycle, never to this merge.
-      // An explicit link always wins: when this PR declares its sessions we
-      // settle exactly those, even if another PR claims them too.
-      let laneHasOtherLivePr = false;
-      const sessionIdsClaimedByOtherPrs = new Set<string>();
-      for (const other of prs) {
-        if (other.id === pr.id || other.laneId !== pr.laneId) continue;
-        if (other.state === "open" || other.state === "draft") laneHasOtherLivePr = true;
-        for (const sessionId of other.chatSessionIds ?? []) {
-          const trimmed = String(sessionId ?? "").trim();
-          if (trimmed) sessionIdsClaimedByOtherPrs.add(trimmed);
-        }
-      }
-      const sweepingLane = linkedChatSessionIds.size === 0;
-      // Still marked handled below: this merge looked and decided there was
-      // nothing it could safely file, and the sibling PR's own merge is what
-      // should file that lane's work.
-      const skipAmbiguousSweep = sweepingLane && laneHasOtherLivePr;
-
-      const rows = skipAmbiguousSweep ? [] : args.sessionService.list({
+      const rows = scope.kind === "ambiguous" ? [] : args.sessionService.list({
         laneId: pr.laneId,
         limit: 500,
       }).filter((session) =>
@@ -132,9 +143,9 @@ export function createPrMergeAutoSettlementService(args: {
         && !session.settledAt
         && (isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)),
       ).filter((session) => (
-        sweepingLane
-          ? !sessionIdsClaimedByOtherPrs.has(session.id)
-          : linkedChatSessionIds.has(session.id)
+        scope.kind === "linked"
+          ? scope.sessionIds.has(session.id)
+          : !scope.claimedByOtherPrs.has(session.id)
       ));
 
       const settledSessionIds: string[] = [];
@@ -163,9 +174,11 @@ export function createPrMergeAutoSettlementService(args: {
 
       const finalSettings = getSessionLifecycleSettings(args.db);
       const finalState = getPrMergeAutoSettlementState(args.db);
-      // Mark this PR handled even when its session had background work. The
-      // merge itself is the explicit override, and a later user reactivation
-      // belongs to a new lifecycle rather than this already-consumed merge.
+      // Mark this PR handled even when its session had background work, and
+      // even when the scope came back `ambiguous` and nothing was filed at all:
+      // the merge itself is the explicit override, this one looked and decided,
+      // and a later user reactivation belongs to a new lifecycle rather than to
+      // this already-consumed merge.
       if (
         finalSettings.autoSettleLaneSessionsOnPrMerge
         && finalState?.enabledSince

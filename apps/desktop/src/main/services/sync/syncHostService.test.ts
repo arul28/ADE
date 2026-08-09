@@ -2495,7 +2495,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         };
       };
       expect(payload.event.result.output).toMatchObject({
-        preview: expect.stringContaining("Inline image data omitted from mobile chat sync"),
+        // The wire runs the same compaction the stored transcript does, so the
+        // redaction notice is the storage policy's wording.
+        preview: expect.stringContaining("Inline image was left out"),
         message: "desktop keeps the full preview",
       });
       expect(payload.event.resultOmittedBytes).toBe(Buffer.byteLength(inlineImage, "utf8"));

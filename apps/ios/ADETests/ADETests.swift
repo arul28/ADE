@@ -17712,7 +17712,7 @@ final class ADETests: XCTestCase {
     ]
 
     XCTAssertFalse(workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallback,
+      fallbackTranscript: { fallback },
       sessionStatus: "idle",
       liveTranscript: live
     ))

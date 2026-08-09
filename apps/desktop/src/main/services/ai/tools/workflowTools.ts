@@ -25,7 +25,7 @@ function formatToolError(prefix: string, err: unknown): { success: false; error:
 }
 
 /** Characters of `diff_hunk` handed to the model per review thread. */
-const REVIEW_THREAD_DIFF_HUNK_MAX_CHARS = 2_000;
+export const REVIEW_THREAD_DIFF_HUNK_MAX_CHARS = 2_000;
 
 /**
  * The code a review thread points at, trimmed for the prompt.

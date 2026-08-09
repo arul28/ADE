@@ -648,10 +648,13 @@ export function eventHasPayload(value: unknown): boolean {
 }
 
 export function summarizeDiffStats(diff: string): { additions: number; deletions: number } {
-  if (
-    diff.includes("[ADE] Large file diff was shortened for stored chat history.")
-    && diff.includes("bytes omitted from stored chat history.")
-  ) {
+  // Both wordings are matched on purpose. The notice is now user-facing (the
+  // same compaction feeds phones, so it can no longer talk about "stored chat
+  // history"), but transcripts already on disk carry the old text and must keep
+  // being recognized as shortened rather than counted as real diff lines.
+  const shortenedDiff = diff.includes("[ADE] Large file diff was shortened")
+    && (diff.includes("bytes were left out.") || diff.includes("bytes omitted from stored chat history."));
+  if (shortenedDiff) {
     return { additions: 0, deletions: 0 };
   }
 

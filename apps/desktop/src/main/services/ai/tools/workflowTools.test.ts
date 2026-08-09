@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createWorkflowTools } from "./workflowTools";
+import { REVIEW_THREAD_DIFF_HUNK_MAX_CHARS, createWorkflowTools } from "./workflowTools";
 
 function makeTools(prServiceOverrides: Record<string, unknown> = {}) {
   const prService = {
@@ -160,7 +160,8 @@ describe("createWorkflowTools", () => {
     // is about — that is the end that must survive the cap.
     expect(hunk.endsWith(tail)).toBe(true);
     expect(hunk.startsWith("...\n")).toBe(true);
-    expect(hunk.length).toBeLessThanOrEqual(2_004);
+    // cap + the "...\n" ellipsis marker the trim prepends
+    expect(hunk.length).toBeLessThanOrEqual(REVIEW_THREAD_DIFF_HUNK_MAX_CHARS + 4);
     // Never cut mid-line.
     expect(hunk.split("\n")[1].startsWith("-  legacy line ")).toBe(true);
   });

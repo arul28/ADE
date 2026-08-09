@@ -354,3 +354,45 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     userInfo: userInfo
   )
 }
+
+/// The error the transport-silence recovery paths report. One factory because
+/// the heartbeat-silence probe and the foreground-resume probe were building the
+/// same literal by hand. The socket-close path keeps its own construction: that
+/// one carries close-code diagnostics this message does not.
+func syncTransportSilenceRecoveryError() -> NSError {
+  NSError(
+    domain: "ADE",
+    code: 24,
+    userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
+  )
+}
+
+// MARK: - Foreground resume
+
+/// What a return to the foreground should do with the existing sync session.
+enum SyncForegroundResumeAction: Equatable {
+  /// Tear the session down and rebuild it without asking it anything first.
+  case replaceSession
+  /// Keep the session but stop treating it as proven — probe it alongside the refreshes.
+  case probeSession
+  /// No background gap was recorded (a cold bootstrap); just refresh.
+  case refreshOnly
+}
+
+/// A background longer than this may have had its socket suspended by iOS
+/// without a close event ever arriving, so "connected" stops being evidence.
+let syncSuspendedSessionBackgroundGapSeconds: TimeInterval = 10
+
+/// Classify a resume by how long the app was backgrounded — the only evidence
+/// available about whether the socket is still real.
+///
+/// Below the threshold the socket is probably alive and replacing it would cost
+/// a reconnect on every trivial app switch. At or above it, probing only buys a
+/// round trip we are about to spend anyway, so the session is replaced outright.
+func syncForegroundResumeAction(
+  backgroundGapSeconds: TimeInterval?,
+  suspendedGapSeconds: TimeInterval = syncSuspendedSessionBackgroundGapSeconds
+) -> SyncForegroundResumeAction {
+  guard let backgroundGapSeconds else { return .refreshOnly }
+  return backgroundGapSeconds >= suspendedGapSeconds ? .replaceSession : .probeSession
+}

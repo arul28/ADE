@@ -569,30 +569,27 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 0)
   }
 
-  /// A short hop out and back (glancing at the notification shade) should keep
-  /// the live session: replacing it there would cost a reconnect on every
-  /// trivial app switch.
-  @MainActor
-  func testResumeAfterShortBackgroundKeepsTheLiveSession() async throws {
-    let baseURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
-    let database = DatabaseService(baseURL: baseURL)
-    let service = SyncService(database: database)
-    service.configureConnectedTransportForTesting()
-    service.completeCapturedRefreshRequestsForTesting()
-    defer {
-      service.disconnect(clearCredentials: false)
-      database.close()
-      try? FileManager.default.removeItem(at: baseURL)
-    }
+  /// Resume classification is a pure decision, so it is tested like the other
+  /// 26 policy rules in this file rather than by standing up a service.
+  func testForegroundResumeReplacesTheSessionOnlyAfterALongBackground() {
+    // iOS suspends sockets without delivering a close event, so past the
+    // threshold "connected" is not evidence and the session is replaced.
+    XCTAssertEqual(
+      syncForegroundResumeAction(backgroundGapSeconds: syncSuspendedSessionBackgroundGapSeconds),
+      .replaceSession
+    )
+    XCTAssertEqual(syncForegroundResumeAction(backgroundGapSeconds: 600), .replaceSession)
 
-    let generation = service.connectionGenerationForTesting()
-    service.setBackgroundedAtForTesting(secondsAgo: 1)
-    await service.handleForegroundTransition()
+    // A glance at the notification shade keeps the live session; replacing it
+    // there would cost a reconnect on every trivial app switch.
+    XCTAssertEqual(syncForegroundResumeAction(backgroundGapSeconds: 1), .probeSession)
+    XCTAssertEqual(
+      syncForegroundResumeAction(backgroundGapSeconds: syncSuspendedSessionBackgroundGapSeconds - 0.1),
+      .probeSession
+    )
 
-    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
-    XCTAssertEqual(service.connectionState, .connected)
+    // No recorded background at all is a cold bootstrap, not a resume.
+    XCTAssertEqual(syncForegroundResumeAction(backgroundGapSeconds: nil), .refreshOnly)
   }
 
   /// The ladder used to run to a terminal `unreachable` state escapable only by
