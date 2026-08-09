@@ -741,8 +741,13 @@ function PiSignIn({
     cancelledProviderRef.current = null;
     const attemptId = ++piSignInAttemptCounter.current;
     setFlow({ attemptId, providerId, method: method ?? null, prompt: null, link: null, progress: null });
+    // Every update below runs after an await, by which time "Try again" may have
+    // started a replacement. A superseded attempt must not report its own
+    // outcome or refresh providers on the newer one's behalf.
+    const isCurrentAttempt = () => piSignInAttemptCounter.current === attemptId;
     try {
       const result = await window.ade.ai.piLoginStart({ providerId, ...(method ? { method } : {}) });
+      if (!isCurrentAttempt()) return;
       const cancelled = !result.ok && cancelledProviderRef.current === providerId;
       setOutcome({
         providerId,
@@ -755,6 +760,7 @@ function PiSignIn({
         void loadProviders();
       }
     } catch (err) {
+      if (!isCurrentAttempt()) return;
       setOutcome({
         providerId,
         method: method ?? null,
