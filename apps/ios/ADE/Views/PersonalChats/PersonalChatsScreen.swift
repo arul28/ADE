@@ -242,9 +242,11 @@ private struct PersonalChatRow: View {
   }
 
   private var modelContext: String {
-    let rawModel = summary.modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
-      .flatMap { $0.isEmpty ? nil : $0 }
-      ?? summary.model
+    // `flatMap` on the optional-chained String resolves to Sequence.flatMap
+    // (yielding [Character]), not Optional.flatMap, so the empty-string fallback
+    // has to be spelled out.
+    let trimmedModelId = summary.modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let rawModel = trimmedModelId.isEmpty ? summary.model : trimmedModelId
     let metadata = workResolvedPiModelMetadata(
       modelId: rawModel,
       profileId: summary.piProfileId,

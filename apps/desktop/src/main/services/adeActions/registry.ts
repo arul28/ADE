@@ -11,6 +11,13 @@ import {
   startOAuth as startOpenCodeOAuth,
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
+import {
+  addPiAuthStatusListener,
+  cancelPiLogin,
+  listPiLoginProviders,
+  startPiLogin,
+  submitPiLoginPrompt,
+} from "../ai/piAuthService";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
@@ -230,7 +237,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev"],
+  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
@@ -679,6 +686,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setOpencodeProviderKey",
     "clearOpencodeProviderKey",
     "refreshModelsDev",
+    "piLoginProviders",
+    "piLoginStart",
+    "piLoginSubmit",
+    "piLoginCancel",
     "listCursorCloudRepositories",
     "listCursorCloudAgents",
     "listCursorCloudRuns",
@@ -2721,28 +2732,31 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   };
 }
 
-// Bridge OpenCode OAuth status transitions onto each runtime's event buffer so
-// remote/web clients (which drain runtimeEvents over the sync/relay channel)
+// Bridge provider sign-in status transitions onto each runtime's event buffer
+// so remote/web clients (which drain runtimeEvents over the sync/relay channel)
 // mirror them, exactly like desktop windows do over IPC. Registered once per
-// runtime; the listener is detached when the runtime is disposed.
-const oauthStatusBridgedRuntimes = new WeakSet<AdeRuntime>();
-function ensureOpenCodeOAuthStatusRelayBridge(runtime: AdeRuntime): void {
-  if (!runtime.eventBuffer || oauthStatusBridgedRuntimes.has(runtime)) return;
-  oauthStatusBridgedRuntimes.add(runtime);
-  const unsubscribe = addOpenCodeOAuthStatusListener((event) => {
+// runtime; the listeners are detached when the runtime is disposed.
+const authStatusBridgedRuntimes = new WeakSet<AdeRuntime>();
+function ensureAuthStatusRelayBridges(runtime: AdeRuntime): void {
+  if (!runtime.eventBuffer || authStatusBridgedRuntimes.has(runtime)) return;
+  authStatusBridgedRuntimes.add(runtime);
+  const push = (kind: string, event: unknown): void => {
     try {
       runtime.eventBuffer.push({
         timestamp: new Date().toISOString(),
         category: "runtime",
-        payload: { kind: "opencodeOAuthStatus", event },
+        payload: { kind, event },
       });
     } catch {
-      // A full/broken buffer must not break the OAuth flow.
+      // A full/broken buffer must not break the sign-in flow.
     }
-  });
+  };
+  const unsubscribeOpenCode = addOpenCodeOAuthStatusListener((event) => push("opencodeOAuthStatus", event));
+  const unsubscribePi = addPiAuthStatusListener((event) => push("piAuthStatus", event));
   const dispose = runtime.dispose;
   runtime.dispose = () => {
-    unsubscribe();
+    unsubscribeOpenCode();
+    unsubscribePi();
     dispose();
   };
 }
@@ -2750,7 +2764,7 @@ function ensureOpenCodeOAuthStatusRelayBridge(runtime: AdeRuntime): void {
 function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   const aiIntegrationService = runtime.aiIntegrationService;
   if (!aiIntegrationService) return null;
-  ensureOpenCodeOAuthStatusRelayBridge(runtime);
+  ensureAuthStatusRelayBridges(runtime);
   const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
     projectRoot: runtime.projectRoot,
     projectConfig: runtime.projectConfigService.getEffective(),
@@ -2778,6 +2792,37 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
         providerId: requireNonEmptyString(args?.providerId, "providerId"),
       }),
+    piLoginProviders: () => listPiLoginProviders(),
+    piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
+      const providerId = requireNonEmptyString(args?.providerId, "providerId");
+      const result = await startPiLogin({
+        providerId,
+        ...(args?.method ? { method: args.method } : {}),
+      });
+      // Signing in unlocks models, so the readiness cache is stale until it is
+      // dropped. The IPC handler does the same; this keeps the action path
+      // (remote runtime, `ade actions run`) consistent with it.
+      if (result.ok) {
+        try {
+          aiIntegrationService.invalidateProviderReadinessCaches();
+        } catch (error) {
+          runtime.logger.warn("ai.pi_auth_cache_invalidation_failed", {
+            provider: providerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return result;
+    },
+    piLoginSubmit: (args?: { providerId?: string; requestId?: string; value?: string }) =>
+      submitPiLoginPrompt({
+        providerId: requireNonEmptyString(args?.providerId, "providerId"),
+        requestId: requireNonEmptyString(args?.requestId, "requestId"),
+        value: typeof args?.value === "string" ? args.value : "",
+      }),
+    piLoginCancel: (args?: { providerId?: string }) => {
+      cancelPiLogin({ providerId: requireNonEmptyString(args?.providerId, "providerId") });
+    },
     refreshModelsDev: async () => {
       try {
         await refreshModelsDevNow();

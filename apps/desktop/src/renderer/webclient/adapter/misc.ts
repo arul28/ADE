@@ -53,6 +53,8 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  PiAuthStatusEvent,
+  PiLoginProvider,
 } from "../../../shared/types";
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
@@ -316,17 +318,21 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
   };
 
-  // Desktop delivers ai.opencodeOAuthStatus over IPC. The web sync protocol has
-  // no push channel for runtime-buffered events, but OAuth status transitions land
-  // in the shared runtime event buffer, which we can pull (unfiltered and
-  // non-destructively — the cursor is client-driven, so this never starves the
-  // personal-chats drain) via personalChats.streamEvents. Drain it only while an
-  // OAuth flow is active and re-emit each opencodeOAuthStatus payload onto the
-  // adapter bus, so the onOpencodeOAuthStatus subscription becomes live instead of
+  // Desktop delivers ai.opencodeOAuthStatus and ai.piAuthStatus over IPC. The web
+  // sync protocol has no push channel for runtime-buffered events, but sign-in
+  // status transitions land in the shared runtime event buffer, which we can pull
+  // (unfiltered and non-destructively — the cursor is client-driven, so this never
+  // starves the personal-chats drain) via personalChats.streamEvents. Drain it only
+  // while a sign-in is active and re-emit each payload onto the adapter bus, so the
+  // onOpencodeOAuthStatus/onPiAuthStatus subscriptions become live instead of
   // inert. Scoped to active flows to avoid a perpetual background poll.
   const OAUTH_STATUS_POLL_MS = 1_000;
   const OAUTH_STATUS_MAX_MS = 5 * 60_000;
-  const OAUTH_TERMINAL_STATES = new Set(["connected", "failed", "cancelled", "timeout"]);
+  const AUTH_TERMINAL_STATES: Record<string, Set<string>> = {
+    opencodeOAuthStatus: new Set(["connected", "failed", "cancelled", "timeout"]),
+    piAuthStatus: new Set(["success", "error"]),
+  };
+  /** Entries are `${kind}:${providerId}` so both flows can drain at once. */
   const oauthActiveProviders = new Set<string>();
   let oauthDrainCursor: number | null = null;
   let oauthDrainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -371,19 +377,21 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     for (const event of page.events) {
       if (event.category !== "runtime") continue;
       const payload = event.payload as { kind?: unknown; event?: unknown };
-      if (payload?.kind !== "opencodeOAuthStatus" || !payload.event || typeof payload.event !== "object") continue;
-      const statusEvent = payload.event as OpenCodeOAuthStatusEvent;
-      events.emit("opencodeOAuthStatus" as never, statusEvent as never);
-      if (typeof statusEvent.providerId === "string" && OAUTH_TERMINAL_STATES.has(statusEvent.state)) {
-        oauthActiveProviders.delete(statusEvent.providerId);
+      const kind = typeof payload?.kind === "string" ? payload.kind : "";
+      const terminalStates = AUTH_TERMINAL_STATES[kind];
+      if (!terminalStates || !payload.event || typeof payload.event !== "object") continue;
+      const statusEvent = payload.event as OpenCodeOAuthStatusEvent | PiAuthStatusEvent;
+      events.emit(kind as never, statusEvent as never);
+      if (typeof statusEvent.providerId === "string" && terminalStates.has(statusEvent.state)) {
+        oauthActiveProviders.delete(`${kind}:${statusEvent.providerId}`);
       }
     }
     if (oauthActiveProviders.size === 0 || Date.now() > oauthDrainDeadline) stopOAuthDrain();
     else scheduleOAuthPoll();
   }
 
-  const startOAuthDrain = async (providerId: string): Promise<void> => {
-    if (providerId) oauthActiveProviders.add(providerId);
+  const startOAuthDrain = async (kind: string, providerId: string): Promise<void> => {
+    if (providerId) oauthActiveProviders.add(`${kind}:${providerId}`);
     oauthDrainDeadline = Date.now() + OAUTH_STATUS_MAX_MS;
     if (oauthDrainCursor == null && oauthDrainTimer == null) {
       // Advance to the buffer tail before the flow emits, so we skip stale
@@ -432,7 +440,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // start so the flow's own events aren't missed.
     opencodeOAuthStart: async (args: unknown) => {
       const providerId = oauthProviderId(args);
-      await startOAuthDrain(providerId);
+      await startOAuthDrain("opencodeOAuthStatus", providerId);
       try {
         return await call<OpenCodeOAuthStartResult>(
           "ai.opencodeOAuthStart",
@@ -441,7 +449,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        if (providerId) oauthActiveProviders.delete(providerId);
+        if (providerId) oauthActiveProviders.delete(`opencodeOAuthStatus:${providerId}`);
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
@@ -465,6 +473,35 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       call<{ lastFetchedAt: number | null }>("ai.refreshModelsDev", undefined, { lastFetchedAt: null }),
     onOpencodeOAuthStatus: (cb: (status: OpenCodeOAuthStatusEvent) => void) =>
       events.on("opencodeOAuthStatus" as never, cb as never),
+    piLoginProviders: () => call<PiLoginProvider[]>("ai.piLoginProviders", undefined, []),
+    // Pi's sign-in blocks on prompts that only the host can answer, so an
+    // offline web client has no honest fallback shape here either.
+    piLoginStart: async (args: unknown) => {
+      const providerId = oauthProviderId(args);
+      await startOAuthDrain("piAuthStatus", providerId);
+      try {
+        return await call<{ ok: boolean; error?: string }>(
+          "ai.piLoginStart",
+          args,
+          unavailableOnHost("Pi sign-in is unavailable in the web client while offline"),
+          false,
+        );
+      } catch (error) {
+        if (providerId) oauthActiveProviders.delete(`piAuthStatus:${providerId}`);
+        if (oauthActiveProviders.size === 0) stopOAuthDrain();
+        throw error;
+      }
+    },
+    piLoginSubmit: (args: unknown) =>
+      call<{ ok: boolean; error?: string }>(
+        "ai.piLoginSubmit",
+        args,
+        { ok: false, error: "Pi sign-in is unavailable in the web client while offline" },
+        false,
+      ),
+    piLoginCancel: (args: unknown) => call<void>("ai.piLoginCancel", args, undefined, false),
+    onPiAuthStatus: (cb: (status: PiAuthStatusEvent) => void) =>
+      events.on("piAuthStatus" as never, cb as never),
   };
 
   const github: Record<string, unknown> = {

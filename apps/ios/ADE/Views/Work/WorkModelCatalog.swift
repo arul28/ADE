@@ -733,7 +733,7 @@ func workModelCatalogGroups(
       // A Pi subsection carries the profile/provider identity. Flattening all
       // subsections into one provider makes two profiles with the same
       // upstream provider indistinguishable in the mobile picker.
-      providers = group.providers.flatMap { provider in
+      providers = group.providers.flatMap { provider -> [WorkModelProvider] in
         if provider.subsections.isEmpty {
           return []
         }
@@ -788,7 +788,7 @@ func workModelCatalogGroups(
       }
     }
 
-    WorkModelCatalogGroup(
+    return WorkModelCatalogGroup(
       key: group.key,
       displayName: group.displayName,
       providers: providers.filter { !$0.models.isEmpty }

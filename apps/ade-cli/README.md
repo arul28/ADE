@@ -609,6 +609,11 @@ ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
 ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
 ade actions run external-sessions.import --input-json '{"provider":"codex","sessionId":"thread-id","laneId":"lane-1","target":"cli","mode":"resume"}' --text
+ade actions run ai.piLoginProviders --text                 # Pi providers that can be signed into, with the auth methods each accepts and whether it is already configured
+ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropic"}' --json   # blocks until the human finishes Pi's own OAuth/device-code flow
+ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in
+ade --role cto actions run ai.piLoginSubmit --input-json "$(jq -n --arg v "$PI_API_KEY" '{providerId:"anthropic",requestId:"req-1",value:$v}')"  # answer a prompt; keep the value out of argv and shell history
+ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthropic"}'
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
@@ -634,6 +639,26 @@ GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI �
 stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
+
+Pi sign-in has no typed command, the same way OpenCode's `ai.opencodeOAuth*`
+actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser
+or device-code flow, and any prompt it raises is answered by a *second* call
+(`ai.piLoginSubmit`) carrying a `requestId` that only appears on the
+`piAuthStatus` runtime event — so the workflow is two processes plus an event
+drain, not one command. From a terminal the shorter path is `ade code`'s
+`/login`, which drops into `pi` and uses Pi's native interactive sign-in.
+
+Three details when driving it through `ade actions run` anyway. The `piLogin`
+start/submit/cancel actions are CTO-only, so they need `--role cto`;
+`ai.piLoginProviders` is not. The two-process shape only works against a running
+brain or desktop socket — a headless invocation builds its own runtime, so a
+second `ade` process cannot see the first's in-flight sign-in. And
+`ai.piLoginStart` carries its own transport floor (11 minutes, the same budget
+the desktop client uses) so the CLI does not report a timeout while the daemon
+is still waiting on the user; `--timeout-ms` still applies when it asks for
+more. `ai.piLoginSubmit`'s `value` can be a raw API key: pass it through
+`--input-json` built from an environment variable rather than typing it inline,
+and never echo the result.
 
 `ade tools` is deliberately not backed by a service action. The pinned-tool cache
 is a property of the machine's filesystem, not of a project runtime, so the

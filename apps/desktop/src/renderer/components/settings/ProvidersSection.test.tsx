@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
-import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
+import type { AgentChatEventEnvelope, AiSettingsStatus, PiAuthStatusEvent } from "../../../shared/types";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -205,6 +205,42 @@ function buildStatus(
   } as AiSettingsStatus;
 }
 
+function buildPiInstallation(): NonNullable<AiSettingsStatus["piInstallation"]> {
+  return {
+    installed: true,
+    sdkAvailable: true,
+    cliAvailable: true,
+    cliPath: "/Users/example/.local/bin/pi",
+    packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
+    version: "0.84.0",
+    agentDir: "/Users/example/.pi/agent",
+    settingsPath: "/Users/example/.pi/agent/settings.json",
+    authPath: "/Users/example/.pi/agent/auth.json",
+    modelsPath: "/Users/example/.pi/agent/models.json",
+    modelsStorePath: "/Users/example/.pi/agent/models-store.json",
+    blocker: null,
+    providers: [
+      {
+        id: "openai-codex",
+        name: "OpenAI Codex",
+        modelCount: 7,
+        availableModelCount: 7,
+        configured: true,
+        authType: "oauth",
+        authMethods: ["oauth"],
+        authSource: "stored",
+        authLabel: "OAuth",
+        subscription: true,
+      },
+    ],
+    availableModelIds: ["pi/openai-codex/gpt-5.4"],
+    authFileDetected: true,
+    modelsFileDetected: false,
+    settingsFileDetected: true,
+    stale: false,
+  };
+}
+
 function renderProvidersSection() {
   return render(
     <MemoryRouter>
@@ -217,10 +253,12 @@ describe("ProvidersSection", () => {
   const originalAde = globalThis.window.ade;
   let emitChatEvent: ((envelope: AgentChatEventEnvelope) => void) | null = null;
   let emitOAuthStatus: ((event: { providerId: string; state: string; error?: string }) => void) | null = null;
+  let emitPiAuthStatus: ((event: PiAuthStatusEvent) => void) | null = null;
 
   beforeEach(() => {
     emitChatEvent = null;
     emitOAuthStatus = null;
+    emitPiAuthStatus = null;
 
     globalThis.window.ade = {
       ai: {
@@ -255,6 +293,16 @@ describe("ProvidersSection", () => {
           emitOAuthStatus = cb;
           return () => {
             if (emitOAuthStatus === cb) emitOAuthStatus = null;
+          };
+        }),
+        piLoginProviders: vi.fn().mockResolvedValue([]),
+        piLoginStart: vi.fn().mockResolvedValue({ ok: true }),
+        piLoginSubmit: vi.fn().mockResolvedValue({ ok: true }),
+        piLoginCancel: vi.fn().mockResolvedValue(undefined),
+        onPiAuthStatus: vi.fn((cb: (event: PiAuthStatusEvent) => void) => {
+          emitPiAuthStatus = cb;
+          return () => {
+            if (emitPiAuthStatus === cb) emitPiAuthStatus = null;
           };
         }),
       },
@@ -530,41 +578,7 @@ describe("ProvidersSection", () => {
   it("renders the Pi card with connected providers and opens Pi settings files", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, [], {
-      piInstallation: {
-        installed: true,
-        sdkAvailable: true,
-        cliAvailable: true,
-        cliPath: "/Users/example/.local/bin/pi",
-        packageRoot: "/Users/example/.pi/agent/node_modules/@earendil-works/pi-coding-agent",
-        version: "0.84.0",
-        agentDir: "/Users/example/.pi/agent",
-        settingsPath: "/Users/example/.pi/agent/settings.json",
-        authPath: "/Users/example/.pi/agent/auth.json",
-        modelsPath: "/Users/example/.pi/agent/models.json",
-        modelsStorePath: "/Users/example/.pi/agent/models-store.json",
-        blocker: null,
-        providers: [
-          {
-            id: "openai-codex",
-            name: "OpenAI Codex",
-            modelCount: 7,
-            availableModelCount: 7,
-            configured: true,
-            authType: "oauth",
-            authMethods: ["oauth"],
-            authSource: "stored",
-            authLabel: "OAuth",
-            subscription: true,
-          },
-        ],
-        availableModelIds: ["pi/openai-codex/gpt-5.4"],
-        authFileDetected: true,
-        modelsFileDetected: false,
-        settingsFileDetected: true,
-        stale: false,
-      },
-    }));
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
     const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
     listApiKeysMock.mockReset();
     listApiKeysMock.mockResolvedValue([]);
@@ -574,14 +588,221 @@ describe("ProvidersSection", () => {
     expect(await screen.findByText("Pi")).toBeTruthy();
     expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
     expect(screen.getByText(/Version 0.84.0/)).toBeTruthy();
-    expect(screen.getByText("Configured providers")).toBeTruthy();
     expect(screen.getByText("OpenAI Codex")).toBeTruthy();
+    expect(screen.getByText(/7 models/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open settings.json" })).toBeTruthy();
 
     await act(async () => {
       screen.getByRole("button", { name: "Open settings.json" }).click();
     });
     expect(window.ade.app.openPath).toHaveBeenCalledWith("/Users/example/.pi/agent/settings.json");
+  });
+
+  it("signs into a Pi provider in-app: device code, prompt, then success", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue([]);
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth", "api_key"], configured: false, loginLabel: "Sign in with SuperGrok" },
+    ]);
+    let resolveLogin: ((result: { ok: boolean; error?: string }) => void) | null = null;
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+
+    renderProvidersSection();
+
+    const signIn = await screen.findByRole("button", { name: "Sign in with SuperGrok — xAI" });
+    expect(screen.getByRole("button", { name: "Use an API key — xAI" })).toBeTruthy();
+
+    await act(async () => {
+      signIn.click();
+    });
+    expect(window.ade.ai.piLoginStart).toHaveBeenCalledWith({ providerId: "xai", method: "oauth" });
+
+    await act(async () => {
+      emitPiAuthStatus?.({
+        providerId: "xai",
+        state: "pending",
+        notice: { level: "info", message: "Enter the code", userCode: "ABCD-1234", verificationUri: "https://x.ai/device" },
+      });
+    });
+    expect(screen.getByText("ABCD-1234")).toBeTruthy();
+
+    await act(async () => {
+      emitPiAuthStatus?.({
+        providerId: "xai",
+        state: "prompt",
+        prompt: { requestId: "req-1", kind: "manual_code", title: "Sign in to xAI", message: "Paste the code from your browser" },
+      });
+    });
+    const input = screen.getByLabelText("Paste the code from your browser") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "code-42" } });
+    await act(async () => {
+      screen.getByRole("button", { name: "Continue" }).click();
+    });
+    expect(window.ade.ai.piLoginSubmit).toHaveBeenCalledWith({
+      providerId: "xai",
+      requestId: "req-1",
+      value: "code-42",
+    });
+
+    await act(async () => {
+      resolveLogin?.({ ok: true });
+    });
+    expect(screen.getByText(/Signed in to xAI\./)).toBeTruthy();
+  });
+
+  it("surfaces a rejected Pi prompt answer instead of waiting out the login timeout", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    // The login promise never settles here: only the submit result can tell the
+    // user their answer was rejected.
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
+    );
+    (window.ade.ai.piLoginSubmit as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      error: "That prompt has already been answered.",
+    });
+
+    renderProvidersSection();
+
+    const signIn = await screen.findByRole("button", { name: "Sign in — xAI" });
+    await act(async () => {
+      signIn.click();
+    });
+    await act(async () => {
+      emitPiAuthStatus?.({
+        providerId: "xai",
+        state: "prompt",
+        prompt: { requestId: "req-1", kind: "manual_code", title: "Sign in to xAI", message: "Paste the code from your browser" },
+      });
+    });
+
+    const input = screen.getByLabelText("Paste the code from your browser") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "code-42" } });
+    await act(async () => {
+      screen.getByRole("button", { name: "Continue" }).click();
+    });
+
+    const failure = await screen.findByText(/xAI: That prompt has already been answered\./);
+    expect(failure.closest('[role="alert"]')).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("offers a retry when a Pi sign-in fails", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false, loginLabel: "Sign in with SuperGrok" },
+    ]);
+    const startMock = window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>;
+    startMock.mockResolvedValue({ ok: false, error: "Device code expired." });
+
+    renderProvidersSection();
+
+    const signIn = await screen.findByRole("button", { name: "Sign in with SuperGrok — xAI" });
+    await act(async () => {
+      signIn.click();
+    });
+    expect(screen.getByText(/xAI: Device code expired\./)).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+    expect(startMock).toHaveBeenCalledTimes(2);
+    expect(startMock).toHaveBeenLastCalledWith({ providerId: "xai", method: "oauth" });
+  });
+
+  it("treats a cancelled Pi sign-in as a choice, not a failure", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    let resolveLogin: ((result: { ok: boolean; error?: string }) => void) | null = null;
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+
+    renderProvidersSection();
+
+    const signIn = await screen.findByRole("button", { name: "Sign in — xAI" });
+    await act(async () => {
+      signIn.click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Cancel" }).click();
+    });
+    await act(async () => {
+      resolveLogin?.({ ok: false, error: "Sign-in cancelled." });
+    });
+
+    const cancelled = screen.getByText("Sign-in cancelled.");
+    expect(cancelled.closest('[role="status"]')).toBeTruthy();
+    expect(cancelled.closest('[role="alert"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("merges a configured provider and its sign-in options into one tile", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"], configured: true },
+    ]);
+
+    renderProvidersSection();
+
+    expect((await screen.findAllByText("OpenAI Codex")).length).toBe(1);
+    expect(screen.getByRole("button", { name: "Sign in — OpenAI Codex" })).toBeTruthy();
+    expect(screen.getByText(/7 models/)).toBeTruthy();
+  });
+
+  it("keeps Pi's terminal login reachable in one click", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    renderProvidersSection();
+
+    expect(await screen.findByRole("button", { name: /Open Pi \/login/ })).toBeTruthy();
+  });
+
+  it("explains the Pi card instead of stranding it when Pi's SDK is missing", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      piInstallation: {
+        ...buildPiInstallation(),
+        sdkAvailable: false,
+        providers: [],
+        availableModelIds: [],
+        blocker: "Pi is installed, but ADE cannot load its package here.",
+      },
+    }));
+
+    renderProvidersSection();
+
+    expect(await screen.findAllByText("Pi is installed, but ADE cannot load its package here.")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Open Pi \/login/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Refresh providers/ })).toBeNull();
+    expect(window.ade.ai.piLoginProviders).not.toHaveBeenCalled();
   });
 
   it("collapses the OpenCode group to an install card when the binary is missing", async () => {

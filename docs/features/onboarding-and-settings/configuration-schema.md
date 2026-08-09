@@ -287,6 +287,18 @@ fires and `nextWakeAt` without deleting schedule records. Clearing the pause
 causes each overdue schedule to catch up once; recurring cron work then
 continues from its next normal occurrence.
 
+`AiChatConfig.piExtensionsEnabled?: boolean` loads the user's own Pi
+extensions inside ADE chat, bound to ADE's UI bridge. It **defaults to true**,
+matching what `pi` does in a terminal; only an explicit `false` turns it off,
+which runs ADE chat with Pi's built-in tools only. The Pi CLI is unaffected
+either way. Two session kinds ignore the flag and never load extensions:
+plan-mode sessions (enabling extensions means dropping Pi's flat tool
+allowlist, which would break plan mode's read-only promise) and personal
+chats (no project worktree). Only the user's own `~/.pi/agent/extensions` ever
+load — the worker pins Pi's `projectTrusted: false`, so a checked-out
+repository's `.pi/extensions` never executes. See
+[Chat › Pi UI bridge](../chat/README.md#pi-ui-bridge-ask_user-and-extensions).
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

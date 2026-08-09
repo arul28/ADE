@@ -482,7 +482,20 @@ Renderer — settings:
   `updateConfig`). When the OpenCode provider inventory is served from the
   persisted disk cache on a cold start, `opencodeProvidersStale` renders an
   italic "updating…" hint until the first live probe. When the OpenCode
-  binary is missing the group collapses to an install card.
+  binary is missing the group collapses to an install card. The **Pi** card
+  additionally hosts in-app sign-in (`PiSignIn`): one merged tile per provider
+  — configured status, signable methods, or both, keyed by provider id so a
+  signable configured provider is one row rather than two. A method button
+  starts `piLoginStart`, and the flow card then renders whatever Pi asks for
+  live off `onPiAuthStatus`: an auth URL with an Open button, a device code with
+  a Copy control, a free-text or password field, or a labelled choice group.
+  Auth URLs and device codes stay pinned while plain progress lines replace each
+  other. Cancel is a distinct outcome from failure, and only a failure offers
+  **Try again** (retrying with the method the user actually pressed). Pi's own
+  terminal `/login` is offered beside the in-app flow, not behind a reveal, and
+  becomes the whole surface when `sdkAvailable` is false. Nothing typed into a
+  Pi prompt is stored by ADE — see
+  [Agent Routing › Pi sign-in](../chat/agent-routing.md#pi-sign-in).
 - `apps/desktop/src/renderer/components/settings/OAuthConnectModal.tsx`
   — subscription OAuth connect dialog for OpenCode providers. Runs a
   `form → starting → waiting → error` phase machine: it renders the
@@ -988,7 +1001,7 @@ changing rather than which service backs it:
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), and privacy. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
+| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the agent completion sound, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |

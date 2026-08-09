@@ -20,11 +20,15 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
 | `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, and the latest usage breakdown. |
+| `apps/desktop/src/main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts` | Pi adapter. `piSdkPool` forks the worker (one per session key) and brokers prompts, model/thinking changes, compaction, inventory reads, sign-in, and the reverse-RPC UI channel described below. `piSdkProtocol` is protocol version 2 and carries the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames plus `login` / `login_cancel`, and validates every frame in both directions. `piSdkEventMapper` translates Pi SDK events into `AgentChatEvent`s and owns the card translation helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`). |
+| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
+| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
+| `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
 | `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
-`AgentChatProvider` is `"codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {})`.
+`AgentChatProvider` is `"codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {})`.
 The final branch exists so local discovery can populate provider keys
 for vendored runtimes without changing the union.
 
@@ -35,6 +39,7 @@ for vendored runtimes without changing the union.
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
+| `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`, `piSessionLease.ts`; installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
 
 ## Model registry
 
@@ -151,6 +156,36 @@ host-advertised model metadata over their static compatibility catalogs.
 
 Results feed into the UI's `AiProviderConnectionStatus` /
 `AiRuntimeConnectionStatus` (see `providerConnectionStatus.ts`).
+
+### Pi sign-in
+
+Pi is signed into from inside ADE. `piAuthService.ts` drives Pi's own
+`ModelRuntime.login(providerId, authType, interaction)` on a dedicated
+inventory-only worker, and Settings → Providers renders whatever Pi asks for:
+an auth URL, a device code, a text or secret field, or a choice list. Pi has
+exactly two login types (`oauth` and `api_key`); a device code is an event
+inside an OAuth flow, not a third type.
+
+**ADE never holds the credential.** The worker hands ADE prompt text only, the
+user's answer travels straight back through `respondToUi`, and Pi's own
+`AuthStorage` writes `auth.json` under its cross-process lock. Nothing that
+could be a token is stored, logged, or attached to a status event, and
+`registerIpc.ts` redacts the `value` argument of `ade.ai.piLoginSubmit` so an
+API key typed into a prompt cannot reach a verbose IPC trace.
+
+Providers are filtered to the ones a sign-in can actually do something with: a
+provider whose API key resolves ambiently (env var, cloud profile) has no
+interactive `login`, so ADE does not offer to sign into it. One flow runs per
+provider at a time — starting another supersedes the first, including a start
+that is still acquiring its worker.
+
+Signing in unlocks models, so both the IPC handler and the ADE action path
+invalidate the provider-readiness caches on success and log
+`ai.pi_auth_cache_invalidation_failed` if that fails.
+
+Pi's own terminal `/login` remains available as a secondary path, offered
+beside the in-app flow rather than behind a reveal, and it is the only path
+when `sdkAvailable` is false.
 
 ## Permission modes
 
@@ -343,6 +378,54 @@ picker state matches the documented default; the explicit Codex
 | `edit` | Read/write allowed; bash gated. |
 | `full-auto` | Proceed without asking. |
 
+### Pi
+
+Pi's built-in tool registry contains only `read`, `bash`, `edit`, and `write`,
+and its `tools` option is one flat allowlist — anything unlisted is dropped.
+Passing ADE's generic `grep`/`find`/`ls` names would make the SDK launch fail.
+
+Chat and tracked-CLI Pi sessions therefore use **two different mappings**, both
+in `shared/cliLaunch.ts`:
+
+- `piToolsForPermissionMode` — the allowlist-only mapping used for tracked
+  terminals, where ADE has no gate of its own.
+- `piSdkToolPolicyForPermissionMode` — the chat mapping, where ADE can hold each
+  call behind an approval card.
+
+| Mode | `tools` | Gated behind an approval card | `readOnly` |
+|---|---|---|:-:|
+| `plan` | `read` | — | yes |
+| `edit` | `read`, `edit`, `write` | — | no |
+| `full-auto` | `read`, `bash`, `edit`, `write` | — | no |
+| `default` (also `auto`, `config-toml`) | `read`, `bash`, `edit`, `write` | `bash`, `edit`, `write` | no |
+
+`default` in a Pi chat therefore means **ask before anything that changes the
+workspace**, not read-only. Every workspace-changing capability is offered
+rather than silently allowed or silently withheld. `readOnly` is stated on the
+policy rather than inferred from the tool list, because callers gate real
+capabilities on it.
+
+The gate is not advisory. `bash`, `edit`, and `write` are rebuilt from Pi's own
+root-exported definition factories (`createBashToolDefinition` and friends) and
+re-registered through `customTools` under the same names, so they keep Pi's
+schema, prompt text, and rendering while acquiring the gate; a gated `bash`
+still honours the user's configured shell path and command prefix. If a Pi build
+does not export the factory for a tool, that tool is **withheld** rather than
+granted ungated — granting it would silently downgrade the permission mode —
+and its name comes back on the ready payload as `ungateableTools`, which the
+chat surfaces as a notice.
+
+An approval answered "allow for this chat" is remembered per tool name for the
+life of the session. A dismissed card or an aborted turn denies the call, and a
+denial is raised as a thrown error because Pi marks a tool call failed only when
+`execute` throws.
+
+Pi's tool allowlist and extension binding are fixed when the worker is created,
+so `startPiRuntime` records a `toolPolicyKey` (tools + approval tools +
+extensions on/off) on the runtime and restarts the worker whenever it changes.
+Without that, a session switched from `default` to `plan` would keep its write
+tools until something else happened to restart it.
+
 ### Cursor
 
 Cursor modes (`apps/desktop/src/shared/cursorModes.ts`) are a list of
@@ -363,6 +446,11 @@ translates the abstract value into the correct provider-native fields:
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
 - `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high"`.
+- `pi`: no native permission field. The abstract mode is read directly by
+  `piSdkToolPolicyForPermissionMode` (chat) or `piToolsForPermissionMode`
+  (tracked CLI) and becomes a tool allowlist plus an approval-tool list. Chat
+  reads the session's own mode rather than the collapsed harness mode, because
+  the approval gate makes `default` meaningfully different from `edit` there.
 
 The abstract field is persisted alongside the native fields so the UI
 can summarize session state consistently, and so legacy flows that only

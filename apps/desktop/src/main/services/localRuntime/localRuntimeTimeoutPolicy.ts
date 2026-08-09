@@ -31,7 +31,15 @@ export const LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS =
 export const LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS =
   localRuntimeCallIpcTimeoutMs(LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS);
 
+/**
+ * A Pi sign-in blocks on a human completing an OAuth or device-code flow, which
+ * `piAuthService` bounds at 10 minutes. The transport budget has to outlive
+ * that, or the renderer reports failure while the daemon is still signing in.
+ */
+export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.

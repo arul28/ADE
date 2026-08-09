@@ -17,7 +17,11 @@ import {
   type PiSdkPackageLocation,
   type PiSdkPromptPayload,
   type PiSdkImage,
+  type PiSdkLoginPayload,
   type PiSdkReady,
+  type PiSdkUiNoticePayload,
+  type PiSdkUiRequestPayload,
+  type PiSdkUiResponsePayload,
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
@@ -28,6 +32,16 @@ export type PiSdkBridge = {
   onLifecycle: ((event: string, requestId?: string, detail?: JsonValue) => void) | null;
   onError: ((error: Error, operation?: string, requestId?: string) => void) | null;
   onReady: ((ready: PiSdkReady) => void) | null;
+  /**
+   * The worker is blocked on a human answer. Reply with `respondToUi`.
+   *
+   * When no handler is installed the pool answers `ok: false` immediately, so
+   * an unattended worker fails closed instead of hanging a turn.
+   */
+  onUiRequest: ((requestId: string, payload: PiSdkUiRequestPayload) => void) | null;
+  onUiNotice: ((payload: PiSdkUiNoticePayload) => void) | null;
+  /** The worker settled a request itself; drop the card raised for it. */
+  onUiCancel: ((requestId: string) => void) | null;
 };
 
 type PiSdkRequestType = PiSdkWorkerRequest["type"];
@@ -40,6 +54,8 @@ type PiSdkRequestArgs<K extends PiSdkRequestType> = K extends
   | "follow_up"
   | "set_model"
   | "set_thinking"
+  | "login"
+  | "ui_response"
   ? [payload: PiSdkRequestPayload<K>]
   : K extends "compact"
     ? [payload?: PiSdkRequestPayload<K>]
@@ -71,6 +87,14 @@ export type PiSdkPooled = {
   compact: (payload?: PiSdkCompactPayload) => Promise<unknown>;
   requestModels: () => Promise<JsonValue[]>;
   requestAuth: () => Promise<JsonValue>;
+  /**
+   * Run Pi's native sign-in for one provider. Deliberately untimed: a device
+   * code flow legitimately takes minutes. Use `cancelLogin` to stop it.
+   */
+  login: (payload: PiSdkLoginPayload) => Promise<JsonValue | undefined>;
+  cancelLogin: () => void;
+  /** Answer a `onUiRequest`. Fire-and-forget; the worker owns the waiter. */
+  respondToUi: (requestId: string, response: PiSdkUiResponsePayload) => void;
   dispose: () => void;
   /** Resolves only after the worker process has actually exited. */
   waitForExit: () => Promise<void>;
@@ -90,6 +114,9 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   session?: PiSdkWorkerInit["session"];
   tools?: string[];
   noTools?: PiSdkWorkerInit["noTools"];
+  extensions?: boolean;
+  askUserTool?: boolean;
+  approvalTools?: string[];
   /** Usually process.env; never put auth.json or API keys in this payload. */
   baseEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
@@ -203,6 +230,9 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     ...(args.session ? { session: args.session } : {}),
     ...(args.tools ? { tools: args.tools } : {}),
     ...(args.noTools ? { noTools: args.noTools } : {}),
+    ...(args.extensions ? { extensions: true } : {}),
+    ...(args.askUserTool ? { askUserTool: true } : {}),
+    ...(args.approvalTools?.length ? { approvalTools: args.approvalTools } : {}),
   };
   const initMessage: PiSdkWorkerRequest = { protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "init", requestId: randomUUID(), payload: initPayload };
   const validationError = validatePiSdkWorkerRequest(initMessage);
@@ -231,7 +261,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
   const exitPromise = new Promise<void>((resolve) => {
     resolveExit = resolve;
   });
-  const bridge: PiSdkBridge = { onEvent: null, onLifecycle: null, onError: null, onReady: null };
+  const bridge: PiSdkBridge = { onEvent: null, onLifecycle: null, onError: null, onReady: null, onUiRequest: null, onUiNotice: null, onUiCancel: null };
   let terminalFailure: ((error: Error) => void) | null = null;
 
   const ipcClosed = (): Error => new Error("Pi SDK worker IPC channel is closed.");
@@ -340,6 +370,15 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       return value;
     },
     requestAuth: () => worker.request("auth"),
+    login: (payload) => worker.request("login", payload),
+    cancelLogin: () => {
+      send({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "login_cancel", requestId: randomUUID() });
+    },
+    respondToUi: (requestId, response) => {
+      // The worker keys its waiter by this id, so the reply reuses it rather
+      // than opening a request of its own.
+      send({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "ui_response", requestId, payload: response });
+    },
     waitForExit: () => exitPromise,
     dispose: () => {
       disposing = true;
@@ -406,6 +445,24 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       }
       applyReady(worker, message.ready);
       bridge.onReady?.(message.ready);
+      return;
+    }
+    if (message.type === "ui_request") {
+      if (!bridge.onUiRequest) {
+        // Nothing can render this card, so answer immediately. Blocking a Pi
+        // callback on a listener that does not exist would hang the turn.
+        worker.respondToUi(message.requestId, { ok: false, error: "No ADE surface is available to answer this request." });
+        return;
+      }
+      bridge.onUiRequest(message.requestId, message.payload);
+      return;
+    }
+    if (message.type === "ui_notice") {
+      bridge.onUiNotice?.(message.payload);
+      return;
+    }
+    if (message.type === "ui_cancel") {
+      bridge.onUiCancel?.(message.requestId);
       return;
     }
     if (message.type === "sdk_event") {

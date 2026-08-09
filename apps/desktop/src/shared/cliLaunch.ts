@@ -344,7 +344,10 @@ export function validateLaunchProfilePermissionMode(
   // Keep the selected policy available to its guidance instead of rejecting a
   // launch or inventing provider-specific switches.
   if (profile === "pi") {
-    if (mode === "auto" || mode === "config-toml") {
+    // `config-toml` means "defer to the provider's own config", which Pi has in
+    // its settings.json — `piToolFlags` omits `--tools` for it. Only `auto`,
+    // which Pi has no equivalent for, is rejected.
+    if (mode === "auto") {
       throw new Error(`permissionMode ${mode} is not supported for Pi CLI sessions.`);
     }
     return;
@@ -854,7 +857,35 @@ export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode
       : ["read"];
 }
 
+/**
+ * Tool policy for a Pi SDK chat session, where ADE can gate each call behind an
+ * approval card.
+ *
+ * The CLI has no such gate, so `piToolsForPermissionMode` stays the stricter
+ * allowlist-only mapping used for tracked terminals. Here `default` means "ask
+ * before anything that changes the workspace" rather than "read-only", which is
+ * what the mode means for every other ADE runtime.
+ */
+export function piSdkToolPolicyForPermissionMode(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): { tools: string[]; approvalTools: string[]; readOnly: boolean } {
+  const mode = permissionMode ?? "default";
+  if (mode === "full-auto") return { tools: ["read", "bash", "edit", "write"], approvalTools: [], readOnly: false };
+  if (mode === "edit") return { tools: ["read", "edit", "write"], approvalTools: [], readOnly: false };
+  // Plan mode is a review posture: reading is enough, and nothing to approve.
+  // `readOnly` is stated rather than inferred from the tool list, because
+  // callers gate real capabilities on it and adding a future read-only tool
+  // must not silently flip them.
+  if (mode === "plan") return { tools: ["read"], approvalTools: [], readOnly: true };
+  // default, auto, and config-toml all land here. Anything that changes the
+  // workspace is offered rather than silently allowed or silently withheld.
+  return { tools: ["read", "bash", "edit", "write"], approvalTools: ["bash", "edit", "write"], readOnly: false };
+}
+
 export function piToolFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  // Passing no allowlist lets Pi's own settings decide, which is what the
+  // user asked for by picking config-toml.
+  if (permissionMode === "config-toml") return [];
   const tools = piToolsForPermissionMode(permissionMode);
   return ["--tools", tools.join(",")];
 }

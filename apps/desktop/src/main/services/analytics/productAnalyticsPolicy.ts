@@ -170,7 +170,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `ade_update_install_did_not_land`, so only the brain half is new signal.
     "service", "restart", "health",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "gemini", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
     "grok", "local", "other",

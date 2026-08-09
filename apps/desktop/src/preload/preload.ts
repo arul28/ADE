@@ -118,6 +118,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  PiAuthStatusEvent,
+  PiLoginMethod,
+  PiLoginProvider,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -1751,6 +1754,7 @@ const remoteLaneOAuthEventCallbacks = new Set<
 const remoteOpenCodeOAuthStatusCallbacks = new Set<
   (payload: OpenCodeOAuthStatusEvent) => void
 >();
+const remotePiAuthStatusCallbacks = new Set<(payload: PiAuthStatusEvent) => void>();
 const remoteLaneDiagnosticsEventCallbacks = new Set<
   (payload: RuntimeDiagnosticsEvent) => void
 >();
@@ -1871,6 +1875,11 @@ const subscribeLocalOpenCodeOAuthStatusEvents =
     IPC.aiOpencodeOAuthStatus,
     "OpenCode OAuth status",
   );
+const subscribeLocalPiAuthStatusEvents =
+  createLocalIpcEventSubscription<PiAuthStatusEvent>(
+    IPC.aiPiAuthStatus,
+    "Pi sign-in status",
+  );
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
@@ -1945,6 +1954,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteLaneProxyEventCallbacks.size > 0 ||
     remoteLaneOAuthEventCallbacks.size > 0 ||
     remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
+    remotePiAuthStatusCallbacks.size > 0 ||
     remoteLaneDiagnosticsEventCallbacks.size > 0 ||
     remotePtyDataEventCallbacks.size > 0 ||
     remotePtyExitEventCallbacks.size > 0 ||
@@ -2305,6 +2315,19 @@ function dispatchRemoteRuntimeEventPayload(
           cb(event as unknown as OpenCodeOAuthStatusEvent);
         } catch (error) {
           console.error("preload remote OpenCode OAuth status listener failed", error);
+        }
+      }
+    }
+  }
+
+  if (payload.kind === "piAuthStatus" && isRecord(payload.event)) {
+    const event = payload.event;
+    if (typeof event.providerId === "string" && typeof event.state === "string") {
+      for (const cb of [...remotePiAuthStatusCallbacks]) {
+        try {
+          cb(event as unknown as PiAuthStatusEvent);
+        } catch (error) {
+          console.error("preload remote Pi sign-in status listener failed", error);
         }
       }
     }
@@ -2854,6 +2877,16 @@ function subscribeRemoteOpenCodeOAuthStatusEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteOpenCodeOAuthStatusCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemotePiAuthStatusEvents(
+  cb: (payload: PiAuthStatusEvent) => void,
+): () => void {
+  remotePiAuthStatusCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remotePiAuthStatusCallbacks.delete(cb);
   };
 }
 
@@ -4248,6 +4281,41 @@ contextBridge.exposeInMainWorld("ade", {
     onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => {
       const removeLocal = subscribeLocalOpenCodeOAuthStatusEvents(cb);
       const removeRemote = subscribeRemoteOpenCodeOAuthStatusEvents(cb);
+      return () => {
+        removeRemote();
+        removeLocal();
+      };
+    },
+    piLoginProviders: async (): Promise<PiLoginProvider[]> =>
+      callProjectRuntimeActionOr("ai", "piLoginProviders", {}, () =>
+        ipcRenderer.invoke(IPC.aiPiLoginProviders),
+      ),
+    piLoginStart: async (args: {
+      providerId: string;
+      method?: PiLoginMethod;
+    }): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "piLoginStart", { args }, () =>
+            ipcRenderer.invoke(IPC.aiPiLoginStart, args),
+          ),
+      ),
+    piLoginSubmit: async (args: {
+      providerId: string;
+      requestId: string;
+      value: string;
+    }): Promise<{ ok: boolean; error?: string }> =>
+      callProjectRuntimeActionOr("ai", "piLoginSubmit", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPiLoginSubmit, args),
+      ),
+    piLoginCancel: async (args: { providerId: string }): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "piLoginCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPiLoginCancel, args),
+      ),
+    onPiAuthStatus: (cb: (event: PiAuthStatusEvent) => void) => {
+      const removeLocal = subscribeLocalPiAuthStatusEvents(cb);
+      const removeRemote = subscribeRemotePiAuthStatusEvents(cb);
       return () => {
         removeRemote();
         removeLocal();

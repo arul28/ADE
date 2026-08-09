@@ -3651,6 +3651,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       clearOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
       refreshModelsDev: resolved({ lastFetchedAt: null }),
       onOpencodeOAuthStatus: () => () => {},
+      piLoginProviders: resolved([]),
+      piLoginStart: resolvedArg({ ok: false, error: "browser" } as any),
+      piLoginSubmit: resolvedArg({ ok: false, error: "browser" } as any),
+      piLoginCancel: resolvedArg(undefined),
+      onPiAuthStatus: () => () => {},
     },
     agentTools: {
       detect: resolved([]),

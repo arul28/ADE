@@ -1224,6 +1224,16 @@ enum WorkPendingInputItem: Identifiable, Equatable {
   }
 }
 
+/// Title stated by the host for a plain approval gate, if any. Read from the
+/// approval detail's `request.title`, which is where every provider that names
+/// its ask puts it. Returns nil (not an empty string) when absent, so the card
+/// falls back to its generic "Approval" header.
+func workPendingApprovalTitle(detail: String?) -> String? {
+  guard let detailObject = workJSONObject(from: detail) else { return nil }
+  let request = detailObject["request"] as? [String: Any] ?? [:]
+  return optionalString(request["title"]) ?? optionalString(detailObject["title"])
+}
+
 /// Asking provider for a pending gate, when the payload carries one. Only the
 /// question and plan-approval kinds do; approval/permission/model-selection fall
 /// back to the session provider at the call site.
@@ -1259,7 +1269,7 @@ func workPendingInputCollapsedSummary(_ item: WorkPendingInputItem) -> String {
   case .planApproval(let model):
     return firstNonEmpty([model.title]) ?? "Plan ready for review"
   case .approval(let model):
-    return firstNonEmpty([model.description, model.detail]) ?? "Approval requested"
+    return firstNonEmpty([model.title, model.description, model.detail]) ?? "Approval requested"
   case .permission(let model):
     let tool = model.tool.trimmingCharacters(in: .whitespacesAndNewlines)
     if !tool.isEmpty { return "Permission: \(tool)" }
@@ -1388,6 +1398,16 @@ func pendingWorkQuestionFromApproval(
   if let request = detailObject["request"] as? [String: Any] {
     let kind = optionalString(request["kind"])?.lowercased() ?? ""
     let rawQuestions = request["questions"] as? [[String: Any]] ?? []
+    // An `approval` request whose questions offer nothing to pick is a verdict,
+    // not a question: Pi's bash/edit/write gate ships exactly one freeform entry
+    // and expects accept / accept-for-session / decline back. Rendering it as a
+    // question card would replace those controls with a text field where any
+    // typed answer submits as `accept` — an allow the user never chose. Claude's
+    // approvals carry Allow / Allow for Session / Deny as options and keep the
+    // question card, which is where those controls come from.
+    let hasSelectableOptions = rawQuestions.contains { ($0["options"] as? [Any])?.isEmpty == false }
+      || (request["options"] as? [Any])?.isEmpty == false
+    if kind == "approval", !hasSelectableOptions { return nil }
     guard kind == "question" || kind == "structured_question" || !rawQuestions.isEmpty else {
       return nil
     }
@@ -1606,6 +1626,17 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   let openIds = pendingWorkInputItemIds(from: transcript)
   var seen = Set<String>()
   var results: [WorkPendingInputItem] = []
+  // Question text of every gate that arrived wrapped in an `approval_request` /
+  // `structured_question`, and of every one derived from a bare `tool_call`.
+  // A host that wraps its ask still emits the raw tool call for it under a
+  // DIFFERENT item id — Pi does: the SDK's `tool_execution_start` carries the
+  // tool-call id while its UI bridge registers the gate under a fresh request
+  // id — so id-based dedupe cannot see they are one ask. The raw card is the
+  // unanswerable one (no gate is registered under the tool-call id, so a reply
+  // is discarded), and it sorts first, which is why it must be dropped rather
+  // than merely deprioritised.
+  var wrappedQuestionTexts = Set<String>()
+  var rawToolCallQuestionTexts: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .approvalRequest(let description, let detail, let itemId, _):
@@ -1616,11 +1647,17 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
       } else if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.planApproval(planApproval))
       } else if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
+        wrappedQuestionTexts.formUnion(workPendingQuestionTexts(question))
         results.append(.question(question))
       } else if let permission = pendingWorkPermissionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.permission(permission))
       } else {
-        results.append(.approval(WorkPendingApprovalModel(id: itemId, description: description, detail: detail)))
+        results.append(.approval(WorkPendingApprovalModel(
+          id: itemId,
+          description: description,
+          detail: detail,
+          title: workPendingApprovalTitle(detail: detail)
+        )))
       }
     case .structuredQuestion(let question, let options, let itemId, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
@@ -1631,18 +1668,42 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         options: options,
         allowsFreeform: true
       )
-      results.append(.question(WorkPendingQuestionModel(id: itemId, questions: [entry])))
+      let model = WorkPendingQuestionModel(id: itemId, questions: [entry])
+      wrappedQuestionTexts.formUnion(workPendingQuestionTexts(model))
+      results.append(.question(model))
     case .toolCall(let tool, let argsText, let itemId, _, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
       guard isQuestionInputToolName(tool) else { continue }
       guard let question = pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) else { continue }
       seen.insert(itemId)
+      rawToolCallQuestionTexts[itemId] = workPendingQuestionTexts(question)
       results.append(.question(question))
     default:
       continue
     }
   }
-  return results
+  guard !rawToolCallQuestionTexts.isEmpty, !wrappedQuestionTexts.isEmpty else { return results }
+  return results.filter { item in
+    guard case .question(let model) = item,
+          let rawTexts = rawToolCallQuestionTexts[model.id]
+    else {
+      return true
+    }
+    return rawTexts.isDisjoint(with: wrappedQuestionTexts)
+  }
+}
+
+/// Comparable question text for one gate, used to recognise the same ask
+/// arriving twice under different item ids. Whitespace-collapsed and lowercased
+/// because the two payloads are rendered by different code paths.
+func workPendingQuestionTexts(_ model: WorkPendingQuestionModel) -> Set<String> {
+  Set(model.questions.compactMap { question in
+    let normalized = question.question
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+      .lowercased()
+    return normalized.isEmpty ? nil : normalized
+  })
 }
 
 /// Deliberately does NOT match Claude's own `AskUserQuestion` (which normalizes

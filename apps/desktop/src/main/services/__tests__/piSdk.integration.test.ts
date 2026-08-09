@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "../ai/piInstallation";
+import { PI_APPROVAL_ALLOW } from "../chat/piSdkEventMapper";
 import {
   acquirePiSdkConnection,
   releasePiSdkConnection,
@@ -54,6 +55,47 @@ function writeCompletion(response: http.ServerResponse, model: string, text = "P
   };
   emit({ choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }] });
   emit({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 3, total_tokens: 6 } });
+  response.end("data: [DONE]\n\n");
+}
+
+/** Emit an OpenAI-style tool call so the installed Pi actually invokes a tool. */
+function writeToolCall(
+  response: http.ServerResponse,
+  model: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): void {
+  if (response.writableEnded) return;
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  const emit = (payload: Record<string, unknown>) => {
+    response.write(`data: ${JSON.stringify({
+      id: "ade-pi-test-tool-call",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      ...payload,
+    })}\n\n`);
+  };
+  emit({
+    choices: [{
+      index: 0,
+      delta: {
+        role: "assistant",
+        tool_calls: [{
+          index: 0,
+          id: "ade-pi-test-call-1",
+          type: "function",
+          function: { name: toolName, arguments: JSON.stringify(args) },
+        }],
+      },
+      finish_reason: null,
+    }],
+  });
+  emit({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] });
   response.end("data: [DONE]\n\n");
 }
 
@@ -112,6 +154,9 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   modelId?: string;
   tools?: string[];
   session?: { sessionFile?: string; sessionId?: string };
+  askUserTool?: boolean;
+  approvalTools?: string[];
+  extensions?: boolean;
 }): {
   poolKey: string;
   packageRoot: string;
@@ -124,6 +169,9 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   systemPrompt: string;
   tools?: string[];
   session?: { sessionFile?: string; sessionId?: string };
+  askUserTool?: boolean;
+  approvalTools?: string[];
+  extensions?: boolean;
   baseEnv: NodeJS.ProcessEnv;
 } {
   const installation = resolvePiInstallation({
@@ -146,6 +194,9 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
     systemPrompt: "You are the isolated ADE Pi integration test model.",
     ...(options?.tools ? { tools: options.tools } : {}),
     ...(options?.session ? { session: options.session } : {}),
+    ...(options?.askUserTool ? { askUserTool: true } : {}),
+    ...(options?.approvalTools ? { approvalTools: options.approvalTools } : {}),
+    ...(options?.extensions ? { extensions: true } : {}),
     baseEnv: {
       PATH: process.env.PATH ?? "",
       HOME: fixture.root,
@@ -194,7 +245,11 @@ describeInstalledPi("installed Pi SDK worker", () => {
           response.end(JSON.stringify({ error: { message: "invalid local test credential" } }));
           return;
         }
-        if (!textFromMessages(body).includes("abort-me")) {
+        // `manual-stream` hands the response to the test so it can emit a tool
+        // call instead of the canned reply. The marker lives in the user turn,
+        // so it still applies on the follow-up request after a tool result.
+        const latestUserText = textFromMessages(body);
+        if (!latestUserText.includes("abort-me") && !latestUserText.includes("manual-stream")) {
           writeCompletion(response, typeof body.model === "string" ? body.model : "test-model");
         }
       });
@@ -366,5 +421,146 @@ describeInstalledPi("installed Pi SDK worker", () => {
     await expect(hangingPrompt).resolves.toMatchObject({ sessionFile: expect.any(String), sessionId: expect.any(String) });
     await connection.pooled.sendPrompt({ prompt: "after abort" });
     await nextRequest();
+  });
+
+  it("exposes ask_user as a real tool and returns the user's answer to the model", async () => {
+    const fixture = createFixture();
+    const connection = await acquireTracked(fixture, `ask-user:${Date.now()}`, { askUserTool: true });
+
+    const seen: Array<{ requestId: string; payload: { origin: string; kind: string; message: string; options?: Array<{ value: string; label: string }> } }> = [];
+    connection.pooled.bridge.onUiRequest = (requestId, payload) => {
+      seen.push({ requestId, payload });
+      // Answer with the second option to prove the value round-trips.
+      connection.pooled.respondToUi(requestId, { ok: true, value: payload.options?.[1]?.value ?? "" });
+    };
+
+    const prompt = connection.pooled.sendPrompt({ prompt: "ask me something (manual-stream)" });
+    const first = await nextRequest();
+    const offered = ((first.body.tools as Array<{ function?: { name?: string } }> | undefined) ?? [])
+      .map((tool) => tool.function?.name);
+    expect(offered).toContain("ask_user");
+
+    writeToolCall(first.response, "test-model", "ask_user", {
+      question: "Which database should I use?",
+      header: "Database",
+      options: [{ label: "Postgres" }, { label: "SQLite" }],
+    });
+
+    // Pi calls the tool, the bridge raises a card, and the answer comes back as
+    // a tool result on the follow-up request.
+    const second = await nextRequest();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.payload).toMatchObject({ origin: "tool", kind: "select", message: "Which database should I use?" });
+    expect(JSON.stringify(second.body.messages)).toContain("SQLite");
+    writeCompletion(second.response, "test-model", "Using SQLite then.");
+    await prompt;
+  });
+
+  it("gates an approved tool behind a card and fails the call when the user denies it", async () => {
+    const fixture = createFixture();
+    const marker = path.join(fixture.cwd, "approval-marker.txt");
+    const connection = await acquireTracked(fixture, `approval:${Date.now()}`, {
+      tools: ["read", "bash", "edit", "write"],
+      approvalTools: ["bash"],
+    });
+
+    const requests: Array<{ origin: string; message: string }> = [];
+    connection.pooled.bridge.onUiRequest = (requestId, payload) => {
+      requests.push({ origin: payload.origin, message: payload.message });
+      connection.pooled.respondToUi(requestId, { ok: false });
+    };
+
+    const prompt = connection.pooled.sendPrompt({ prompt: "run a command (manual-stream)" });
+    const first = await nextRequest();
+    writeToolCall(first.response, "test-model", "bash", { command: `touch ${marker}` });
+
+    const second = await nextRequest();
+    // The gate ran before the command did.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ origin: "approval" });
+    expect(requests[0]!.message).toContain("touch");
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(JSON.stringify(second.body.messages)).toMatch(/denied this bash call/iu);
+    writeCompletion(second.response, "test-model", "Understood.");
+    await prompt;
+  });
+
+  it("runs an approved tool for real once the user allows it", async () => {
+    const fixture = createFixture();
+    const marker = path.join(fixture.cwd, "allowed-marker.txt");
+    const connection = await acquireTracked(fixture, `approval-allow:${Date.now()}`, {
+      tools: ["read", "bash", "edit", "write"],
+      approvalTools: ["bash"],
+    });
+    const approvals: string[] = [];
+    connection.pooled.bridge.onUiRequest = (requestId, payload) => {
+      approvals.push(payload.origin);
+      connection.pooled.respondToUi(requestId, { ok: true, value: PI_APPROVAL_ALLOW });
+    };
+
+    const prompt = connection.pooled.sendPrompt({ prompt: "run a command (manual-stream)" });
+    const first = await nextRequest();
+    writeToolCall(first.response, "test-model", "bash", { command: `touch ${marker}` });
+    const second = await nextRequest();
+    // The command ran because the gate was asked and answered, not bypassed.
+    expect(approvals).toEqual(["approval"]);
+    expect(fs.existsSync(marker)).toBe(true);
+    writeCompletion(second.response, "test-model", "Done.");
+    await prompt;
+  });
+
+  it("answers a blocked worker request when no ADE surface is listening", async () => {
+    const fixture = createFixture();
+    const connection = await acquireTracked(fixture, `no-surface:${Date.now()}`, { askUserTool: true });
+    // Deliberately leave bridge.onUiRequest unset.
+    const prompt = connection.pooled.sendPrompt({ prompt: "ask with nobody home (manual-stream)" });
+    const first = await nextRequest();
+    writeToolCall(first.response, "test-model", "ask_user", { question: "Anyone there?" });
+    // Without the pool's fail-closed reply this would hang until the test timed out.
+    const second = await nextRequest();
+    expect(JSON.stringify(second.body.messages)).toMatch(/did not answer/iu);
+    writeCompletion(second.response, "test-model", "Proceeding.");
+    await prompt;
+  });
+
+  it("loads extensions behind the UI bridge and reports them on the ready payload", async () => {
+    const fixture = createFixture();
+    const extensionDir = path.join(fixture.agentDir, "extensions");
+    fs.mkdirSync(extensionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(extensionDir, "ade-test-extension.js"),
+      "export default function(pi) { pi.registerCommand?.({ name: 'ade-test', description: 'ADE test', handler: () => {} }); }\n",
+    );
+    const connection = await acquireTracked(fixture, `extensions:${Date.now()}`, { extensions: true });
+    // Naming the fixture proves the bridge bound real extensions rather than
+    // reporting an empty list that an opted-out session would also produce.
+    const loaded = connection.pooled.ready?.extensions ?? [];
+    expect(connection.pooled.ready?.extensionsError ?? null).toBeNull();
+    expect(loaded.map((extension) => extension.name ?? extension.id).join(" "))
+      .toContain("ade-test-extension");
+  });
+
+  it("never loads extensions from the checkout, only from the user's own profile", async () => {
+    const fixture = createFixture();
+    // Pi auto-loads project extensions when the project is trusted, which its
+    // CLI only does after prompting. ADE opens repositories the user has not
+    // vouched for, so this must stay out of the session.
+    const projectExtensions = path.join(fixture.cwd, ".pi", "extensions");
+    fs.mkdirSync(projectExtensions, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectExtensions, "repo-supplied.js"),
+      "export default function(pi) { pi.registerCommand?.({ name: 'repo-supplied', description: 'repo', handler: () => {} }); }\n",
+    );
+    const userExtensions = path.join(fixture.agentDir, "extensions");
+    fs.mkdirSync(userExtensions, { recursive: true });
+    fs.writeFileSync(
+      path.join(userExtensions, "user-owned.js"),
+      "export default function(pi) { pi.registerCommand?.({ name: 'user-owned', description: 'user', handler: () => {} }); }\n",
+    );
+
+    const connection = await acquireTracked(fixture, `trust:${Date.now()}`, { extensions: true });
+    const names = (connection.pooled.ready?.extensions ?? []).map((extension) => extension.name ?? extension.id);
+    expect(names.join(" ")).toContain("user-owned");
+    expect(names.join(" ")).not.toContain("repo-supplied");
   });
 });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +20,17 @@ import {
   piSessionHeaderMatchesCwd,
   readPiSessionHeader,
 } from "./piSessionLease";
+import {
+  PI_ASK_USER_TOOL_NAME,
+  createPiApprovalGate,
+  createPiAskUserTool,
+  createPiAuthInteraction,
+  createPiExtensionUiContext,
+  createPiUiBridge,
+  withPiApproval,
+  type PiToolDefinitionLike,
+  type PiUiBridge,
+} from "./piSdkUiBridge";
 
 // Deliberately no static import (or type import) from Pi. This process is
 // started by ADE and loads the user's installation only after init validation.
@@ -39,9 +51,22 @@ let session: PiSession | null = null;
 let modelInventory: JsonValue[] = [];
 let lastAssistantError: string | null = null;
 const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const PI_BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write"]);
+/** Root-exported factory per built-in tool, used to rebuild it behind an approval gate. */
+const PI_TOOL_DEFINITION_FACTORIES: Record<string, string> = {
+  read: "createReadToolDefinition",
+  bash: "createBashToolDefinition",
+  edit: "createEditToolDefinition",
+  write: "createWriteToolDefinition",
+};
+/** Derived so the gateable set and the built-in set cannot drift apart. */
+const PI_BUILTIN_TOOLS = new Set(Object.keys(PI_TOOL_DEFINITION_FACTORIES));
 let unsubscribe: (() => void) | null = null;
 let disposed = false;
+let loadedExtensions: Array<{ id: string; name?: string | null }> = [];
+let ungateableTools: string[] = [];
+let extensionsError: string | null = null;
+let activeLogin: { providerId: string; controller: AbortController } | null = null;
+const uiBridge: PiUiBridge = createPiUiBridge(post, () => randomUUID());
 
 function post(message: PiSdkWorkerResponse): void {
   if (!process.send) return;
@@ -210,9 +235,21 @@ async function authInventory(): Promise<JsonValue> {
     const provider = record(providerValue);
     const id = nonEmpty(provider?.id);
     if (!id) continue;
+    const auth = record(provider?.auth);
+    const oauth = record(auth?.oauth);
+    const apiKey = record(auth?.apiKey);
+    // An api-key provider with no interactive `login` resolves ambiently (env
+    // var, cloud profile), so ADE must not offer to sign into it.
+    const authTypes = [
+      ...(oauth ? ["oauth"] : []),
+      ...(apiKey && typeof apiKey.login === "function" ? ["api_key"] : []),
+    ];
     const item: Record<string, JsonValue> = {
       id,
       ...(nonEmpty(provider?.name) ? { name: nonEmpty(provider?.name)! } : {}),
+      ...(authTypes.length ? { authTypes } : {}),
+      ...(nonEmpty(oauth?.loginLabel) ? { loginLabel: nonEmpty(oauth?.loginLabel)! } : {}),
+      ...(oauth?.isSubscription === true ? { isSubscription: true } : {}),
     };
     try {
       const status = typeof runtime.getProviderAuthStatus === "function"
@@ -348,7 +385,7 @@ async function openSessionManager(init: PiSdkWorkerInit, sdk: PiModule): Promise
   }
 }
 
-function makeResourceLoader(init: PiSdkWorkerInit, sdk: PiModule): unknown {
+function makeResourceLoader(init: PiSdkWorkerInit, sdk: PiModule, settingsManager: unknown): unknown {
   const Loader = sdk.DefaultResourceLoader;
   if (typeof Loader !== "function") throw new Error("Pi SDK export DefaultResourceLoader is unavailable.");
   const rawSkillRoots = init.skillsEnv?.ADE_AGENT_SKILLS_DIRS ?? "";
@@ -359,10 +396,14 @@ function makeResourceLoader(init: PiSdkWorkerInit, sdk: PiModule): unknown {
   return new (Loader as new (options: Record<string, unknown>) => unknown)({
     cwd: init.cwd,
     agentDir: init.agentDir,
-    // Pi extensions can execute arbitrary code and can install custom UI
-    // handlers. Native ADE chat deliberately keeps them out of the worker;
-    // the Pi CLI remains the escape hatch for extension-owned experiences.
-    noExtensions: true,
+    // Without this the loader builds its own settings manager, which trusts
+    // the project and would auto-load extensions from the checkout.
+    ...(settingsManager ? { settingsManager } : {}),
+    // Pi extensions execute arbitrary code and install their own UI handlers,
+    // so ADE chat keeps them out unless the caller opts in. When enabled they
+    // are bound to ADE's limited UI bridge; the Pi CLI remains the escape hatch
+    // for extension experiences the bridge cannot render.
+    noExtensions: init.extensions !== true,
     // Do not inherit project/user Pi skill settings. ADE passes only its
     // explicitly approved skill roots below; the CLI remains the escape hatch
     // for Pi-native skill discovery.
@@ -370,6 +411,63 @@ function makeResourceLoader(init: PiSdkWorkerInit, sdk: PiModule): unknown {
     ...(additionalSkillPaths.length ? { additionalSkillPaths } : {}),
     ...(init.systemPrompt != null ? { systemPromptOverride: () => init.systemPrompt ?? "" } : {}),
   });
+}
+
+/**
+ * Assemble ADE's custom tools: `ask_user`, plus approval-gated rebuilds of the
+ * built-ins the caller wants gated.
+ *
+ * A custom tool whose name matches a built-in replaces it in Pi's registry, so
+ * rebuilding `bash` from Pi's own factory keeps its schema, prompt text, and
+ * rendering while adding the gate. Pi's shell settings are passed through so a
+ * gated bash still honours the user's configured shell.
+ */
+function buildCustomTools(
+  init: PiSdkWorkerInit,
+  sdk: PiModule,
+  settingsManager: unknown,
+): { tools: PiToolDefinitionLike[]; ungateable: string[] } {
+  const tools: PiToolDefinitionLike[] = [];
+  const ungateable: string[] = [];
+  const define = typeof sdk.defineTool === "function" ? sdk.defineTool as Callable : null;
+  const finish = (definition: PiToolDefinitionLike): PiToolDefinitionLike =>
+    (define ? define.call(null, definition) as PiToolDefinitionLike : definition);
+
+  if (init.askUserTool) tools.push(finish(createPiAskUserTool(uiBridge)));
+
+  // Only gate a tool this session actually grants. Relying on Pi's own
+  // allowlist to drop an unrequested wrapper would make the gate depend on
+  // resolution order rather than on ADE's permission mode.
+  const requested = new Set(init.tools ?? ["read"]);
+  const gated = (init.approvalTools ?? []).filter((tool) => PI_BUILTIN_TOOLS.has(tool) && requested.has(tool));
+  if (!gated.length) return { tools, ungateable };
+  const gate = createPiApprovalGate(uiBridge);
+  const settings = record(settingsManager);
+  const shellPath = typeof settings?.getShellPath === "function"
+    ? nonEmpty((settings.getShellPath as Callable).call(settings))
+    : null;
+  const commandPrefix = typeof settings?.getShellCommandPrefix === "function"
+    ? nonEmpty((settings.getShellCommandPrefix as Callable).call(settings))
+    : null;
+  for (const toolName of gated) {
+    const factoryName = PI_TOOL_DEFINITION_FACTORIES[toolName];
+    const factory = factoryName ? sdk[factoryName] : undefined;
+    if (typeof factory !== "function") {
+      // Nothing to wrap, so the caller withholds the tool. Granting it ungated
+      // would silently downgrade the permission mode.
+      ungateable.push(toolName);
+      continue;
+    }
+    const options = toolName === "bash"
+      ? {
+          ...(shellPath ? { shellPath } : {}),
+          ...(commandPrefix ? { commandPrefix } : {}),
+        }
+      : undefined;
+    const definition = (factory as Callable).call(null, init.cwd, options) as PiToolDefinitionLike;
+    tools.push(finish(withPiApproval(definition, gate)));
+  }
+  return { tools, ungateable };
 }
 
 function ready(): PiSdkReady {
@@ -391,7 +489,79 @@ function ready(): PiSdkReady {
     currentModel: currentModelDescriptor(),
     thinkingLevel: typeof session?.thinkingLevel === "string" ? session.thinkingLevel : null,
     availableModels: modelInventory,
+    extensions: loadedExtensions,
+    extensionsError,
+    ungateableTools,
   };
+}
+
+/**
+ * Bind the user's extensions to ADE's UI bridge and report what loaded.
+ *
+ * `bindExtensions` is also what fires Pi's `session_start` event, and it is
+ * where extension-registered providers are flushed into the model runtime — so
+ * it must run before the model inventory is read.
+ */
+async function bindExtensions(active: PiSession, loadResult: unknown): Promise<void> {
+  loadedExtensions = [];
+  extensionsError = null;
+  const bind = (active as Record<string, unknown>).bindExtensions;
+  if (typeof bind !== "function") {
+    extensionsError = "This Pi build does not support binding extensions to a host UI.";
+    return;
+  }
+  try {
+    await (bind as Callable).call(active, {
+      uiContext: createPiExtensionUiContext({ bridge: uiBridge }),
+      // Pi's own non-terminal host mode: dialogs and notifications are
+      // supported, terminal-only widgets are not.
+      mode: "rpc",
+      onError: (error: unknown) => {
+        const detail = record(error);
+        uiBridge.notify({
+          origin: "extension",
+          level: "error",
+          message: `A Pi extension failed: ${nonEmpty(detail?.error) ?? errorMessage(error)}`,
+          ...(nonEmpty(detail?.extensionPath) ? { sourceId: nonEmpty(detail?.extensionPath)! } : {}),
+        });
+      },
+    });
+  } catch (error) {
+    extensionsError = errorMessage(error);
+    return;
+  }
+
+  // `createAgentSession` hands back the load result directly; prefer it. The
+  // resource-loader accessor stays only as a fallback for Pi builds that do
+  // not return one — reading it first reported "no extensions" whenever that
+  // accessor was shaped differently.
+  const loader = record((active as Record<string, unknown>).resourceLoader);
+  const getExtensions = loader?.getExtensions;
+  const result = record(loadResult)
+    ?? (typeof getExtensions === "function" ? record((getExtensions as Callable).call(loader)) : null);
+  if (!result) return;
+  const entries = Array.isArray(result?.extensions) ? result.extensions : [];
+  loadedExtensions = entries.flatMap((entry) => {
+    const item = record(entry);
+    // Pi identifies an extension by path. `sourceInfo.source` names the origin
+    // ("auto", "local", a package name), so it only doubles as a label when it
+    // is a package; otherwise the path is what the user recognizes, and an
+    // `index.*` entry is named by its folder rather than "index".
+    const id = nonEmpty(item?.resolvedPath) ?? nonEmpty(item?.path);
+    if (!id || item?.hidden === true) return [];
+    const base = path.basename(id).replace(/\.(?:ts|js|mjs|cjs)$/, "");
+    const name = base === "index" ? path.basename(path.dirname(id)) : base;
+    return [{ id, name }];
+  });
+  const failures = Array.isArray(result?.errors) ? result.errors : [];
+  if (failures.length) {
+    extensionsError = failures
+      .map((failure) => {
+        const item = record(failure);
+        return `${nonEmpty(item?.path) ?? "extension"}: ${nonEmpty(item?.error) ?? "failed to load"}`;
+      })
+      .join("; ");
+  }
 }
 
 async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
@@ -448,25 +618,69 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
 
   sessionManager = await openSessionManager(init, pi);
   const selectedModel = init.modelRef == null ? undefined : await resolveModel(init.modelRef);
-  const resourceLoader = makeResourceLoader(init, pi);
+  // One settings manager governs both the resource loader and the session.
+  //
+  // `projectTrusted` is deliberately false. Pi treats a trusted project as
+  // permission to auto-load and execute extensions from the checkout's own
+  // `.pi/` directory, which its CLI only does after prompting. ADE opens
+  // repositories the user has not vouched for, so only the user's own profile
+  // extensions may load here; without this the loader would build its own
+  // settings manager that defaults to trusted.
+  const SettingsManagerCtor = typeof pi.SettingsManager === "function"
+    ? pi.SettingsManager as unknown as Record<string, unknown>
+    : null;
+  const settingsManager = SettingsManagerCtor && typeof SettingsManagerCtor.create === "function"
+    ? (SettingsManagerCtor.create as Callable).call(SettingsManagerCtor, init.cwd, init.agentDir, { projectTrusted: false })
+    : null;
+  // Without a settings manager ADE cannot pin `projectTrusted`, and Pi's own
+  // default would trust the checkout — so extensions stay off rather than
+  // loading repository code on a Pi build ADE cannot constrain.
+  const extensionsAllowed = init.extensions === true && settingsManager !== null;
+  if (init.extensions && !extensionsAllowed) {
+    extensionsError = "This Pi build does not let ADE mark the project untrusted, so extensions stayed off.";
+  }
+  const resourceLoader = makeResourceLoader({ ...init, extensions: extensionsAllowed }, pi, settingsManager);
   if (resourceLoader && typeof (resourceLoader as Record<string, unknown>).reload === "function") {
     await method(resourceLoader, "reload").call(resourceLoader);
   }
+  const { tools: customTools, ungateable } = buildCustomTools(init, pi, settingsManager);
+  // A Pi build that cannot supply a tool's definition factory cannot have that
+  // tool gated, so it is withheld rather than granted ungated — and the chat
+  // still starts.
+  const grantedTools = requestedTools.filter((tool) => !ungateable.includes(tool));
+  // Reported on the ready payload rather than as a notice: nothing is listening
+  // for notices until the desktop process finishes acquiring this worker.
+  ungateableTools = ungateable;
   const createSession = callable(pi.createAgentSession, "createAgentSession");
   const options: Record<string, unknown> = {
     cwd: init.cwd,
     agentDir: init.agentDir,
     modelRuntime,
     sessionManager,
+    ...(settingsManager ? { settingsManager } : {}),
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(init.thinkingLevel ? { thinkingLevel: init.thinkingLevel } : {}),
     ...(resourceLoader ? { resourceLoader } : {}),
-    tools: init.tools ?? ["read"],
+    // Pi's `tools` option is one flat allowlist covering built-ins, extension
+    // tools, and custom tools, and anything unlisted is dropped. With
+    // extensions enabled ADE cannot name their tools in advance, so it denies
+    // the unwanted built-ins instead and leaves the rest of the namespace
+    // alone. Without extensions the tighter allowlist still applies.
+    ...(extensionsAllowed
+      ? { excludeTools: [...PI_BUILTIN_TOOLS].filter((tool) => !grantedTools.includes(tool)) }
+      : {
+          tools: [
+            ...grantedTools,
+            ...(init.askUserTool ? [PI_ASK_USER_TOOL_NAME] : []),
+          ],
+        }),
+    ...(customTools.length ? { customTools } : {}),
     ...(init.noTools ? { noTools: init.noTools } : {}),
   };
   const created = record(await createSession(options));
   session = record(created?.session);
   if (!session) throw new Error("Pi SDK createAgentSession returned no session.");
+  if (extensionsAllowed) await bindExtensions(session, created?.extensionsResult);
   const subscribe = method(session, "subscribe");
   const listener = (event: unknown): void => {
     const eventRecord = record(event);
@@ -546,9 +760,100 @@ async function compact(customInstructions?: string | null): Promise<JsonValue> {
   return toPiSdkJson(await (compactMethod as Callable).call(active, customInstructions ?? undefined));
 }
 
+/**
+ * Run Pi's native login for one provider.
+ *
+ * Credentials stay Pi's: `ModelRuntime.login` persists them through Pi's own
+ * `AuthStorage`, under its cross-process lock. ADE only renders the prompts and
+ * relays what the user typed, and never receives or stores a token.
+ */
+async function loginProvider(providerId: string, method?: string | null): Promise<JsonValue> {
+  if (!modelRuntime) throw new Error("Pi SDK model runtime is not initialized.");
+  const runtime = modelRuntime as Record<string, unknown>;
+  const login = runtime.login;
+  if (typeof login !== "function") {
+    throw new Error("This Pi build does not expose ModelRuntime.login(). Update Pi, or sign in with the Pi CLI.");
+  }
+
+  const provider = typeof runtime.getProvider === "function"
+    ? record((runtime.getProvider as Callable).call(runtime, providerId))
+    : null;
+  const auth = record(provider?.auth);
+  // Pi only has two login types. An api-key provider without an interactive
+  // `login` is ambient-only (env var, cloud profile) and has nothing to run.
+  const requested = nonEmpty(method);
+  const authType = requested === "api_key" || requested === "oauth"
+    ? requested
+    : auth?.oauth
+      ? "oauth"
+      : "api_key";
+  if (authType === "oauth" && auth && !auth.oauth) {
+    throw new Error(`Pi provider "${providerId}" does not support OAuth sign-in.`);
+  }
+  if (authType === "api_key" && auth) {
+    const apiKeyAuth = record(auth.apiKey);
+    if (!apiKeyAuth) throw new Error(`Pi provider "${providerId}" does not support API key sign-in.`);
+    if (typeof apiKeyAuth.login !== "function") {
+      throw new Error(`Pi provider "${providerId}" reads its API key from the environment, so there is nothing to sign in to.`);
+    }
+  }
+
+  if (activeLogin) {
+    // Aborting the old flow rejects its in-flight prompt, but a card already
+    // on screen belongs to the bridge — settle it so the superseded sign-in
+    // cannot leave an unanswerable prompt next to the new one.
+    activeLogin.controller.abort();
+    uiBridge.drain("auth");
+  }
+  const controller = new AbortController();
+  activeLogin = { providerId, controller };
+  try {
+    await (login as Callable).call(
+      modelRuntime,
+      providerId,
+      authType,
+      createPiAuthInteraction(uiBridge, providerId, controller.signal),
+    );
+  } catch (error) {
+    // Credentials were written but Pi could not resync its local snapshot.
+    // That is a successful sign-in with a stale catalog, not a failed login.
+    if (error instanceof Error && error.name === "CredentialSynchronizationError") {
+      uiBridge.notify({
+        origin: "auth",
+        level: "warn",
+        message: "Signed in, but Pi could not refresh its model list. Reopen settings to retry.",
+        sourceId: providerId,
+      });
+    } else {
+      throw error;
+    }
+  } finally {
+    if (activeLogin?.controller === controller) activeLogin = null;
+  }
+
+  // login() settles once local credential state is consistent, but not once
+  // remote catalogs are fresh. Refresh so newly unlocked models appear.
+  if (typeof runtime.refresh === "function") {
+    try {
+      await (runtime.refresh as Callable).call(modelRuntime, { allowNetwork: true, providers: [providerId] });
+    } catch {
+      // Refresh failures are reported through the model list, not the login.
+    }
+  }
+  // Deliberately does not return the model inventory: the credential is
+  // already written, so letting an inventory read throw here would report a
+  // completed sign-in as a failure. `refresh` above owns catalog freshness.
+  return toPiSdkJson({ ok: true, providerId, authType });
+}
+
 async function disposeWorker(): Promise<void> {
   if (disposed) return;
   disposed = true;
+  activeLogin?.controller.abort();
+  activeLogin = null;
+  // Every awaiting Pi callback resolves to "no answer" rather than hanging a
+  // teardown that is already underway.
+  uiBridge.close();
   unsubscribe?.();
   unsubscribe = null;
   try {
@@ -583,7 +888,27 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
       await method(active, "followUp").call(active, request.payload.prompt, imageContents(request.payload.images));
       return null;
     }
-    case "abort": await method(requireSession(), "abort").call(requireSession()); post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "aborted", requestId: request.requestId }); return null;
+    case "abort": {
+      const active = requireSession();
+      // Cards waiting on the user belong to the turn being abandoned; leaving
+      // them pending would block their tool calls forever. A chat worker never
+      // holds an auth request — login runs on its own worker.
+      uiBridge.drain();
+      await method(active, "abort").call(active);
+      post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "aborted", requestId: request.requestId });
+      return null;
+    }
+    case "login": return await loginProvider(request.payload.providerId, request.payload.method);
+    case "login_cancel": {
+      activeLogin?.controller.abort();
+      activeLogin = null;
+      uiBridge.drain("auth");
+      return null;
+    }
+    case "ui_response": {
+      uiBridge.resolve(request.requestId, request.payload);
+      return null;
+    }
     case "set_model": return toPiSdkJson(await setModel(request.payload.modelRef));
     case "set_thinking": return toPiSdkJson(await setThinking(request.payload.thinkingLevel));
     case "compact": return await compact(request.payload?.customInstructions);

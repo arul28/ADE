@@ -13,6 +13,10 @@ import {
   resolveCleanShellLaunchFields,
   resolvePiCliModelForLaunch,
   piThinkingFlags,
+  piSdkToolPolicyForPermissionMode,
+  piToolsForPermissionMode,
+  piToolFlags,
+  validateLaunchProfilePermissionMode,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -404,6 +408,53 @@ describe("resolveCleanShellLaunchFields", () => {
         args: ["-NoLogo", "-NoProfile"],
       });
     }
+  });
+});
+
+describe("piSdkToolPolicyForPermissionMode", () => {
+  it("keeps plan mode read-only and states it, rather than leaving it inferred", () => {
+    const plan = piSdkToolPolicyForPermissionMode("plan");
+    expect(plan.tools).toEqual(["read"]);
+    expect(plan.approvalTools).toEqual([]);
+    // Chat gates real capabilities (extension loading) on this flag, so it must
+    // not be re-derived from the tool list.
+    expect(plan.readOnly).toBe(true);
+  });
+
+  it("offers the write tools behind an approval card for the ask-first modes", () => {
+    for (const mode of ["default", "auto", "config-toml"] as const) {
+      const policy = piSdkToolPolicyForPermissionMode(mode);
+      expect(policy.tools).toEqual(["read", "bash", "edit", "write"]);
+      expect(policy.approvalTools).toEqual(["bash", "edit", "write"]);
+      expect(policy.readOnly).toBe(false);
+    }
+  });
+
+  it("pre-approves the modes the user already widened, and never gates a tool it withholds", () => {
+    expect(piSdkToolPolicyForPermissionMode("full-auto")).toMatchObject({ approvalTools: [], readOnly: false });
+    expect(piSdkToolPolicyForPermissionMode("edit")).toMatchObject({
+      tools: ["read", "edit", "write"],
+      approvalTools: [],
+    });
+    for (const mode of ["default", "auto", "config-toml", "edit", "plan", "full-auto"] as const) {
+      const policy = piSdkToolPolicyForPermissionMode(mode);
+      expect(policy.approvalTools.every((tool) => policy.tools.includes(tool))).toBe(true);
+    }
+  });
+
+  it("lets a Pi terminal defer to Pi's own settings, which the picker already offers", () => {
+    // The picker lists config-toml for Pi, so rejecting it here made a listed
+    // mode fail the launch.
+    expect(() => validateLaunchProfilePermissionMode("pi", "config-toml")).not.toThrow();
+    expect(piToolFlags("config-toml")).toEqual([]);
+    expect(piToolFlags("full-auto")).toEqual(["--tools", "read,bash,edit,write"]);
+    // Pi has no equivalent of Claude's auto, so that one still fails loudly.
+    expect(() => validateLaunchProfilePermissionMode("pi", "auto")).toThrow(/not supported for Pi/u);
+  });
+
+  it("leaves the tracked-terminal mapping stricter, because a CLI has no approval gate", () => {
+    expect(piToolsForPermissionMode("default")).toEqual(["read"]);
+    expect(piSdkToolPolicyForPermissionMode("default").tools).toContain("bash");
   });
 });
 

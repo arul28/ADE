@@ -279,6 +279,18 @@ struct WorkPlanComposerStrip: View {
   }
 }
 
+/// Header line for an approval card: "Pi · Run bash?" when the host named the
+/// ask, "Pi · Approval" otherwise. Shared by the pinned strip and its detail
+/// sheet so the two cannot drift.
+func workApprovalCardHeadline(
+  _ approval: WorkPendingApprovalModel,
+  fallbackProvider: String?
+) -> String {
+  let providerName = workChatSurfaceProviderName(fallbackProvider)
+  let title = approval.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return "\(providerName) · \(title.isEmpty ? "Approval" : title)"
+}
+
 /// Pinned tool / file-change approval badge shown directly above the composer,
 /// mirroring `WorkPlanComposerStrip`. Collapsed row = provider logo + "{Provider}
 /// · Approval" + Accept / Decline; tapping the header opens a detail sheet that
@@ -294,7 +306,7 @@ struct WorkApprovalComposerStrip: View {
   @State private var detailPresented = false
 
   private var accent: Color { ADEColor.providerChatAccent(for: fallbackProvider) }
-  private var providerName: String { workChatSurfaceProviderName(fallbackProvider) }
+  private var headline: String { workApprovalCardHeadline(approval, fallbackProvider: fallbackProvider) }
 
   var body: some View {
     compactRow
@@ -322,7 +334,7 @@ struct WorkApprovalComposerStrip: View {
         .presentationDragIndicator(.visible)
       }
       .accessibilityElement(children: .contain)
-      .accessibilityLabel("\(providerName) approval requested. \(approval.description)")
+      .accessibilityLabel("\(headline). \(approval.description)")
   }
 
   private var compactRow: some View {
@@ -338,7 +350,7 @@ struct WorkApprovalComposerStrip: View {
             size: 16
           )
           VStack(alignment: .leading, spacing: 1) {
-            Text("\(providerName) · Approval")
+            Text(headline)
               .font(.caption.weight(.semibold))
               .foregroundStyle(accent)
               .lineLimit(1)
@@ -431,7 +443,7 @@ struct WorkApprovalDetailSheet: View {
   @Environment(\.dismiss) private var dismiss
 
   private var accent: Color { ADEColor.providerChatAccent(for: fallbackProvider) }
-  private var providerName: String { workChatSurfaceProviderName(fallbackProvider) }
+  private var headline: String { workApprovalCardHeadline(approval, fallbackProvider: fallbackProvider) }
 
   var body: some View {
     NavigationStack {
@@ -444,7 +456,7 @@ struct WorkApprovalDetailSheet: View {
               tint: accent,
               size: 18
             )
-            Text("\(providerName) · Approval")
+            Text(headline)
               .font(.caption.weight(.semibold))
               .foregroundStyle(accent)
           }
