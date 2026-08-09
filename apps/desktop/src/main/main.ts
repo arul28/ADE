@@ -269,6 +269,7 @@ import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
 import {
   RENDERER_RECOVERY_DELAY_MS,
   RENDERER_RECOVERY_WINDOW_MS,
+  coarseRenderProcessGoneReason,
   createRendererCrashRecoveryBudget,
 } from "./rendererCrashRecovery";
 import { createLinearClient } from "./services/cto/linearClient";
@@ -649,6 +650,11 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
 
 async function createWindow(args: {
   logger?: Logger;
+  /**
+   * Reports a lost renderer as a product fact. Optional so window creation
+   * stays usable before the analytics service exists.
+   */
+  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
   onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
 } = {}): Promise<BrowserWindow> {
@@ -797,7 +803,19 @@ async function createWindow(args: {
       url: win.webContents.getURL(),
     });
 
-    const decision = rendererRecoveryBudget.requestAttempt(details.reason, Date.now());
+    // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
+    // correction mid-crash-storm would either free the budget early or freeze it.
+    const decision = rendererRecoveryBudget.requestAttempt(details.reason, performance.now());
+    // A lost renderer is a product-level failure category, so it is reported
+    // once per occurrence with Electron's own closed reason enum and whether the
+    // retry budget still allowed a reload. The budget bounds the volume: a
+    // boot-crash loop stops trying, so it cannot emit forever.
+    if (details.reason !== "clean-exit") {
+      args.onRendererRecovery?.({
+        crash_reason: coarseRenderProcessGoneReason(details.reason),
+        recovered: decision.recover,
+      });
+    }
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
         args.logger?.error("window.render_process_recovery_abandoned", {
@@ -6605,6 +6623,11 @@ app.whenReady().then(async () => {
         : readLastRemoteProjectBinding();
     const win = await createWindow({
       logger: getActiveContext().logger,
+      onRendererRecovery: (outcome) => productAnalyticsService.captureInternal({
+        event: "ade_renderer_recovered",
+        surface: "desktop",
+        properties: outcome,
+      }),
       onCreated: (createdWindow) =>
         registerWindowSession(createdWindow, null, restoredRemoteBinding),
       onCloseRequested: handleMainWindowCloseRequested,
@@ -7438,6 +7461,11 @@ app.whenReady().then(async () => {
   const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
+    onRendererRecovery: (outcome) => productAnalyticsService.captureInternal({
+      event: "ade_renderer_recovered",
+      surface: "desktop",
+      properties: outcome,
+    }),
     onCreated: (createdWindow) =>
       registerWindowSession(
         createdWindow,

@@ -160,10 +160,30 @@ describe("createWorkflowTools", () => {
     // is about — that is the end that must survive the cap.
     expect(hunk.endsWith(tail)).toBe(true);
     expect(hunk.startsWith("...\n")).toBe(true);
-    // cap + the "...\n" ellipsis marker the trim prepends
-    expect(hunk.length).toBeLessThanOrEqual(REVIEW_THREAD_DIFF_HUNK_MAX_CHARS + 4);
+    // The marker is inside the budget, not added to it.
+    expect(hunk.length).toBeLessThanOrEqual(REVIEW_THREAD_DIFF_HUNK_MAX_CHARS);
     // Never cut mid-line.
     expect(hunk.split("\n")[1].startsWith("-  legacy line ")).toBe(true);
+  });
+
+  it("honors the cap when the hunk is one line with no break to cut on", async () => {
+    // A minified file produces a single enormous line; the cap is a promise
+    // about what reaches the prompt, so it holds with no newline to trim at.
+    const { tools } = makeTools({
+      getReviewThreads: vi.fn(async () => [
+        makeReviewThread([
+          { id: "comment-1", author: "reviewer", body: "Here.", url: null, diffHunk: `+${"z".repeat(9_000)}` },
+        ]),
+      ]),
+    });
+
+    const result = await (tools.prRefreshIssueInventory as any).execute({ prId: "pr-80" });
+
+    const hunk: string = result.reviewThreads[0].diffHunk;
+    expect(hunk.length).toBeLessThanOrEqual(REVIEW_THREAD_DIFF_HUNK_MAX_CHARS);
+    expect(hunk.startsWith("...\n")).toBe(true);
+    // Still carries the code, rather than degenerating to the marker alone.
+    expect(hunk.length).toBeGreaterThan(100);
   });
 
   it("reports no diff hunk rather than an empty string when GitHub omits one", async () => {

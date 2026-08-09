@@ -989,6 +989,14 @@ Renderer surfaces:
   per session), or `"columns"` (one column per session). The
   `WorkViewArea` arrange menu rewrites the persisted tiling tree when
   the user picks a non-auto preset.
+- `apps/desktop/src/renderer/lib/workGrid.ts` — pure grid-set membership
+  ops (`addSessionBesideTarget`, `removeSessionFromGrids`,
+  `findGridSetForSession`), the drag-and-drop mime
+  (`GRID_SESSION_DND_MIME`), and `MAX_WORK_GRID_TILES` — the hard bound
+  on how many sessions one grid set may hold, because every tile renders
+  a full live session surface. See
+  [ui-surfaces.md](./ui-surfaces.md#gotchas) for the three places that
+  cap is enforced.
 - `apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx` +
   `paneTreeOps.ts` — recursive pane tree component + pure operations
   (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,

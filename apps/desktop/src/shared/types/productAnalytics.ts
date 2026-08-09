@@ -19,6 +19,7 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_update_auto_apply_cancelled",
   "ade_update_prompted",
   "ade_brain_recovered",
+  "ade_renderer_recovered",
   "ade_publish_failing",
   "ade_relay_suppressed",
   "ade_account_session_unreadable",

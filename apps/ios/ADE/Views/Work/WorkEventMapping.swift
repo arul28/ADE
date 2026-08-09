@@ -919,10 +919,31 @@ func nonEmpty(_ value: String) -> String? {
   return trimmed.isEmpty ? nil : value
 }
 
+/// True when `diff` is a compaction wrapper rather than a whole diff.
+///
+/// Both wordings are matched on purpose, exactly as the desktop's
+/// `summarizeDiffStats` does. The notice became user-facing when phones started
+/// receiving the same compacted events, so its text changed from "for stored
+/// chat history" to "to keep this chat fast" — but transcripts already on disk
+/// carry the old wording and must keep being recognized.
+func workDiffWasShortened(_ diff: String) -> Bool {
+  guard diff.contains("[ADE] Large file diff was shortened") else { return false }
+  return diff.contains("bytes were left out.")
+    || diff.contains("bytes omitted from stored chat history.")
+}
+
 /// Counts unified-diff `+` / `-` lines, ignoring file-header (`+++ `, `--- `)
 /// and hunk-header (`@@`) lines. Mirrors the desktop `summarizeDiffStats` so
 /// inline file-row stats stay consistent across platforms.
+///
+/// A shortened diff reports nothing rather than a wrong number. Its wrapper
+/// contains `----- BEGIN FIRST PREVIEW -----` style separators, which start
+/// with `-` and were being counted as deletions, and the previews themselves
+/// hold only the head and tail of the real diff — so any count derived from
+/// them is both inflated by markers and missing the omitted middle, while
+/// being presented as an exact `+N / -N`.
 func aggregateDiffStats(_ diff: String) -> (additions: Int, deletions: Int) {
+  if workDiffWasShortened(diff) { return (0, 0) }
   var additions = 0
   var deletions = 0
   diff.enumerateLines { line, _ in

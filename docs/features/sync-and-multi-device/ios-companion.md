@@ -246,7 +246,9 @@ apps/ios/
 │   │   │                               # quota snapshot + refresh state
 │   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, roam-trigger
 │   │   │                            # policy (failover vs upgrade probe),
-│   │   │                            # path-change, heartbeat-silence, and
+│   │   │                            # path-change, heartbeat-silence,
+│   │   │                            # foreground-resume classification
+│   │   │                            # (syncForegroundResumeAction), and
 │   │   │                            # timeout policy
 │   │   ├── SyncConnectionRace.swift # one happy-eyeballs race over direct +
 │   │   │                            # Relay candidates: stagger/budget/relay
@@ -508,8 +510,9 @@ apps/ios/
     ├── SyncEnvelopeChunkAssemblerTests.swift # bidirectional frame budget,
     │                                          # reassembly bounds/expiry,
     │                                          # compression + version matrices
-    ├── SyncRecoveryPolicyTests.swift # reconnect/backoff, path-change, and
-    │                                 # roam-trigger (failover vs upgrade) policy
+    ├── SyncRecoveryPolicyTests.swift # reconnect/backoff, path-change,
+    │                                 # roam-trigger (failover vs upgrade), and
+    │                                 # foreground-resume classification policy
     ├── SyncTransportSelectionTests.swift # single-race candidate plan, relay
     │                                     # join delay, network fingerprint +
     │                                     # route memory, endpoint failure
@@ -970,10 +973,23 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    domain stuck in `hydrating` or overwriting a newer result.
 6. Enter continuous bidirectional sync. Inbound processing runs off
    the main actor: envelope JSON parse, gzip/deflate decompression, payload JSON parse,
-   chunked-envelope reassembly, and changeset decode + apply all run
+   chunked-envelope reassembly, changeset decode + apply, and the
+   `chat_event` / `chat_subscribe` decodes all run
    in detached tasks (the SQLite connection is FULLMUTEX). The receive
    loop awaits frames in order, so application order is unchanged —
    the UI just never freezes under sync load.
+   The chat payloads follow the same shape as `changeset_batch`: the handler
+   **gates on the raw dictionary first** — session id and subscription
+   membership read straight off `[String: Any]` — and only then hands the dict
+   to a `Task.detached` running a free-function decoder
+   (`syncDecodeChatEventEnvelope`, `syncDecodeChatSubscribeSnapshot`) that owns
+   its own `JSONDecoder`, so nothing crosses an actor boundary. Gating first
+   matters because a tool result can be large and a subscribe snapshot carries a
+   transcript tail of up to 256 KiB, and both used to be decoded on the main
+   actor for every event. The detached decode is a suspension point, so the
+   connection generation and the subscription are **re-checked after it**: a
+   project switch mid-decode would otherwise land a snapshot in a session the
+   user has already left.
    Phone-originated changesets are persisted as one pending batch and the
    outbound cursor advances only on a successful ack. Ack timeout/NACK retries
    the same batch; exhausting the retry budget re-exports from the unchanged
@@ -1017,6 +1033,47 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `LaneSummary.devicesOpen` for other controllers; the phone calls
    `lanes.presence.release` when the user leaves a lane surface and
    re-announces on a 30 s heartbeat (runtime-side TTL is 60 s).
+
+### Foreground resume
+
+iOS suspends a backgrounded socket without ever delivering a close event, so
+after a background gap `canSendLiveRequests()` only proves the socket *object*
+still exists. Trusting it meant firing five hydration refreshes into a dead pipe
+and showing "Connected" for the ~35–42 s it took the heartbeat to notice.
+
+The only evidence available is how long the app was away, so the app stamps it:
+`ADEApp` calls `syncService.handleBackgroundTransition()` on the `.background`
+scene phase, and `handleForegroundTransition()` classifies the gap through the
+pure `syncForegroundResumeAction` in `SyncRecoveryPolicy.swift`:
+
+| Background gap | Action | Behavior |
+|---|---|---|
+| ≥ 10 s (`syncSuspendedSessionBackgroundGapSeconds`) | `replaceSession` | Rebuild the session outright — do not ask it anything first. Probing's best case is a round trip that is about to be spent anyway. |
+| < 10 s | `probeSession` | Keep the fast path but stop treating the socket as proven: `verifyTransportAliveAfterSilence(trigger: "foreground_resume")` runs alongside the refreshes and tears the session down if nothing answers. |
+| none recorded (cold bootstrap) | `refreshOnly` | Just refresh. |
+
+`replaceSession` calls `reconnectIfPossible(replaceSuspendedSession: true)`.
+That flag gives the resume the manual Reconnect button's *connection strength* —
+cancel the stale attempt, reset the ladder, sweep the full candidate set rather
+than live-only, and bypass both the healthy-connection guard and the
+in-flight-attempt guard — without its user-intent side effects, so a deliberate
+"pause auto-reconnect" is still honored. Bypassing those two guards is the whole
+point: a socket that still reports connected after a long background, and an
+"in-flight" attempt that is almost certainly a zombie from before the
+suspension, are exactly the states this path exists to clear; honoring them is
+what made foreground a no-op. The full candidate sweep matters because the route
+that worked before a suspension is often the one that died with it.
+
+Every foreground also resets the reconnect attempt ladder
+(`reconnectState.reset()`), including from the terminal `unreachable` state.
+Returning to the app is new information — the user is here, and the network may
+be a different one entirely — and without the reset escaping `unreachable` cost
+a manual tap while retries came only on the quiet 30–40 s heartbeat.
+
+The transport-silence error message is minted once by
+`syncTransportSilenceRecoveryError()` and shared by the heartbeat-silence probe
+and the foreground-resume probe; the socket-close path keeps its own
+construction because it carries close-code diagnostics.
 
 ### Switching machines, and what a failed switch costs
 
@@ -2974,6 +3031,19 @@ different machine's cached limits.
   attributed auth failure, and the stores are keyed by session id rather than
   by host, so wiping them would destroy unsent text for every other paired
   machine plus the machine-independent Hub and New Chat drafts.
+- **The fallback transcript is built lazily, and the guard order that makes
+  that work is load-bearing.** `WorkSessionDestinationView` keeps a
+  cached-entry fallback alongside the live event transcript, but materializing
+  it means re-parsing the whole fallback entry page (240–600 KB) through
+  `makeWorkChatTranscript`. That used to run on the main actor for every
+  streaming delta — roughly 6–7×/s — and on that path nothing consumed the
+  result: the delta-append merge branch never reads it, and
+  `workChatShouldPreferFallbackTranscript` rejects any actively-streaming tick
+  before it would. So the parameter is a **closure**, memoized per pass, and the
+  two cheap status guards (`sessionStatus != "active"`,
+  `!workTranscriptIndicatesActiveTurn(liveTranscript)`) must stay *ahead* of the
+  emptiness check that calls it. Reordering them — or passing a built array
+  back — silently restores the per-delta re-parse.
 - **Optimistic steers reconcile on the active-to-idle turn boundary.**
   A message the phone sends mid-turn is echoed as an optimistic "Sends
   after turn" row (`WorkQueuedSteerRow`) using the host-assigned steer id

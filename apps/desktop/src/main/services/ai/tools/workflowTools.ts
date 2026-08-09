@@ -42,9 +42,15 @@ function reviewThreadDiffHunk(comments: ReadonlyArray<{ diffHunk?: string | null
   const hunk = comments.map((comment) => comment.diffHunk ?? "").find((value) => value.trim());
   if (!hunk) return null;
   if (hunk.length <= REVIEW_THREAD_DIFF_HUNK_MAX_CHARS) return hunk;
-  const tail = hunk.slice(hunk.length - REVIEW_THREAD_DIFF_HUNK_MAX_CHARS);
+  // The marker is part of the budget, not an addition to it — the cap is a
+  // promise about what the prompt receives.
+  const marker = "...\n";
+  const tail = hunk.slice(hunk.length - (REVIEW_THREAD_DIFF_HUNK_MAX_CHARS - marker.length));
   const fromLineBreak = tail.indexOf("\n");
-  return `...\n${fromLineBreak >= 0 ? tail.slice(fromLineBreak + 1) : tail}`;
+  // A hunk of one very long line (a minified file) has no break to cut on.
+  // Keeping the trimmed tail beats returning the marker alone: it is still the
+  // code the comment points at.
+  return `${marker}${fromLineBreak >= 0 ? tail.slice(fromLineBreak + 1) : tail}`;
 }
 
 export interface WorkflowToolDeps {

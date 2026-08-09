@@ -131,7 +131,7 @@ Two helpers summarise a parsed stream:
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
-| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Claude SDK `tool_result_meta` is retained as optional `toolResultMeta` for consumers that need to distinguish execution, rejection, or provider feedback without reparsing display text. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. |
+| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Claude SDK `tool_result_meta` is retained as optional `toolResultMeta`, and the provider's raw payload as optional `structured`; both are local-only debug material — they are bounded on disk and stripped from the sync wire, because no renderer, TUI, web, or iOS client decodes either. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. |
 | `file_change` | Emitted when the agent writes or deletes a file; carries `path`, `diff`, and `kind`. |
 | `command` | A shell command invocation; carries `cwd`, `output`, `exitCode`, `durationMs`. |
 | `plan` | Final plan payload (steps + explanation); replaces any earlier `plan_text` rows for that turn. |
@@ -623,15 +623,46 @@ or capped files do not hide compacted chat history.
 
 Persisted chat events keep the same public `AgentChatEvent` shape, but bulky
 payloads are compacted before storage for rows users rarely need in full after
-the turn is over. Large command output, tool results, file diffs, reasoning
-text, and inline image data URIs are replaced with a short preview (or no inline
-media) plus original/omitted-byte metadata on the event
-(`outputOriginalBytes`, `resultOmittedBytes`, `diffOmittedBytes`,
-`textOmittedBytes`, `urlOmittedBytes`, etc.). Desktop/runtime live subscribers
-still receive the original event while a turn is active. The sync host
-independently removes inline image data URIs over 64 KB from mobile live sends,
-snapshots, and replay entries without mutating the desktop event.
-Persisted-history consumers see the stored preview on replay.
+the turn is over. Large command output, tool results (both `result` and the
+provider's raw `structured` payload), file diffs, reasoning text, and inline
+image data URIs are replaced with a short preview (or no inline media) plus
+original/omitted-byte metadata on the event (`outputOriginalBytes`,
+`resultOmittedBytes`, `diffOmittedBytes`, `textOmittedBytes`,
+`urlOmittedBytes`, etc.). Desktop/runtime live subscribers still receive the
+original event while a turn is active. Persisted-history consumers see the
+stored preview on replay.
+
+The policy — every cap, every wrapper shape — lives in one module,
+`apps/desktop/src/shared/chatEventCompaction.ts`, because it has two consumers
+that must never disagree: the stored transcript
+(`compactChatEventForStorage`) and the mobile/web sync wire
+(`compactChatEventForWire`). The wire variant runs storage compaction first, so
+a live push and the same event re-read after reconnect hydration are
+byte-identical, then drops `tool_result.structured` and
+`tool_result.toolResultMeta` outright — no client decodes either field, so
+phones and web clients paid a download and a JSON parse for something they
+immediately discarded. Removing a field no client reads is backward-compatible
+by construction and needs no capability gate; adding or reshaping one still
+does.
+
+Compaction must stay **idempotent**. The wire applies it to events that already
+came off disk compacted (hydration and the replay ring), and re-wrapping is not
+a harmless no-op: the wrapper's newline-dense `preview` re-serializes with JSON
+escaping and comes out *bigger* than the cap, so each pass grew the payload
+while overwriting `originalBytes` with the previous pass's size. The module
+recognizes its own wrapper by shape (`summary` starting with `[ADE] Large `,
+plus `preview` / `originalBytes` / `omittedBytes`) rather than by a marker key,
+because every surface that renders an object-shaped tool result dumps it as
+JSON, so an added key would become the first line the user reads — and shape
+detection also recognizes wrappers written by builds that predate the check.
+The recognition is size-bounded at 2× the cap so a provider payload cannot
+coincidentally buy itself an exemption.
+
+The shortened-payload notices are user-facing copy now (the same compaction
+feeds phones), so they no longer mention "stored chat history". Transcripts
+already on disk carry the old wording; `summarizeDiffStats` in
+`chatTranscriptRows.ts` matches both so an old shortened diff is still counted
+as shortened rather than parsed as real diff lines.
 
 `sessionRecovery.ts` implements version-2 reconstruction:
 

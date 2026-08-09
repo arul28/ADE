@@ -69,3 +69,22 @@ export function createRendererCrashRecoveryBudget(options: {
 }
 
 export type RendererCrashRecoveryBudget = ReturnType<typeof createRendererCrashRecoveryBudget>;
+
+/**
+ * Electron's documented reason values. Reported as-is only when they match, so
+ * a future Electron string cannot widen what crosses the analytics boundary —
+ * `reason` is a shared property key with no value allowlist of its own.
+ */
+const KNOWN_RENDER_PROCESS_GONE_REASONS: ReadonlySet<string> = new Set([
+  "clean-exit",
+  "abnormal-exit",
+  "killed",
+  "crashed",
+  "oom",
+  "launch-failed",
+  "integrity-failure",
+]);
+
+export function coarseRenderProcessGoneReason(reason: RenderProcessGoneReason): string {
+  return KNOWN_RENDER_PROCESS_GONE_REASONS.has(reason) ? reason : "unknown";
+}

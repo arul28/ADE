@@ -62,7 +62,7 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
-  sessionService: Pick<ReturnType<typeof createSessionService>, "list" | "settleSessionsWithOutcome">;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsWithOutcome">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
@@ -135,18 +135,28 @@ export function createPrMergeAutoSettlementService(args: {
     for (const pr of candidates) {
       const scope = resolveMergeSettlementScope(pr, prs);
 
-      const rows = scope.kind === "ambiguous" ? [] : args.sessionService.list({
-        laneId: pr.laneId,
-        limit: 500,
-      }).filter((session) =>
+      // Declared sessions are looked up by id rather than found inside a lane
+      // page: the PR named them, so a long-lived lane whose session list runs
+      // past the page size must not silently drop the ones it named. The sweep
+      // keeps the bounded listing — it is a guess, and a guess should stay
+      // bounded.
+      const candidateSessions = scope.kind === "ambiguous"
+        ? []
+        : scope.kind === "linked"
+          ? [...scope.sessionIds]
+            .map((sessionId) => args.sessionService.get(sessionId))
+            .filter((session): session is NonNullable<typeof session> => session != null)
+            // A declared link can outlive a lane move; only this lane's work is
+            // this merge's to file.
+            .filter((session) => session.laneId === pr.laneId)
+          : args.sessionService.list({ laneId: pr.laneId, limit: 500 })
+            .filter((session) => !scope.claimedByOtherPrs.has(session.id));
+
+      const rows = candidateSessions.filter((session) =>
         !session.archivedAt
         && !session.settledAt
         && (isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)),
-      ).filter((session) => (
-        scope.kind === "linked"
-          ? scope.sessionIds.has(session.id)
-          : !scope.claimedByOtherPrs.has(session.id)
-      ));
+      );
 
       const settledSessionIds: string[] = [];
       for (const session of rows) {

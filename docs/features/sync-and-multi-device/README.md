@@ -362,6 +362,7 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
 | Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
+| PR detail bodies (`pull_request_snapshots`: `files_json`, `comments_json`, `reviews_json`) | Desktop peers replicate them; phones fetch them on demand via `prs.refresh` instead | Desktop peers only |
 | Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected ADE desktops |
 | Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
 
@@ -1061,15 +1062,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   chat/changeset-poll chain, so a slow transcript read cannot hold other peers;
   queued foreground envelopes or active-chat socket pressure defer background
   changesets for at most 2 seconds, after which only the smaller active-chat
-  batch is admitted before returning to foreground work), mobile-chat inline-image compaction
-  (`compactChatEventEnvelopeForSync`: data URIs above 64 KB are removed from
-  live sends, snapshots, and replay entries while the desktop event remains
-  unchanged and original/omitted byte counts are retained), the mobile changeset diet
-  (`MOBILE_CHANGESET_EXCLUDED_TABLES`: high-churn tables the phone
-  never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
-  `budget_usage_records`, `automation_runs`,
-  `automation_action_results` — are filtered from phone changesets
-  while ack watermarks still advance), compact reseeding for replica phones
+  batch is admitted before returning to foreground work), mobile-chat event compaction
+  (`compactChatEventEnvelopeForSync`, a thin envelope adapter over
+  `compactChatEventForWire` in `apps/desktop/src/shared/chatEventCompaction.ts` —
+  the *same* policy the stored transcript uses, applied to live sends,
+  snapshots, and replay entries while the desktop event remains unchanged; it
+  bounds every heavy payload (command output, tool results, the provider's raw
+  `structured` blob, file diffs, reasoning text, inline `data:image/*` URIs
+  above 64 KB), retains original/omitted byte counts, and then drops
+  `tool_result.structured` and `tool_result.toolResultMeta` from the wire
+  entirely because no client decodes them — see
+  [chat → Persisted transcript](../chat/transcript-and-turns.md#persisted-transcript)),
+  the mobile changeset diet
+  (`MOBILE_CHANGESET_EXCLUDED_TABLES`: tables the phone
+  never reads from a changeset — `attempt_transcripts`, `operations`,
+  `ai_usage_log`, `budget_usage_records`, `automation_runs`,
+  `automation_action_results`, and `pull_request_snapshots` — are filtered from
+  phone changesets while ack watermarks still advance), compact reseeding for replica phones
   more than 5,000 versions behind (ACK- and chunk-capable iOS peers receive one
   bounded current-state `catchup` batch, then resume incremental delivery only
   after its `changeset_ack`), the host-authoritative table
@@ -2802,6 +2811,32 @@ feature is merged or because a deliberately isolated-port host is running.
   pending marker exists so a failed service restart is retried without deleting
   newly created pairings again; iOS writes its marker only after connection
   tokens clear; web scopes its version marker to the environment store.
+
+- **A table only leaves `MOBILE_CHANGESET_EXCLUDED_TABLES` territory if the
+  phone has another way to get it.** The diet is not "drop what looks big" — it
+  is "drop what the phone re-fetches anyway." `pull_request_snapshots` is the
+  clearest case: 10.65 MB of a 26.8 MB synced project DB, and iOS reads it in
+  exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
+  which it populates on demand through `prs.refresh` →
+  `replacePullRequestHydration`. That works for every paired build, however old,
+  because `prs.refresh` and `prs.getMobileSnapshot` are both in the **required**
+  remote-command set. Lists and badges are unaffected — the slim `pull_requests`
+  rows still replicate. Devices paired before an exclusion keep the rows they
+  already have (nothing deletes them); they simply stop receiving updates
+  through the changeset pump. Excluding a table the phone reads with no
+  on-demand path would silently blank a surface, so check the iOS queries and
+  the required-command set before adding one.
+
+- **The wire and the stored transcript share one chat-event compaction policy,
+  and the wire runs storage compaction first.** `compactChatEventEnvelopeForSync`
+  is an adapter; the policy is `shared/chatEventCompaction.ts`. Two
+  implementations with two cap tables is what this replaced, and they drifted:
+  the wire only redacted inline images, so a multi-megabyte event went out live
+  and came back small after reconnect hydration. Compaction is applied to events
+  that are already compacted (hydration, the replay ring), so it must be
+  idempotent. Dropping a field from the wire (`tool_result.structured`,
+  `toolResultMeta`) is safe without a capability gate only because no client
+  decodes it; anything that *adds* or reshapes a wire field still needs one.
 
 - **The runtime owns sync. Desktop is a client.** A desktop window bound
   to a remote runtime is *not* the sync authority for that project; the remote
