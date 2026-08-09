@@ -705,6 +705,18 @@ function PiSignIn({
     return unsubscribe;
   }, []);
 
+  // Leaving Settings mid-sign-in would otherwise strand the flow: the worker
+  // keeps waiting for an answer for its full budget, and reopening Settings
+  // cannot adopt it because status events are ignored without a current flow.
+  const activeFlowProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFlowProviderRef.current = flow?.providerId ?? null;
+  }, [flow?.providerId]);
+  useEffect(() => () => {
+    const providerId = activeFlowProviderRef.current;
+    if (providerId) void window.ade.ai.piLoginCancel({ providerId }).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     if (!flow?.prompt) return;
     // A choice prompt unmounts whatever held focus, so hand focus to the first

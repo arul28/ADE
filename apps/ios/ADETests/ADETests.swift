@@ -23392,6 +23392,7 @@ final class ADETests: XCTestCase {
         "kind": "structured_question",
         "title": "Lane",
         "description": "Which lane first?",
+        "providerMetadata": { "pi": true, "origin": "tool", "sourceId": "ask_user" },
         "questions": [
           {
             "id": "answer",

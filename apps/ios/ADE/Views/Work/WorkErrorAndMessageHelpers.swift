@@ -1234,6 +1234,19 @@ func workPendingApprovalTitle(detail: String?) -> String? {
   return optionalString(request["title"]) ?? optionalString(detailObject["title"])
 }
 
+/// True when an approval-wrapped question is the host's own ask-user gate, which
+/// is the only wrapper that also emits a raw `tool_call` for the same ask. Any
+/// other question that happens to share its text is a different gate and must
+/// not suppress anything.
+func workPendingQuestionWrapsAskUserTool(detail: String?) -> Bool {
+  guard let detailObject = workJSONObject(from: detail) else { return false }
+  let request = detailObject["request"] as? [String: Any] ?? [:]
+  let metadata = request["providerMetadata"] as? [String: Any] ?? [:]
+  let sourceId = optionalString(metadata["sourceId"]) ?? optionalString(detailObject["sourceId"])
+  guard let sourceId else { return false }
+  return isQuestionInputToolName(sourceId)
+}
+
 /// Asking provider for a pending gate, when the payload carries one. Only the
 /// question and plan-approval kinds do; approval/permission/model-selection fall
 /// back to the session provider at the call site.
@@ -1647,7 +1660,9 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
       } else if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.planApproval(planApproval))
       } else if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
-        wrappedQuestionTexts.formUnion(workPendingQuestionTexts(question))
+        if workPendingQuestionWrapsAskUserTool(detail: detail) {
+          wrappedQuestionTexts.formUnion(workPendingQuestionTexts(question))
+        }
         results.append(.question(question))
       } else if let permission = pendingWorkPermissionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.permission(permission))
@@ -1669,7 +1684,6 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         allowsFreeform: true
       )
       let model = WorkPendingQuestionModel(id: itemId, questions: [entry])
-      wrappedQuestionTexts.formUnion(workPendingQuestionTexts(model))
       results.append(.question(model))
     case .toolCall(let tool, let argsText, let itemId, _, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
