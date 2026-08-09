@@ -658,6 +658,7 @@ function PiSignIn({
   const retryButtonRef = useRef<HTMLButtonElement | null>(null);
   /** Pi reports a cancel as a plain failure, so remember that the user asked for it. */
   const cancelledProviderRef = useRef<string | null>(null);
+  const lastPromptRequestIdRef = useRef<string | null>(null);
   const promptFieldId = React.useId();
   const promptLabelId = `${promptFieldId}-label`;
   const { copy, copied } = useCopyToClipboard();
@@ -692,7 +693,14 @@ function PiSignIn({
           ? { ...current, link: event.notice, progress: null }
           : { ...current, progress: event.notice.message };
       });
-      if (event.state === "prompt") setPromptValue("");
+      // A local runtime delivers each status twice (direct IPC broadcast plus
+      // the buffered relay), and the second copy can land after the user has
+      // started typing. Only a genuinely new prompt clears the field, or the
+      // duplicate would erase a half-entered API key.
+      if (event.state === "prompt" && event.prompt) {
+        setPromptValue((current) => (lastPromptRequestIdRef.current === event.prompt!.requestId ? current : ""));
+        lastPromptRequestIdRef.current = event.prompt.requestId;
+      }
     });
     return unsubscribe;
   }, []);
