@@ -554,6 +554,7 @@ describe("fileService", () => {
         workspaceId: "workspace-1",
         query: "src/my folder about this",
         includeIgnored: true,
+        allowComposerPrefixFallback: true,
       });
 
       expect(quickOpen.map((item) => item.path)).toContain("src/my folder");
@@ -574,11 +575,41 @@ describe("fileService", () => {
 
       const quickOpen = await service.quickOpen({
         workspaceId: "workspace-1",
-        query: "my review this",
+        query: "my file review this",
         includeIgnored: true,
+        allowComposerPrefixFallback: true,
       });
 
       expect(quickOpen.map((item) => item.path)).toContain("my file");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
+  it("keeps composer prefix fallback out of generic quickOpen", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generic-prefix-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "package.json"), "{}\n", "utf8");
+
+      const generic = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "package manager",
+        includeIgnored: true,
+      });
+      const composer = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "package manager",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(generic.map((item) => item.path)).not.toContain("package.json");
+      expect(composer.map((item) => item.path)).toContain("package.json");
     } finally {
       removeTestTree(rootPath);
     }

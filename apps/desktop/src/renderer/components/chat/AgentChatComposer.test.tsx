@@ -856,6 +856,23 @@ describe("AgentChatComposer", () => {
     expect(second.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
   });
 
+  it("falls back to the canonical mention token when a persisted rich mention label is cleared", () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+      iosElementContextItems: [makeIosContextItem("ios-1")],
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const chip = () => view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
+
+    expect(chip()?.textContent).toBe("a b c");
+    view.rerender(<AgentChatComposer {...props} mentionLabels={{}} />);
+
+    expect(chip()?.textContent).toBe("@chat:chat-1");
+    expect(chip()?.title).toBe("@chat:chat-1");
+  });
+
   it("does not consume prose after a matching spaced chat mention", async () => {
     const onSearchMentions = vi.fn().mockResolvedValue([{
       kind: "chat" as const,

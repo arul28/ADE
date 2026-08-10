@@ -7413,6 +7413,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             workspaceId: laneId,
             query: fileQuery,
             limit: MENTION_FILE_ROWS,
+            allowComposerPrefixFallback: true,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];
@@ -7453,7 +7454,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           .filter((commit) => {
             const subject = String(commit.subject ?? commit.message ?? "");
             const sha = String(commit.shortSha ?? commit.sha ?? "");
-            return !query || subject.toLowerCase().includes(query) || sha.toLowerCase().includes(query);
+            return !query || matchesMentionTarget(subject.toLowerCase(), query) || sha.toLowerCase().includes(query);
           })
           .slice(0, 5)
           .map((commit) => {
@@ -12354,6 +12355,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const trigger = composerTriggerForSelection(
       detectedTrigger,
       suggestion.kind === "file" ? suggestion.filePath ?? suggestion.label : suggestion.label,
+      suggestion.kind === "file" ? "file" : "mention",
     );
     const next = replaceComposerTriggerSpan(prompt, trigger, `${suggestion.insertText} `);
     setPromptValue(next.text, next.caret);

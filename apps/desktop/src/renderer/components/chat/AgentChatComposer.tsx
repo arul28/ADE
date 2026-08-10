@@ -2752,16 +2752,23 @@ export function AgentChatComposer({
   const hydrateMentionChipsInEditor = useCallback((): boolean => {
     const editor = richEditorRef.current;
     const labels = mentionLabelsRef.current;
-    if (!editor || !labels.size) return false;
+    if (!editor) return false;
 
     let changed = false;
     editor.querySelectorAll<HTMLElement>("[data-composer-chip='mention']").forEach((chip) => {
       const token = chip.dataset.composerChipText;
-      const label = token ? labels.get(token)?.trim() : undefined;
-      if (!token || !label) return;
+      if (!token) return;
+      const label = labels.get(token)?.trim() || token;
       const labelNode = chip.firstElementChild;
-      if (labelNode) labelNode.textContent = label;
-      chip.title = `${label} — ${token}`;
+      if (labelNode && labelNode.textContent !== label) {
+        labelNode.textContent = label;
+        changed = true;
+      }
+      const title = label === token ? token : `${label} — ${token}`;
+      if (chip.title !== title) {
+        chip.title = title;
+        changed = true;
+      }
     });
 
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {

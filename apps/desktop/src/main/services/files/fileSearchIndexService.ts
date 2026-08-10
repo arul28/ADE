@@ -92,19 +92,21 @@ function scorePathForNeedle(normalized: string, needle: string): number {
   return idx < 0 ? -1 : 600 - idx;
 }
 
-function scorePath(pathValue: string, query: string): number {
+function scorePath(pathValue: string, query: string, allowComposerPrefixFallback: boolean): number {
   const normalized = pathValue.toLowerCase();
   const needle = query.toLowerCase().trim();
   if (!needle) return scoreBrowseDepth(normalized);
   const directScore = scorePathForNeedle(normalized, needle);
   if (directScore >= 0) return directScore;
 
+  if (!allowComposerPrefixFallback) return -1;
+
   // Composer @-file queries can contain ordinary prose after an extensionless
   // path whose filename or directory contains spaces. A path index cannot
   // know that boundary from the string alone, so try progressively shorter
-  // space-delimited prefixes and keep the longest matching one. Restrict this
-  // fallback to path-like queries so ordinary multiword quick-open searches
-  // keep their existing whole-query semantics.
+  // space-delimited prefixes and keep the longest matching one. This is kept
+  // behind an explicit composer-only mode so generic quick-open searches keep
+  // their whole-query semantics.
   const isRootLevelPath = !normalized.includes("/") && !normalized.includes("\\");
   if (!needle.includes("/") && !needle.includes("\\") && !isRootLevelPath) return -1;
   const words = needle.split(/[ \t]+/);
@@ -248,7 +250,8 @@ export function createFileSearchIndexService() {
     }
   };
 
-  const quickOpenCacheKey = (query: string, limit: number): string => `${query.toLowerCase().trim()}\0${limit}`;
+  const quickOpenCacheKey = (query: string, limit: number, allowComposerPrefixFallback: boolean): string =>
+    `${query.toLowerCase().trim()}\0${limit}\0${allowComposerPrefixFallback ? "composer" : "generic"}`;
 
   const rememberQuickOpenCache = (index: WorkspaceIndex, cacheKey: string, items: FilesQuickOpenItem[]): void => {
     if (index.quickOpenCache.has(cacheKey)) {
@@ -360,6 +363,7 @@ export function createFileSearchIndexService() {
       query: string;
       limit: number;
       includeIgnored: boolean;
+      allowComposerPrefixFallback?: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
       primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
     }): Promise<FilesQuickOpenItem[]> {
@@ -369,13 +373,14 @@ export function createFileSearchIndexService() {
         primeIgnoreCache: args.primeIgnoreCache
       });
 
-      const cacheKey = quickOpenCacheKey(args.query, args.limit);
+      const allowComposerPrefixFallback = Boolean(args.allowComposerPrefixFallback);
+      const cacheKey = quickOpenCacheKey(args.query, args.limit, allowComposerPrefixFallback);
       const cached = index.quickOpenCache.get(cacheKey);
       if (cached) return cloneQuickOpenItems(cached);
 
       const scored: FilesQuickOpenItem[] = [];
       for (const entry of index.files.values()) {
-        const score = scorePath(entry.lowerPath, args.query);
+        const score = scorePath(entry.lowerPath, args.query, allowComposerPrefixFallback);
         if (score < 0) continue;
         scored.push({ path: entry.path, score });
       }

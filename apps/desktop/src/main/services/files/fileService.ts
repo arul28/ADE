@@ -1461,6 +1461,7 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
+        allowComposerPrefixFallback: Boolean(args.allowComposerPrefixFallback),
         shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
         primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
       });

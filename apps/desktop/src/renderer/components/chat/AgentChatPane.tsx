@@ -7657,7 +7657,8 @@ export function AgentChatPane({
     const hits = await window.ade.files.quickOpen({
       workspaceId: laneId,
       query: trimmed,
-      limit: 60
+      limit: 60,
+      allowComposerPrefixFallback: true,
     }, pin);
     return hits.map((hit) => ({
       path: hit.path,

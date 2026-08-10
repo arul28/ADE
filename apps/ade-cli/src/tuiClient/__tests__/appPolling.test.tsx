@@ -589,9 +589,42 @@ describe("AdeCodeApp polling", () => {
       instance.stdin.write(" review this");
     });
     await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
 
     expect(actionMock.mock.calls.filter(([domain, action]) => domain === "file" && action === "quickOpen"))
       .toHaveLength(1);
+    await unmountApp(instance);
+  });
+
+  it("keeps a commit suggestion available after trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "git" && action === "listRecentCommits") {
+        return [{ shortSha: "abc1234", subject: "Fix parser" }];
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@Fix parser please inspect");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("\t");
+    });
+    await flushInkFrame();
+
+    expect(stripAnsi(instance.frames.join("\n"))).toContain("@commit:abc1234 please inspect");
     await unmountApp(instance);
   });
 });
