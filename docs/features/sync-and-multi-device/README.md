@@ -401,11 +401,16 @@ only**. Two properties make it different from the table-level
   `sessionService` chokepoint, so its settle writes are host-decided too and
   must keep replicating; broadening the filter would silently stop settle
   propagating between two of one user's machines.
-- **It is a compatibility guard, not a security boundary.** `isMobileChangesetPeer`
-  reads the peer's own `hello` metadata, so it holds against an older iOS build
-  — which declares itself honestly — and not against a peer that lies. Current
-  iOS never writes these columns at all; it shows an in-flight settle through a
-  local overlay instead (`PendingSessionSettleStates.swift`).
+- **A paired phone cannot opt out of it.** `isMobilePeer` resolves a
+  record-backed peer through its **pairing record** — host-side truth — and
+  falls back to the peer's own `hello` metadata only when the auth kind is not
+  record-backed. Declaring `deviceType: "desktop"` therefore does not evade the
+  filter. It remains a compatibility guard rather than a hard boundary, because
+  a bootstrap-token peer is still classified from what it says about itself; the
+  complete closure is the host-local lifecycle revision in step 1 of the
+  settle-teardown design. Current iOS never writes these columns at all — it
+  shows an in-flight settle through a local overlay instead
+  (`PendingSessionSettleStates.swift`).
 
 The drop is silent and per-column: the rest of the batch applies, including the
 phone's own snooze overlay (`snoozed_until` / `snoozed_at` / `woke_*`), which

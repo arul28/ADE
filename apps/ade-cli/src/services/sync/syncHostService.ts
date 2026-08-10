@@ -7629,7 +7629,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // merge over the host's decision (older iOS builds still write them).
         // The two rules are not symmetric: the table rule applies to every
         // peer, the column rule only to phones.
-        const isPhonePeer = isMobileChangesetPeer(peer);
+        //
+        // `isMobilePeer`, not `isMobileChangesetPeer`: it resolves a
+        // record-backed peer through its PAIRING RECORD rather than the
+        // `hello` metadata the peer declares about itself, so a paired phone
+        // cannot opt out of the guard by claiming to be a desktop.
+        const isPhonePeer = isMobilePeer(peer);
         const filtered = changes.filter((change) => {
           if (isHostAuthoritativeTable(change)) return false;
           if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;

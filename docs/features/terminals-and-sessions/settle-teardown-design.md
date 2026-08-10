@@ -237,7 +237,7 @@ update is not a guarantee, so the host enforces it.
 
 `syncHostService` drops inbound `terminal_sessions` changes for `settled_at`,
 `settle_override`, and `settle_source` when the peer is a phone
-(`isMobileChangesetPeer`), alongside the existing `sync_cluster_state`
+(`isMobilePeer`), alongside the existing `sync_cluster_state`
 brain-seizure filter. The drop is per-column and silent: the rest of the batch —
 including the phone's own snooze overlay, which it legitimately owns — applies
 normally, and the batch still acks `ok`, because a rejected ack would stall the
@@ -258,13 +258,17 @@ further filtered to sessions whose lane the phone has hydrated, so a row outside
 that window stays locally wrong until it re-enters it. Local-only, never host
 corruption.
 
-**What this filter is not.** `isMobileChangesetPeer` reads the peer's *own*
-`hello` metadata, so a peer that declares itself a desktop is not filtered. That
-is adequate for the stated threat — an older iOS build, which declares itself
-honestly — but it is a compatibility guard, not a security boundary, and it
-should not be read as one. The real closure is step 1's host-local lifecycle
-revision: a settle write conditional on a revision no replica can author cannot
-be won by a merge from any peer, however it identifies itself.
+**How the phone is identified.** The filter uses `isMobilePeer`, which resolves a
+record-backed peer through its **pairing record** — host-side truth — and only
+falls back to the peer's own `hello` metadata when the auth kind is not
+record-backed. A paired phone therefore cannot opt out of the guard by declaring
+itself a desktop.
+
+It is still a compatibility guard rather than a hard boundary: a peer
+authenticated by bootstrap token alone is classified from self-declared
+metadata. The complete closure is step 1's host-local lifecycle revision — a
+settle write conditional on a revision no replica can author cannot be won by a
+merge from any peer, however it identifies itself.
 
 ### 3c-ii. Where the revision column lives
 
