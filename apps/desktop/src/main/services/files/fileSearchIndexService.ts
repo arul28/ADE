@@ -108,7 +108,6 @@ function scorePath(pathValue: string, query: string, allowComposerPrefixFallback
   // behind an explicit composer-only mode so generic quick-open searches keep
   // their whole-query semantics.
   const isRootLevelPath = !normalized.includes("/") && !normalized.includes("\\");
-  if (!needle.includes("/") && !needle.includes("\\") && !isRootLevelPath) return -1;
   const words = needle.split(/[ \t]+/);
   let best = -1;
   for (let end = words.length - 1; end > 0; end -= 1) {

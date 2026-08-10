@@ -586,6 +586,30 @@ describe("fileService", () => {
     }
   });
 
+  it("matches a nested extensionless basename before trailing prose", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-nested-basename-prose-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "docs", "README"), "nested extensionless file\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "README review this",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(quickOpen.map((item) => item.path)).toContain("docs/README");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("keeps composer prefix fallback out of generic quickOpen", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generic-prefix-"));
     const { execSync } = await import("node:child_process");
