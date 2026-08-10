@@ -6,6 +6,7 @@ import {
   sessionStatusBucket,
   sessionStatusDisplay,
   sessionStatusDot,
+  summarizeTerminalAttention,
 } from "./terminalAttention";
 
 describe("terminalAttention", () => {
@@ -301,6 +302,48 @@ describe("terminalAttention", () => {
       expect(presentation?.showsElapsed).toBe(true);
     });
 
+    it("says Monitoring when watch loops are the only live work", () => {
+      const presentation = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        lastOutputPreview: "Foreground turn complete",
+        activeBackgroundTaskCount: 2,
+        backgroundWork: { workingCount: 0, monitoringCount: 2 },
+      });
+
+      // "Monitoring" answers a different question than "Background work":
+      // a watch loop will not finish on its own, so the row is telling you it
+      // is safe to walk away.
+      expect(presentation).toMatchObject({
+        label: "Monitoring ×2",
+        tone: "blue",
+        glyph: "monitoring",
+      });
+    });
+
+    it("keeps a live turn's Planning label off a background-promoted row", () => {
+      const planningTurn = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "running",
+        toolType: "claude-chat",
+        lastOutputPreview: "thinking",
+        chatActivityMode: "planning",
+      });
+      expect(planningTurn?.label).toBe("Planning");
+
+      // The turn is over; plan mode was how it ran, not what is happening now.
+      const backgroundOnly = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        lastOutputPreview: "Plan delivered",
+        chatActivityMode: "planning",
+        backgroundWork: { workingCount: 1, monitoringCount: 0 },
+      });
+      expect(backgroundOnly?.label).toBe("Background work");
+    });
+
     it("shows Waiting only for an idle chat with a valid future wake", () => {
       const base = {
         status: "running" as const,
@@ -351,5 +394,42 @@ describe("terminalAttention", () => {
       expect(stale?.label).toBe("Stale");
       expect(stale?.tone).toBe("neutral");
     });
+  });
+});
+
+describe("summarizeTerminalAttention", () => {
+  const base = {
+    id: "s-1",
+    laneId: "lane-1",
+    status: "running" as const,
+    runtimeState: "idle" as const,
+    toolType: "claude-chat" as const,
+    lastOutputPreview: "Foreground turn complete",
+    startedAt: "2026-08-01T10:00:00.000Z",
+  };
+
+  it("counts a session whose only live work is in the background", () => {
+    // The Work-tab dot, the TopBar rollup and the dock badge all read this
+    // rollup. Before background work reached the canonical phase they showed
+    // nothing at all while agents were mid-run.
+    const quiet = summarizeTerminalAttention([base as never]);
+    expect(quiet.runningCount).toBe(0);
+    expect(quiet.indicator).toBe("none");
+
+    const busy = summarizeTerminalAttention([
+      { ...base, backgroundWork: { workingCount: 2, monitoringCount: 0 }, activeBackgroundTaskCount: 2 } as never,
+    ]);
+    expect(busy.runningCount).toBe(1);
+    expect(busy.activeCount).toBe(1);
+    expect(busy.needsAttentionCount).toBe(0);
+    expect(busy.indicator).toBe("running-active");
+  });
+
+  it("counts a monitoring-only session as running, not as needing you", () => {
+    const summary = summarizeTerminalAttention([
+      { ...base, backgroundWork: { workingCount: 0, monitoringCount: 1 }, activeBackgroundTaskCount: 1 } as never,
+    ]);
+    expect(summary.runningCount).toBe(1);
+    expect(summary.needsAttentionCount).toBe(0);
   });
 });

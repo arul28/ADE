@@ -9,6 +9,7 @@ import type { FileDiff } from "./git";
 import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
+import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { SubagentCapability } from "../subagentCapabilities";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
@@ -1602,6 +1603,8 @@ export type AgentChatSessionSummary = {
   nextWakeAt: string | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
   activeBackgroundTaskCount?: number;
+  /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
+  backgroundWork?: SessionBackgroundWork;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */

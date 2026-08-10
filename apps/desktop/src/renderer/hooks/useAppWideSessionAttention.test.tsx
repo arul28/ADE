@@ -19,7 +19,6 @@ const summarizeTerminalAttention = vi.fn(() => ({
   activeCount: 0,
   needsAttentionCount: 0,
   indicator: "none" as const,
-  byLaneId: {},
 }));
 
 vi.mock("../lib/sessionListCache", () => ({
@@ -96,7 +95,6 @@ beforeEach(() => {
     activeCount: 0,
     needsAttentionCount: 2,
     indicator: "none" as const,
-    byLaneId: {},
   });
   Object.defineProperty(window, "ade", {
     configurable: true,

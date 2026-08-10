@@ -1,4 +1,9 @@
-import type { CanonicalSessionPhase } from "./sessionCanonicalState";
+import type {
+  CanonicalSessionPhase,
+  SessionBackgroundWork,
+  SessionLiveness,
+} from "./sessionCanonicalState";
+import { totalBackgroundWork } from "./sessionCanonicalState";
 
 /**
  * The ONE presentation vocabulary for "how does a session's state look and
@@ -50,6 +55,7 @@ export type SessionStatusTone = "blue" | "violet" | "amber" | "emerald" | "red" 
  */
 export type SessionStatusGlyph =
   | "working"
+  | "monitoring"
   | "planning"
   | "waiting"
   | "needs-you"
@@ -129,10 +135,20 @@ export type SessionStatusOverlay = {
 
 export type SessionStatusActivityContext = {
   chatActivityMode?: "planning" | null;
-  activeBackgroundTaskCount?: number;
+  /**
+   * Why the session is running, from `canonicalSessionState`. Absent (or
+   * `"turn"`) means a live foreground turn and the plain "Working" copy.
+   */
+  liveness?: SessionLiveness | null;
+  /** Live background work, for the "×N" suffix. */
+  backgroundWork?: SessionBackgroundWork | null;
   nextWakeAt?: string | null;
   nowMs?: number;
 };
+
+function countSuffix(count: number): string {
+  return count > 1 ? ` ×${count}` : "";
+}
 
 export function sessionStatusPresentation(
   phase: CanonicalSessionPhase,
@@ -159,7 +175,11 @@ export function sessionStatusPresentation(
     return { label: "Woke", tone: "amber", glyph: "woke", showsElapsed: false, prominent: true };
   }
 
-  if (phase === "running" && activity.chatActivityMode === "planning") {
+  // Planning is a property of a LIVE TURN. A resting session promoted back to
+  // `running` by its background work is not planning anything — its plan-mode
+  // flag is just the mode the finished turn ran in.
+  const liveness = activity.liveness ?? "turn";
+  if (phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning") {
     return {
       label: "Planning",
       tone: "violet",
@@ -180,10 +200,23 @@ export function sessionStatusPresentation(
   // not in the session summary. It is a proxy: a job launched early in a long
   // turn reads ~0s at turn end. `showsElapsed` also re-enables the breathing
   // animation, which is intended — background work genuinely is a live state.
-  const backgroundJobCount = activity.activeBackgroundTaskCount ?? 0;
-  if ((phase === "ready" || phase === "idle") && backgroundJobCount > 0) {
+  if (phase === "running" && liveness !== "turn") {
+    const work = activity.backgroundWork;
+    // "Monitoring" earns its own word because it answers a different question.
+    // Background work might finish on its own; a watch loop will not, so the
+    // row is telling you it is safe to walk away — and, once the CI run it is
+    // watching lands, that it is yours to close.
+    if (liveness === "monitoring") {
+      return {
+        label: `Monitoring${countSuffix(work?.monitoringCount ?? 0)}`,
+        tone: "blue",
+        glyph: "monitoring",
+        showsElapsed: true,
+        prominent: false,
+      };
+    }
     return {
-      label: backgroundJobCount > 1 ? `Background work ×${backgroundJobCount}` : "Background work",
+      label: `Background work${countSuffix(totalBackgroundWork(work))}`,
       tone: "blue",
       glyph: "working",
       showsElapsed: true,

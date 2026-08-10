@@ -22,7 +22,6 @@ function resetStore() {
       activeCount: 0,
       needsAttentionCount: 0,
       indicator: "none",
-      byLaneId: {},
     },
     workViewByProject: {},
     laneWorkViewByScope: {},

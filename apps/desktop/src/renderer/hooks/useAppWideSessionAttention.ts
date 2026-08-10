@@ -19,7 +19,6 @@ const EMPTY_TERMINAL_ATTENTION = {
   activeCount: 0,
   needsAttentionCount: 0,
   indicator: "none" as const,
-  byLaneId: {},
 };
 
 /**

@@ -216,12 +216,6 @@ export type TerminalAttentionSnapshot = {
   activeCount: number;
   needsAttentionCount: number;
   indicator: TerminalAttentionIndicator;
-  byLaneId: Record<string, {
-    runningCount: number;
-    activeCount: number;
-    needsAttentionCount: number;
-    indicator: TerminalAttentionIndicator;
-  }>;
 };
 
 const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
@@ -229,7 +223,6 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
   activeCount: 0,
   needsAttentionCount: 0,
   indicator: "none",
-  byLaneId: {}
 };
 
 /**

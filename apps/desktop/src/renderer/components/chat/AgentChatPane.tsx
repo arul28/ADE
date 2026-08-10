@@ -4471,6 +4471,19 @@ export function AgentChatPane({
     () => selectedSubagentSnapshots.some((s) => s.background === true && s.status === "running"),
     [selectedSubagentSnapshots],
   );
+  /**
+   * Subagents still RUNNING, which is what the toolbar badge counts.
+   *
+   * It used to count every tracked subagent, so a fleet that had finished an
+   * hour ago still wore a "7" — a number that only ever grew and told you
+   * nothing about now. A badge on a live-activity toggle has to answer "how
+   * much is happening", and once nothing is running the honest answer is to
+   * show no badge at all.
+   */
+  const runningSubagentCount = useMemo(
+    () => selectedSubagentSnapshots.filter((s) => s.status === "running").length,
+    [selectedSubagentSnapshots],
+  );
   // Auto-clear the subagent view when the underlying snapshot disappears
   // (e.g. session switch). Updating status is fine and stays in view.
   useEffect(() => {
@@ -11695,8 +11708,8 @@ export function AgentChatPane({
                   : "Open agents, proof artifacts, and handoff controls for this chat.",
                 effect: [
                   proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"}` : null,
-                  selectedSubagentSnapshots.length > 0
-                    ? `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"}`
+                  runningSubagentCount > 0
+                    ? `${runningSubagentCount} subagent${runningSubagentCount === 1 ? "" : "s"} running`
                     : null,
                   selectedScheduledWorkSnapshots.length > 0
                     ? `${selectedScheduledWorkSnapshots.length} scheduled`
@@ -11737,9 +11750,9 @@ export function AgentChatPane({
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
                     {proofArtifactCount}
                   </span>
-                ) : selectedSubagentSnapshots.length > 0 ? (
+                ) : runningSubagentCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
-                    {selectedSubagentSnapshots.length}
+                    {runningSubagentCount}
                   </span>
                 ) : selectedScheduledWorkSnapshots.length > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black">

@@ -473,6 +473,11 @@ import {
 } from "../skills/agentSkillRuntimeService";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  summarizeBackgroundWork,
+  totalBackgroundWork,
+  type SessionBackgroundWork,
+} from "../../../shared/sessionCanonicalState";
+import {
   isBackgroundShellCommand,
   isNonAgentTaskRun,
   isRealSubagent,
@@ -1509,6 +1514,13 @@ type ClaudeRuntime = {
    * protect the long-lived query from idle cleanup and runtime eviction.
    */
   liveBackgroundTaskIds: Set<string>;
+  /**
+   * Raw SDK `task_type` per live background task, kept beside the level set so
+   * `runtimeBackgroundWork` can split working from monitoring without going
+   * through `activeSubagents` — which does not hold an entry for every plain
+   * background shell, and would silently classify those as unknown.
+   */
+  backgroundTaskTypeById: Map<string, string>;
   /** True after this CLI process has emitted its first authoritative level. */
   backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
@@ -1568,6 +1580,7 @@ type ClaudeRuntime = {
 
 function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.liveBackgroundTaskIds.clear();
+  runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
 }
 
@@ -2129,6 +2142,59 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   if (runtime.kind === "pi") return false;
   return false;
+}
+
+const NO_BACKGROUND_WORK: SessionBackgroundWork = { workingCount: 0, monitoringCount: 0 };
+
+/**
+ * Live work a chat session still owns after its foreground turn bookends,
+ * classified working vs monitoring for `canonicalSessionState`.
+ *
+ * ── Scope, stated honestly ──────────────────────────────────────────────────
+ *
+ * This reads RESIDENT runtime state only. It is therefore in-memory and empty
+ * after a restart, which is the intended contract: orphaned background work is
+ * not live work, and a persisted count would resurrect a "Working" pill over a
+ * process that died with the app.
+ *
+ * What it does NOT see, and cannot without new tracking:
+ *   • processes an agent detached with `nohup`/`setsid`/`disown` — they leave
+ *     ADE's process tree entirely,
+ *   • long-lived processes started inside a user-owned terminal pane, which are
+ *     the user's to manage and deliberately out of scope,
+ *   • opencode / droid / pi background work — those runtimes report no
+ *     background-task or subagent level to track. They contribute zero here
+ *     rather than a guess.
+ */
+function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWork {
+  if (!runtime) return NO_BACKGROUND_WORK;
+  switch (runtime.kind) {
+    case "claude": {
+      // The level set is authoritative for what is still live; the per-task
+      // types recorded alongside it decide which column each lands in.
+      return summarizeBackgroundWork(
+        [...runtime.liveBackgroundTaskIds].map(
+          (taskId) => runtime.backgroundTaskTypeById.get(taskId) ?? null,
+        ),
+      );
+    }
+    case "codex": {
+      // Codex reports no task_type, so a backgrounded subagent is a real agent
+      // doing real work — the unknown-is-working default is also the right one.
+      const backgroundTypes: Array<string | null> = [];
+      for (const subagent of runtime.activeSubagents.values()) {
+        if (subagent.background) backgroundTypes.push(null);
+      }
+      return summarizeBackgroundWork(backgroundTypes);
+    }
+    case "cursor": {
+      // A cloud run keeps executing on Cursor's infrastructure after the local
+      // turn ends — the clearest case of work outliving its turn ADE has.
+      return summarizeBackgroundWork(new Array(runtime.cloudRuns.size).fill(null));
+    }
+    default:
+      return NO_BACKGROUND_WORK;
+  }
 }
 
 function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
@@ -14333,6 +14399,7 @@ export function createAgentChatService(args: {
     if (terminal) {
       runtime.seenBackgroundTaskIds.delete(args.taskId);
       runtime.liveBackgroundTaskIds.delete(args.taskId);
+      runtime.backgroundTaskTypeById.delete(args.taskId);
       runtime.backgroundTaskTitleById.delete(args.taskId);
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
@@ -14354,11 +14421,14 @@ export function createAgentChatService(args: {
     tasks: unknown,
   ): void => {
     const nextIds = new Set<string>();
+    const nextTaskTypes = new Map<string, string>();
     for (const rawTask of Array.isArray(tasks) ? tasks : []) {
       const task = asRecord(rawTask);
       const taskId = compactString(task?.task_id);
       if (!task || !taskId) continue;
       nextIds.add(taskId);
+      const rawLevelTaskType = compactString(task.task_type);
+      if (rawLevelTaskType) nextTaskTypes.set(taskId, rawLevelTaskType);
 
       const description = compactString(task.description) ?? "Background work";
       if (isClaudeAgentBackgroundTaskType(task.task_type)) {
@@ -14424,6 +14494,10 @@ export function createAgentChatService(args: {
 
     runtime.liveBackgroundTaskIds.clear();
     for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
+    runtime.backgroundTaskTypeById.clear();
+    for (const [taskId, taskType] of nextTaskTypes) {
+      runtime.backgroundTaskTypeById.set(taskId, taskType);
+    }
     runtime.backgroundTasksLevelObserved = true;
     managed.lastActivityTimestamp = Date.now();
   };
@@ -29120,6 +29194,7 @@ export function createAgentChatService(args: {
       taskTodos: { seeded: false, byId: new Map() },
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),
+      backgroundTaskTypeById: new Map(),
       backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
       stoppingBackgroundTaskIds: new Map(),
@@ -38683,9 +38758,8 @@ export function createAgentChatService(args: {
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
-    const activeBackgroundTaskCount = liveManaged?.runtime?.kind === "claude"
-      ? liveManaged.runtime.liveBackgroundTaskIds.size
-      : 0;
+    const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
+    const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
     let nextWakeAt: string | null = null;
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
@@ -38802,6 +38876,7 @@ export function createAgentChatService(args: {
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
       activeBackgroundTaskCount,
+      backgroundWork,
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),

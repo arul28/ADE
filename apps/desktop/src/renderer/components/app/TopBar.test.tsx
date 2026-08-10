@@ -176,7 +176,6 @@ function resetStore() {
       activeCount: 0,
       needsAttentionCount: 0,
       indicator: "none",
-      byLaneId: {},
     },
     closeProject: vi.fn(async () => undefined),
     openRepo: vi.fn(async () => ({ rootPath: "/Users/arul/ADE", name: "ADE" })),
