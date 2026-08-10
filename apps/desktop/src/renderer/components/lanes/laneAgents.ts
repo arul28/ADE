@@ -102,7 +102,7 @@ function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
     activity: chatActivity(summary),
     lastHint: summary.awaitingInput
       ? "Awaiting your input"
-      : backgroundHint(summary)
+      : backgroundHint(summary, summary.status === "active")
         ?? summary.summary?.trim()
         ?? summary.lastOutputPreview?.trim()
         ?? null,
@@ -113,15 +113,22 @@ function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
 /**
  * Background work is the more useful hint than a stale last-output preview:
  * the preview describes the turn that already ended, the count describes what
- * is still running. Only shown once the turn is over — a live turn's own
- * output is the better story.
+ * is still running.
+ *
+ * Callers pass `turnActive` explicitly rather than having this re-read a status
+ * field — chat and CLI summaries spell "a turn is running" differently
+ * (`status: "active"` vs `runtimeState: "running"`), and a single stringly-typed
+ * guard here would silently match neither for one of them.
  */
-function backgroundHint(summary: {
-  status?: string;
-  backgroundWork?: SessionBackgroundWork;
-  activeBackgroundTaskCount?: number;
-}): string | null {
-  if (summary.status === "active") return null;
+function backgroundHint(
+  summary: {
+    backgroundWork?: SessionBackgroundWork;
+    activeBackgroundTaskCount?: number;
+  },
+  turnActive: boolean,
+): string | null {
+  // A live turn's own output is the better story than a job count.
+  if (turnActive) return null;
   const work = backgroundWorkFromSummary(summary);
   const total = totalBackgroundWork(work);
   if (total <= 0) return null;
@@ -143,7 +150,7 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
       || summary.attentionRequestedAt
       || summary.attentionSource === "provider_structured"
       ? "Awaiting your input"
-      : backgroundHint(summary)
+      : backgroundHint(summary, summary.runtimeState === "running")
         ?? summary.summary?.trim()
         ?? summary.lastOutputPreview?.trim()
         ?? null,

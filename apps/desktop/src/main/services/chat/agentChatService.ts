@@ -2144,7 +2144,12 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   return false;
 }
 
-const NO_BACKGROUND_WORK: SessionBackgroundWork = { workingCount: 0, monitoringCount: 0 };
+// Frozen because it is returned by reference to every caller with no live work;
+// a single mutation would otherwise follow every session in the process.
+const NO_BACKGROUND_WORK: SessionBackgroundWork = Object.freeze({
+  workingCount: 0,
+  monitoringCount: 0,
+});
 
 /**
  * Live work a chat session still owns after its foreground turn bookends,
@@ -38876,7 +38881,10 @@ export function createAgentChatService(args: {
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
       activeBackgroundTaskCount,
-      backgroundWork,
+      // Omitted when nothing is live, like every other optional field here: a
+      // zero record carries no information and would ride along on every
+      // summary read for every session.
+      ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -39287,8 +39295,9 @@ export function createAgentChatService(args: {
    *   • Children stop before parents. Stopping only the parent leaves the fleet
    *     running and untracked, which is how a "stopped" agent keeps spending.
    *
-   * Returns how much live work was found, so callers can report honestly rather
-   * than claiming a teardown that did nothing.
+   * Returns how much live work actually STOPPED — the drop in the session's
+   * live-work count across the call, not what it found. A runtime with no stop
+   * control reports 0 rather than claiming a teardown it never performed.
    */
   const stopBackgroundWork = async (
     { sessionId }: { sessionId: string },
@@ -39299,9 +39308,9 @@ export function createAgentChatService(args: {
     if (!runtime) return { stopped: 0, skippedActiveTurn: false };
 
     const turnActive = managed.session.status === "active" || Boolean(runtime.activeTurnId);
-    const stopped = totalBackgroundWork(runtimeBackgroundWork(runtime));
     if (turnActive) return { stopped: 0, skippedActiveTurn: true };
-    if (stopped === 0) return { stopped: 0, skippedActiveTurn: false };
+    const before = totalBackgroundWork(runtimeBackgroundWork(runtime));
+    if (before === 0) return { stopped: 0, skippedActiveTurn: false };
 
     try {
       switch (runtime.kind) {
@@ -39319,7 +39328,17 @@ export function createAgentChatService(args: {
           // Those are exactly the ones that survived the old teardown.
           const control = getClaudeQueryControl(runtime.query);
           for (const taskId of [...runtime.liveBackgroundTaskIds]) {
-            if (typeof control.stopTask === "function") {
+            // Same convention as `closeOpenClaudeBackgroundTasks`: a task ADE
+            // could not actually stop settles as FAILED with the reason, not as
+            // "stopped". Both close the row — leaving it open would keep the
+            // session claiming work forever — but only one of them claims ADE
+            // did the stopping.
+            let terminalStatus: ScheduledWorkEvent["status"] = "stopped";
+            let terminalSummary: string | undefined;
+            if (typeof control.stopTask !== "function") {
+              terminalStatus = "failed";
+              terminalSummary = "The Claude query did not expose a task stop control.";
+            } else {
               try {
                 await awaitClaudeControlCall(
                   `Stopping Claude background task '${taskId}'`,
@@ -39327,14 +39346,21 @@ export function createAgentChatService(args: {
                   () => control.stopTask!(taskId),
                 );
               } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                terminalStatus = "failed";
+                terminalSummary = `Failed to stop background task: ${message}`;
                 logger.warn("agent_chat.settle_background_stop_failed", {
                   sessionId: managed.session.id,
                   taskId,
-                  error: error instanceof Error ? error.message : String(error),
+                  error: message,
                 });
               }
             }
-            emitClaudeBackgroundTaskUpdate(managed, runtime, { taskId, status: "stopped" });
+            emitClaudeBackgroundTaskUpdate(managed, runtime, {
+              taskId,
+              status: terminalStatus,
+              ...(terminalSummary ? { summary: terminalSummary } : {}),
+            });
           }
           break;
         }
@@ -39365,7 +39391,13 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    return { stopped, skippedActiveTurn: false };
+    // Measured as the DROP in live work rather than what was found, so a
+    // runtime with no stop control (Codex) or a cursor session with no cloud
+    // agent id reports 0 instead of claiming a teardown it never performed.
+    // Under-reporting is the safe direction: a caller may never be told more
+    // was stopped than actually was.
+    const after = totalBackgroundWork(runtimeBackgroundWork(runtime));
+    return { stopped: Math.max(0, before - after), skippedActiveTurn: false };
   };
 
   const hasActiveWorkloads = (): boolean => {
