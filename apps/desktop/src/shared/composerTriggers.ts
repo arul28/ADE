@@ -65,12 +65,16 @@ function composerPathPrefixForSelection(
   selectedLabel: string,
   allowRootLevelFile: boolean,
 ): string {
-  if (!allowRootLevelFile && !/[\\/]/.test(selectedLabel)) return "";
+  if (!allowRootLevelFile) return "";
+  const pathComponents = selectedLabel.split(/[\\/]/).filter(Boolean);
   const words = query.trim().split(/[ \t]+/).filter(Boolean);
   for (let wordCount = words.length - 1; wordCount > 0; wordCount -= 1) {
     const prefix = words.slice(0, wordCount).join(" ");
-    if (!allowRootLevelFile && !/[\\/]/.test(prefix)) continue;
-    if (selectedLabel.toLowerCase().startsWith(prefix.toLowerCase())) return prefix;
+    const normalizedPrefix = prefix.toLowerCase();
+    const matchesPath = /[\\/]/.test(prefix)
+      ? selectedLabel.toLowerCase().startsWith(normalizedPrefix)
+      : pathComponents.some((component) => component.toLowerCase().startsWith(normalizedPrefix));
+    if (matchesPath) return prefix;
   }
   return "";
 }
@@ -106,8 +110,10 @@ export function composerTriggerForSelection(
   // Extensionless path searches accept the longest space-delimited prefix that
   // exists in the index, so the selected canonical path may continue beyond
   // what the user typed before adding prose (for example, `src/my review`
-  // selecting `src/my folder`). Preserve that accepted prefix as the splice
-  // boundary without applying this heuristic to ordinary chat titles.
+  // selecting `src/my folder`, or `my review` selecting `src/my/file`). Match
+  // against the full path for path-like prefixes and each component for
+  // basename/intermediate-component prefixes, without applying this heuristic
+  // to ordinary chat titles.
   addCandidateLabel(composerPathPrefixForSelection(
     trigger.query,
     selectedLabel,

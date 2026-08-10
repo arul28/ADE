@@ -159,6 +159,28 @@ describe("replaceComposerTriggerSpan", () => {
     expect(composerTriggerForSelection(trigger, "my file", "mention")).toEqual(trigger);
   });
 
+  it("preserves prose after an intermediate path-component match", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my/file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my/file ").text).toBe(
+      "ask @src/my/file review this",
+    );
+  });
+
+  it("preserves prose after a nested basename prefix match", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "docs/my file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@docs/my file ").text).toBe(
+      "ask @docs/my file review this",
+    );
+  });
+
   it("recognizes a confirmed @ token as a terminated trigger", () => {
     const text = "ask @src/foo.ts about this";
     const trigger = detectComposerTrigger(text, text.length)!;

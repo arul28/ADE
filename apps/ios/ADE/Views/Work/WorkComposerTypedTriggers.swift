@@ -216,10 +216,19 @@ enum WorkComposerTriggerDetector {
   static func pathPrefixForSelection(query: String, selectedLabel: String) -> String {
     let words = query.split(whereSeparator: { $0 == " " || $0 == "\t" })
     guard words.count > 1 else { return "" }
+    let pathComponents = selectedLabel
+      .split(whereSeparator: { $0 == "/" || $0 == "\\" })
+      .map(String.init)
 
     for wordCount in stride(from: words.count - 1, through: 1, by: -1) {
       let prefix = words.prefix(wordCount).joined(separator: " ")
-      if selectedLabel.lowercased().hasPrefix(prefix.lowercased()) { return prefix }
+      let matchesPath: Bool
+      if prefix.contains("/") || prefix.contains("\\") {
+        matchesPath = selectedLabel.lowercased().hasPrefix(prefix.lowercased())
+      } else {
+        matchesPath = pathComponents.contains { $0.lowercased().hasPrefix(prefix.lowercased()) }
+      }
+      if matchesPath { return prefix }
     }
     return ""
   }
