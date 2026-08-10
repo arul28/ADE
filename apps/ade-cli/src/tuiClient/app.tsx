@@ -17,12 +17,14 @@ import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSk
 import {
   composerFileSearchQuery,
   composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
 } from "../../../desktop/src/shared/composerTriggers";
+import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -4970,9 +4972,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setSelectedDrawerChatAction(action);
     applyDrawerChatSelection({ session: session ?? null, action });
   }, [applyDrawerChatSelection, openDrawerSessions, selectActiveLaneId]);
-  const activeComposerTrigger = useMemo(() => (
-    activePane === "chat" ? detectComposerTrigger(prompt, promptCursor) : null
-  ), [activePane, prompt, promptCursor]);
+  const activeComposerTrigger = useMemo(() => {
+    if (activePane !== "chat") return null;
+    const trigger = detectComposerTrigger(prompt, promptCursor);
+    if (!trigger) return null;
+    const confirmedFile = (body: string) => selectedMentions.some(
+      (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
+    );
+    return composerTriggerHasConfirmedPrefix(prompt, trigger, {
+      isFile: confirmedFile,
+      isMention: isChatMentionTokenBody,
+    }) ? null : trigger;
+  }, [activePane, prompt, promptCursor, selectedMentions]);
   const activeMentionRange = useMemo(() => (
     activeComposerTrigger?.type === "at"
       ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }

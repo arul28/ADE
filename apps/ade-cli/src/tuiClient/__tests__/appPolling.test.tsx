@@ -561,6 +561,39 @@ describe("AdeCodeApp polling", () => {
 
     await unmountApp(instance);
   });
+
+  it("closes a confirmed spaced-file mention while typing trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "file" && action === "quickOpen") return [{ path: "src/my folder" }];
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@src/my");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) => domain === "file" && action === "quickOpen"))
+      .toHaveLength(1);
+
+    await act(async () => {
+      instance.stdin.write("\t");
+      await flushAsyncEffects();
+      instance.stdin.write(" review this");
+    });
+    await flushInkFrame();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) => domain === "file" && action === "quickOpen"))
+      .toHaveLength(1);
+    await unmountApp(instance);
+  });
 });
 
 describe("TUI product analytics policy", () => {

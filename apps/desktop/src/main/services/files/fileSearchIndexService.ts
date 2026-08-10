@@ -105,12 +105,15 @@ function scorePath(pathValue: string, query: string): number {
   // space-delimited prefixes and keep the longest matching one. Restrict this
   // fallback to path-like queries so ordinary multiword quick-open searches
   // keep their existing whole-query semantics.
-  if (!needle.includes("/") && !needle.includes("\\")) return -1;
+  const isRootLevelPath = !normalized.includes("/") && !normalized.includes("\\");
+  if (!needle.includes("/") && !needle.includes("\\") && !isRootLevelPath) return -1;
   const words = needle.split(/[ \t]+/);
   let best = -1;
   for (let end = words.length - 1; end > 0; end -= 1) {
     const prefix = words.slice(0, end).join(" ");
-    const score = scorePathForNeedle(normalized, prefix);
+    const score = isRootLevelPath
+      ? (normalized.startsWith(prefix) ? 600 : -1)
+      : scorePathForNeedle(normalized, prefix);
     if (score < 0) continue;
     // Prefer a longer path prefix when multiple indexed paths share the same
     // beginning. The tiny fractional tie-break preserves existing score tiers.

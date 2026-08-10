@@ -145,7 +145,35 @@ export type ComposerTokenRange = {
   kind: ComposerTokenKind;
 };
 
-const CONFIRMED_TOKEN_RE = /(^|\s)([@/])(\S+)/g;
+const CONFIRMED_TRIGGER_RE = /(^|\s)([@/])/g;
+
+function plainComposerTokenEnd(text: string, start: number, limit: number): number | null {
+  let end = start;
+  while (end < limit && !/\s/.test(text[end]!)) end += 1;
+  return end > start ? end : null;
+}
+
+function confirmedFileTokenEnd(
+  text: string,
+  start: number,
+  limit: number,
+  isFile: (body: string) => boolean,
+): number | null {
+  let end = start;
+  let bestEnd: number | null = null;
+  while (end < limit) {
+    const character = text[end]!;
+    if (character === "@" || character === "\r" || character === "\n") break;
+    if (character === " " || character === "\t") {
+      if (isFile(text.slice(start, end))) bestEnd = end;
+      end += 1;
+      continue;
+    }
+    end += 1;
+  }
+  if (end === limit && end > start && isFile(text.slice(start, end))) bestEnd = end;
+  return bestEnd;
+}
 
 /**
  * Find the confirmed chip tokens in a draft: word-boundary `@body` / `/body`
@@ -169,13 +197,21 @@ export function findConfirmedComposerTokens(
 ): ComposerTokenRange[] {
   if (!text) return [];
   const tokens: ComposerTokenRange[] = [];
-  for (const match of text.matchAll(CONFIRMED_TOKEN_RE)) {
+  for (const match of text.matchAll(CONFIRMED_TRIGGER_RE)) {
     const start = (match.index ?? 0) + match[1]!.length;
-    const body = match[3]!;
-    const kind: ComposerTokenKind | null = match[2] === "@"
-      ? (confirm.isMention?.(body) ? "mention" : confirm.isFile(body) ? "file" : null)
-      : (confirm.isCommand(body) ? "command" : null);
-    if (kind) tokens.push({ start, end: start + 1 + body.length, kind });
+    const bodyStart = start + 1;
+    const plainEnd = plainComposerTokenEnd(text, bodyStart, text.length);
+    const plainBody = plainEnd == null ? "" : text.slice(bodyStart, plainEnd);
+    if (match[2] === "@") {
+      if (plainBody && confirm.isMention?.(plainBody)) {
+        tokens.push({ start, end: plainEnd!, kind: "mention" });
+        continue;
+      }
+      const fileEnd = confirmedFileTokenEnd(text, bodyStart, text.length, confirm.isFile);
+      if (fileEnd != null) tokens.push({ start, end: fileEnd, kind: "file" });
+    } else if (plainBody && confirm.isCommand(plainBody)) {
+      tokens.push({ start, end: plainEnd!, kind: "command" });
+    }
   }
   return tokens;
 }
@@ -196,10 +232,14 @@ export function composerTriggerHasConfirmedPrefix(
 ): boolean {
   if (trigger.type !== "at") return false;
   const end = Math.min(text.length, trigger.start + 1 + trigger.query.length);
-  const query = text.slice(trigger.start + 1, end);
-  const match = /^(\S+)[ \t]/.exec(query);
-  if (!match) return false;
-  return confirm.isFile(match[1]!) || confirm.isMention?.(match[1]!) === true;
+  const bodyStart = trigger.start + 1;
+  const plainEnd = plainComposerTokenEnd(text, bodyStart, end);
+  if (plainEnd != null && plainEnd < end) {
+    const body = text.slice(bodyStart, plainEnd);
+    if (confirm.isFile(body) || confirm.isMention?.(body) === true) return true;
+  }
+  const fileEnd = confirmedFileTokenEnd(text, bodyStart, end, confirm.isFile);
+  return fileEnd != null && fileEnd < end && /[ \t]/.test(text[fileEnd]!);
 }
 
 /** True when the trigger token is the only content in the draft. */

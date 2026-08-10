@@ -156,6 +156,18 @@ describe("replaceComposerTriggerSpan", () => {
     expect(composerTriggerHasConfirmedPrefix("ask @src/foo.ts", detectComposerTrigger("ask @src/foo.ts", 15)!, confirm)).toBe(false);
   });
 
+  it("recognizes a confirmed file token with spaces as terminated", () => {
+    const text = "ask @src/my folder about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const confirm = { isFile: (body: string) => body === "src/my folder" };
+
+    expect(composerTriggerHasConfirmedPrefix(text, trigger, confirm)).toBe(true);
+    expect(findConfirmedComposerTokens(text, {
+      ...confirm,
+      isCommand: () => false,
+    })).toEqual([{ start: 4, end: 18, kind: "file" }]);
+  });
+
   it("replaces exactly the trigger span mid-sentence", () => {
     const text = "fix @src/f then run /te tomorrow";
     const trigger = { start: 20, query: "te" };
