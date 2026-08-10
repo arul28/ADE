@@ -655,12 +655,16 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   let turnId: String?
   let itemId: String?
   let block: WorkMarkdownBlock
+  /// The one block still receiving deltas. Its renders are throwaway, so they
+  /// are kept out of the shared inline-markdown cache.
+  var isStreamingTail = false
 
   static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
     lhs.id == rhs.id
       && lhs.messageId == rhs.messageId
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
+      && lhs.isStreamingTail == rhs.isStreamingTail
       && lhs.block == rhs.block
   }
 }

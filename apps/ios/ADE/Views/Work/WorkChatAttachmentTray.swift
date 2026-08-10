@@ -24,6 +24,54 @@ private enum WorkChatRemoteImageError: Error {
   case responseTooLarge
 }
 
+/// Placeholder scheme for an image the composer has accepted but not yet saved
+/// to the host. The local echo carries these refs so the user's bubble and its
+/// thumbnails paint on the tap frame; `sendMessage` swaps them for the real host
+/// paths once the save round-trip returns, before the message is sent.
+///
+/// A ref with this prefix never reaches the wire.
+let workPendingUploadPathPrefix = "ade-pending-upload://"
+
+func workAttachmentIsPendingUpload(_ ref: AgentChatFileRef) -> Bool {
+  ref.path.hasPrefix(workPendingUploadPathPrefix)
+}
+
+/// Holds the composer's already-downscaled `UIImage` for each in-flight upload
+/// so the echo's thumbnail resolves without touching the host. Entries are
+/// released as soon as the save returns (or the send fails) — a handoff buffer,
+/// not a cache.
+@MainActor
+final class WorkPendingUploadPreviewStore {
+  static let shared = WorkPendingUploadPreviewStore()
+
+  private var imagesByPath: [String: UIImage] = [:]
+
+  private init() {}
+
+  func register(_ attachments: [WorkChatInputAttachment]) -> [AgentChatFileRef] {
+    attachments.map { attachment in
+      let ref = AgentChatFileRef(
+        path: "\(workPendingUploadPathPrefix)\(attachment.id.uuidString)",
+        type: "image"
+      )
+      if let image = attachment.image {
+        imagesByPath[ref.path] = image
+      }
+      return ref
+    }
+  }
+
+  func image(forPath path: String) -> UIImage? {
+    imagesByPath[path]
+  }
+
+  func release(_ refs: [AgentChatFileRef]) {
+    for ref in refs where workAttachmentIsPendingUpload(ref) {
+      imagesByPath.removeValue(forKey: ref.path)
+    }
+  }
+}
+
 func workChatAttachmentIsImage(_ ref: AgentChatFileRef) -> Bool {
   let type = ref.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return type == "image" || type == "image-url"
@@ -674,6 +722,10 @@ private struct WorkChatAttachmentChip: View {
   @State private var previewImage: UIImage?
   @State private var loadFailed = false
 
+  private var isUploading: Bool {
+    workAttachmentIsPendingUpload(attachment)
+  }
+
   var body: some View {
     Group {
       if workChatAttachmentIsImage(attachment) {
@@ -703,19 +755,31 @@ private struct WorkChatAttachmentChip: View {
           .scaledToFill()
           .frame(width: size, height: size)
           .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .opacity(isUploading ? 0.55 : 1)
+          .overlay {
+            if isUploading {
+              ProgressView()
+                .controlSize(.small)
+                .tint(Color.white)
+            }
+          }
       } else {
         VStack(spacing: 4) {
           Image(systemName: loadFailed ? "photo.badge.exclamationmark" : "photo")
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.82))
-          Text(loadFailed ? "On desktop" : "Image")
+          Text(loadFailed ? "On desktop" : (isUploading ? "Sending" : "Image"))
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.72))
             .lineLimit(1)
         }
       }
     }
-    .accessibilityLabel("Image attachment \(workChatAttachmentDisplayName(attachment))")
+    .accessibilityLabel(
+      isUploading
+        ? "Image attachment, sending"
+        : "Image attachment \(workChatAttachmentDisplayName(attachment))"
+    )
   }
 
   private var fileChip: some View {
@@ -742,6 +806,13 @@ private struct WorkChatAttachmentChip: View {
   @MainActor
   private func loadPreviewIfNeeded() async {
     guard workChatAttachmentIsImage(attachment) else { return }
+    // Still uploading: the composer's downscaled image is already in memory, so
+    // the echo's thumbnail resolves without a host round-trip.
+    if workAttachmentIsPendingUpload(attachment) {
+      previewImage = WorkPendingUploadPreviewStore.shared.image(forPath: attachment.path)
+      loadFailed = false
+      return
+    }
     let maxPixelSize = max(workChatAttachmentPreviewMinimumPixels, ceil(size * displayScale))
     if attachment.type == "image-url", let urlString = attachment.url,
        let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),

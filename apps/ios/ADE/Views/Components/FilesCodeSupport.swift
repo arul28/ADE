@@ -126,9 +126,94 @@ struct SyntaxToken: Identifiable, Equatable {
   let range: NSRange
 }
 
+/// Whether a scan position sits inside a construct that can span lines. Every
+/// token rule is line-anchored except block comments and backtick / triple-quote
+/// strings, so a line boundary reached with all of these clear is a point no
+/// later text can reinterpret.
+///
+/// Ambiguity resolves toward "still inside": a false positive only stops the
+/// stable prefix from growing (slower, still correct), while a false negative
+/// would let a token straddle the split.
+struct SyntaxNestingBalance: Equatable {
+  var insideBlockComment = false
+  var insideBacktick = false
+  var insideTripleQuote = false
+
+  var isClear: Bool {
+    !insideBlockComment && !insideBacktick && !insideTripleQuote
+  }
+}
+
+/// The already-highlighted stable prefix of the code block currently streaming
+/// in a given language. It always ends just past a newline reached with no
+/// multi-line construct open, so a resumed scan can start from a clear state.
+struct SyntaxHighlightPrefix {
+  let text: String
+  let attributed: AttributedString
+}
+
+/// Returns the position just past the last newline in `text[start...]` reached
+/// with no multi-line construct open (never earlier than `start`). `start` is
+/// itself such a position, so the scan begins from a clear state.
+private func syntaxStableBoundary(in text: String, from start: String.Index) -> String.Index {
+  var balance = SyntaxNestingBalance()
+  var boundary = start
+  var index = start
+  while index < text.endIndex {
+    let character = text[index]
+    let next = text.index(after: index)
+
+    if character == "\n" {
+      if balance.isClear { boundary = next }
+      index = next
+      continue
+    }
+
+    if balance.insideBlockComment {
+      if character == "*", next < text.endIndex, text[next] == "/" {
+        balance.insideBlockComment = false
+        index = text.index(after: next)
+        continue
+      }
+    } else if balance.insideBacktick {
+      if character == "`" { balance.insideBacktick = false }
+    } else if balance.insideTripleQuote {
+      if syntaxIsTripleQuote(text, at: index) {
+        balance.insideTripleQuote = false
+        index = text.index(index, offsetBy: 3)
+        continue
+      }
+    } else if character == "/", next < text.endIndex, text[next] == "*" {
+      balance.insideBlockComment = true
+      index = text.index(after: next)
+      continue
+    } else if character == "`" {
+      balance.insideBacktick = true
+    } else if syntaxIsTripleQuote(text, at: index) {
+      balance.insideTripleQuote = true
+      index = text.index(index, offsetBy: 3)
+      continue
+    }
+
+    index = next
+  }
+  return boundary
+}
+
+private func syntaxIsTripleQuote(_ text: String, at index: String.Index) -> Bool {
+  let character = text[index]
+  guard character == "\"" || character == "'" else { return false }
+  var cursor = index
+  for _ in 0..<2 {
+    cursor = text.index(after: cursor)
+    guard cursor < text.endIndex, text[cursor] == character else { return false }
+  }
+  return true
+}
+
 struct SyntaxHighlighter {
   static func tokenize(_ text: String, as language: FilesLanguage) -> [SyntaxToken] {
-    let cacheKey = "tokens|\(language.rawValue)|\(text)"
+    let cacheKey = "tokens|\(language.rawValue)|\(workStableDigest(text))"
     if let cached = ADECodeRenderingCache.shared.tokens(for: cacheKey) {
       return cached
     }
@@ -156,28 +241,98 @@ struct SyntaxHighlighter {
     return tokens
   }
 
+  /// Syntax-highlights a code block, incrementally while it is still streaming.
+  ///
+  /// A streaming block grows by a few characters per delta. Highlighting the
+  /// whole text each time is O(n) regex work *plus* O(n) attribute application
+  /// per token, which made a long block the most expensive main-thread path in
+  /// an agent reply. This mirrors what `parseMarkdownBlocksForStreaming` does
+  /// for prose: everything up to the last line boundary that is provably outside
+  /// a multi-line construct can never be re-interpreted by text arriving later,
+  /// so it is highlighted once and reused; only the growing tail is re-scanned.
   static func highlightedAttributedString(_ text: String, as language: FilesLanguage) -> AttributedString {
-    let cacheKey = "highlighted|\(language.rawValue)|\(text)"
+    let cacheKey = "highlighted|\(language.rawValue)|\(workStableDigest(text))"
     if let cached = ADECodeRenderingCache.shared.highlightedString(for: cacheKey) {
       return cached
     }
 
+    let attributed = incrementallyHighlighted(text, as: language)
+    ADECodeRenderingCache.shared.storeHighlightedString(attributed, for: cacheKey)
+    return attributed
+  }
+
+  private static func incrementallyHighlighted(
+    _ text: String,
+    as language: FilesLanguage
+  ) -> AttributedString {
+    let reusable = ADECodeRenderingCache.shared.highlightPrefix(for: language)
+      .flatMap { prefix -> SyntaxHighlightPrefix? in
+        // Byte-prefix check: only a block that literally grew from this prefix
+        // may reuse it. A different block of the same language starts over.
+        guard !prefix.text.isEmpty, text.hasPrefix(prefix.text) else { return nil }
+        return prefix
+      }
+
+    let reusedText = reusable?.text ?? ""
+    let scanStart = text.index(text.startIndex, offsetBy: reusedText.count)
+    let boundary = syntaxStableBoundary(in: text, from: scanStart)
+
+    var attributed = reusable?.attributed ?? AttributedString()
+    if boundary > scanStart {
+      attributed.append(highlightedSegment(text[scanStart..<boundary], as: language))
+    }
+    ADECodeRenderingCache.shared.storeHighlightPrefix(
+      SyntaxHighlightPrefix(text: String(text[..<boundary]), attributed: attributed),
+      for: language
+    )
+
+    guard boundary < text.endIndex else { return attributed }
+    var result = attributed
+    result.append(highlightedSegment(text[boundary...], as: language))
+    return result
+  }
+
+  /// Highlights one self-contained segment. Attribute ranges are walked with a
+  /// single forward cursor — the previous implementation re-walked from
+  /// `startIndex` for every token, which is what made a long block quadratic.
+  ///
+  /// Applied to a whole code block this is the non-incremental reference
+  /// rendering, which is what the equivalence tests compare against.
+  static func highlightedSegment(
+    _ segment: Substring,
+    as language: FilesLanguage
+  ) -> AttributedString {
+    let text = String(segment)
     var attributed = AttributedString(text)
     attributed.font = .system(.body, design: .monospaced)
     attributed.foregroundColor = ADEColor.textPrimary
 
+    var cursorOffset = 0
+    var cursor = attributed.startIndex
     for token in tokenize(text, as: language) {
       guard let stringRange = Range(token.range, in: text) else { continue }
       let startOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
       let endOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
-      let lowerBound = attributed.characters.index(attributed.startIndex, offsetBy: startOffset)
-      let upperBound = attributed.characters.index(attributed.startIndex, offsetBy: endOffset)
-      let attributeRange = lowerBound..<upperBound
-      attributed[attributeRange].foregroundColor = token.role.tint
-      attributed[attributeRange].font = token.role.font
+      // Tokens arrive sorted by location, but overlapping rules can hand back a
+      // range that starts before the cursor; rewind only in that case.
+      if startOffset < cursorOffset {
+        cursor = attributed.startIndex
+        cursorOffset = 0
+      }
+      guard let lowerBound = attributed.characters.index(
+        cursor,
+        offsetBy: startOffset - cursorOffset,
+        limitedBy: attributed.endIndex
+      ), let upperBound = attributed.characters.index(
+        lowerBound,
+        offsetBy: endOffset - startOffset,
+        limitedBy: attributed.endIndex
+      ) else { continue }
+      attributed[lowerBound..<upperBound].foregroundColor = token.role.tint
+      attributed[lowerBound..<upperBound].font = token.role.font
+      cursor = lowerBound
+      cursorOffset = startOffset
     }
-
-    ADECodeRenderingCache.shared.storeHighlightedString(attributed, for: cacheKey)
     return attributed
   }
 

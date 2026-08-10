@@ -4,9 +4,12 @@ import AVKit
 
 struct WorkInlineMarkdownText: View {
   let text: String
+  /// Set on the one block that is still growing, so its throwaway revisions
+  /// stay out of the shared inline-markdown cache.
+  var isStreamingTail = false
 
   var body: some View {
-    Text(markdownAttributedString(text))
+    Text(markdownAttributedString(text, intermediate: isStreamingTail))
       .foregroundStyle(ADEColor.textPrimary)
       .tint(ADEColor.accent)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -31,9 +34,13 @@ struct WorkMarkdownRenderer: View {
   }
 
   var body: some View {
+    let blocks = self.blocks
+    // Only the last block of a streaming message is still growing; everything
+    // above it is final and belongs in the shared caches.
+    let streamingTailId = streamingCacheKey == nil ? nil : blocks.last?.id
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
-        WorkMarkdownBlockView(block: block)
+        WorkMarkdownBlockView(block: block, isStreamingTail: block.id == streamingTailId)
       }
     }
   }
@@ -41,13 +48,14 @@ struct WorkMarkdownRenderer: View {
 
 struct WorkMarkdownBlockView: View {
   let block: WorkMarkdownBlock
+  var isStreamingTail = false
 
   var body: some View {
     switch block.kind {
     case .paragraph(let text):
-      WorkInlineMarkdownText(text: text)
+      WorkInlineMarkdownText(text: text, isStreamingTail: isStreamingTail)
     case .heading(let level, let text):
-      WorkInlineMarkdownText(text: text)
+      WorkInlineMarkdownText(text: text, isStreamingTail: isStreamingTail)
         .font(headingFont(level: level))
     case .unorderedList(let items):
       VStack(alignment: .leading, spacing: 6) {
@@ -55,7 +63,7 @@ struct WorkMarkdownBlockView: View {
           HStack(alignment: .top, spacing: 8) {
             Text("•")
               .foregroundStyle(ADEColor.accent)
-            WorkInlineMarkdownText(text: item)
+            WorkInlineMarkdownText(text: item, isStreamingTail: isStreamingTail)
           }
         }
       }
@@ -65,7 +73,7 @@ struct WorkMarkdownBlockView: View {
           HStack(alignment: .top, spacing: 8) {
             Text("\(start + index).")
               .foregroundStyle(ADEColor.accent)
-            WorkInlineMarkdownText(text: item)
+            WorkInlineMarkdownText(text: item, isStreamingTail: isStreamingTail)
           }
         }
       }
@@ -76,7 +84,7 @@ struct WorkMarkdownBlockView: View {
           .frame(width: 3)
         VStack(alignment: .leading, spacing: 4) {
           ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-            WorkInlineMarkdownText(text: line)
+            WorkInlineMarkdownText(text: line, isStreamingTail: isStreamingTail)
           }
         }
       }

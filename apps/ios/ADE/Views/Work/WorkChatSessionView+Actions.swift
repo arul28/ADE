@@ -139,6 +139,35 @@ private func workSnapshotByApplyingAssistantTextTail(
   return nextSnapshot
 }
 
+/// Mirrors the echo-suppression rules the full rebuild applies
+/// (`buildWorkTimeline`) and `reconcileLocalEchoMessages`: an echo whose text +
+/// attachments already appear as a delivered user message, or as a pending
+/// steer, must not get its own row.
+private func workTranscriptAlreadyRepresents(
+  _ echoes: ArraySlice<WorkLocalEchoMessage>,
+  transcript: [WorkChatEnvelope]
+) -> Bool {
+  let echoKeys = Set(echoes.compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) })
+  guard !echoKeys.isEmpty else { return false }
+
+  for steer in derivePendingWorkSteers(from: transcript) {
+    if let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments),
+       echoKeys.contains(key) {
+      return true
+    }
+  }
+  for envelope in transcript {
+    guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
+      continue
+    }
+    if deliveryState == "queued", steerId != nil { continue }
+    if let key = workLocalEchoDedupeKey(text: text, attachments: attachments), echoKeys.contains(key) {
+      return true
+    }
+  }
+  return false
+}
+
 private func workSnapshotByApplyingLocalEchoTail(
   to snapshot: WorkChatTimelineSnapshot,
   cache: WorkTimelineIncrementalCache,
@@ -163,8 +192,14 @@ private func workSnapshotByApplyingLocalEchoTail(
     else { return nil }
   }
 
+  let appendedEchoes = localEchoMessages[cache.localEchoCount..<localEchoMessages.count]
+  // The full rebuild hides echoes the transcript already represents
+  // (`visibleLocalEchoMessages` in `buildWorkTimeline`). Fall back rather than
+  // append a duplicate bubble the next rebuild would silently remove.
+  guard !workTranscriptAlreadyRepresents(appendedEchoes, transcript: transcript) else { return nil }
+
   var timeline = snapshot.timeline
-  for echo in localEchoMessages[cache.localEchoCount..<localEchoMessages.count] {
+  for echo in appendedEchoes {
     let message = WorkChatMessage(
       id: echo.id,
       role: "user",
@@ -172,7 +207,8 @@ private func workSnapshotByApplyingLocalEchoTail(
       timestamp: echo.timestamp,
       turnId: nil,
       itemId: nil,
-      deliveryState: echo.deliveryState
+      deliveryState: echo.deliveryState,
+      attachments: echo.attachments
     )
     timeline.append(WorkTimelineEntry(
       id: "echo-\(echo.id)",
@@ -560,6 +596,55 @@ extension WorkChatSessionView {
     forcePinToLatestAfterLayout(proxy, reason: "initial-\(reason)")
   }
 
+  /// Paints the user's own bubble on the tap frame.
+  ///
+  /// Everything else that changes the timeline goes through the 90 ms coalescing
+  /// worker in `scheduleTimelineSnapshotRebuild`, which is right for host deltas
+  /// arriving 6-7×/s but is dead air when the change is the local echo the user
+  /// just produced. Appending one echo to an already-built snapshot is O(1), so
+  /// it runs synchronously; anything the incremental path can't express falls
+  /// back to the debounced rebuild.
+  @MainActor
+  func applyLocalEchoTailImmediatelyIfPossible() -> Bool {
+    guard !localEchoMessages.isEmpty else { return false }
+    guard timelineSourceKey == (selectedSubagentTaskId ?? "main") else { return false }
+
+    // A brand-new chat has no snapshot to append to; the fold is trivially
+    // cheap there, so build it inline rather than wait out the debounce.
+    if timelineSnapshot.timeline.isEmpty {
+      cancelScheduledTimelineSnapshotRebuild()
+      rebuildTimelineSnapshot()
+      return !timelineSnapshot.timeline.isEmpty
+    }
+
+    guard let nextSnapshot = workSnapshotByApplyingLocalEchoTail(
+      to: timelineSnapshot,
+      cache: timelineIncrementalCache,
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    ) else { return false }
+
+    // A coalesced rebuild may already be inside the fold with inputs captured
+    // before this echo existed. Retire that generation so its result is dropped
+    // instead of overwriting the bubble we are about to paint.
+    timelineRebuildGeneration += 1
+
+    timelineSnapshot = nextSnapshot
+    timelineIncrementalCache.record(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
+    refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
+    if isNearBottom, !timelineDragActive {
+      timelineLayoutPinToken &+= 1
+    }
+    return true
+  }
+
   @MainActor
   func scheduleTimelineSnapshotRebuild() {
     resetTimelineSourceIfNeeded()
@@ -818,7 +903,12 @@ extension WorkChatSessionView {
     olderHistoryLoadError = nil
     let revealedBufferedEntries = hiddenTimelineCount > 0
     if hiddenTimelineCount > 0 {
-      withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      // Deliberately not animated: these rows land *above* the viewport and are
+      // immediately offset-corrected, so animating them only produces a visible
+      // flash of the content sliding down and back.
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
         visibleTimelineCount += workTimelinePageSize
         refreshTimelinePresentation()
       }

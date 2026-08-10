@@ -25,6 +25,15 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    /// Transcript render caches (parsed Markdown blocks, inline attributed
+    /// strings, syntax highlighting) are all derived state — a long chat can
+    /// hold megabytes of it, and every entry can be rebuilt on demand. When the
+    /// system says it wants memory back, give it these first.
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        workPurgeMarkdownRenderCaches()
+        ADECodeRenderingCache.shared.purgeOnMemoryWarning()
+    }
+
     /// Register the approval-alert category so approval pushes carry inline
     /// Approve / Deny actions on the lock screen and in Notification Center. The
     /// brain stamps `aps.category = "ADE_APPROVAL"` on those alerts; the action

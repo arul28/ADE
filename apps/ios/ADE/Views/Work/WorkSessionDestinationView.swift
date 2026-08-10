@@ -595,6 +595,11 @@ struct WorkSessionDestinationView: View {
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var artifactsRenderSignature = 0
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
+  /// Post-send reconciliation runs behind the composer rather than in front of
+  /// it, so `sending` can drop the moment the host accepts the message. Chained
+  /// rather than fire-and-forget: two quick sends must not interleave two
+  /// transcript loads.
+  @State var postSendRefreshTask: Task<Void, Never>?
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var remoteSubagentSnapshots: [WorkSubagentSnapshot] = []
@@ -1312,6 +1317,8 @@ struct WorkSessionDestinationView: View {
           self.announcedLaneId = nil
         }
         cleanupLoadedArtifactContent()
+        postSendRefreshTask?.cancel()
+        postSendRefreshTask = nil
         let wasCrossProject = isCrossProject
         let wasPersonalChat = personalChat
         if wasCrossProject || wasPersonalChat {
@@ -2951,6 +2958,13 @@ struct WorkSessionDestinationView: View {
   func updateLocalEchoDeliveryState(echoId: String, deliveryState: String?) {
     guard let index = localEchoMessages.firstIndex(where: { $0.id == echoId }) else { return }
     localEchoMessages[index].deliveryState = deliveryState
+  }
+
+  @MainActor
+  func updateLocalEchoAttachments(echoId: String, attachments: [AgentChatFileRef]?) {
+    guard let index = localEchoMessages.firstIndex(where: { $0.id == echoId }) else { return }
+    guard localEchoMessages[index].attachments != attachments else { return }
+    localEchoMessages[index].attachments = attachments
   }
 
   @MainActor

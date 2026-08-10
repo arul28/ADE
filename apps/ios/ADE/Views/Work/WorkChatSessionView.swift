@@ -82,9 +82,42 @@ func workChatShouldContinueAutomaticOlderHistory(
     && (hasBufferedEntries || hasHostHistory)
 }
 
+/// Scroll geometry a prepend has to preserve: where the reader was, and how
+/// tall the content was, at the instant rows were inserted above them.
+struct WorkChatPrependAnchor {
+  let offsetY: CGFloat
+  let contentHeight: CGFloat
+  /// Geometry callbacks to wait for before giving up. Content height is part of
+  /// the observed value, so a stationary reader burns none of these — the budget
+  /// only exists so an abandoned prepend can't leave the anchor armed to fire on
+  /// unrelated growth later.
+  var remainingAttempts: Int
+}
+
+/// Reference box so scroll geometry can be recorded per frame without
+/// invalidating the view. `distanceFromBottom` predates the prepend anchor and
+/// keeps its existing meaning.
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
+  var contentHeight: CGFloat = 0
+  var offsetY: CGFloat = 0
+  var prependAnchor: WorkChatPrependAnchor?
 }
+
+/// The slice of `ScrollGeometry` the transcript reacts to. Rounded so sub-pixel
+/// jitter doesn't wake the observer.
+struct WorkChatScrollGeometrySample: Equatable {
+  let offsetY: CGFloat
+  let contentHeight: CGFloat
+
+  init(_ geometry: ScrollGeometry) {
+    self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
+    self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
+  }
+}
+
+/// Number of geometry callbacks a prepend anchor stays armed for.
+let workChatPrependAnchorAttempts = 12
 
 struct WorkChatSummaryRenderContext: Equatable {
   let isAvailable: Bool
@@ -213,6 +246,9 @@ struct WorkChatSessionView: View {
   @State var scrollViewportWidth: CGFloat = 0
   @State var composerLayoutHeight: CGFloat = 150
   @State var scrollMetrics = WorkChatScrollMetrics()
+  /// Only ever written to restore the reader's position after a prepend. Bottom
+  /// follow and the jump-to-latest pill keep using `ScrollViewProxy.scrollTo`.
+  @State var scrollPosition = ScrollPosition()
   @State var timelineDragActive = false
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
@@ -635,7 +671,58 @@ struct WorkChatSessionView: View {
       )
     }
     guard nextPresentation != timelinePresentation else { return }
+    armPrependAnchorIfRowsInsertedAbove(nextPresentation)
     timelinePresentation = nextPresentation
+  }
+
+  /// Records where the reader is whenever the next presentation inserts rows
+  /// above the ones already on screen — whether that came from revealing locally
+  /// buffered entries or from an older page landing from the host. Without this
+  /// the LazyVStack grows upward, `contentOffset` stays put, and whatever the
+  /// user was reading slides down by the height of the inserted page.
+  @MainActor
+  private func armPrependAnchorIfRowsInsertedAbove(_ nextPresentation: WorkTimelinePresentation) {
+    guard nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
+          let previousFirstId = timelinePresentation.visibleEntries.first?.id,
+          nextPresentation.visibleEntries.first?.id != previousFirstId,
+          scrollMetrics.contentHeight > 0
+    else { return }
+    // Only a genuine prepend: the row that used to lead the list has to still be
+    // in the list, just further down.
+    guard nextPresentation.visibleEntries.contains(where: { $0.id == previousFirstId }) else { return }
+
+    scrollMetrics.prependAnchor = WorkChatPrependAnchor(
+      offsetY: scrollMetrics.offsetY,
+      contentHeight: scrollMetrics.contentHeight,
+      remainingAttempts: workChatPrependAnchorAttempts
+    )
+  }
+
+  /// Re-applies the reader's position after a prepend lands. Content grew only
+  /// above the viewport, so the height delta *is* the distance the reader was
+  /// pushed down; adding it back to the captured offset puts the previously
+  /// first-visible row at exactly the same screen y.
+  @MainActor
+  private func restorePrependAnchorIfNeeded(_ sample: WorkChatScrollGeometrySample) {
+    guard var anchor = scrollMetrics.prependAnchor else { return }
+
+    let insertedHeight = sample.contentHeight - anchor.contentHeight
+    guard insertedHeight > 0.5 else {
+      anchor.remainingAttempts -= 1
+      scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
+      return
+    }
+
+    scrollMetrics.prependAnchor = nil
+    // Bottom-follow owns the scroll position when the reader is parked at the
+    // tail; a prepend there is invisible anyway.
+    guard !isNearBottom else { return }
+
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      scrollPosition.scrollTo(y: anchor.offsetY + insertedHeight)
+    }
   }
 
   var canCompose: Bool {
@@ -1066,6 +1153,16 @@ struct WorkChatSessionView: View {
           .clipped()
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
+          .scrollPosition($scrollPosition)
+          .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
+            WorkChatScrollGeometrySample(geometry)
+          } action: { _, sample in
+            // Recorded into a reference box, not @State: this fires per scroll
+            // frame and must not invalidate the transcript.
+            scrollMetrics.offsetY = sample.offsetY
+            scrollMetrics.contentHeight = sample.contentHeight
+            restorePrependAnchorIfNeeded(sample)
+          }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
             GeometryReader { geometry in
@@ -1294,6 +1391,10 @@ struct WorkChatSessionView: View {
           scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: localEchoMessages) { _, _ in
+          // The user's own message is the one timeline change that must not wait
+          // out the coalescing debounce — it has to be on screen by the frame
+          // after the tap.
+          guard !applyLocalEchoTailImmediatelyIfPossible() else { return }
           scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: blockingPendingInputId) { _, newId in
@@ -1931,13 +2032,15 @@ func workTimelineRenderEntries(
         ? parseMarkdownBlocksForStreaming(preview.text, cacheKey: "\(message.id):preview")
         : parseMarkdownBlocks(preview.text)
       rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
+      let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
       for block in blocks {
         let model = WorkAssistantMarkdownBlockRenderModel(
           id: "\(entry.id)-\(block.id)",
           messageId: message.id,
           turnId: message.turnId,
           itemId: message.itemId,
-          block: block
+          block: block,
+          isStreamingTail: block.id == streamingTailBlockId
         )
         rendered.append(WorkTimelineRenderEntry(
           id: model.id,
