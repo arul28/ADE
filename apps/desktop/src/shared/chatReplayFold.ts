@@ -15,26 +15,37 @@ import type { AgentChatEventEnvelope } from "./types";
  * ## Why this folds so little of the event union
  *
  * The obvious approach — fold every type with a `logicalItemId` — is wrong
- * here, because the clients do not agree on how to fold. Desktop's
- * `mergeStreamingText` (chatTranscriptRows.ts) is five lines: prefix check,
- * else concatenate. iOS's `mergeWorkStreamingText`
- * (WorkErrorAndMessageHelpers.swift) is ~50 lines of replay-shape detection,
- * trimmed prefix/suffix checks and an overlap scan. For deltas that overlap or
- * repeat, those two already produce different text TODAY. No single server-side
- * fold can be byte-identical to both, so folding those cases would silently
- * pick a winner and change what one client renders.
+ * here, because the two clients do not fold text the same way.
  *
- * So this folds exactly the case where every implementation provably agrees:
- * a run of deltas that are clean appends. When neither string is a prefix of
- * the other and they are not equal, desktop concatenates and iOS falls through
- * its heuristics to the same concatenation. Anything else stops the run and is
- * emitted unfolded.
+ * Desktop merges a text delta inline (chatTranscriptRows.ts, the `text` branch
+ * of the row reducer): it concatenates UNCONDITIONALLY, and only into
+ * `rows[rows.length - 1]`, and only when that row is itself a text row passing
+ * `shouldMergeTextRows`. iOS merges through `mergeWorkStreamingText`
+ * (WorkErrorAndMessageHelpers.swift) — ~50 lines of replay-shape detection,
+ * trimmed prefix/suffix checks and an overlap scan — and finds its target by
+ * searching the message list for the item id, so it merges ACROSS intervening
+ * events. Two consequences, and this module obeys both:
+ *
+ *  1. Only provably-clean appends fold. For deltas that overlap or repeat, iOS
+ *     collapses and desktop concatenates, so they already render differently
+ *     today; folding those would silently pick a winner.
+ *  2. Only ADJACENT deltas fold. Desktop ends a text row at the first non-text
+ *     event, so folding across a tool call would move that tool call after the
+ *     whole message instead of leaving it between the two halves. Folding only
+ *     adjacent runs is exactly what desktop produces and no more than iOS
+ *     already does.
  *
  * Types other than text/reasoning are deliberately NOT folded yet, for the same
  * reason rather than for lack of value:
  *   - `command` merges its `output` and `file_change` merges its `diff` through
- *     the same streaming merge (chatTranscriptRows.ts:959,984) — they are
- *     append-merges, not keep-last, so keeping the last event would drop output.
+ *     `mergeStreamingText` (chatTranscriptRows.ts:634, called at :959 and :984
+ *     — its ONLY two call sites; it is not on the text path). That function
+ *     has two semantics: `incoming.startsWith(existing)` REPLACES, everything
+ *     else CONCATENATES. A runtime emitting a growing diff or growing command
+ *     output per event is exactly the cumulative shape that branch exists to
+ *     collapse, so anyone extending the fold to those types must handle it —
+ *     the fixtures in this module's test file are all text-shaped and would
+ *     not catch a cumulative diff.
  *   - `plan` is a field-wise merge with fallbacks
  *     (`mergePlanTranscriptEvent`, chatTranscriptRows.ts:488): an event with
  *     empty `steps` preserves the previous steps, so keep-last loses them.
@@ -76,11 +87,12 @@ export function isFoldableChatEventType(type: string): type is FoldableChatEvent
 /**
  * True when concatenation is what every client's merge produces for this pair.
  *
- * Mirrors the guards in desktop `mergeStreamingText` and iOS
- * `mergeWorkStreamingText`. Both special-case an empty side, equality, and a
- * prefix relationship in either direction; iOS additionally collapses repeated
- * or overlapping tails. Rejecting all of those leaves only disjoint appends,
- * where every implementation returns `existing + incoming`.
+ * Desktop concatenates text deltas unconditionally, so for text this predicate
+ * is stricter than desktop needs — it simply folds less. It exists for iOS,
+ * whose `mergeWorkStreamingText` special-cases an empty side, equality, a
+ * prefix relationship in either direction, and repeated or overlapping tails.
+ * Rejecting all of those leaves only disjoint appends, where both clients
+ * return `existing + incoming`.
  */
 export function isCleanTextAppend(existing: string, incoming: string): boolean {
   if (!existing.length || !incoming.length) return false;
@@ -157,9 +169,14 @@ export function foldChatEventEnvelopesForReplay(
 ): FoldedChatReplay {
   const events: AgentChatEventEnvelope[] = [];
   let foldedAwayCount = 0;
-  // Index of the open run per group key, into `events`.
-  const openRunIndex = new Map<string, number>();
-  const openRunText = new Map<string, string>();
+  // At most ONE run is open, and only while the deltas are adjacent in the
+  // stream. Desktop merges a text delta into `rows[rows.length - 1]` and only
+  // when that row is itself a text row, so a tool call landing between two
+  // deltas of one message ends the run there and starts a second row. Folding
+  // across the gap would move the tool call after the whole message. iOS
+  // merges by item id across gaps, so folding only adjacent runs is correct
+  // for both: it is what desktop produces, and no more than iOS already does.
+  let openRun: { index: number; key: string; text: string } | null = null;
 
   for (const envelope of envelopes) {
     const event = envelope?.event as unknown as Record<string, unknown> | undefined;
@@ -167,39 +184,37 @@ export function foldChatEventEnvelopesForReplay(
     // splice-repaired tails). Replay must carry them through untouched rather
     // than fault on them.
     if (!event || typeof event !== "object") {
+      openRun = null;
       events.push(envelope);
       continue;
     }
     const type = typeof event.type === "string" ? event.type : "";
     if (!isFoldableChatEventType(type)) {
+      openRun = null;
       events.push(envelope);
       continue;
     }
     const incoming = readText(event);
     const key = foldGroupKey(envelope);
     if (incoming == null || key == null) {
+      openRun = null;
       events.push(envelope);
       continue;
     }
-    const openIndex = openRunIndex.get(key);
-    if (openIndex == null) {
-      openRunIndex.set(key, events.length);
-      openRunText.set(key, incoming);
+    // A different message, or a merge the clients would not all agree on,
+    // starts a fresh run instead of extending this one.
+    if (
+      openRun == null
+      || openRun.key !== key
+      || !isCleanTextAppend(openRun.text, incoming)
+    ) {
+      openRun = { index: events.length, key, text: incoming };
       events.push(envelope);
       continue;
     }
-    const existing = openRunText.get(key) ?? "";
-    if (!isCleanTextAppend(existing, incoming)) {
-      // Not provably equivalent — close the run and let the client apply its
-      // own merge to this event exactly as it does today.
-      openRunIndex.set(key, events.length);
-      openRunText.set(key, incoming);
-      events.push(envelope);
-      continue;
-    }
-    const merged = existing + incoming;
-    const previous = events[openIndex]!;
-    events[openIndex] = {
+    const merged = openRun.text + incoming;
+    const previous = events[openRun.index]!;
+    events[openRun.index] = {
       ...previous,
       // The last delta's identity: a snapshot consumer that tracks progress on
       // sequence must not stop inside the run.
@@ -207,7 +222,7 @@ export function foldChatEventEnvelopesForReplay(
       timestamp: envelope.timestamp ?? previous.timestamp,
       event: { ...(previous.event as object), text: merged } as AgentChatEventEnvelope["event"],
     };
-    openRunText.set(key, merged);
+    openRun.text = merged;
     foldedAwayCount += 1;
   }
 
