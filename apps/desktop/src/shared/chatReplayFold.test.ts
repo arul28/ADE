@@ -287,3 +287,82 @@ describe("sequence identity regression (ADE transcript sequence collision class)
     }
   });
 });
+
+describe("cumulative-delta runtimes (desktop mergeStreamingText has two semantics)", () => {
+  /**
+   * `mergeStreamingText` is five lines but two behaviors: `incoming.startsWith(
+   * existing)` REPLACES (a runtime re-sending the whole message so far), and
+   * everything else CONCATENATES. Folding a cumulative run as if it were
+   * incremental would duplicate the text quadratically, and the client could
+   * not detect it — after the fold there is one event and nothing to compare
+   * against. These fixtures pin that the fold refuses that shape.
+   *
+   * Empirically no runtime on this machine emits cumulative text deltas
+   * (316,506 delta pairs across the 40 largest transcripts, zero cumulative),
+   * but the renderer branch exists, so the guard is pinned rather than argued.
+   */
+
+  /** Fold, then apply the client merge — what a folded peer actually renders. */
+  function renderAfterFold(input: AgentChatEventEnvelope[]): string {
+    return clientFoldText(foldChatEventEnvelopesForReplay(input).events);
+  }
+
+  it("never folds a fully cumulative run — output is the input", () => {
+    const input = [
+      textEvent("Hello", 1),
+      textEvent("Hello world", 2),
+      textEvent("Hello world and more", 3),
+    ];
+    const { events, foldedAwayCount } = foldChatEventEnvelopesForReplay(input);
+    expect(foldedAwayCount).toBe(0);
+    expect(events).toEqual(input);
+    // The decisive assertion: no duplication, and identical to unfolded.
+    expect(renderAfterFold(input)).toBe("Hello world and more");
+    expect(renderAfterFold(input)).toBe(clientFoldText(input));
+  });
+
+  it("a cumulative run that would duplicate quadratically renders once", () => {
+    // 8 cumulative deltas of a growing reply. Concatenating them would yield
+    // ~8x the text; replacing yields the final message exactly once.
+    const full = "The quick brown fox jumps over the lazy dog";
+    const input = full.split(" ").map((_, index) =>
+      textEvent(full.split(" ").slice(0, index + 1).join(" "), index + 1));
+    const rendered = renderAfterFold(input);
+    expect(rendered).toBe(full);
+    expect(rendered.length).toBe(full.length);
+    expect(foldChatEventEnvelopesForReplay(input).foldedAwayCount).toBe(0);
+  });
+
+  it("mixed incremental-then-cumulative renders identically folded and unfolded", () => {
+    const input = [
+      textEvent("Because the", 1),
+      textEvent(" comparison", 2),
+      textEvent(" is visual", 3),
+      // The runtime switches to re-sending the whole message so far.
+      textEvent("Because the comparison is visual, so", 4),
+      textEvent("Because the comparison is visual, so I checked", 5),
+    ];
+    expect(renderAfterFold(input)).toBe(clientFoldText(input));
+    expect(renderAfterFold(input)).toBe("Because the comparison is visual, so I checked");
+  });
+
+  it("folded and unfolded render identically across every fixture shape", () => {
+    // The general equivalence claim, asserted rather than argued.
+    const shapes: Array<[string, string[]]> = [
+      ["incremental", ["Hello", " world", " again"]],
+      ["cumulative", ["Hel", "Hello", "Hello world"]],
+      ["duplicate delta", ["Hello", "Hello", " world"]],
+      ["repeated tail", ["the answer is", " is", " 42"]],
+      ["boundary overlap", ["abcdef", "defghi", "ghijkl"]],
+      ["single delta", ["only one"]],
+      ["empty interleaved", ["Hello", "", " world"]],
+      ["whitespace-only delta", ["Hello", " ", "world"]],
+      ["cumulative then incremental", ["Hi", "Hi there", " friend"]],
+    ];
+    for (const [label, texts] of shapes) {
+      const input = texts.map((text, index) => textEvent(text, index + 1));
+      expect(renderAfterFold(input), `${label} must render identically`)
+        .toBe(clientFoldText(input));
+    }
+  });
+});
