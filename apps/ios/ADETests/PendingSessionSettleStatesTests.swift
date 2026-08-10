@@ -273,6 +273,31 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertNil(states["session-1"])
   }
 
+  /// A keep-active pin plus an overlapping pair of commands. Host-side the
+  /// settle clears the pin and the unsettle then preserves whatever is left, so
+  /// the run ends with no override. Reading the stale row here would resurrect
+  /// the pin and offer the wrong actions until replication caught up.
+  func testUnsettleAfterAnUnlandedSettleDoesNotResurrectAKeepActivePin() {
+    var states = PendingSessionSettleStates()
+    let pinned = session(settleOverride: "active")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: pinned)
+    states.begin(.unsettle(now: now), for: "session-1", baseline: pinned)
+
+    let overlaid = states.apply(to: pinned)
+    XCTAssertNil(overlaid.settledAt)
+    XCTAssertNil(overlaid.settleOverride, "the settle the user already issued clears the pin host-side")
+  }
+
+  /// The same branch with no overlapping command: a pin the host really will
+  /// preserve must still be shown.
+  func testAStandaloneUnsettleStillPreservesAKeepActivePin() {
+    var states = PendingSessionSettleStates()
+    let pinned = session(settledAt: "2026-08-10T09:00:00.000Z", settleOverride: "active")
+    states.begin(.unsettle(now: now), for: "session-1", baseline: pinned)
+
+    XCTAssertEqual(states.apply(to: pinned).settleOverride, "active")
+  }
+
   func testAnUnknownBaselineFallsBackToValueEquality() {
     var states = PendingSessionSettleStates()
     states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)

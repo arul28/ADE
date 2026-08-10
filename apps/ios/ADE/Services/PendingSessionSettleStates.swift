@@ -39,6 +39,13 @@ struct PendingSessionSettleIntent: Equatable {
   /// unknown at begin, in which case value equality alone has to do.
   fileprivate var baseline: Baseline?
   fileprivate var sawRowChange = false
+  /// The override as it was PRESENTED to the user when this command was issued
+  /// — the raw row with any intent this one replaced already applied over it.
+  /// An unsettle's override branch has to follow what the user acted on, not
+  /// the stale row: a settle overlay has already cleared a keep-active pin that
+  /// the row still carries, and the host will clear it too when it processes the
+  /// commands in order. Outer `nil` means the row was unknown at begin.
+  fileprivate var presentedOverride: String??
 
   struct Baseline: Equatable {
     var settledAt: String?
@@ -71,12 +78,19 @@ struct PendingSessionSettleIntent: Equatable {
       next.settledAt = nil
       // The host clears a `"settled"` override and PRESERVES an `"active"` pin
       // (`settle_override = case when settle_override = 'settled' then null else
-      // settle_override end`). Which branch it takes is decided by the value
-      // already in the row, so we can predict it exactly rather than guess —
-      // and must, because a row settled purely BY that pin has a null
-      // `settled_at` already, so clearing the timestamp alone would show the
-      // user nothing at all.
-      if PendingSessionSettleIntent.normalized(session.settleOverride) == "settled" {
+      // settle_override end`). Which branch it takes is decided by the value in
+      // the row when the host gets there, so we can predict it exactly rather
+      // than guess — and must, because a row settled purely BY that pin has a
+      // null `settled_at` already, so clearing the timestamp alone would show
+      // the user nothing at all.
+      //
+      // `presentedOverride`, not the live row: if this unsettle replaced a
+      // settle that has not landed yet, the host will clear the pin as part of
+      // that settle, so reading the stale row here would resurrect a pin that
+      // is on its way out.
+      if let presented = presentedOverride {
+        next.settleOverride = presented == "settled" ? nil : presented
+      } else if PendingSessionSettleIntent.normalized(session.settleOverride) == "settled" {
         next.settleOverride = nil
       }
     case .override(let value):
@@ -151,6 +165,11 @@ struct PendingSessionSettleStates: Equatable {
     var stamped = intent
     stamped.token = nextToken
     stamped.baseline = baseline.map { stamped.currentBaseline(of: $0) }
+    // What the user was looking at when they issued this: the row with any
+    // intent this one replaces already applied over it.
+    stamped.presentedOverride = baseline.map { row in
+      PendingSessionSettleIntent.normalized((intents[sessionId]?.applied(to: row) ?? row).settleOverride)
+    }
     intents[sessionId] = stamped
     return nextToken
   }
