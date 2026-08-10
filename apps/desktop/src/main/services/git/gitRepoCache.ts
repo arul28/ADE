@@ -98,7 +98,7 @@ const READ_ONLY_GIT_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
 };
 
 const READ_ONLY_GIT_FLAGS: Record<string, ReadonlySet<string>> = {
-  branch: new Set(["--list", "-l", "--show-current", "--contains", "--points-at", "--merged", "--no-merged"]),
+  branch: new Set(["--list", "-l", "-r", "--remotes", "-a", "--all", "--show-current", "--contains", "--points-at", "--merged", "--no-merged"]),
   config: new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"]),
   remote: new Set(["-v", "--verbose"]),
   tag: new Set(["--list", "-l", "--points-at", "--contains"]),

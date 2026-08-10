@@ -1690,14 +1690,18 @@ export function createGitOperationsService({
     async getUserIdentity(args: { laneId: string }): Promise<GitUserIdentity> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
-      // The committer identity is repo-wide (or global), so every lane asks the
-      // same question. Cached on the stable class keyed by the repo's common
-      // git dir; a `git config` write invalidates it through runGit.
+      // Keyed by worktree, not repo. `git config` is repo-wide *unless* the
+      // repo enables `extensions.worktreeConfig`, in which case each lane can
+      // carry its own `user.name`/`user.email` — and a repo-wide key would then
+      // serve whichever lane asked first to all of them, mis-attributing
+      // commits. ADE never enables that extension, but a user's repo can, and
+      // these calls are per-lane anyway so a repo-wide key saves nothing
+      // measurable here.
       const readConfig = async (key: string): Promise<string> => {
         const result = await runGitRepoCached(
           ["config", "--get", key],
           { cwd: lane.worktreePath, timeoutMs: 5_000 },
-          { key: `config:${key}`, cacheClass: "stable" },
+          { key: `config:${lane.worktreePath}:${key}`, cacheClass: "stable" },
         );
         return result.exitCode === 0 ? result.stdout.trim() : "";
       };
@@ -1712,12 +1716,12 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(laneId);
       await assertLaneWorktreeRoot(lane);
       const [remoteRes, branchRes] = await Promise.all([
-        // Repo-wide: whether an origin exists, and its URL. Every lane of a
-        // repo shares one answer, and it only changes on `git remote`.
+        // Worktree-keyed for the same reason as the identity read above:
+        // `extensions.worktreeConfig` lets a lane override `remote.origin.url`.
         runGitRepoCached(
           ["remote", "get-url", "origin"],
           { cwd: lane.worktreePath, timeoutMs: 8_000 },
-          { key: "remote-url:origin", cacheClass: "stable" },
+          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "stable" },
         ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)

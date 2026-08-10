@@ -66,6 +66,9 @@ describe("isRefAffectingGitCommand", () => {
       ["worktree", "list", "--porcelain"],
       ["branch", "--show-current"],
       ["branch", "--list", "ade/*"],
+      // ADE's actual history query, and a bare remote listing.
+      ["branch", "-r", "--contains", "abc123", "origin/main"],
+      ["branch", "-r"],
       ["tag", "--list"],
       ["stash", "list"],
     ]) {
