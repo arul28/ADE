@@ -115,6 +115,29 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testAtSelectionRangePreservesTrailingProseAfterExtensionlessPathPrefix() {
+    let text = "ask @src/my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/my folder",
+      kind: .at,
+      title: "my folder",
+      subtitle: "src",
+      insertText: "@src/my folder"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "src/my ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@src/my " as NSString).length)
+    )
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @src/my folder review this"
+    )
+  }
+
   func testFileSearchQueryPreservesPathBeforeTrailingProse() {
     XCTAssertEqual(
       WorkComposerTriggerDetector.fileSearchQuery(for: "src/foo.ts about this"),

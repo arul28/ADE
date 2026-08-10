@@ -211,6 +211,22 @@ enum WorkComposerTriggerDetector {
     return nsQuery.substring(with: labelRange)
   }
 
+  /// Keep extensionless path prefixes separate from prose when the selected
+  /// file's canonical path continues past the words typed before that prose.
+  /// Ordinary multiword chat titles intentionally do not use this heuristic.
+  static func pathPrefixForSelection(query: String, selectedLabel: String) -> String {
+    guard selectedLabel.contains(where: { $0 == "/" || $0 == "\\" }) else { return "" }
+    let words = query.split(whereSeparator: { $0 == " " || $0 == "\t" })
+    guard words.count > 1 else { return "" }
+
+    for wordCount in stride(from: words.count - 1, through: 1, by: -1) {
+      let prefix = words.prefix(wordCount).joined(separator: " ")
+      guard prefix.contains("/") || prefix.contains("\\") else { continue }
+      if selectedLabel.lowercased().hasPrefix(prefix.lowercased()) { return prefix }
+    }
+    return ""
+  }
+
   /// Keep prose typed after a selected @ item outside the replacement range.
   /// The trigger detector intentionally accepts spaces for multi-word names;
   /// this second pass uses the selected row's label to distinguish that name
@@ -238,6 +254,11 @@ enum WorkComposerTriggerDetector {
        label.lowercased().hasSuffix(searchableQuery.lowercased()),
        !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
       candidateLabels.append(searchableQuery)
+    }
+    let pathPrefix = pathPrefixForSelection(query: match.query, selectedLabel: label)
+    if !pathPrefix.isEmpty,
+       !candidateLabels.contains(where: { $0.lowercased() == pathPrefix.lowercased() }) {
+      candidateLabels.append(pathPrefix)
     }
 
     let query = match.query as NSString
