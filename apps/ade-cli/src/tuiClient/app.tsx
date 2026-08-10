@@ -2520,6 +2520,29 @@ function matchesMentionTarget(target: string, query: string): boolean {
   return target.includes(query) || query.startsWith(`${target} `);
 }
 
+/**
+ * Prefer the longest label that is a confirmed prefix of the query. This lets
+ * `@Foo Bar please` select `Foo Bar` before a shorter `Foo` lane while keeping
+ * the existing source order for unrelated or equally long matches.
+ */
+export function rankMentionSuggestions(
+  suggestions: MentionSuggestion[],
+  query: string,
+): MentionSuggestion[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return suggestions;
+
+  return suggestions
+    .map((suggestion, index) => {
+      const label = suggestion.label.trim().toLowerCase();
+      const isConfirmedPrefix = label.length > 0
+        && (normalizedQuery === label || normalizedQuery.startsWith(`${label} `));
+      return { suggestion, index, prefixLength: isConfirmedPrefix ? label.length : 0 };
+    })
+    .sort((left, right) => right.prefixLength - left.prefixLength || left.index - right.index)
+    .map(({ suggestion }) => suggestion);
+}
+
 type MentionRemoteCacheEntry = {
   filesByQuery: Map<string, Array<{ path: string }>>;
   commits: Array<Record<string, unknown>> | null;
@@ -7393,11 +7416,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (cancelled) return;
       const local = localSuggestions();
       // On a bare `@` every lane and chat matches, so without a reservation the
-      // row cap would drop the whole browse list of files. Only browse mode
-      // trims locals; typed queries keep their existing ordering untouched.
+      // row cap would drop the whole browse list of files. Typed queries keep
+      // all local candidates long enough for prefix ranking to choose the most
+      // specific target before the row cap is applied.
       const fileRows = query ? 0 : Math.min(remote.filter((s) => s.kind === "file").length, MENTION_FILE_ROWS);
       const localBudget = Math.max(0, MENTION_MAX_ROWS - fileRows);
-      const next = [...local.slice(0, localBudget), ...remote, ...attachedSuggestions()].slice(0, MENTION_MAX_ROWS);
+      const localCandidates = query ? local : local.slice(0, localBudget);
+      const next = rankMentionSuggestions(
+        [...localCandidates, ...remote, ...attachedSuggestions()],
+        query,
+      ).slice(0, MENTION_MAX_ROWS);
       setMentionSuggestions(next);
       setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
     };

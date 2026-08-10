@@ -73,7 +73,8 @@ vi.mock("node:fs", async () => {
   };
 });
 
-import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, rankMentionSuggestions, shouldHydrateRefreshHistory } from "../app";
+import type { MentionSuggestion } from "../types";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousReactActEnvironment: boolean | undefined;
@@ -266,6 +267,17 @@ describe("AdeCodeApp polling", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("ranks longer confirmed mention prefixes before shorter matches", () => {
+    const suggestions: MentionSuggestion[] = [
+      { kind: "lane", label: "Foo", insertText: "@lane:foo", detail: "foo" },
+      { kind: "commit", label: "Foo Bar", insertText: "@commit:abc1234", detail: "abc1234" },
+      { kind: "pr", label: "Foo Bar", insertText: "@pr:42", detail: "#42" },
+    ];
+
+    expect(rankMentionSuggestions(suggestions, "foo bar please").map((suggestion) => suggestion.insertText))
+      .toEqual(["@commit:abc1234", "@pr:42", "@lane:foo"]);
   });
 
   it("polls summary refreshes without hydrating chat history", async () => {
@@ -607,6 +619,7 @@ describe("AdeCodeApp polling", () => {
       return [];
     });
     connection.action = actionMock as unknown as AdeCodeConnection["action"];
+    mocks.listLanes.mockResolvedValue([lane({ name: "Fix" })]);
 
     const instance = await renderApp(<AdeCodeApp project={project} />);
 
