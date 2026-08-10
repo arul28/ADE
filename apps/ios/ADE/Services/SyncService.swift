@@ -22,6 +22,28 @@ enum WidgetReloadBridge {
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
 
+/// Build the host request payload for file quick-open. The composer-only
+/// prefix fallback is intentionally omitted for generic Files searches so a
+/// multiword query keeps its normal exact-search semantics everywhere else.
+func syncQuickOpenRequestArgs(
+  workspaceId: String,
+  query: String,
+  limit: Int,
+  includeIgnored: Bool,
+  allowComposerPrefixFallback: Bool
+) -> [String: Any] {
+  var args: [String: Any] = [
+    "workspaceId": workspaceId,
+    "query": query,
+    "limit": limit,
+    "includeIgnored": includeIgnored,
+  ]
+  if allowComposerPrefixFallback {
+    args["allowComposerPrefixFallback"] = true
+  }
+  return args
+}
+
 /// Transport-level attachment to a machine. There is deliberately no separate
 /// "hydrating"/"syncing" state: attachment is a fact the moment `hello_ok` is
 /// applied, and per-domain hydration progress is carried by `SyncDomainStatus`
@@ -9925,16 +9947,21 @@ final class SyncService: ObservableObject {
     workspaceId: String,
     query: String,
     limit: Int = 30,
-    includeIgnored: Bool = true
+    includeIgnored: Bool = true,
+    allowComposerPrefixFallback: Bool = false
   ) async throws -> [FilesQuickOpenItem] {
     let boundedLimit = min(max(limit, 1), 1000)
     return try decode(
-      try await sendFileRequest(action: "quickOpen", args: [
-        "workspaceId": workspaceId,
-        "query": query,
-        "limit": boundedLimit,
-        "includeIgnored": includeIgnored,
-      ]),
+      try await sendFileRequest(
+        action: "quickOpen",
+        args: syncQuickOpenRequestArgs(
+          workspaceId: workspaceId,
+          query: query,
+          limit: boundedLimit,
+          includeIgnored: includeIgnored,
+          allowComposerPrefixFallback: allowComposerPrefixFallback
+        )
+      ),
       as: [FilesQuickOpenItem].self
     )
   }

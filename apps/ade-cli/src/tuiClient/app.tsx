@@ -4979,9 +4979,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const confirmedFile = (body: string) => selectedMentions.some(
       (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
     );
+    const confirmedMention = (body: string) => isChatMentionTokenBody(body)
+      || selectedMentions.some(
+        (mention) => mention.kind !== "file" && mention.insertText === `@${body}`,
+      );
     return composerTriggerHasConfirmedPrefix(prompt, trigger, {
       isFile: confirmedFile,
-      isMention: isChatMentionTokenBody,
+      isMention: confirmedMention,
     }) ? null : trigger;
   }, [activePane, prompt, promptCursor, selectedMentions]);
   const activeMentionRange = useMemo(() => (

@@ -533,7 +533,8 @@ final class WorkComposerSuggestionController: ObservableObject {
           workspaceId: workspaceId,
           query: query,
           limit: 20,
-          includeIgnored: true
+          includeIgnored: true,
+          allowComposerPrefixFallback: true
         )
         guard !Task.isCancelled, self.laneGeneration == generation else { return }
         let mapped = items.map { item -> WorkComposerSuggestion in

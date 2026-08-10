@@ -599,7 +599,7 @@ describe("AdeCodeApp polling", () => {
     await unmountApp(instance);
   });
 
-  it("keeps a commit suggestion available after trailing prose", async () => {
+  it("closes a commit mention trigger after trailing prose", async () => {
     const actionMock = vi.fn(async (domain: string, action: string) => {
       if (domain === "git" && action === "listRecentCommits") {
         return [{ shortSha: "abc1234", subject: "Fix parser" }];
@@ -625,6 +625,37 @@ describe("AdeCodeApp polling", () => {
     await flushInkFrame();
 
     expect(stripAnsi(instance.frames.join("\n"))).toContain("@commit:abc1234 please inspect");
+    expect(stripAnsi(instance.lastFrame() ?? "")).not.toContain("References ·");
+    await unmountApp(instance);
+  });
+
+  it("closes a PR mention trigger after trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "pr" && action === "listAll") {
+        return [{ id: "42", number: 42, title: "Fix parser" }];
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@Fix parser please inspect");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("\t");
+    });
+    await flushInkFrame();
+
+    expect(stripAnsi(instance.frames.join("\n"))).toContain("@pr:42 please inspect");
+    expect(stripAnsi(instance.lastFrame() ?? "")).not.toContain("References ·");
     await unmountApp(instance);
   });
 });

@@ -201,6 +201,26 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testComposerQuickOpenRequestEnablesPrefixFallbackWithoutChangingGenericSearch() {
+    let generic = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src/my folder review this",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: false
+    )
+    XCTAssertNil(generic["allowComposerPrefixFallback"])
+
+    let composer = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src/my folder review this",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: true
+    )
+    XCTAssertEqual(composer["allowComposerPrefixFallback"] as? Bool, true)
+  }
+
   func testEmailDoesNotTrigger() {
     // The `@` is glued to a preceding non-space char, so emails never trigger.
     XCTAssertNil(detect("ping foo@bar"))
