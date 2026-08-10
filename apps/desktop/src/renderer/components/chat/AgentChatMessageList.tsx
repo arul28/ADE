@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -47,7 +47,6 @@ import type {
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   ChatSurfaceChipTone,
-  FilesWorkspace,
   ChatSurfaceProfile,
   ChatSurfaceMode,
   ComputerUseArtifactView,
@@ -59,7 +58,16 @@ import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
-import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
+import { normalizePath } from "../../lib/pathUtils";
+import {
+  ChatWorkspacePathProvider,
+  chatMarkdownUrlTransform,
+  looksLikeWorkspacePath,
+  parseWorkspacePathLocation,
+  resolveWorkspacePathFromHref,
+  useWorkspacePathOpener,
+  type WorkspacePathLocation,
+} from "./chatWorkspacePaths";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
@@ -168,12 +176,6 @@ export type MosaicRenderContext = {
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
-type WorkspacePathLocation = {
-  path: string;
-  startLine?: number;
-  startColumn?: number;
-};
-
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
   AgentChatEvent,
@@ -1025,122 +1027,6 @@ function statusColorClass(status: string | undefined): string {
   }
 }
 
-function isExternalHref(href: string): boolean {
-  const trimmed = href.trim();
-  if (/^file:/i.test(trimmed)) return false;
-  if (isWindowsAbsolutePath(trimmed)) return false;
-  return /^(?:[a-z]+:)?\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed);
-}
-
-function readWorkspacePathFragmentPosition(fragment: string): Pick<WorkspacePathLocation, "startLine" | "startColumn"> {
-  const trimmed = fragment.trim();
-  if (!trimmed.length) return {};
-
-  const lineMatch = trimmed.match(/^L(\d+)(?:C(\d+))?(?:-L?\d+)?$/i);
-  if (lineMatch) {
-    const [, startLineRaw, startColumnRaw] = lineMatch;
-    return {
-      startLine: Number(startLineRaw),
-      startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
-    };
-  }
-
-  const explicitMatch = trimmed.match(/^line=(\d+)(?:,(\d+))?$/i);
-  if (!explicitMatch) return {};
-  const [, startLineRaw, startColumnRaw] = explicitMatch;
-  return {
-    startLine: Number(startLineRaw),
-    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
-  };
-}
-
-function splitWorkspacePathLineSuffix(path: string): WorkspacePathLocation {
-  const match = path.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
-  if (!match) return { path };
-
-  const [, candidatePath, startLineRaw, startColumnRaw] = match;
-  if (!candidatePath.length) return { path };
-  return {
-    path: candidatePath,
-    startLine: Number(startLineRaw),
-    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
-  };
-}
-
-function parseWorkspacePathLocation(value: string): WorkspacePathLocation | null {
-  const trimmed = value.trim();
-  if (!trimmed.length) return null;
-  if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
-  if (/^#/.test(trimmed)) return null;
-
-  let rawPath: string;
-  let rawFragment = "";
-  if (/^file:/i.test(trimmed)) {
-    try {
-      const url = new URL(trimmed);
-      rawPath = `${url.host ? `//${url.host}` : ""}${url.pathname}`.trim();
-      rawFragment = url.hash.startsWith("#") ? url.hash.slice(1) : "";
-    } catch {
-      const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-      const [withoutFragment, fallbackFragment = ""] = withoutScheme.split("#", 2);
-      rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
-      rawFragment = fallbackFragment;
-    }
-  } else {
-    const [withoutFragment, fallbackFragment = ""] = trimmed.split("#", 2);
-    rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
-    rawFragment = fallbackFragment;
-  }
-  let decodedPath = rawPath;
-  try {
-    decodedPath = decodeURIComponent(rawPath);
-  } catch {
-    // Keep the raw path when markdown produced a partially-encoded href.
-  }
-
-  const slashNormalized = decodedPath.replace(/\\/g, "/");
-  if (!slashNormalized.length) return null;
-
-  const normalizedDrivePath = /^\/[A-Za-z]:\//.test(slashNormalized) ? slashNormalized.slice(1) : slashNormalized;
-  const fromSuffix = splitWorkspacePathLineSuffix(normalizedDrivePath);
-  const fromFragment = readWorkspacePathFragmentPosition(rawFragment);
-  const normalizedPath = normalizePath(fromSuffix.path);
-  if (!normalizedPath.length) return null;
-
-  return {
-    path: normalizedPath,
-    startLine: fromFragment.startLine ?? fromSuffix.startLine,
-    startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
-  };
-}
-
-function looksLikeWorkspacePath(value: string): boolean {
-  const candidate = parseWorkspacePathLocation(value);
-  if (!candidate) return false;
-  if (candidate.path === ".." || candidate.path.startsWith("../") || candidate.path.startsWith("~/")) {
-    return false;
-  }
-  if (candidate.path.startsWith("/")) {
-    return candidate.path.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
-  }
-  return candidate.path.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
-}
-
-function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
-  if (!href) return null;
-  if (isExternalHref(href)) return null;
-  const candidate = parseWorkspacePathLocation(href);
-  if (!candidate) return null;
-  return looksLikeWorkspacePath(href) ? candidate : null;
-}
-
-function chatMarkdownUrlTransform(value: string): string {
-  if (/^file:/i.test(value) || isWindowsAbsolutePath(value)) {
-    return value;
-  }
-  return defaultUrlTransform(value);
-}
-
 type WebSearchActionListProps = {
   actions: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["actions"]>;
   isFailed: boolean;
@@ -1569,51 +1455,6 @@ function ChatActivityBundle({
       ) : null}
     </div>
   );
-}
-
-function resolveFilesNavigationTarget(args: {
-  path: string | WorkspacePathLocation;
-  workspaces: FilesWorkspace[];
-  fallbackLaneId: string | null;
-}): { openFilePath: string; laneId: string | null; startLine?: number; startColumn?: number } | null {
-  const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
-  if (!candidate) return null;
-
-  const normalizedCandidate = normalizePath(candidate.path);
-  if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
-    const matches = args.workspaces
-      .map((workspace) => ({
-        workspace,
-        rootPath: normalizePath(workspace.rootPath),
-      }))
-      .filter(({ rootPath }) => isPathEqualOrDescendant(normalizedCandidate, rootPath))
-      .sort((left, right) => {
-        const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
-        const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
-        if (rightMatchesLane !== leftMatchesLane) return rightMatchesLane - leftMatchesLane;
-        return right.rootPath.length - left.rootPath.length;
-      });
-
-    const match = matches[0];
-    if (!match) return null;
-    const openFilePath = normalizedCandidate.slice(match.rootPath.length).replace(/^\/+/, "");
-    if (!openFilePath.length) return null;
-    return {
-      openFilePath,
-      laneId: match.workspace.laneId ?? args.fallbackLaneId ?? null,
-      startLine: candidate.startLine,
-      startColumn: candidate.startColumn,
-    };
-  }
-
-  const openFilePath = normalizedCandidate.replace(/^\.\//, "");
-  if (!openFilePath.length) return null;
-  return {
-    openFilePath,
-    laneId: args.fallbackLaneId ?? null,
-    startLine: candidate.startLine,
-    startColumn: candidate.startColumn,
-  };
 }
 
 function WorkspacePathLink({
@@ -5381,7 +5222,6 @@ function AgentChatMessageListMain({
   // effectively "the state this chat was left in".
   const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
   const [stickToBottom, setStickToBottom] = useState(() => restoredScrollMemory?.wasPinnedToBottom ?? true);
-  const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(restoredScrollMemory?.wasPinnedToBottom ?? true);
   // Scroll bookkeeping written from `handleScroll` only — never state, so
   // scrolling stays render-free.
@@ -5642,58 +5482,11 @@ function AgentChatMessageListMain({
     : null;
   const currentLaneId = laneId ?? locationLaneId;
 
-  const openWorkspacePath = useCallback(async (path: string | WorkspacePathLocation) => {
-    let resolvedWorkspaces = filesWorkspaces;
-    let target = resolveFilesNavigationTarget({
-      path,
-      workspaces: resolvedWorkspaces,
-      fallbackLaneId: currentLaneId,
-    });
-    const workspaceCandidate = typeof path === "string" ? parseWorkspacePathLocation(path) : path;
-    if (!target && workspaceCandidate && (workspaceCandidate.path.startsWith("/") || isWindowsAbsolutePath(workspaceCandidate.path))) {
-      const listWorkspaces = window.ade?.files?.listWorkspaces;
-      if (typeof listWorkspaces === "function") {
-        try {
-          resolvedWorkspaces = await listWorkspaces();
-          setFilesWorkspaces(resolvedWorkspaces);
-          target = resolveFilesNavigationTarget({
-            path,
-            workspaces: resolvedWorkspaces,
-            fallbackLaneId: currentLaneId,
-          });
-        } catch {
-          target = null;
-        }
-      }
-    }
-    if (!target) return;
-    const state = {
-      openFilePath: target.openFilePath,
-      ...(target.laneId ? { laneId: target.laneId } : {}),
-      ...(typeof target.startLine === "number" ? { startLine: target.startLine } : {}),
-      ...(typeof target.startColumn === "number" ? { startColumn: target.startColumn } : {}),
-    };
-    navigate("/files", { state });
-    onOpenWorkspacePath?.(target.openFilePath, target.laneId);
-  }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
-
-  /**
-   * Display form for a path a tool reported. Agents emit absolute worktree
-   * paths, which are unreadable in a narrow chat column and identical across
-   * every row; the lane-relative tail is the part that carries information.
-   * Resolution reuses the same workspace matching as `openWorkspacePath`
-   * (longest matching root, this chat's lane preferred) so it is correct for
-   * Windows drive/UNC roots too. Non-worktree paths pass through untouched, and
-   * callers keep the absolute path for the tooltip.
-   */
-  const formatWorkspaceDisplayPath = useCallback((path: string): string => {
-    const target = resolveFilesNavigationTarget({
-      path,
-      workspaces: filesWorkspaces,
-      fallbackLaneId: currentLaneId,
-    });
-    return target?.openFilePath ?? path;
-  }, [filesWorkspaces, currentLaneId]);
+  const { openWorkspacePath, formatWorkspaceDisplayPath } = useWorkspacePathOpener({
+    laneId: currentLaneId,
+    navigate,
+    onOpened: onOpenWorkspacePath,
+  });
 
   const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
     navigate(suggestion.href);
@@ -6754,6 +6547,7 @@ function AgentChatMessageListMain({
   const showJumpToLatest = !stickToBottom && !sessionEnded;
 
   return (
+    <ChatWorkspacePathProvider onOpenWorkspacePath={openWorkspacePath}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
@@ -6864,6 +6658,7 @@ function AgentChatMessageListMain({
         </button>
       ) : null}
     </div>
+    </ChatWorkspacePathProvider>
   );
 }
 

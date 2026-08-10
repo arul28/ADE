@@ -6,6 +6,11 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
+import {
+  chatMarkdownUrlTransform,
+  resolveWorkspacePathFromHref,
+  useChatWorkspacePathOpener,
+} from "./chatWorkspacePaths";
 
 export const SAFE_PREVIEW_SCHEMA = {
   ...defaultSchema,
@@ -75,6 +80,61 @@ function toneAccents(tone: Tone) {
     hr: "border-sky-300/15",
     link: "text-sky-300/90 underline underline-offset-2 transition-colors hover:text-sky-200",
   };
+}
+
+/**
+ * A markdown link, routed by what it actually points at.
+ *
+ * A file path is NOT a URL: handing `laneService.ts` to the browser opener gets
+ * it normalized to `https://laneService.ts` and navigates ADE's built-in browser
+ * to a garbage host, and a multi-segment `apps/foo.ts` dead-clicks instead. So
+ * workspace paths go to the Files tab via the chat's opener, and when no chat
+ * surface is hosting this markdown (Settings preview, PR body) they render as
+ * inert text — never as a guessed URL.
+ */
+function ChatMarkdownAnchor({
+  href,
+  className,
+  children,
+}: {
+  href: string | undefined;
+  className: string;
+  children: ReactNode;
+}): ReactNode {
+  const openWorkspacePath = useChatWorkspacePathOpener();
+  const workspacePath = resolveWorkspacePathFromHref(href);
+
+  if (workspacePath) {
+    if (!openWorkspacePath) return <span className="break-words">{children}</span>;
+    return (
+      <button
+        type="button"
+        title={workspacePath.path}
+        className={cn(className, "cursor-pointer break-words text-left")}
+        onClick={(event) => {
+          event.preventDefault();
+          openWorkspacePath(workspacePath);
+        }}
+      >
+        {children}
+      </button>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      onClick={(event) => {
+        event.preventDefault();
+        openUrlInAdeBrowser(href);
+      }}
+    >
+      {children}
+    </a>
+  );
 }
 
 export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overrides = {}): Components {
@@ -151,20 +211,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ),
     strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
     em: ({ children }) => <em className="italic">{children}</em>,
-    a: ({ children, href }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={accent.link}
-        onClick={(event) => {
-          event.preventDefault();
-          openUrlInAdeBrowser(href);
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ children, href }) => <ChatMarkdownAnchor href={href} className={accent.link}>{children}</ChatMarkdownAnchor>,
     table: ({ children }) => (
       <div className="mb-3 max-w-full overflow-x-auto last:mb-0">
         <table className="w-full min-w-0 border-collapse text-left">{children}</table>
@@ -201,6 +248,9 @@ export function ChatMarkdown({ children, tone = "sky", componentOverrides }: Cha
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
+      // Keep `file:` and Windows drive hrefs intact — the default transform
+      // drops them, which would hide exactly the paths we want to linkify.
+      urlTransform={chatMarkdownUrlTransform}
       components={buildChatMarkdownComponents(tone, componentOverrides)}
     >
       {children}

@@ -119,6 +119,7 @@ import {
   ChatInfoHostContext,
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
+import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -3358,6 +3359,10 @@ export function AgentChatPane({
     }));
   }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
+  // Provided for the WHOLE pane, not just the transcript: the proposed-plan
+  // card and question-option previews render agent markdown from the composer
+  // subtree, and without an opener their file paths fall back to inert text.
+  const { openWorkspacePath: openChatWorkspacePath } = useWorkspacePathOpener({ laneId, navigate });
   const openAiProvidersSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
@@ -12756,6 +12761,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
+    <ChatWorkspacePathProvider onOpenWorkspacePath={openChatWorkspacePath}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
@@ -13352,5 +13358,6 @@ export function AgentChatPane({
         />
       ) : null}
     </>
+    </ChatWorkspacePathProvider>
   );
 }
