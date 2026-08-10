@@ -7,7 +7,7 @@ import type {
   SyncPeerMetadata,
 } from "../../../../desktop/src/shared/types";
 import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
-import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT, SYNC_PER_MESSAGE_DEFLATE_OPTIONS } from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import {
   assertAdeLoopbackListener,
@@ -567,6 +567,7 @@ export function createSharedSyncListener(options: {
       const candidateServer = new WebSocketServer({
         server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
+        perMessageDeflate: SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
         path: SYNC_WEBSOCKET_PATH,
         verifyClient: (info: { origin?: string }) => {
           const origin = info.origin?.trim();

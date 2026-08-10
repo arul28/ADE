@@ -198,12 +198,18 @@ import {
   SYNC_HOST_MAX_PORT,
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
+  parseSyncEnvelopeFrame,
+  shouldSkipApplicationCompression,
+  syncFrameByteLength,
+  SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
+  type SyncWireFrame,
   mapPlatform,
   negotiateSyncApplicationCompression,
   normalizeSyncApplicationCompressionOffer,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
   sendSyncProtocolVersionMismatchAndClose,
+  SYNC_BINARY_ENVELOPES_CAPABILITY,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SyncProtocolVersionMismatchError,
   SYNC_RUNTIME_ONLY_CAPABILITY,
@@ -2698,6 +2704,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     : new WebSocketServer({
         server: httpServer!,
         maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES,
+        perMessageDeflate: SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
       });
   httpServer?.listen(args.port ?? DEFAULT_SYNC_HOST_PORT, SYNC_HOST_BIND_HOST);
 
@@ -3202,17 +3209,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.framesReceived += 1;
       let envelope: ParsedSyncEnvelope;
       try {
-        envelope = parseSyncEnvelope(wsDataToText(raw));
+        envelope = parseSyncEnvelopeFrame(raw);
         if (
           envelope.type === "envelope_chunk"
           && peer.authenticated
           && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
         ) {
-          const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
-          if (!chunk) throw new Error("Invalid envelope_chunk payload.");
-          const reassembled = peer.envelopeChunks.add(chunk);
-          if (!reassembled) return;
-          envelope = parseSyncEnvelope(reassembled);
+          const binaryChunk = envelope.binaryChunk;
+          if (binaryChunk) {
+            const reassembled = peer.envelopeChunks.addBinary(binaryChunk, binaryChunk.body);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelopeFrame(reassembled);
+          } else {
+            const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
+            if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+            const reassembled = peer.envelopeChunks.add(chunk);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelope(reassembled);
+          }
           if (envelope.type === "envelope_chunk") {
             throw new Error("Nested envelope_chunk frames are not allowed.");
           }
@@ -4123,14 +4137,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       : null;
   }
 
+  // Compressed envelopes go out as binary frames only to peers that declared
+  // the capability; everyone else keeps base64-in-JSON byte for byte.
+  function usesBinaryFramesForPeer(peer: PeerState | null): boolean {
+    return Array.isArray(peer?.metadata?.capabilities)
+      && peer.metadata.capabilities.includes(SYNC_BINARY_ENVELOPES_CAPABILITY);
+  }
+
   function encodeFramesFor<TPayload>(
     target: WebSocket | PeerState,
     type: SyncEnvelope["type"],
     payload: TPayload,
     requestId?: string | null,
-  ): string[] {
+  ): SyncWireFrame[] {
+    const ws = target instanceof WebSocket ? target : target.ws;
     const peer = target instanceof WebSocket ? peerForSocket(target) : target;
     const negotiatedCompression = peer?.negotiatedCompression ?? null;
+    // A peer whose transport already deflates every frame gets the payload
+    // uncompressed: permessage-deflate compresses better than the application
+    // codec (its dictionary persists across frames) and stacking the two
+    // measures worse than either alone.
+    const transportCompresses = shouldSkipApplicationCompression(ws.extensions);
     return encodeSyncEnvelopeFrames({
       type,
       payload,
@@ -4138,8 +4165,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       compressionThresholdBytes: negotiatedCompression
         ? SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES
         : compressionThresholdBytes,
-      compressionCodec: negotiatedCompression ?? "gzip",
+      compressionCodec: transportCompresses ? "none" : (negotiatedCompression ?? "gzip"),
       maxFrameBytes: maxFrameBytesForPeer(peer),
+      binaryFrames: usesBinaryFramesForPeer(peer),
     });
   }
 
@@ -4165,7 +4193,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
     const frames = encodeFramesFor(peer, type, payload, requestId);
-    const frameBytes = frames.reduce((sum, frame) => sum + Buffer.byteLength(frame, "utf8"), 0);
+    const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     const backpressured = isPeerBackpressured(peer);
     if (
       ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES ||
@@ -4247,7 +4275,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
     const frames = encodeFramesFor(ws, type, payload, requestId);
-    const frameBytes = frames.reduce((sum, frame) => sum + Buffer.byteLength(frame, "utf8"), 0);
+    const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     if (ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES) {
       return Promise.reject(new Error("WebSocket send buffer is over the required-send budget."));
     }

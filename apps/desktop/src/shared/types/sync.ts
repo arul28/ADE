@@ -126,6 +126,12 @@ export type SyncApplicationCompressionCodec =
   (typeof SYNC_APPLICATION_COMPRESSION_CODECS)[number];
 export const SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES = 512;
 export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
+/**
+ * Hello capability a client declares when it can decode compressed envelopes
+ * delivered as binary websocket frames instead of base64 inside JSON text.
+ * Peers that do not declare it keep the base64 wire byte for byte.
+ */
+export const SYNC_BINARY_ENVELOPES_CAPABILITY = "binaryEnvelopes";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
