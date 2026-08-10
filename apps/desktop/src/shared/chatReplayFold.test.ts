@@ -396,3 +396,47 @@ describe("cumulative-delta runtimes (desktop mergeStreamingText has two semantic
     }
   });
 });
+
+describe("seam composition (a message straddling the page cut)", () => {
+  /**
+   * Turn-anchored paging guarantees the loaded span CONTAINS a user_message,
+   * not that it STARTS on one — the window top is still a byte cut, so one
+   * message's deltas can straddle it. The older half then arrives as individual
+   * deltas through byte-paged history while the newer half arrives inside a
+   * FOLDED snapshot. Those two halves must still compose to the same text.
+   *
+   * They do because concatenation is associative: folding (C+D) first and
+   * appending it to A+B gives the same string as folding nothing. This pins
+   * that, since it is the one place a folded event meets an unfolded one.
+   */
+  it("composes a folded newer half with unfolded older deltas", () => {
+    const older = [textEvent("Because ", 1), textEvent("the comparison ", 2)];
+    const newer = [textEvent("is fundamentally ", 3), textEvent("visual", 4)];
+
+    const folded = foldChatEventEnvelopesForReplay(newer);
+    expect(folded.events).toHaveLength(1);
+
+    // What the client renders from [older deltas..., folded newer half].
+    const composed = clientFoldText([...older, ...folded.events]);
+    // What it renders today, with nothing folded anywhere.
+    const unfolded = clientFoldText([...older, ...newer]);
+
+    expect(composed).toBe(unfolded);
+    expect(composed).toBe("Because the comparison is fundamentally visual");
+  });
+
+  it("composes when the seam falls at every possible delta boundary", () => {
+    const parts = ["Because ", "the ", "comparison ", "is ", "visual"];
+    const all = parts.map((text, index) => textEvent(text, index + 1));
+    const expected = parts.join("");
+    for (let cut = 0; cut <= all.length; cut += 1) {
+      const older = all.slice(0, cut);
+      const newer = all.slice(cut);
+      const composed = clientFoldText([
+        ...older,
+        ...foldChatEventEnvelopesForReplay(newer).events,
+      ]);
+      expect(composed, `seam after ${cut} delta(s)`).toBe(expected);
+    }
+  });
+});
