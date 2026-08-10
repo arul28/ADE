@@ -106,6 +106,10 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
       "src/my file.ts"
     )
     XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/my folder about this"),
+      "src/my folder about this"
+    )
+    XCTAssertEqual(
       WorkComposerTriggerDetector.fileSearchQuery(for: "a b c"),
       "a b c"
     )

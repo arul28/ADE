@@ -64,6 +64,7 @@ describe("detectComposerTrigger", () => {
   it("narrows path-like file queries before trailing prose", () => {
     expect(composerFileSearchQuery("src/foo.ts about this")).toBe("src/foo.ts");
     expect(composerFileSearchQuery("src/my file.ts about this")).toBe("src/my file.ts");
+    expect(composerFileSearchQuery("src/my folder about this")).toBe("src/my folder about this");
     expect(composerFileSearchQuery("a b c")).toBe("a b c");
   });
 

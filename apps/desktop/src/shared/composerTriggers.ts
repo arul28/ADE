@@ -21,10 +21,11 @@ export type ComposerTrigger = {
 // another `@` or a newline, so emails and cross-line prose never trigger.
 const AT_TRIGGER_RE = /(?:^|[ \t\r\n])(@([^@\r\n]*))$/;
 const SLASH_TRIGGER_RE = /(?:^|\s)(\/([^\s/]*))$/;
-// A path-like leading label can be separated from prose without making the
-// same assumption for ordinary multiword chat titles. This covers the common
-// `src/foo.ts about this` form, including paths whose filename contains spaces.
-const FILE_QUERY_RE = /^((?:.+?\.[A-Za-z0-9_-]+)|(?:\S+[\\/]\S+))(?:[ \t]+.*)?$/;
+// A path with a recognizable extension can be separated from prose without
+// making the same assumption for ordinary multiword chat titles. Extensionless
+// paths are kept intact; the file index resolves a leading path prefix when
+// prose follows it, which also preserves spaces in directory/file names.
+const FILE_QUERY_RE = /^(.+?\.[A-Za-z0-9_-]+)(?:[ \t]+.*)?$/;
 
 export function detectComposerTrigger(text: string, cursorPos: number): ComposerTrigger | null {
   const cursor = Math.max(0, Math.min(Math.floor(cursorPos), text.length));
@@ -42,9 +43,9 @@ export function detectComposerTrigger(text: string, cursorPos: number): Composer
 }
 
 /**
- * Remove trailing prose from an @ file query while leaving chat-name queries
- * untouched. File selection still uses the raw trigger below, so the shared
- * label-narrowing helper preserves the prose in the replacement range.
+ * Remove trailing prose from an @ file query when a filename extension gives
+ * us an unambiguous boundary. Leave extensionless paths and chat-name queries
+ * intact; file quick-open handles a path prefix followed by prose.
  */
 export function composerFileSearchQuery(query: string): string {
   const trimmed = query.trim();

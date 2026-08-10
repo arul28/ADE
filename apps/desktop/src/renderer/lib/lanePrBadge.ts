@@ -5,8 +5,9 @@ import { COLORS } from "../components/lanes/laneDesignTokens";
 
 /**
  * Rank used to choose the one PR that represents a lane in a dense list:
- * an open PR is the most actionable, then a draft, then a merged/closed one.
- * Lower rank wins.
+ * an open PR is the most actionable, then a draft, then terminal history.
+ * Merged and closed PRs share the terminal rank so their activity timestamps
+ * decide which history is most useful. Lower rank wins.
  */
 export function primaryPrStateRank(state: PrState): number {
   switch (state) {
@@ -17,7 +18,7 @@ export function primaryPrStateRank(state: PrState): number {
     case "merged":
       return 2;
     default:
-      return 3; // closed
+      return 2; // closed
   }
 }
 
@@ -43,7 +44,7 @@ function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): numbe
 
 /**
  * Pick the single PR that best represents a set of PRs: prefer open over draft
- * over merged/closed; among equals the most recently updated (then highest
+ * over terminal history; among equals the most recently updated (then highest
  * number) wins. Returns null for an empty list. Pure — the caller pre-filters
  * to a lane's PRs.
  */

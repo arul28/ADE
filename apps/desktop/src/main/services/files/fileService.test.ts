@@ -539,6 +539,29 @@ describe("fileService", () => {
     }
   });
 
+  it("matches an extensionless path with spaces before trailing prose", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-spaced-path-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "my folder"), "extensionless path\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "src/my folder about this",
+        includeIgnored: true,
+      });
+
+      expect(quickOpen.map((item) => item.path)).toContain("src/my folder");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("warms the quick open index for subsequent lookups", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-search-"));
     const { execSync } = await import("node:child_process");

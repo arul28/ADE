@@ -2514,6 +2514,10 @@ export const MENTION_MAX_ROWS = 10;
 export const MENTION_FILE_ROWS = 5;
 const STARTUP_RECONNECT_DELAY_MS = 3_000;
 
+function matchesMentionTarget(target: string, query: string): boolean {
+  return target.includes(query) || query.startsWith(`${target} `);
+}
+
 type MentionRemoteCacheEntry = {
   filesByQuery: Map<string, Array<{ path: string }>>;
   commits: Array<Record<string, unknown>> | null;
@@ -7347,8 +7351,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (!query) return true;
       const label = suggestion.label.toLowerCase();
       return (
-        label.includes(query)
-        || query.startsWith(`${label} `)
+        matchesMentionTarget(label, query)
         || suggestion.insertText.toLowerCase().includes(query)
         || Boolean(suggestion.detail?.toLowerCase().includes(query))
       );
@@ -7456,7 +7459,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             const title = String(pr.title ?? "");
             const number = String(pr.number ?? pr.prNumber ?? "");
             const loweredTitle = title.toLowerCase();
-            return !query || loweredTitle.includes(query) || query.startsWith(`${loweredTitle} `) || number.includes(query);
+            return !query || matchesMentionTarget(loweredTitle, query) || number.includes(query);
           })
           .slice(0, 5)
           .map((pr) => {

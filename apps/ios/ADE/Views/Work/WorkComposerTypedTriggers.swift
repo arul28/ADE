@@ -163,7 +163,7 @@ enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
   private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
   private static let fileQueryRegex = try! NSRegularExpression(
-    pattern: "^((?:.+?\\.[A-Za-z0-9_-]+)|(?:\\S+[\\\\/]\\S+))(?:[ \\t]+.*)?$"
+    pattern: "^(.+?\\.[A-Za-z0-9_-]+)(?:[ \\t]+.*)?$"
   )
 
   static func detect(in text: NSString, cursor: Int) -> WorkComposerTriggerMatch? {

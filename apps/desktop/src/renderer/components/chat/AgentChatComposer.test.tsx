@@ -701,6 +701,25 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("foo.ts")).toBeTruthy();
   });
 
+  it("keeps an extensionless spaced file path intact before trailing prose", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/my folder", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/my folder about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/my folder about this"));
+    expect(await screen.findByText("my folder")).toBeTruthy();
+  });
+
   it("keeps spaced chat mentions searchable and displays the chat title in the chip", async () => {
     const onSearchMentions = vi.fn().mockResolvedValue([{
       kind: "chat" as const,
@@ -732,6 +751,45 @@ describe("AgentChatComposer", () => {
     expect(chip.closest("[aria-hidden]")).not.toBeNull();
     expect(view.container.querySelector("[data-composer-mention-layout]")?.textContent).toBe("@chat:chat-1");
     expect(view.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+  });
+
+  it("restores persisted mention titles after a plain composer remount", () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+    });
+    const first = render(<AgentChatComposer {...props} />);
+    expect(first.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+
+    first.unmount();
+    const second = render(<AgentChatComposer {...props} />);
+    expect(second.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+  });
+
+  it("restores persisted mention titles after a rich composer remount", () => {
+    const iosContext = {
+      kind: "ios_element" as const,
+      id: "ios-1",
+      componentId: "PrimaryButton",
+      sourceFile: null,
+      sourceLine: null,
+      frame: null,
+      metadata: { label: "Primary" },
+      selectedAt: "2026-05-07T00:00:00.000Z",
+    };
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+      iosElementContextItems: [iosContext],
+    });
+    const first = render(<AgentChatComposer {...props} />);
+    expect(first.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+
+    first.unmount();
+    const second = render(<AgentChatComposer {...props} />);
+    expect(second.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
   });
 
   it("does not consume prose after a matching spaced chat mention", async () => {

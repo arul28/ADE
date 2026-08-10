@@ -51,6 +51,7 @@ import {
 import {
   formatChatMentionToken,
   isChatMentionTokenBody,
+  parseChatMentions,
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
@@ -1509,6 +1510,8 @@ export function AgentChatComposer({
   onReasoningEffortChange,
   onFastModeChange,
   onDraftChange,
+  mentionLabels,
+  onMentionLabelChange,
   onClearDraft,
   onSubmit,
   onSubmitBlocked,
@@ -1663,6 +1666,9 @@ export function AgentChatComposer({
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
+  /** Persisted display labels keyed by their canonical mention token. */
+  mentionLabels?: Record<string, string>;
+  onMentionLabelChange?: (token: string, title: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
   onSubmitBlocked?: (message: string) => void;
@@ -1859,7 +1865,10 @@ export function AgentChatComposer({
   // selected row's title separately so the visible chip stays user-facing.
   // This is a presentation cache only; send-time parsing still uses the
   // canonical @chat:<id> token in `draft`.
-  const mentionLabelsRef = useRef<Map<string, string>>(new Map());
+  const mentionLabelsRef = useRef<Map<string, string>>(new Map(Object.entries(mentionLabels ?? {})));
+  useLayoutEffect(() => {
+    mentionLabelsRef.current = new Map(Object.entries(mentionLabels ?? {}));
+  }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
@@ -2013,7 +2022,7 @@ export function AgentChatComposer({
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
       const tokenText = draft.slice(token.start, token.end);
       const displayText = token.kind === "mention"
-        ? mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
+        ? mentionLabels?.[tokenText]?.trim() || mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
         : tokenText;
       const isLabeledMention = token.kind === "mention" && displayText !== tokenText;
       segments.push(
@@ -2044,7 +2053,7 @@ export function AgentChatComposer({
     // measurable so the overlay height matches the textarea's scrollHeight.
     segments.push("​");
     return segments;
-  }, [draft, plainComposerTokens]);
+  }, [draft, mentionLabels, plainComposerTokens]);
 
   // Pre-warm the lane's quick-open file index as soon as the composer is
   // bound to a session so the first "@" query is served from a warm index.
@@ -2732,6 +2741,54 @@ export function AgentChatComposer({
     return chip;
   }, []);
 
+  const hydrateMentionChipsInEditor = useCallback((): boolean => {
+    const editor = richEditorRef.current;
+    const labels = mentionLabelsRef.current;
+    if (!editor || !labels.size) return false;
+
+    let changed = false;
+    editor.querySelectorAll<HTMLElement>("[data-composer-chip='mention']").forEach((chip) => {
+      const token = chip.dataset.composerChipText;
+      const label = token ? labels.get(token)?.trim() : undefined;
+      if (!token || !label) return;
+      const labelNode = chip.firstElementChild;
+      if (labelNode) labelNode.textContent = label;
+      chip.title = `${label} — ${token}`;
+    });
+
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes: Text[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      nodes.push(current as Text);
+      current = walker.nextNode();
+    }
+    for (const node of nodes) {
+      const text = node.textContent ?? "";
+      const mentions = parseChatMentions(text).filter((mention) => labels.has(mention.token));
+      if (!mentions.length) continue;
+      const fragment = document.createDocumentFragment();
+      let offset = 0;
+      for (const mention of mentions) {
+        if (mention.start > offset) fragment.append(document.createTextNode(text.slice(offset, mention.start)));
+        fragment.append(createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)));
+        offset = mention.end;
+      }
+      if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+      node.replaceWith(fragment);
+      changed = true;
+    }
+    return changed;
+  }, [createComposerTokenChipNode]);
+
   // Finds the in-progress /command or @file token that ends at the caret in
   // the rich contenteditable. Works on the DOM text run around the caret
   // instead of serialized-draft offsets: serialization collapses whitespace
@@ -3059,6 +3116,8 @@ export function AgentChatComposer({
       }
     }
 
+    hydrateMentionChipsInEditor();
+
     const isFocusedInsideEditor = document.activeElement === editor;
     const insertChipFragment = (chip: HTMLElement) => {
       const before = document.createTextNode(" ");
@@ -3136,7 +3195,7 @@ export function AgentChatComposer({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // ── Chip selection highlight ─────────────────────────────────────────────
   // The native selection is not painted over contentEditable="false" chips, so
@@ -3940,6 +3999,7 @@ export function AgentChatComposer({
       // now. The token is expanded into an <ade-mention> block at send time.
       const token = formatChatMentionToken(item.mention.kind, item.mention.id);
       mentionLabelsRef.current.set(token, item.mention.title);
+      onMentionLabelChange?.(token, item.mention.title);
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "mention",
@@ -3977,7 +4037,7 @@ export function AgentChatComposer({
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;

@@ -85,15 +85,38 @@ function scoreBrowseDepth(normalizedPath: string): number {
   return Math.max(1, BROWSE_BASE_SCORE - depth);
 }
 
+function scorePathForNeedle(normalized: string, needle: string): number {
+  if (normalized === needle) return 1000;
+  if (normalized.endsWith(`/${needle}`) || normalized.endsWith(`\\${needle}`)) return 900;
+  const idx = normalized.indexOf(needle);
+  return idx < 0 ? -1 : 600 - idx;
+}
+
 function scorePath(pathValue: string, query: string): number {
   const normalized = pathValue.toLowerCase();
   const needle = query.toLowerCase().trim();
   if (!needle) return scoreBrowseDepth(normalized);
-  if (normalized === needle) return 1000;
-  if (normalized.endsWith(`/${needle}`) || normalized.endsWith(`\\${needle}`)) return 900;
-  const idx = normalized.indexOf(needle);
-  if (idx < 0) return -1;
-  return 600 - idx;
+  const directScore = scorePathForNeedle(normalized, needle);
+  if (directScore >= 0) return directScore;
+
+  // Composer @-file queries can contain ordinary prose after an extensionless
+  // path whose filename or directory contains spaces. A path index cannot
+  // know that boundary from the string alone, so try progressively shorter
+  // space-delimited prefixes and keep the longest matching one. Restrict this
+  // fallback to path-like queries so ordinary multiword quick-open searches
+  // keep their existing whole-query semantics.
+  if (!needle.includes("/") && !needle.includes("\\")) return -1;
+  const words = needle.split(/[ \t]+/);
+  let best = -1;
+  for (let end = words.length - 1; end > 0; end -= 1) {
+    const prefix = words.slice(0, end).join(" ");
+    const score = scorePathForNeedle(normalized, prefix);
+    if (score < 0) continue;
+    // Prefer a longer path prefix when multiple indexed paths share the same
+    // beginning. The tiny fractional tie-break preserves existing score tiers.
+    best = Math.max(best, score + Math.min(prefix.length, 999) / 1000);
+  }
+  return best;
 }
 
 async function cooperativeYield(): Promise<void> {

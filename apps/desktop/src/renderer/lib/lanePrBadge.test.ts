@@ -16,10 +16,10 @@ function pr(id: string, state: PrState, updatedAt: string | null | undefined, gi
 }
 
 describe("primaryPrStateRank", () => {
-  it("ranks open < draft < merged < closed", () => {
+  it("ranks open < draft < terminal history", () => {
     expect(primaryPrStateRank("open")).toBeLessThan(primaryPrStateRank("draft"));
     expect(primaryPrStateRank("draft")).toBeLessThan(primaryPrStateRank("merged"));
-    expect(primaryPrStateRank("merged")).toBeLessThan(primaryPrStateRank("closed"));
+    expect(primaryPrStateRank("merged")).toBe(primaryPrStateRank("closed"));
   });
 });
 
@@ -67,6 +67,14 @@ describe("pickPrimaryPr", () => {
         pr("merged", "merged", "2026-07-02T00:00:00Z", 2),
       ],
       expected: "merged",
+    },
+    {
+      name: "newer closed activity beats older merged history",
+      prs: [
+        pr("old-merged", "merged", "2026-07-01T00:00:00Z", 20),
+        pr("new-closed", "closed", "2026-07-04T00:00:00Z", 1),
+      ],
+      expected: "new-closed",
     },
     {
       name: "valid activity beats a missing timestamp",
