@@ -10,8 +10,10 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
+  EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
+  pruneRowsInBatches,
   REVIEW_ARTIFACT_RETENTION_DAYS,
   pruneIngressEventRowsForProject,
   type DbMaintenanceApi,
@@ -772,6 +774,43 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
 
+/**
+ * Append-only event logs that had no retention at all, with the column each one
+ * actually timestamps on.
+ *
+ * All seven are CRR tables, so every row replicated to every paired device
+ * forever — including phones. They are near-empty on a typical project today,
+ * which is precisely why this is worth fixing now: the cost of an unbounded
+ * append-only log is paid by whichever user first drives it hard, and it is
+ * paid on their phone as well as their desktop.
+ */
+const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: string]> = [
+  ["linear_sync_events", "created_at"],
+  ["linear_workflow_run_events", "created_at"],
+  // `created_at` (insert time), not `occurred_at`: the latter is event time and
+  // can be backdated, which would age a row out the moment it is written.
+  ["worker_agent_cost_events", "created_at"],
+  ["pack_events", "created_at"],
+];
+
+/**
+ * Deliberately NOT retained, each for a reason that would make pruning a bug:
+ *
+ * - `linear_ingress_events` is the webhook replay guard, not a log.
+ *   `linearIngressService.persistRecord` refuses to dispatch a delivery whose
+ *   `delivery_id` it has already stored, and the cursor is explicitly reset on
+ *   `cursorExpired`. Pruning it lets a backlog drain re-dispatch automations —
+ *   re-running agent work and re-posting Linear comments.
+ * - `cto_session_logs` is two-way reconciled against an append-only
+ *   `.ade/cto/sessions.jsonl` that has no retention of its own, so every prune
+ *   is undone by the next CTO read — and on a CRR table each cycle writes a
+ *   tombstone plus a fresh set of clock rows. It would make this lane's own
+ *   metric worse, permanently.
+ * - `worker_agent_runs` is a lifecycle table, not an event log. Keying it on
+ *   `created_at` would delete a still-pending run and orphan the
+ *   `worker_agent_cost_events.run_id` and `automation_runs.worker_run_id`
+ *   references. It needs a terminal-status + `finished_at` policy instead.
+ */
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // Per-device ingress dedup log. It carries a non-PK UNIQUE index
   // (project_id, source, event_key) for dedup, which cr-sqlite forbids on CRR
@@ -807,6 +846,40 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
   "usage_events",
+  // NOT here on purpose: `ai_usage_log`, whose CRR metadata is the largest
+  // single block in a measured project database (0.93 MB of clock/pks for
+  // 0.27 MB of data — 2.8 MB off the file after vacuum). It looks like an
+  // obvious sibling of `usage_events` above, and it is not.
+  //
+  // `ai.budgets.<feature>.dailyLimit` is enforced by counting rows:
+  // `select count(*) from ai_usage_log where feature = ? and success = 1`
+  // over today. Because the table replicates, that count is account-wide
+  // across a user's machines. Un-CRR it and the limit silently becomes
+  // per-machine — an N-times looser cost control, which is the opposite of a
+  // saving.
+  //
+  // Serving the limit from a slim synced aggregate instead was scoped and
+  // rejected as too large for one change, not as a bad idea:
+  //   - The aggregate has to be keyed (day, feature, site) and SUMMED at read.
+  //     A shared (day, feature) counter cannot work: cr-sqlite is
+  //     last-writer-wins per column, so one machine's upsert would discard the
+  //     other's count — silently under-counting, i.e. the same loosening by a
+  //     different route.
+  //   - It cannot be rolled out in one release. The moment raw rows stop
+  //     replicating, a machine on the new build sees nothing at all from a peer
+  //     still on the old build (inbound local-only changes are dropped just
+  //     above in applyChanges), so it under-counts and overruns the account cap
+  //     during exactly the window a rollout guarantees. Safe sequencing is two
+  //     releases: ship the aggregate while `ai_usage_log` still syncs, then flip
+  //     to local-only once aggregates are everywhere.
+  //   - A new CRR table also has to exist in every peer's schema or
+  //     `unknown_sync_table` wedges apply — the hazard fixed just above.
+  // Retention is not the consolation prize either: `ActivityModule` defaults to
+  // the "All" range and renders a "lifetime tokens" total from these rows, so
+  // ageing them out would quietly turn a lifetime figure into a trailing-window
+  // one. The phone already never receives this table
+  // (MOBILE_CHANGESET_EXCLUDED_TABLES); everything else here waits on the
+  // aggregate.
   "test_suites",
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
@@ -3970,6 +4043,36 @@ export async function openKvDb(
     }
   };
 
+  /**
+   * Log and rethrow, so the storage doctor records a real failure.
+   *
+   * Deliberately unlike the synchronous `runMaintenanceSafely` above, which
+   * swallows into an `unsupported` result. "Unsupported" means "this handle
+   * does not implement the step" — reporting a locked database or a malformed
+   * table that way makes the maintenance journal, the analytics event, and the
+   * Settings run summary all show a tidy completed sweep. `runStep` already
+   * catches and records `error` per action, so rethrowing is what surfaces it,
+   * and a failing step still does not abort the rest of the run.
+   *
+   * Rows deleted before the throw stay deleted; the next sweep continues from
+   * there. That is why a partial multi-table prune is safe to report as failed
+   * rather than as a partial success nobody looks at.
+   */
+  const runMaintenanceSafelyAsync = async (
+    action: keyof DbMaintenanceApi,
+    operation: () => Promise<DbMaintenanceResult>,
+  ): Promise<DbMaintenanceResult> => {
+    try {
+      return await operation();
+    } catch (error) {
+      logger.warn("db.maintenance_failed", {
+        action,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
+
   const vacuumIfFragmented = (threshold: number): DbMaintenanceResult => {
     if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
       throw new Error(`Invalid fragmentation threshold: ${String(threshold)}`);
@@ -4084,6 +4187,31 @@ export async function openKvDb(
         "delete from pull_request_snapshots where updated_at < ?",
         [cutoff],
       ).changes;
+      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
+    }),
+    pruneEventLogs: () => runMaintenanceSafelyAsync("pruneEventLogs", async () => {
+      const cutoff = new Date(
+        Date.now() - EVENT_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString();
+      let itemsAffected = 0;
+      let supported = false;
+      for (const [table, column] of RETAINED_EVENT_LOG_TABLES) {
+        if (!rawHasTable(db, table)) continue;
+        supported = true;
+        itemsAffected += await pruneRowsInBatches({
+          table,
+          // Compare only against values that are actually ISO-shaped dates.
+          // A `text`-affinity column stores an epoch number as its digits, and
+          // '1767225600000' < '2026-...' is true as a string — so a numeric
+          // timestamp would be born expired. CRR repair also appends
+          // `default ''` to NOT NULL text columns, and '' sorts before every
+          // cutoff. Neither should be read as "older than the cutoff".
+          where: `${column} like '____-__-__%' and ${column} < ?`,
+          params: [cutoff],
+          deleteRows: (sql, params) => runStatement(db, sql, params as string[]).changes,
+        });
+      }
+      if (!supported) return unsupportedMaintenanceResult();
       return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
     }),
     compactCrsqlTombstones: () => runMaintenanceSafely("compactCrsqlTombstones", () => {
@@ -4316,6 +4444,18 @@ export async function openKvDb(
             if (isRetiredIncomingSyncTable(rawChange.table)) continue;
             throw new Error(`unknown_sync_table:${rawChange.table}`);
           }
+          // A local-only table still exists as a plain table here, so the check
+          // above passes — but cr-sqlite has no schema record for it and
+          // `insert into crsql_changes` throws "could not find the schema
+          // information". That rolls back the whole BEGIN IMMEDIATE, and a
+          // batch is ordered by db_version, so one usage row would take a
+          // peer's chats, lanes, and commits down with it. The peer then
+          // re-exports the same poisoned range forever, because its outbound
+          // cursor only advances on an ok ack.
+          //
+          // Reachable whenever a table is moved local-only while a paired peer
+          // is still on a build that replicates it — i.e. during every rollout.
+          if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,

@@ -1096,8 +1096,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: tables the phone
   never reads from a changeset — `attempt_transcripts`, `operations`,
   `ai_usage_log`, `budget_usage_records`, `automation_runs`,
-  `automation_action_results`, and `pull_request_snapshots` — are filtered from
-  phone changesets while ack watermarks still advance), compact reseeding for replica phones
+  `automation_action_results`, `pull_request_snapshots`, and the seven
+  event logs `linear_ingress_events`, `linear_sync_events`,
+  `linear_workflow_run_events`, `worker_agent_runs`,
+  `worker_agent_cost_events`, `pack_events`, and `cto_session_logs` — are
+  filtered from phone changesets while ack watermarks still advance; the event
+  logs exist in the phone's `DatabaseBootstrap.sql` so an inbound row would
+  still apply, but there is no Swift read path for any of them), compact reseeding for replica phones
   more than 5,000 versions behind (ACK- and chunk-capable iOS peers receive one
   bounded current-state `catchup` batch, then resume incremental delivery only
   after its `changeset_ack`), the host-authoritative table
@@ -2847,7 +2852,25 @@ feature is merged or because a deliberately isolated-port host is running.
   already have (nothing deletes them); they simply stop receiving updates
   through the changeset pump. Excluding a table the phone reads with no
   on-demand path would silently blank a surface, so check the iOS queries and
-  the required-command set before adding one.
+  the required-command set before adding one. The seven event-log tables added
+  alongside the PR cache clear that bar the other way: they have *no* iOS read
+  path at all (the only reference anywhere under `apps/ios/` is the
+  `DatabaseBootstrap.sql` `create table`), so nothing on the phone can render
+  them and there is nothing to re-fetch.
+
+- **The mobile diet is an outbound filter; a local-only conversion is not.**
+  They look similar and their failure modes are opposite. Excluding a table
+  from `MOBILE_CHANGESET_EXCLUDED_TABLES` only drops rows on the way out to a
+  phone — CRR metadata is untouched, existing rows on paired devices are left
+  alone, and the peer's ack watermark still advances through the filtered
+  versions, so there is no apply hazard for a peer on any build. Moving a table
+  into `LOCAL_ONLY_CRR_EXCLUDED_TABLES` changes what cr-sqlite knows about the
+  table and *does* have an apply hazard, which is why `applyChanges` skips
+  inbound rows for those tables (see
+  [the CRDT model](./crdt-model.md#apply)). Do not reason about one from the
+  other. Related but independent: whether the host prunes a table is a third,
+  orthogonal question — `linear_ingress_events` and `worker_agent_runs` are on
+  the mobile-exclusion list yet deliberately never age-pruned on the host.
 
 - **The wire and the stored transcript share one chat-event compaction policy,
   and the wire runs storage compaction first.** `compactChatEventEnvelopeForSync`

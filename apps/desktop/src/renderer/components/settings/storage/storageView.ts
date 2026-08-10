@@ -300,6 +300,7 @@ const LEDGER_LABELS: Record<string, string> = {
   "db.operations_crsql": "Sync bookkeeping",
   "db.review_run_artifacts": "Review artifacts",
   "db.pull_request_snapshots": "Pull request cache",
+  "db.event_logs": "Event history",
   "db.core": "Core data",
   "fs.transcripts": "Chat & terminal history",
   "fs.tmp": "Release staging",

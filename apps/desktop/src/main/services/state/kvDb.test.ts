@@ -11,6 +11,7 @@ import {
   type TableRebuildPlan,
 } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
+import { EVENT_LOG_RETENTION_DAYS } from "./dbMaintenanceApi";
 
 const testRequire = createRequire(import.meta.url);
 const { DatabaseSync } = testRequire("node:sqlite") as {
@@ -760,6 +761,108 @@ describe("sweepOrphanedRepairStagingTables", () => {
     } finally {
       db.close();
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("retention maintenance", () => {
+  async function openScratchDb() {
+    const root = makeProjectRoot("ade-kvdb-retention-");
+    const db = await openKvDb(path.join(root, ".ade", "ade.db"), createLogger() as any);
+    return { db, root };
+  }
+
+  const daysAgo = (days: number): string =>
+    new Date(Date.now() - days * 24 * 60 * 60 * 1_000).toISOString();
+
+  it("prunes event logs on created_at and leaves fresh rows", async () => {
+    const { db } = await openScratchDb();
+    try {
+      db.run(
+        `insert into pack_events (id, project_id, pack_key, event_type, created_at)
+         values ('pack-old', 'proj', 'k', 'installed', ?)`,
+        [daysAgo(EVENT_LOG_RETENTION_DAYS + 5)],
+      );
+      db.run(
+        `insert into pack_events (id, project_id, pack_key, event_type, created_at)
+         values ('pack-fresh', 'proj', 'k', 'installed', ?)`,
+        [daysAgo(1)],
+      );
+
+      const result = await db.maintenance!.pruneEventLogs();
+      expect(result.itemsAffected).toBe(1);
+      expect(db.all<{ id: string }>("select id from pack_events").map((r) => r.id))
+        .toEqual(["pack-fresh"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The webhook replay guard, the CTO log that a reconcile re-inserts, and the
+  // worker lifecycle table are all deliberately exempt — pruning any of them
+  // would be a bug, not a saving.
+  it("leaves the deliberately-unretained tables alone", async () => {
+    const { db } = await openScratchDb();
+    try {
+      const stale = daysAgo(EVENT_LOG_RETENTION_DAYS + 60);
+      db.run(
+        `insert into linear_ingress_events (id, project_id, source, delivery_id, created_at)
+         values ('ing-1', 'proj', 'linear', 'delivery-1', ?)`,
+        [stale],
+      );
+      db.run(
+        `insert into cto_session_logs (id, project_id, session_id, created_at)
+         values ('cto-1', 'proj', 'sess', ?)`,
+        [stale],
+      );
+      db.run(
+        `insert into worker_agent_runs (id, project_id, agent_id, created_at)
+         values ('run-1', 'proj', 'agent', ?)`,
+        [stale],
+      );
+
+      await db.maintenance!.pruneEventLogs();
+
+      expect(db.all("select id from linear_ingress_events")).toHaveLength(1);
+      expect(db.all("select id from cto_session_logs")).toHaveLength(1);
+      expect(db.all("select id from worker_agent_runs")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  // A locked or malformed database must not read as "step not supported" —
+  // that renders as a tidy completed sweep in the journal, the analytics event,
+  // and the Settings summary.
+  it("surfaces a prune failure instead of reporting it as unsupported", async () => {
+    const { db } = await openScratchDb();
+    try {
+      // A malformed table is a real SQL failure, not "this handle does not
+      // implement the step" — the doctor must record it as an error rather than
+      // rendering a tidy completed sweep.
+      db.run("drop table pack_events");
+      db.run("create table pack_events (id text primary key)");
+      await expect(db.maintenance!.pruneEventLogs()).rejects.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  // SQLite orders INTEGER before TEXT, so an epoch-number timestamp would match
+  // every cutoff; CRR repair can also leave an empty-string timestamp.
+  it("does not treat a non-text or empty timestamp as expired", async () => {
+    const { db } = await openScratchDb();
+    try {
+      db.run("insert into pack_events (id, project_id, pack_key, event_type, created_at) values ('epoch', 'p', 'k', 'e', 1767225600000)");
+      db.run("insert into pack_events (id, project_id, pack_key, event_type, created_at) values ('empty', 'p', 'k', 'e', '')");
+
+      await db.maintenance!.pruneEventLogs();
+
+      expect(db.all<{ id: string }>("select id from pack_events order by id").map((r) => r.id))
+        .toEqual(["empty", "epoch"]);
+    } finally {
+      db.close();
     }
   });
 });

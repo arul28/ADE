@@ -86,6 +86,64 @@ export function pruneIngressEventRowsForProject(
   return removed;
 }
 
+/** Linear/worker/pack/CTO event-log rows older than this are deleted. */
+export const EVENT_LOG_RETENTION_DAYS = 30;
+
+/**
+ * Rows deleted per batch by {@link pruneRowsInBatches}.
+ *
+ * ADE's SQLite driver (`node:sqlite` `DatabaseSync`) is fully synchronous, so a
+ * DELETE runs to completion on the event loop with nothing else able to
+ * proceed. 2,000 rows is small enough that one batch is imperceptible and
+ * large enough that a realistic backlog clears in a handful of them.
+ */
+export const MAINTENANCE_DELETE_BATCH_ROWS = 2_000;
+
+/** Batches per prune, so one call cannot run unbounded on a huge backlog. */
+export const MAINTENANCE_DELETE_MAX_BATCHES = 200;
+
+/**
+ * Delete rows matching `where` in paced batches, yielding to the event loop
+ * between them.
+ *
+ * Every existing prune issues a single unbounded DELETE. That is fine at
+ * today's row counts and is a latency cliff waiting for the first project that
+ * accumulates a real backlog: a synchronous driver means the UI, IPC, and sync
+ * pump all stop for the duration. Batching bounds each pause; the `setImmediate`
+ * between batches is what actually lets everything else run.
+ *
+ * Deleting by `rowid` rather than by the predicate keeps each batch's work
+ * proportional to the batch, not to the table.
+ */
+export async function pruneRowsInBatches(args: {
+  table: string;
+  where: string;
+  params: readonly unknown[];
+  deleteRows: (sql: string, params: readonly unknown[]) => number;
+  batchRows?: number;
+  maxBatches?: number;
+  yieldToEventLoop?: () => Promise<void>;
+}): Promise<number> {
+  const batchRows = args.batchRows ?? MAINTENANCE_DELETE_BATCH_ROWS;
+  const maxBatches = args.maxBatches ?? MAINTENANCE_DELETE_MAX_BATCHES;
+  const yieldToEventLoop = args.yieldToEventLoop
+    ?? (() => new Promise<void>((resolve) => { setImmediate(resolve); }));
+
+  const sql = `delete from ${args.table} where rowid in (
+      select rowid from ${args.table} where ${args.where} limit ${batchRows}
+    )`;
+  let removed = 0;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const changes = args.deleteRows(sql, args.params);
+    removed += changes;
+    // A short batch means the predicate is exhausted; stop without paying for
+    // one more round trip.
+    if (changes < batchRows) break;
+    await yieldToEventLoop();
+  }
+  return removed;
+}
+
 export type DbMaintenanceResult = {
   itemsAffected: number;
   bytesReclaimed: number;
@@ -102,6 +160,18 @@ export interface DbMaintenanceApi {
   pruneReviewArtifacts(): DbMaintenanceResult;
   /** Delete pull_request_snapshots rows not updated in 60 days. */
   prunePrSnapshots(): DbMaintenanceResult;
+  /**
+   * Delete rows older than 30 days from the append-only event logs that had no
+   * retention at all: `linear_sync_events`, `linear_workflow_run_events`,
+   * `worker_agent_cost_events`, and `pack_events`. Every one of them
+   * replicates.
+   *
+   * `linear_ingress_events`, `cto_session_logs`, and `worker_agent_runs` look
+   * like they belong here and deliberately do not — see
+   * `RETAINED_EVENT_LOG_TABLES` in `kvDb.ts` for why pruning each would be a
+   * bug.
+   */
+  pruneEventLogs(): Promise<DbMaintenanceResult>;
   /**
    * Reclaim cr-sqlite clock/pks bookkeeping. Only safe (and only performed)
    * when the project has zero sync peers; otherwise returns skippedReason

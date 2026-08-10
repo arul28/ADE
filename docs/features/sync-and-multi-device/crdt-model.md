@@ -38,7 +38,8 @@ Every other service talks to plain SQLite (`run`, `get`, `all`,
   `crsql_export_version_group_too_large` instead of materializing the whole
   transaction in memory.
 - `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
-  apply remote changes locally.
+  apply remote changes locally, after dropping rows for retired,
+  locally-absent, and local-only tables (see [Apply](#apply)).
 - `discardUnpublishedChangesForTables(tableNames: string[]): void` —
   records a per-table, per-site high-water mark in the local-only
   `local_crr_change_suppressions` table so subsequent
@@ -298,11 +299,24 @@ device. Worktrees, PTY handles, transcripts, and caches are
 explicitly excluded. If a table is useful as "the host knows X", it
 should live outside `.ade/ade.db` or be designed so the host owns
 all writes and controllers only read. The local-only excluded set
-is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` and
-includes `lane_detail_snapshots`, `lane_list_snapshots`,
-`local_crr_change_suppressions`, `local_worktree_residual_cleanups`,
-`pr_auto_link_ignores`, `pull_request_ai_summaries`, and
-`runtime_processes`.
+is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` — the
+lane and PR projections (`lane_detail_snapshots`, `lane_list_snapshots`,
+`github_pr_projections`, `github_pr_stacks`, `github_pr_stack_entries`,
+`pull_request_ai_summaries`, `pr_auto_link_ignores`), machine-local
+automation and runtime bookkeeping (`automation_ingress_events`,
+`automation_schedule_occurrences`, `automation_scheduled_cleanups`,
+`github_webhook_deliveries`, `runtime_processes`, `test_suites`,
+`usage_events`), the sync-suppression ledger
+(`local_crr_change_suppressions`), and the local storage/worktree state
+(`local_worktree_residual_cleanups`, `local_lane_storage_state`,
+`local_storage_lifecycle_runs`). Read the constant for the current set
+and the per-table reason; several entries are excluded because a
+non-PK UNIQUE index is illegal on a CRR, not merely because the data is
+machine-bound.
+
+**Moving an existing table into that set is a rollout-hazard change,
+and it is only safe because `applyChanges` now skips inbound rows for
+local-only tables** — see [Apply](#apply).
 
 ### Local clears that must not propagate
 
@@ -402,8 +416,31 @@ emulation both handle conflict resolution inside the insert trigger
 writer wins on ties by `site_id`).
 
 Before apply, `kvDb.ts` filters inbound rows for explicitly retired
-tables (`unified_memories` and related FTS tables) and for tables that
-no longer exist locally. iOS also ignores its hydration-owned snapshot
+tables (`unified_memories` and related FTS tables), for tables that
+no longer exist locally, and for tables in
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`.
+
+That last filter closes a wedge that is reachable during **every
+rollout** that moves a table local-only. A local-only table still
+exists as an ordinary table, so the "does this table exist" check
+passes — but cr-sqlite holds no schema record for it, and
+`insert into crsql_changes` throws *"could not find the schema
+information"*. Because the whole batch is one `BEGIN IMMEDIATE` and a
+batch is ordered by `db_version`, that single row rolls back the peer's
+chats, lanes, and commits alongside it. The peer then re-exports the
+identical poisoned range forever, because an outbound cursor only
+advances on an `ok` ack (see [Transactional
+boundaries](#transactional-boundaries)). Skipping instead of throwing
+turns a permanent, self-reinforcing sync freeze into dropped rows for a
+table this device does not replicate anyway.
+
+**Invariant: adding a table to `LOCAL_ONLY_CRR_EXCLUDED_TABLES` is only
+safe because of this skip.** A paired peer on an older build keeps
+replicating the table until it updates, so the skip — not the rollout
+order — is what makes the two builds interoperable. Do not remove it,
+and do not reintroduce a throw for an unrecognized-but-local table.
+
+iOS also ignores its hydration-owned snapshot
 tables, which are intentionally not part of the desktop CRDT schema,
 and **skips rows for any table its bundled schema does not know**
 instead of failing the batch. A thrown error there would nack the
@@ -468,6 +505,13 @@ After apply, ADE runs post-hooks:
 - **Static-link cr-sqlite on iOS is a dead end.** The wrapper
   approach was evaluated and abandoned; do not revive it without a
   plan for the SQLite thunk pointer issue.
+- **A local-only table is not an unknown table.** It exists in
+  `sqlite_master`, so existence checks pass, while cr-sqlite has no
+  schema record for it and `insert into crsql_changes` throws. Inbound
+  rows for `LOCAL_ONLY_CRR_EXCLUDED_TABLES` are skipped for exactly this
+  reason; without the skip, one row from a peer still on the older build
+  rolls back that peer's entire `db_version`-ordered batch and wedges
+  its cursor permanently.
 - **Tables added by tests still register as CRRs at startup.** Test
   suites that create scratch tables in the main DB will see them
   replicated on the next connection. Use an in-memory DB or a

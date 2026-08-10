@@ -5,7 +5,7 @@
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
-| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. |
+| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
 | `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
@@ -263,8 +263,16 @@ go through the lane-aware typed-confirmation path.
 2. Compress inactive chat/terminal history (`fs.transcripts`).
 3. Record filesystem review candidates without deleting them.
 4. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
-   `review_run_artifacts`, and `pull_request_snapshots`; compact cr-sqlite
-   sync bookkeeping; and vacuum when the freelist is fragmented.
+   `review_run_artifacts`, `pull_request_snapshots`, `ai_usage_log`, and the
+   retained event logs; compact cr-sqlite sync bookkeeping; and vacuum when the
+   freelist is fragmented.
+
+Step 4's hooks are awaited individually, so a hook may be `async` — the two
+newest ones are, because they delete in paced batches. Each is invoked through
+method-level optional chaining (`maintenance?.pruneEventLogs?.bind(…)`), not
+just object-level: the handle is consumed optionally so the doctor can degrade
+against a database handle that predates a step, and `handle?.method.bind()`
+still throws when only the method is missing.
 
 The run is appended to the maintenance journal and summarized in a
 `storage.maintenance_completed` log with a `completed` / `partial` / `failed`
@@ -303,11 +311,55 @@ its target table exists:
   `automation_ingress_events`.
 - `pruneReviewArtifacts` — delete `review_run_artifacts` older than 30 days.
 - `prunePrSnapshots` — delete `pull_request_snapshots` not updated in 60 days.
+  Machine-local telemetry behind Stats and the per-feature daily budget check,
+  and the largest single source of cr-sqlite metadata in a measured project
+  database.
+- `pruneEventLogs` (async) — delete rows older than 30 days from the four
+  retained append-only event logs (see below).
 - `compactCrsqlTombstones` — rebuild the `operations` CRR table to shed
   cr-sqlite clock/pks shadow rows, then vacuum. **Only runs when the project has
   zero sync peers** (`options.hasSyncPeers`, defaulting conservatively to
   "assume peers"); otherwise it returns a `has_peers` skip and touches nothing,
-  because compacting shared change-tracking state mid-sync is unsafe.
+  because compacting shared change-tracking state mid-sync is unsafe. The guard
+  is also cheap to keep: on a measured 28.7 MB project database, tombstones were
+  under 4% of CRR metadata (~220 KB of 5.7 MB). Do not re-litigate removing a
+  correctness guard for that prize — the metadata that actually grows is the
+  live clock rows behind unbounded logs, which is what the two prunes above
+  target.
+
+#### Why `ai_usage_log` is not local-only
+
+It is the largest single block of CRR metadata in a measured project database
+— 0.93 MB of clock/pks for 0.27 MB of data, about 2.8 MB off the file after a
+vacuum — and it looks like an obvious sibling of `usage_events`, which *is* in
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`. It stays a CRR anyway, deliberately.
+
+`ai.budgets.<feature>.dailyLimit` is enforced by counting rows in this table
+for today. Because the table replicates, that cap is **account-wide across a
+user's machines**. Making it local-only silently turns it into a per-machine
+cap — an N-times looser cost control.
+
+Serving the cap from a slim synced aggregate was scoped and deferred, not
+dismissed. Three things make it larger than it looks:
+
+1. The aggregate must be keyed `(day, feature, site)` and summed at read.
+   A shared `(day, feature)` counter cannot work — cr-sqlite is
+   last-writer-wins per column, so one machine's upsert discards another's
+   count, reintroducing the same under-count by a different route.
+2. It cannot ship in one release. Once raw rows stop replicating, a machine on
+   the new build sees nothing from a peer still on the old one, so it
+   under-counts and overruns the cap during precisely the window a rollout
+   guarantees. Safe sequencing is two releases: ship the aggregate while
+   `ai_usage_log` still replicates, then flip to local-only.
+3. A new CRR table must exist in every peer's schema or `unknown_sync_table`
+   wedges apply — the hazard described under [CRDT model](../sync-and-multi-device/crdt-model.md).
+
+Retention is not a consolation prize here either. `ActivityModule` defaults to
+the **All** range and renders a "lifetime tokens" total computed from these
+rows, so ageing them out would quietly turn a lifetime figure into a
+trailing-window one — the same class of silent loss as the budget. Both wait on
+the aggregate. The phone already never receives the table
+(`MOBILE_CHANGESET_EXCLUDED_TABLES`).
 - `vacuumIfFragmented(threshold)` — when the freelist fraction exceeds the
   threshold, a one-time full `VACUUM` rebuilds the file and activates
   `auto_vacuum = INCREMENTAL`; every later sweep then reclaims the freelist in
@@ -317,6 +369,62 @@ its target table exists:
 
 The database is opened in WAL mode with `synchronous = NORMAL`
 (`journal_mode = WAL` set explicitly at open in `openRawDatabase`).
+
+#### Paced deletes
+
+ADE's SQLite driver (`node:sqlite`'s `DatabaseSync`) is **fully synchronous**: a
+`DELETE` runs to completion on the event loop with nothing else able to proceed,
+so an unbounded delete stalls the UI, IPC, and the sync pump for its whole
+duration. The older prunes are each a single unbounded `DELETE`, which is fine
+at today's row counts and is a latency cliff waiting for the first project with
+a real backlog.
+
+`pruneRowsInBatches` is the shared fix and the shape new prunes should use:
+delete 2,000 rows per batch (`delete … where rowid in (select rowid … limit N)`,
+so each batch's work is proportional to the batch and not to the table), yield
+with `setImmediate` between batches, stop early when a short batch proves the
+predicate is exhausted, and cap at 200 batches so one call can never run
+unbounded. It returns a promise, which is why the two hooks that use it are
+`async` and why `runDbStep` awaits its callback.
+
+Both prunes compare timestamps with `column like '____-__-__%' and column < ?`
+rather than `column < ?` alone. These are `text`-affinity columns: an epoch
+number stored as digits sorts before every ISO cutoff (`'1767225600000' <
+'2026-…'` is true as strings), and CRR repair appends `default ''` to NOT NULL
+text columns, where `''` also sorts before every cutoff. Without the shape guard
+a numeric or defaulted timestamp would be born expired.
+
+#### Event-log retention, and the three tables deliberately exempt
+
+`RETAINED_EVENT_LOG_TABLES` in `kvDb.ts` pairs each retained table with the
+column it actually timestamps on:
+
+| Table | Column | Why this column |
+|---|---|---|
+| `linear_sync_events` | `created_at` | Insert time. |
+| `linear_workflow_run_events` | `created_at` | Insert time. |
+| `worker_agent_cost_events` | `created_at` | **Not `occurred_at`** — that is event time and can be backdated, which would age a row out the moment it is written. |
+| `pack_events` | `created_at` | Insert time. |
+
+Three tables that look like event logs are **deliberately not pruned**. Each
+exemption is a correctness constraint, not an oversight — the reasoning is
+recorded here and in the `RETAINED_EVENT_LOG_TABLES` doc comment so nobody
+"completes" the set later:
+
+- **`linear_ingress_events` is the webhook replay guard, not a log.**
+  `linearIngressService.persistRecord` refuses to dispatch a delivery whose
+  `delivery_id` it has already stored, and the cursor is explicitly reset on
+  `cursorExpired`. Pruning it lets a backlog drain **re-dispatch automations** —
+  re-running agent work and re-posting Linear comments.
+- **`cto_session_logs` is two-way reconciled** against an append-only
+  `.ade/cto/sessions.jsonl` that has no retention of its own, so every prune is
+  undone by the next CTO read. On a CRR table each such cycle writes a tombstone
+  plus a fresh set of clock rows, so pruning would make the metric this work
+  exists to improve permanently *worse*.
+- **`worker_agent_runs` is a lifecycle table.** Keying it on `created_at` would
+  delete a still-pending run and orphan the `worker_agent_cost_events.run_id`
+  and `automation_runs.worker_run_id` references. It needs a terminal-status +
+  `finished_at` policy instead, which is a different change.
 
 ### Maintenance journal, diagnostics, and runtime health
 
@@ -351,6 +459,8 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Automation ingress events | 7 days / 2,000 rows per project | Age-pruned at write time and by the doctor; the newest 2,000 non-`dispatched` rows per project are kept regardless of age (dispatched rows are age-pruned only). Raw webhook payloads are no longer persisted. |
 | Review artifacts | 30 days | `review_run_artifacts` older than the cutoff are deleted (re-derivable from a fresh review). |
 | PR snapshots | 60 days | `pull_request_snapshots` not updated within the window are deleted (re-fetchable from GitHub). |
+| AI usage log | 90 days | `ai_usage_log` rows older than the cutoff are deleted in paced batches. Stats and the daily budget check read a shorter window than this. |
+| Retained event logs | 30 days | `linear_sync_events`, `linear_workflow_run_events`, `worker_agent_cost_events`, and `pack_events`, each on `created_at`, in paced batches. `linear_ingress_events`, `cto_session_logs`, and `worker_agent_runs` are deliberately exempt — see [the exemptions](#event-log-retention-and-the-three-tables-deliberately-exempt). |
 | Storage-doctor journal | 30 runs | `storage-doctor-journal.json` keeps the newest 30 `MaintenanceRunReport`s; older runs drop off on the next append. |
 | launchd logs | 10 MiB threshold × 2 streams | `launchd.err.log` and `launchd.out.log` each keep a 1 MiB `.1` tail, then copytruncate the live file to zero. |
 | Desktop JSONL logs | 10 MiB × 2 generations | Current log plus one `.1` rotation; the older rotation is replaced. |
@@ -382,6 +492,18 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 - The DB retention numbers live once in `state/dbMaintenanceApi.ts`. The ingress
   writer, the kvDb hooks, and the storage ledger all import them; never re-hard-code
   a cutoff in one enforcement site.
+- **The SQLite driver is synchronous.** A single unbounded `DELETE` blocks the
+  whole event loop. New prunes go through `pruneRowsInBatches`; an existing
+  unbounded one is a latency cliff to migrate, not a pattern to copy.
+- **Not every append-only table is prunable.** `linear_ingress_events` (replay
+  guard), `cto_session_logs` (reconciled from a jsonl that has no retention),
+  and `worker_agent_runs` (lifecycle rows with live foreign references) are
+  exempt on purpose. Adding one to `RETAINED_EVENT_LOG_TABLES` re-dispatches
+  automations, churns CRR metadata forever, or orphans references respectively.
+- **A new doctor step must be added to `STORAGE_LEDGER` and to `LEDGER_LABELS`.**
+  The ledger is what the Settings policy chips read; a step whose `ledgerId` has
+  no ledger entry runs but has no declared policy, and one missing from
+  `storageView.ts`'s `LEDGER_LABELS` shows the raw id in Settings.
 - `dbstat` is a compile-time-optional virtual table. The breakdown scan and the
   vacuum path degrade gracefully when the SQLite build lacks it — do not assume
   it is present.
