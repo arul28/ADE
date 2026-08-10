@@ -46,16 +46,6 @@ export type ChatScheduledWorkState = {
   version: 1;
   schedules: ChatScheduledWorkRecord[];
   pausedSessionIds: string[];
-  /**
-   * Sessions whose pause was taken by SETTLE TEARDOWN rather than by the user.
-   *
-   * Persisted beside the pause itself because it is the exact undo record:
-   * settle pauses a session's schedules so a monitor cannot wake a thread the
-   * user has declared done, and unsettle has to put back precisely what settle
-   * took — never a pause the user set deliberately, and never nothing at all,
-   * which would leave the schedules disabled forever.
-   */
-  settlePausedSessionIds?: string[];
 };
 
 export type ChatScheduledWorkUpsert = Omit<
@@ -98,10 +88,6 @@ export type ChatScheduledWorkScheduler = {
   cancel(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
   setSchedulePaused(scheduleId: string, paused: boolean): Promise<ChatScheduledWorkRecord | null>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
-  /** Pause on settle, claiming the pause only if the user had not already taken one. Returns whether it paused. */
-  setSessionPausedForSettle(sessionId: string): Promise<boolean>;
-  /** Undo exactly what `setSessionPausedForSettle` did, and nothing else. Returns whether it resumed. */
-  resumeSessionPausedForSettle(sessionId: string): Promise<boolean>;
   refreshGlobalPause(): Promise<void>;
   list(sessionId?: string): ChatScheduledWorkRecord[];
   isSessionPaused(sessionId: string): boolean;
@@ -202,18 +188,10 @@ function normalizeState(value: unknown): ChatScheduledWorkState {
   const pausedSessionIds = Array.isArray(record?.pausedSessionIds)
     ? record.pausedSessionIds.filter((item): item is string => typeof item === "string" && item.length > 0)
     : [];
-  const settlePausedSessionIds = Array.isArray(record?.settlePausedSessionIds)
-    ? record.settlePausedSessionIds.filter((item): item is string => typeof item === "string" && item.length > 0)
-    : [];
   return {
     version: 1,
     schedules,
     pausedSessionIds: [...new Set(pausedSessionIds)],
-    // Only meaningful for sessions that are actually paused; a stale marker
-    // for an already-resumed session would resume nothing but would linger.
-    settlePausedSessionIds: [...new Set(settlePausedSessionIds)].filter(
-      (sessionId) => pausedSessionIds.includes(sessionId),
-    ),
   };
 }
 
@@ -228,7 +206,6 @@ export function createChatScheduledWorkScheduler(
   const timers = options.timers ?? defaultTimers;
   const schedules = new Map<string, ChatScheduledWorkRecord>();
   const pausedSessionIds = new Set<string>();
-  const settlePausedSessionIds = new Set<string>();
   const timerHandles = new Map<string, unknown>();
   const inFlight = new Set<string>();
   let started = false;
@@ -242,7 +219,6 @@ export function createChatScheduledWorkScheduler(
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
       .map(cloneSchedule),
     pausedSessionIds: [...pausedSessionIds].sort(),
-    settlePausedSessionIds: [...settlePausedSessionIds].sort(),
   });
 
   const persist = async (): Promise<void> => {
@@ -519,7 +495,6 @@ export function createChatScheduledWorkScheduler(
       const state = normalizeState(await options.loadState());
       schedules.clear();
       pausedSessionIds.clear();
-      settlePausedSessionIds.clear();
       let migrated = false;
       for (const schedule of state.schedules) {
         // Pre-1.2.27 builds persisted cron-tool placeholders before Claude
@@ -551,7 +526,6 @@ export function createChatScheduledWorkScheduler(
         schedules.set(schedule.id, schedule);
       }
       for (const sessionId of state.pausedSessionIds) pausedSessionIds.add(sessionId);
-      for (const sessionId of state.settlePausedSessionIds ?? []) settlePausedSessionIds.add(sessionId);
       migrated = pruneTerminalHistory() || migrated;
       started = true;
       for (const schedule of schedules.values()) await reconcileSchedule(schedule);
@@ -652,30 +626,9 @@ export function createChatScheduledWorkScheduler(
       await start();
       if (paused) pausedSessionIds.add(sessionId);
       else pausedSessionIds.delete(sessionId);
-      // An explicit choice by the user replaces settle's claim on this pause,
-      // in either direction: a later unsettle must not undo what they just did.
-      settlePausedSessionIds.delete(sessionId);
       await updatePauseStatuses(sessionId);
     },
 
-    async setSessionPausedForSettle(sessionId): Promise<boolean> {
-      await start();
-      // Already paused by the user — leave it, and take no claim on it, so
-      // unsettle cannot resume schedules they deliberately stopped.
-      if (pausedSessionIds.has(sessionId)) return false;
-      pausedSessionIds.add(sessionId);
-      settlePausedSessionIds.add(sessionId);
-      await updatePauseStatuses(sessionId);
-      return true;
-    },
-
-    async resumeSessionPausedForSettle(sessionId): Promise<boolean> {
-      await start();
-      if (!settlePausedSessionIds.delete(sessionId)) return false;
-      pausedSessionIds.delete(sessionId);
-      await updatePauseStatuses(sessionId);
-      return true;
-    },
 
     async refreshGlobalPause(): Promise<void> {
       await start();

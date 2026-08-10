@@ -927,10 +927,6 @@ describe("prMergeAutoSettlementService", () => {
       order.push("stop");
       return { stopped: 1, skippedActiveTurn: false };
     });
-    const setScheduledWorkPausedForSettle = vi.fn(async () => {
-      order.push("pause");
-      return true;
-    });
     const rows = [{ id: "chat-live", toolType: "claude-chat", archivedAt: null, settledAt: null }];
     const service = createPrMergeAutoSettlementService({
       db: db as any,
@@ -941,8 +937,6 @@ describe("prMergeAutoSettlementService", () => {
       } as any,
       agentChatService: {
         stopBackgroundWork,
-        setScheduledWorkPausedForSettle,
-        listScheduledWork: vi.fn(async () => [{ id: "sched-1", status: "scheduled" }]),
       } as any,
       emitEvent: vi.fn(),
     });
@@ -957,8 +951,7 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     expect(stopBackgroundWork).toHaveBeenCalledWith({ sessionId: "chat-live" });
-    expect(setScheduledWorkPausedForSettle).toHaveBeenCalledWith({ sessionId: "chat-live", paused: true });
-    expect(order).toEqual(["pause", "stop", "settle"]);
+    expect(order).toEqual(["stop", "settle"]);
   });
 
   it("does not re-settle after reactivation, but settles for a later PR", async () => {

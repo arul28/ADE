@@ -208,20 +208,17 @@ and in tests.
   registry. Settle stops the machinery the session owns before it writes the
   lifecycle column — see
   `apps/desktop/src/main/services/sessions/sessionMachineryTeardown.ts`. It
-  pauses the session's scheduled work — pauses rather than cancels, and the
-  pause is durable, so it carries an exact undo: the scheduler records which
-  sessions **settle** paused (`settlePausedSessionIds`), and
-  `sessionService`'s `onSettleCleared` hook runs `resumeSettledSessionMachinery`
-  for every route that clears a settle. The hook sits at the column write rather
-  than in each caller because the most common unsettle is implicit —
-  `clearTurnStartMarkers`, i.e. a user sending the next message — and
-  per-caller wiring silently skipped it. A pause the user took deliberately is
-  never claimed and never resumed, and background work is never restarted: ADE
-  cannot re-spawn a shell it stopped. Settle itself is still explicit per entry
-  point because teardown must finish *before* the write; that includes the CTO
-  operator's `settleSession` tool. It also calls
-  `agentChatService.stopBackgroundWork`, which stops every live child before
-  the parent. **Terminal panes stay open**: an agent's background shell is
+  calls `agentChatService.stopBackgroundWork`, which stops every live child
+  before the parent. Every settle entry point runs it, including the CTO
+  operator's `settleSession` tool, because the teardown has to finish *before*
+  the lifecycle write. **Scheduled work is deliberately left running**: pausing
+  it would be durable, and `settled_at` is cleared from seven places (including
+  the hot `setLastOutputPreview` path), so a pause without a complete undo would
+  silently disable a user's own monitors and crons forever. ADE's scheduled work
+  is already visible and user-manageable (`scheduledWork` / `nextWakeAt` on the
+  summary, a per-session pause toggle), and `canonicalSessionState` already
+  handles a settled chat woken by a schedule — green while the turn streams,
+  then re-settled. **Terminal panes stay open**: an agent's background shell is
   thread background work, but a pane the user opened is theirs, and closing it
   on settle would destroy scrollback nobody asked to lose. An ACTIVE foreground
   turn is also left alone — its subagents are work the user can see happening,

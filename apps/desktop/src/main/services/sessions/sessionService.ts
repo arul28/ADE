@@ -364,36 +364,9 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
   ));
 }
 
-export function createSessionService({ db, onSettleCleared }: {
-  db: AdeDb;
-  /**
-   * Called for every session whose declared settle this service just cleared —
-   * the explicit unsettle paths AND the implicit one where new activity clears
-   * `settled_at` at turn start.
-   *
-   * The hook lives HERE, at the authoritative column write, because settle
-   * teardown pauses the session's scheduled work and that pause is durable: an
-   * unsettle route that skips the resume leaves monitors, crons, and scheduled
-   * turns disabled forever. Wiring the resume into each caller instead left
-   * `clearTurnStartMarkers` — the most common unsettle of all, a user simply
-   * sending the next message — silently bypassing it. One hook at the mutation
-   * means a new caller cannot reintroduce that gap.
-   *
-   * Best-effort and non-blocking by contract: a lifecycle write must never fail
-   * because a resume did.
-   */
-  onSettleCleared?: (sessionId: string) => void;
-}) {
+export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
-  const notifySettleCleared = (sessionId: string): void => {
-    if (!onSettleCleared) return;
-    try {
-      onSettleCleared(sessionId);
-    } catch {
-      // The column write already happened and is what callers depend on.
-    }
-  };
 
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
@@ -1497,7 +1470,6 @@ export function createSessionService({ db, onSettleCleared }: {
           [id],
         );
       });
-      if (changed) notifySettleCleared(sessionId.trim());
       return changed;
     },
 
@@ -1585,7 +1557,6 @@ export function createSessionService({ db, onSettleCleared }: {
       );
       for (const id of ids) {
         emitChanged({ sessionId: id, reason: "meta-updated" });
-        notifySettleCleared(id);
       }
     },
 
@@ -1801,9 +1772,6 @@ export function createSessionService({ db, onSettleCleared }: {
           [id],
         );
       });
-      // The implicit unsettle: a user sending the next message into a settled
-      // chat. It must resume what settle paused exactly like an explicit one.
-      if (changed) notifySettleCleared(sessionId.trim());
       return changed;
     },
 

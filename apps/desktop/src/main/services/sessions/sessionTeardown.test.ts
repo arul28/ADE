@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { deleteTerminalSessionWithRuntimeCleanup } from "./deleteTerminalSession";
-import {
-  resumeSettledSessionMachinery,
-  stopSettledSessionMachinery,
-} from "./sessionMachineryTeardown";
+import { stopSettledSessionMachinery } from "./sessionMachineryTeardown";
 import { settleTerminalSession } from "./settleTerminalSession";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "./sessionService";
@@ -23,22 +20,16 @@ type Row = { id: string; toolType: string };
 
 function deps(rows: Row[], overrides: Record<string, unknown> = {}) {
   const stopBackgroundWork = vi.fn(async () => ({ stopped: 2, skippedActiveTurn: false }));
-  const setScheduledWorkPausedForSettle = vi.fn(async () => true);
-  const listScheduledWork = vi.fn(async () => [{ id: "sched-1", status: "scheduled" }]);
   return {
     sessionService: {
       get: (id: string) => rows.find((row) => row.id === id) ?? null,
     } as never,
     agentChatService: {
       stopBackgroundWork,
-      setScheduledWorkPausedForSettle,
-      listScheduledWork,
       ...overrides,
     } as never,
     logger: { warn: vi.fn() },
     stopBackgroundWork,
-    setScheduledWorkPausedForSettle,
-    listScheduledWork,
   };
 }
 
@@ -50,54 +41,16 @@ describe("stopSettledSessionMachinery", () => {
     const result = await stopSettledSessionMachinery(d, ["chat-1"]);
 
     expect(d.stopBackgroundWork).toHaveBeenCalledWith({ sessionId: "chat-1" });
-    expect(d.setScheduledWorkPausedForSettle).toHaveBeenCalledWith({ sessionId: "chat-1", paused: true });
     expect(result).toMatchObject({
       sessionIds: ["chat-1"],
       stoppedBackgroundWork: 2,
-      pausedScheduledWork: 1,
       skippedActiveTurns: 0,
     });
   });
 
-  it("pauses rather than cancels, so an unsettle can bring the schedules back", async () => {
-    const d = deps([{ id: "chat-1", toolType: "claude-chat" }], {
-      cancelScheduledWork: vi.fn(),
-    });
-    await stopSettledSessionMachinery(d, ["chat-1"]);
-    expect(d.setScheduledWorkPausedForSettle).toHaveBeenCalledTimes(1);
-    expect((d.agentChatService as unknown as { cancelScheduledWork: ReturnType<typeof vi.fn> })
-      .cancelScheduledWork).not.toHaveBeenCalled();
-  });
 
-  it("resumes on unsettle what settle paused — a durable pause needs an exact undo", async () => {
-    // A pause with no undo is just a slower deletion: before this, a settled
-    // then unsettled chat kept its monitors, crons, and scheduled turns
-    // disabled forever, because unsettle only cleared lifecycle columns.
-    const d = deps([{ id: "chat-1", toolType: "claude-chat" }]);
-    await stopSettledSessionMachinery(d, ["chat-1"]);
-    const resumed = await resumeSettledSessionMachinery(d, ["chat-1"]);
 
-    expect(d.setScheduledWorkPausedForSettle).toHaveBeenNthCalledWith(1, { sessionId: "chat-1", paused: true });
-    expect(d.setScheduledWorkPausedForSettle).toHaveBeenNthCalledWith(2, { sessionId: "chat-1", paused: false });
-    expect(resumed).toEqual({ sessionIds: ["chat-1"], resumedScheduledWork: 1 });
-  });
 
-  it("does not resume a pause settle never took", async () => {
-    // The scheduler refuses the claim when the user had already paused, and
-    // reports false — an unsettle must not restart schedules they stopped.
-    const d = deps([{ id: "chat-1", toolType: "claude-chat" }], {
-      setScheduledWorkPausedForSettle: vi.fn(async () => false),
-    });
-    const resumed = await resumeSettledSessionMachinery(d, ["chat-1"]);
-    expect(resumed.resumedScheduledWork).toBe(0);
-  });
-
-  it("leaves terminals alone on the resume path too", async () => {
-    const d = deps([{ id: "term-1", toolType: "shell" }]);
-    const resumed = await resumeSettledSessionMachinery(d, ["term-1"]);
-    expect(resumed.sessionIds).toEqual([]);
-    expect(d.setScheduledWorkPausedForSettle).not.toHaveBeenCalled();
-  });
 
   it("leaves terminal sessions alone — a terminal pane is user-owned", async () => {
     // The whole carve-out of settle teardown: an agent's background shell is
@@ -111,7 +64,6 @@ describe("stopSettledSessionMachinery", () => {
 
     expect(result.sessionIds).toEqual([]);
     expect(d.stopBackgroundWork).not.toHaveBeenCalled();
-    expect(d.setScheduledWorkPausedForSettle).not.toHaveBeenCalled();
   });
 
   it("reports a session skipped because its foreground turn is still streaming", async () => {
