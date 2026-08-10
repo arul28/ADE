@@ -6283,6 +6283,125 @@ describe("initial hydration priority", () => {
     }
   });
 
+  it("folds replay deltas only for peers that declared the capability", async () => {
+    // The unit tests pin the fold itself; this pins the wiring — that the gate
+    // actually gates, and that a client without the capability still receives
+    // every individual delta.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "folded-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const deltas = ["Because the", " comparison", " is visual"].map((text, index) => ({
+      sessionId: "folded-chat",
+      timestamp: `2026-08-09T04:50:5${index}.000Z`,
+      sequence: index + 1,
+      event: { type: "text", text, messageId: "msg_fold", itemId: "msg_fold", turnId: "turn_fold" },
+    })) as unknown as AgentChatEventEnvelope[];
+    fs.writeFileSync(transcriptPath, `${deltas.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-folded-replay",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [],
+        get: (sessionId: string) => sessionId === "folded-chat"
+          ? { id: sessionId, transcriptPath, status: "running" }
+          : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn(() => ({
+          sessionId: "folded-chat",
+          events: deltas,
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        })),
+        getSessionSummary: vi.fn(() => Promise.resolve({ status: "idle" })),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    const clients: WebSocket[] = [];
+    const openClient = async (
+      port: number,
+      deviceId: string,
+      capabilities: string[],
+      requestId: string,
+    ) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      clients.push(ws);
+      const tracked = trackClientEnvelopes(ws);
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      });
+      ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: `${deviceId}-hello`,
+        payload: {
+          peer: {
+            deviceId,
+            deviceName: deviceId,
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: `${deviceId}-site`,
+            dbVersion: 0,
+            capabilities,
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId,
+        projectId: "project-1",
+        payload: { sessionId: "folded-chat" },
+      }));
+      return tracked;
+    };
+
+    try {
+      const port = await host.waitUntilListening();
+      const folding = await openClient(port, "peer-folding", ["foldedReplay"], "folding-subscribe");
+      const legacy = await openClient(port, "peer-legacy", [], "legacy-subscribe");
+
+      const foldedSnapshot = await waitForEnvelope(folding.envelopes, "chat_subscribe", "folding-subscribe");
+      const legacySnapshot = await waitForEnvelope(legacy.envelopes, "chat_subscribe", "legacy-subscribe");
+      const foldedEvents = (foldedSnapshot.payload as { events: AgentChatEventEnvelope[] }).events;
+      const legacyEvents = (legacySnapshot.payload as { events: AgentChatEventEnvelope[] }).events;
+
+      expect(legacyEvents).toHaveLength(3);
+      expect(foldedEvents).toHaveLength(1);
+      expect((foldedEvents[0]!.event as unknown as { text: string }).text)
+        .toBe("Because the comparison is visual");
+      // The folded run carries the LAST delta's sequence, so a consumer cannot
+      // watermark inside it.
+      expect(foldedEvents[0]!.sequence).toBe(3);
+      // And it is exactly what the ungated peer derives by concatenating.
+      expect(legacyEvents.map((e) => (e.event as unknown as { text: string }).text).join(""))
+        .toBe((foldedEvents[0]!.event as unknown as { text: string }).text);
+    } finally {
+      for (const ws of clients) {
+        try { ws.close(); } catch { /* ignore */ }
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("hydrates the selected browser chat without replaying historical CRDT rows", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const transcriptPath = path.join(projectRoot, "transcripts", "selected-chat.chat.jsonl");
