@@ -995,6 +995,23 @@ struct WorkFileChangeCardView: View {
     !card.diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  /// Sighted users see no `+N / -N` badges for a shortened diff because both
+  /// counts are zero. VoiceOver would otherwise read the same zeros as a fact
+  /// about the change ("0 additions, 0 deletions") instead of the absence of a
+  /// measurement, so it gets the reason instead.
+  /// A shortened diff has no trustworthy counts, so neither badge is drawn —
+  /// the delete-kind branch would otherwise still render `-0` and contradict the
+  /// VoiceOver label right beside it.
+  private var showsChangeCounts: Bool {
+    !workDiffWasShortened(card.diff)
+  }
+
+  private var changeCountDescription: String {
+    workDiffWasShortened(card.diff)
+      ? "Change counts unavailable, diff was shortened"
+      : "\(diffStats.additions) additions, \(diffStats.deletions) deletions"
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Button {
@@ -1028,12 +1045,12 @@ struct WorkFileChangeCardView: View {
 
           Spacer(minLength: 6)
 
-          if diffStats.additions > 0 {
+          if showsChangeCounts, diffStats.additions > 0 {
             Text("+\(diffStats.additions)")
               .font(.caption.monospaced())
               .foregroundStyle(ADEColor.success)
           }
-          if diffStats.deletions > 0 || card.kind.lowercased() == "delete" {
+          if showsChangeCounts, diffStats.deletions > 0 || card.kind.lowercased() == "delete" {
             Text("-\(diffStats.deletions)")
               .font(.caption.monospaced())
               .foregroundStyle(ADEColor.danger)
@@ -1057,7 +1074,7 @@ struct WorkFileChangeCardView: View {
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("File change, \(card.path), \(diffStats.additions) additions, \(diffStats.deletions) deletions. \(hasDiff ? "Tap to \(isExpanded ? "collapse" : "expand") diff." : "No diff payload available.")")
+    .accessibilityLabel("File change, \(card.path), \(changeCountDescription). \(hasDiff ? "Tap to \(isExpanded ? "collapse" : "expand") diff." : "No diff payload available.")")
   }
 
   private var fileExtensionBadge: String {

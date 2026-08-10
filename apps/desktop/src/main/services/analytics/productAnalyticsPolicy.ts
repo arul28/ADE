@@ -1,5 +1,9 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import {
+  RENDERER_GONE_ANALYTICS_REASONS,
+  RENDERER_GONE_UNKNOWN_REASON,
+} from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
 import type {
   ProductAnalyticsCapture,
@@ -20,7 +24,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_install_aborted", "ade_update_quit_escalated", "ade_update_install_did_not_land",
   "ade_update_auto_applied",
   "ade_update_auto_apply_cancelled",
-  "ade_brain_recovered", "ade_publish_failing", "ade_relay_suppressed",
+  "ade_brain_recovered", "ade_renderer_recovered", "ade_publish_failing", "ade_relay_suppressed",
   "ade_account_session_unreadable",
   "ade_tool_fetched",
 ]);
@@ -44,6 +48,9 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_auto_apply_cancelled: 10,
   ade_update_prompted: 10,
   ade_brain_recovered: 10,
+  // Bounded by the recovery budget itself (3 per rolling 60s); a boot-crash
+  // loop stops trying rather than emitting forever.
+  ade_renderer_recovered: 10,
   ade_publish_failing: 10,
   ade_relay_suppressed: 10,
   ade_account_session_unreadable: 10,
@@ -70,6 +77,11 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_auto_apply_cancelled: 3,
   ade_update_prompted: 3,
   ade_brain_recovered: 3,
+  // One more than the recovery budget's 3 attempts per rolling 60s. At exactly
+  // 3 the successful reloads consumed the whole minute and the one occurrence
+  // that reports the window STAYED down — the event that matters most — was
+  // always dropped as rate-limited.
+  ade_renderer_recovered: 4,
   ade_publish_failing: 3,
   ade_relay_suppressed: 3,
   ade_account_session_unreadable: 3,
@@ -81,7 +93,7 @@ const STRING_PROPERTIES = new Set([
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
-  "tool_error_kind",
+  "tool_error_kind", "crash_reason",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -93,7 +105,7 @@ const NUMBER_PROPERTIES = new Set([
   "time_since_install_seconds",
 ]);
 const BOOLEAN_PROPERTIES = new Set([
-  "recoverable", "paired", "cached_data", "is_packaged", "native_staging_completed",
+  "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
 ]);
 
 // Actions emitted only by daemon services (not user-mutation ledger rows) that
@@ -141,6 +153,10 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_update_auto_apply_cancelled: new Set(),
   ade_update_prompted: new Set(["from_version", "to_version", "user_action"]),
   ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
+  // `reason` is Electron's own closed enum (crashed/oom/killed/launch-failed/…);
+  // `recovered` says whether the retry budget still allowed a reload. No URL, no
+  // window title, no exit detail.
+  ade_renderer_recovered: new Set(["crash_reason", "recovered"]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
   ade_account_session_unreadable: new Set(["code"]),
@@ -192,6 +208,13 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   release_channel: new Set(["stable", "beta", "development", "unknown"]),
   summary_kind: new Set(["overall", "client", "provider", "model"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
+  // Derived from the normalizer's own enum so the two cannot drift. Deliberately
+  // not folded into `reason`: that key is pinned to the auto-update abort set,
+  // and widening it would weaken that event's guarantee.
+  crash_reason: new Set<string>([
+    ...RENDERER_GONE_ANALYTICS_REASONS,
+    RENDERER_GONE_UNKNOWN_REASON,
+  ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
   install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
   trigger: new Set(["work_session_completed"]),

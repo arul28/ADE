@@ -18001,35 +18001,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("session lifecycle", () => {
-    it("blocks system settlement during an active tracked CLI turn but preserves self-settlement semantics", async () => {
-      const getRuntimeState = vi.fn(() => "running" as const);
-      const { service, sessionService } = createService({
-        ptyService: {
-          create: vi.fn(),
-          sendToSession: vi.fn(),
-          enrichSessions: vi.fn((sessions: unknown[]) => sessions),
-          canAcceptScheduledTurn: vi.fn(() => true),
-          getRuntimeState,
-        },
-      });
-      sessionService.create({
-        sessionId: "active-cli",
-        laneId: "lane-1",
-        toolType: "codex",
-        tracked: true,
-      });
-
-      await expect(service.getSettlementBlockers("active-cli")).resolves.toEqual([]);
-      await expect(service.getSettlementBlockers(
-        "active-cli",
-        { includeCurrentTurn: true },
-      )).resolves.toContainEqual({
-        code: "active_workload",
-        message: "Wait for the active primary turn to finish before settling.",
-      });
-      expect(getRuntimeState).toHaveBeenCalledWith("active-cli", "running");
-    });
-
     it("creates multiple sessions and lists them independently", async () => {
       const { service } = createService();
 
@@ -34205,7 +34176,7 @@ describe("createAgentChatService", () => {
     );
     expect(storedToolResult?.event.type).toBe("tool_result");
     if (storedToolResult?.event.type !== "tool_result") throw new Error("Expected stored tool result");
-    expect(JSON.stringify(storedToolResult.event.result)).toContain("Inline image data omitted");
+    expect(JSON.stringify(storedToolResult.event.result)).toContain("Inline image was left out");
 
     releaseStream();
     await sendPromise;

@@ -1862,6 +1862,22 @@ func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayloa
   return try JSONDecoder().decode(SyncChangesetBatchPayload.self, from: data)
 }
 
+/// Chat-event decode, shaped for `Task.detached` like the changeset-batch
+/// decode above: a free function owning its own decoder, so nothing crosses an
+/// actor boundary. A single tool result can carry a large payload, and this
+/// used to run on the main actor for every event.
+func syncDecodeChatEventEnvelope(_ payload: Any) -> AgentChatEventEnvelope? {
+  guard let data = try? adeJSONData(withJSONObject: payload) else { return nil }
+  return try? JSONDecoder().decode(AgentChatEventEnvelope.self, from: data)
+}
+
+/// Subscribe-snapshot decode, off-main for the same reason: the payload is a
+/// transcript tail of up to 256 KiB and it arrives as a thread is opening.
+func syncDecodeChatSubscribeSnapshot(_ payload: Any) -> SyncChatSubscribeSnapshotPayload? {
+  guard let data = try? adeJSONData(withJSONObject: payload) else { return nil }
+  return try? JSONDecoder().decode(SyncChatSubscribeSnapshotPayload.self, from: data)
+}
+
 private let syncAddressProbeQueue = DispatchQueue(label: "ade.sync.address-probe", qos: .userInitiated)
 
 /// Raw TCP reachability probe used to race address candidates before the
@@ -3765,6 +3781,12 @@ final class SyncService: ObservableObject {
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  /// Uptime when the app last went to the background, used to classify the
+  /// resume. Deliberately monotonic (`systemUptime`), not wall clock: a device
+  /// whose clock moves backward during a long suspension would otherwise report
+  /// a short or negative gap and go on to trust a socket iOS had already
+  /// suspended — the exact failure this classifier exists to prevent.
+  private var backgroundedAtUptime: TimeInterval?
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
   private var envelopeChunkExpiryTask: Task<Void, Never>?
   private var transportProbeTask: Task<Void, Never>?
@@ -7344,7 +7366,13 @@ final class SyncService: ObservableObject {
     return hasPairedHost
   }
 
-  func reconnectIfPossible(userInitiated: Bool = false) async {
+  /// - Parameter replaceSuspendedSession: the caller has decided the current
+  ///   socket cannot be trusted (a foreground resume after a background long
+  ///   enough for iOS to have suspended it silently). Gets the manual button's
+  ///   connection strength — stale attempt cancelled, ladder reset, full
+  ///   candidate sweep — without its user-intent side effects, so a deliberate
+  ///   "pause auto-reconnect" is still honored.
+  func reconnectIfPossible(userInitiated: Bool = false, replaceSuspendedSession: Bool = false) async {
     do {
       try ensureDatabaseReady()
     } catch {
@@ -7353,8 +7381,11 @@ final class SyncService: ObservableObject {
       connectionState = .error
       return
     }
+    let forcesFreshSession = userInitiated || replaceSuspendedSession
     if userInitiated {
       setAutoReconnectPausedByUser(false)
+    }
+    if forcesFreshSession {
       autoReconnectAwaitingLiveDiscovery = false
       reconnectTask?.cancel()
       networkPathReconnectTask?.cancel()
@@ -7362,7 +7393,9 @@ final class SyncService: ObservableObject {
       roamTask = nil
       reconnectState.reset()
       if reconnectConnectInFlight {
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect user override cancels in-flight attempt")
+        syncConnectLog.info(
+          "ADE_SYNC_TRACE reconnect override cancels in-flight attempt userInitiated=\(userInitiated)"
+        )
         beginConnectAttempt()
         teardownSocket(reason: "Reconnect restarted.")
         clearReconnectConnectInFlight()
@@ -7372,7 +7405,11 @@ final class SyncService: ObservableObject {
     // callbacks) must never reach openSocket while a healthy connection is
     // up — openSocket starts with teardownSocket, so a stray retry would
     // kill a live session. Only an explicit user reconnect may rebuild one.
-    guard userInitiated || !canSendLiveRequests() else {
+    // `replaceSuspendedSession` intentionally passes this: a socket that still
+    // reports connected after a long background is exactly the case we are here
+    // to rebuild. Every other background retry must still bounce off a healthy
+    // connection, because openSocket starts with a teardown.
+    guard forcesFreshSession || !canSendLiveRequests() else {
       syncConnectLog.info("reconnect skipped: already connected")
       return
     }
@@ -7391,7 +7428,7 @@ final class SyncService: ObservableObject {
     syncConnectLog.info(
       "ADE_SYNC_TRACE reconnect start userInitiated=\(userInitiated) state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) automatic=[\(syncLogAddressList(automaticAddresses), privacy: .public)]"
     )
-    if !userInitiated && automaticAddresses.isEmpty {
+    if !forcesFreshSession && automaticAddresses.isEmpty {
       if !autoReconnectAwaitingLiveDiscovery {
         syncConnectLog.info("reconnect skipped: waiting for a saved or live route")
         autoReconnectAwaitingLiveDiscovery = true
@@ -7400,7 +7437,7 @@ final class SyncService: ObservableObject {
       return
     }
     autoReconnectAwaitingLiveDiscovery = false
-    guard !reconnectConnectInFlight else {
+    guard forcesFreshSession || !reconnectConnectInFlight else {
       syncConnectLog.info("reconnect skipped: connect already in flight")
       return
     }
@@ -7415,7 +7452,10 @@ final class SyncService: ObservableObject {
         profile,
         token: token,
         connectAttemptGeneration: connectAttemptGeneration,
-        preferLiveCandidatesOnly: !userInitiated,
+        // A resume sweep is at least as strong as the manual button: the
+        // route that worked before a suspension is often the one that died
+        // with it, so live-only candidates are the wrong set to prefer.
+        preferLiveCandidatesOnly: !forcesFreshSession,
         publishConnecting: true
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
@@ -7740,8 +7780,30 @@ final class SyncService: ObservableObject {
     Task { _ = try? await AccountService.shared.freshRelaySession() }
   }
 
+  /// Stamps the suspension the next resume is measured against.
+  ///
+  /// `ADEApp` throttles the foreground hook to once a second, so a resume can be
+  /// skipped and leave this stamp set — the next one then measures from the
+  /// older background and over-estimates the gap. That is deliberate: an
+  /// over-estimate resolves to `.replaceSession`, which costs a reconnect,
+  /// while clearing the stamp on a skipped resume would resolve a genuinely
+  /// long background to `.refreshOnly` and trust a socket iOS may already have
+  /// suspended. The cheap error is the safe one.
+  func handleBackgroundTransition() {
+    backgroundedAtUptime = ProcessInfo.processInfo.systemUptime
+  }
+
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
+    let resumeAction = syncForegroundResumeAction(
+      backgroundGapSeconds: backgroundedAtUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+    )
+    backgroundedAtUptime = nil
+    // Coming to the foreground is new information: the user is here, and the
+    // network may be a different one entirely. Reset the attempt ladder even
+    // from the terminal unreachable state, which otherwise costs the user a
+    // manual tap to escape and meanwhile retries only on a 30-40s heartbeat.
+    reconnectState.reset()
     // Push registration + Live Activity token re-reporting are independent of
     // the connection branch below, so kick them off up front. They no-op when
     // no machine is paired.
@@ -7755,8 +7817,33 @@ final class SyncService: ObservableObject {
       scheduleRelayReauthorization(lease: relayAuthorizationLease, refreshImmediately: true)
     }
     warmRelayCredentialIfDialImminent()
+
+    if resumeAction == .replaceSession {
+      // Mobile operating systems commonly suspend a socket without delivering
+      // a close event, so after a long background `canSendLiveRequests()` only
+      // proves the socket object still exists. Trusting it meant firing five
+      // refreshes into a dead pipe and showing "Connected" for up to the ~35-42s
+      // it took the heartbeat to notice. Replace the session instead of probing
+      // it: the probe's best case is a round trip we are going to spend anyway.
+      //
+      // This deliberately runs even when an attempt claims to be in flight —
+      // after a suspension that attempt is almost certainly a zombie from
+      // before it, and honoring it is what made foreground a no-op.
+      await reconnectIfPossible(replaceSuspendedSession: true)
+      return
+    }
+
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
+      // Short background: the socket is probably real, so take the fast path
+      // but stop treating it as proven. The probe runs alongside the refreshes
+      // and tears the session down if nothing answers.
+      if resumeAction == .probeSession {
+        verifyTransportAliveAfterSilence(
+          syncTransportSilenceRecoveryError(),
+          trigger: "foreground_resume"
+        )
+      }
       lastError = nil
       // Five independent host round trips. Run serially they made a warm
       // foreground feel slower than a cold start, because the user waited out
@@ -16147,6 +16234,16 @@ final class SyncService: ObservableObject {
     capturedOutboundEnvelopesForTesting = []
   }
 
+  func exhaustReconnectAttemptsForTesting() {
+    while !reconnectState.isExhausted {
+      _ = reconnectState.nextDelayNanoseconds()
+    }
+  }
+
+  func reconnectAttemptsAreExhaustedForTesting() -> Bool {
+    reconnectState.isExhausted
+  }
+
   func capturedOutboundEnvelopeCountForTesting(type: String) -> Int {
     capturedOutboundEnvelopesForTesting.filter { $0.type == type }.count
   }
@@ -16955,9 +17052,21 @@ final class SyncService: ObservableObject {
       resolve(requestId: requestId, result: .success(payload))
     case "chat_subscribe":
       if supportsChatStreaming,
-         let dict = payload as? [String: Any],
-         let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
-         subscribedChatSessionIds.contains(snapshot.sessionId) {
+         let dict = payload as? [String: Any] {
+        // Gate on the raw dictionary first, then decode off the main actor:
+        // a subscribe snapshot carries up to 256 KiB of transcript and this
+        // lands while the user is watching the thread open.
+        guard let snapshotSessionId = dict["sessionId"] as? String,
+              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+        let snapshotDecodeTask = Task.detached(priority: .userInitiated) {
+          syncDecodeChatSubscribeSnapshot(dict)
+        }
+        guard let snapshot = await snapshotDecodeTask.value else { break }
+        // Re-check the subscription too: the decode is a suspension point, and
+        // a project switch during it would otherwise land this snapshot in a
+        // session the user has already left.
+        guard isCurrentConnectionGeneration(generation),
+              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
         recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshot.sessionId)
         clearChatSnapshotWatchdogState(sessionId: snapshot.sessionId)
         let resumed = (dict["resumed"] as? Bool) == true
@@ -17001,23 +17110,47 @@ final class SyncService: ObservableObject {
       }
     case "chat_event":
       if supportsChatStreaming,
-         let dict = payload as? [String: Any],
-         let envelope = try? decode(dict, as: AgentChatEventEnvelope.self),
-         subscribedChatSessionIds.contains(envelope.sessionId) {
+         let dict = payload as? [String: Any] {
+        // Both gates read the raw dictionary so they run BEFORE the decode.
+        // They used to run after it, which meant every duplicate replayed after
+        // a reconnect was fully decoded on the main actor and then thrown away.
+        //
         // Gate chat events on the current subscription set so events from a
         // previous project (still streaming on the host) do not leak into the
         // newly-active project's view after a quick switch.
-        if let seq = (dict["seq"] as? NSNumber)?.intValue {
-          // Resumable stream: drop duplicates/old replays and advance the
-          // per-session watermark used as sinceSeq on re-subscribe. Events
-          // without seq (older hosts) keep today's behavior unchanged.
-          if let lastSeq = chatEventLastSeqBySession[envelope.sessionId], seq <= lastSeq {
-            syncChatLog.debug(
-              "chat_event_dropped_old session=\(envelope.sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public) type=\(envelope.event.typeName, privacy: .public)"
-            )
-            break
-          }
-          chatEventLastSeqBySession[envelope.sessionId] = seq
+        guard let sessionId = dict["sessionId"] as? String,
+              subscribedChatSessionIds.contains(sessionId) else { break }
+        // Resumable stream: drop duplicates/old replays and advance the
+        // per-session watermark used as sinceSeq on re-subscribe. Events
+        // without seq (older hosts) keep today's behavior unchanged.
+        let seq = (dict["seq"] as? NSNumber)?.intValue
+        if let seq, let lastSeq = chatEventLastSeqBySession[sessionId], seq <= lastSeq {
+          syncChatLog.debug(
+            "chat_event_dropped_old session=\(sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public)"
+          )
+          break
+        }
+
+        // Decode off the main actor, mirroring changeset_batch. Ordering is
+        // preserved for the same reason it is there: receiveLoop awaits each
+        // frame's handleIncoming before reading the next, so two chat events
+        // can never be in flight at once.
+        let decodeTask = Task.detached(priority: .userInitiated) {
+          syncDecodeChatEventEnvelope(dict)
+        }
+        guard let envelope = await decodeTask.value else { break }
+        // The decode is a suspension point: a teardown + reconnect can complete
+        // while it runs, and a stale frame must not mutate the new connection.
+        // Same re-check as the snapshot path: the subscription can be dropped
+        // while the decode runs off-actor.
+        guard isCurrentConnectionGeneration(generation),
+              subscribedChatSessionIds.contains(sessionId) else { break }
+
+        // Advanced only after a successful decode. Moving it before would
+        // burn the watermark on an event that never got applied, losing it
+        // permanently on re-subscribe.
+        if let seq {
+          chatEventLastSeqBySession[sessionId] = seq
         }
         recordChatEventEnvelope(envelope)
         // A `session_meta_updated` event carries a client-side mode change
@@ -17099,11 +17232,7 @@ final class SyncService: ObservableObject {
           isConstrained: path?.isConstrained == true
         ) {
           self.verifyTransportAliveAfterSilence(
-            NSError(
-              domain: "ADE",
-              code: 24,
-              userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
-            ),
+            syncTransportSilenceRecoveryError(),
             trigger: "heartbeat_silence"
           )
           continue

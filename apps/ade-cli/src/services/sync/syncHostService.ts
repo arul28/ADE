@@ -20,6 +20,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { compactChatEventForWire } from "../../../../desktop/src/shared/chatEventCompaction";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
@@ -284,6 +285,26 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   "budget_usage_records",
   "automation_runs",
   "automation_action_results",
+  // 11.2 MB of a 28.1 MB synced project database (39.7%) — 258 rows averaging
+  // 43 KB, one `files_json` at 1.65 MB — for data the phone was already fetching a second
+  // time on its own. iOS reads this table in exactly one SELECT, the per-PR
+  // detail query behind `fetchPullRequestSnapshot(prId:)`, and it reaches that
+  // data through `prs.refresh` → `replacePullRequestHydration` on demand.
+  // `prs.refresh` and `prs.getMobileSnapshot` are both in the REQUIRED remote
+  // command set, so no paired build — however old — loses PR detail by not
+  // receiving these rows.
+  //
+  // Lists and badges are unaffected: the slim `pull_requests` rows still sync,
+  // and while four iOS projections name this table as an invalidation trigger,
+  // no projection query actually reads a column from it.
+  //
+  // Devices paired before this keep the rows they already have (nothing deletes
+  // them), so previously-opened PRs still render offline; they simply stop
+  // receiving updates through the changeset pump and refresh on open instead.
+  // This also ends a scroll-driven write path: the desktop Lanes page's
+  // visible-lane refresh upserts here, so scrolling was pushing changesets to
+  // every phone.
+  "pull_request_snapshots",
 ]);
 
 // Tables the host alone is authoritative for. `sync_cluster_state` is the
@@ -1675,7 +1696,6 @@ export const TERMINAL_INPUT_RETRY_WINDOW_MS = 60_000;
 export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
 export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
 export const CONNECTION_ATTEMPT_RESERVATION_TTL_MS = 30_000;
-const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
 // buffered event's key cannot be evicted while the event itself is still in
 // the ring buffer (which could double-assign a seq to the same event).
@@ -1815,155 +1835,17 @@ function normalizeTerminalInputId(value: unknown): string | null {
   return inputId;
 }
 
-function inlineImageDataUrlBytes(value: string | null | undefined): number | null {
-  if (!value || !/^data:image\//i.test(value.trim())) return null;
-  return Buffer.byteLength(value, "utf8");
-}
-
-function redactInlineImageDataUrlsForSync(
-  value: unknown,
-): { value: unknown; omittedBytes: number; changed: boolean } {
-  const seen = new WeakSet<object>();
-  const visit = (
-    candidate: unknown,
-    depth: number,
-  ): { value: unknown; omittedBytes: number; changed: boolean } => {
-    if (typeof candidate === "string") {
-      const bytes = inlineImageDataUrlBytes(candidate);
-      if (bytes == null || bytes <= SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-        return { value: candidate, omittedBytes: 0, changed: false };
-      }
-      return {
-        value: `[ADE] Inline image data omitted from mobile chat sync (${bytes} bytes).`,
-        omittedBytes: bytes,
-        changed: true,
-      };
-    }
-    if (!candidate || typeof candidate !== "object") {
-      return { value: candidate, omittedBytes: 0, changed: false };
-    }
-    if (depth >= 32) {
-      return {
-        value: "[ADE] Deep structured payload omitted from mobile chat sync.",
-        omittedBytes: 0,
-        changed: true,
-      };
-    }
-    if (seen.has(candidate)) {
-      return { value: "[Circular]", omittedBytes: 0, changed: true };
-    }
-
-    seen.add(candidate);
-    if (Array.isArray(candidate)) {
-      let omittedBytes = 0;
-      let changed = false;
-      const next = candidate.map((entry) => {
-        const result = visit(entry, depth + 1);
-        omittedBytes += result.omittedBytes;
-        changed ||= result.changed;
-        return result.value;
-      });
-      seen.delete(candidate);
-      return { value: changed ? next : candidate, omittedBytes, changed };
-    }
-
-    let omittedBytes = 0;
-    let changed = false;
-    const next: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(candidate)) {
-      const result = visit(entry, depth + 1);
-      next[key] = result.value;
-      omittedBytes += result.omittedBytes;
-      changed ||= result.changed;
-    }
-    seen.delete(candidate);
-    return { value: changed ? next : candidate, omittedBytes, changed };
-  };
-
-  return visit(value, 0);
-}
-
-function serializedSyncPayloadBytes(value: unknown): number {
-  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
-  try {
-    const serialized = JSON.stringify(value);
-    return Buffer.byteLength(serialized ?? String(value), "utf8");
-  } catch {
-    return Buffer.byteLength(String(value), "utf8");
-  }
-}
-
 /**
- * Bound inline image payloads at the mobile-sync boundary. The agent chat
- * service intentionally keeps the original envelope for desktop live
- * previews; only WebSocket snapshots/events and their replay ring use this
- * compact copy.
+ * Envelope adapter for the wire. The policy lives in
+ * `shared/chatEventCompaction` — see its header for why the wire and the stored
+ * transcript have to share one. Every outbound path (live push, replay ring,
+ * snapshot backfill) funnels through here.
  */
 export function compactChatEventEnvelopeForSync(
   envelope: AgentChatEventEnvelope,
 ): AgentChatEventEnvelope {
-  const event = envelope.event;
-  if (event.type === "tool_result") {
-    const redacted = redactInlineImageDataUrlsForSync(event.result);
-    if (!redacted.changed) return envelope;
-    const originalBytes = Math.max(
-      event.resultOriginalBytes ?? 0,
-      serializedSyncPayloadBytes(event.result),
-      redacted.omittedBytes,
-    );
-    return {
-      ...envelope,
-      event: {
-        ...event,
-        result: redacted.value,
-        resultOriginalBytes: originalBytes,
-        resultOmittedBytes: (event.resultOmittedBytes ?? 0) + redacted.omittedBytes,
-      },
-    };
-  }
-
-  if (event.type === "codex_image_generation") {
-    const resultBytes = inlineImageDataUrlBytes(event.result);
-    const savedPathIsInline = inlineImageDataUrlBytes(event.savedPath) != null;
-    if (resultBytes != null && resultBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-      return {
-        ...envelope,
-        event: {
-          ...event,
-          result: null,
-          ...(savedPathIsInline ? { savedPath: null } : {}),
-          resultOriginalBytes: resultBytes,
-          resultOmittedBytes: resultBytes,
-        },
-      };
-    }
-    if (savedPathIsInline) {
-      return { ...envelope, event: { ...event, savedPath: null } };
-    }
-    return envelope;
-  }
-
-  if (event.type === "codex_image_view") {
-    const urlBytes = inlineImageDataUrlBytes(event.url);
-    const pathIsInline = inlineImageDataUrlBytes(event.path) != null;
-    if (urlBytes != null && urlBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-      return {
-        ...envelope,
-        event: {
-          ...event,
-          url: null,
-          ...(pathIsInline ? { path: null } : {}),
-          urlOriginalBytes: urlBytes,
-          urlOmittedBytes: urlBytes,
-        },
-      };
-    }
-    if (pathIsInline) {
-      return { ...envelope, event: { ...event, path: null } };
-    }
-  }
-
-  return envelope;
+  const event = compactChatEventForWire(envelope.event);
+  return event === envelope.event ? envelope : { ...envelope, event };
 }
 
 export type ChatEventReplayBufferEntry = {
@@ -5497,9 +5379,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  /**
+   * Compaction serializes the payload and binary-searches it, so doing it per
+   * peer meant one live event paid that cost once for every subscriber. The
+   * result depends only on the envelope, so it is memoized against the envelope
+   * identity and computed once per event no matter how many peers receive it.
+   */
+  const compactedSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
+  function compactChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
+    const cached = compactedSyncEnvelopes.get(event);
+    if (cached) return cached;
+    const compacted = compactChatEventEnvelopeForSync(event);
+    compactedSyncEnvelopes.set(event, compacted);
+    return compacted;
+  }
+
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
-    const syncEvent = compactChatEventEnvelopeForSync(event);
+    const syncEvent = compactChatEventEnvelopeOnce(event);
     const sent = send(peer.ws, "chat_event", { ...syncEvent, seq } satisfies SyncChatEventPayload);
     if (sent) markChatEventSent(peer, event);
     return sent ? "sent" : "failed";

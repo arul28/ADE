@@ -1096,6 +1096,21 @@ nothing when no delta is available.
   stay live at once. The gridLayoutId is namespaced
   (`work:grid:tiling:v1:<projectRoot>[::<laneId>]`) so a persisted
   layout travels with the project/lane pair.
+- Because every tile stays mounted, grid-set membership is a direct
+  multiplier on renderer heap, and it is capped at
+  `MAX_WORK_GRID_TILES` = 6 (`renderer/lib/workGrid.ts`). An uncapped set
+  can OOM the ~4 GB renderer. The cap is enforced in three places that
+  must agree: `addSessionBesideTarget` refuses a new member once the
+  target set is full; `WorkGridView` withholds
+  `acceptExternalDropMime` at that point so a full grid stops
+  advertising the drop target and no drop indicator appears (measured
+  against persisted `gridSet.sessionIds`, the same thing
+  `addSessionBesideTarget` counts — measuring the resolved tiles instead
+  would advertise a drop that then silently no-ops); and
+  `normalizeWorkGridSets` in `appStore.ts` trims a set persisted by an
+  older uncapped build on load. Trimmed members are left **unclaimed**
+  (not marked seen) so they remain openable as ordinary single sessions
+  rather than disappearing.
 
 ## Cross-links
 

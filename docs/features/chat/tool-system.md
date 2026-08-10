@@ -45,6 +45,13 @@ fields for thin clients: Bash exposes `timedOutAfterMs` and
 `backgroundCwdHint`, while Grep exposes `grepTotals.files` and
 `grepTotals.lines`.
 
+Because everything ADE actually uses is projected into typed fields on the same
+event at construction time, `structured` past that point is debug material.
+It is bounded on disk at 8 KB by `shared/chatEventCompaction.ts` (uncapped, it
+reached 56.6% of a real 8 MB transcript — ten times the size of `result`, the
+field that *was* capped) and dropped from the sync wire entirely. Clients that
+need a value from it must read it from a typed field instead.
+
 Completed Agent/Task results use the SDK's enriched
 `AgentToolCompletedOutput` when present. Their `subagent_result` rows can carry
 `worktreePath`, `worktreeBranch`, `totalTokens`, and `toolUseCount`; clients do
@@ -125,7 +132,7 @@ in `workflowTools.ts`.
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
 | `captureScreenshot()` | Screenshots the current environment and files the result through the proof broker. macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
 | `reportCompletion({ status, summary, artifacts, blockerDescription? })` | Persists an `AgentChatCompletionReport` on the session. Renders a closeout card in the transcript. |
-| `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. |
+| `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. Each returned thread carries a `diffHunk` — the code the thread is anchored to, taken from the first comment that has one. Review feedback ("this leaks a handle") is not actionable from a path and a line number alone; without the hunk the resolver has to go re-find the code, or guess. GitHub's `diff_hunk` is normally a few hundred bytes, so the `REVIEW_THREAD_DIFF_HUNK_MAX_CHARS` = 2,000 cap only bites on pathological hunks. Trimming is from the **front** (on a line boundary where one exists, with the `...` marker counted inside the budget rather than added to it), because a diff hunk ends at the commented line — the tail is the part the comment is about. |
 | `prRerunFailedChecks({ prNumber })` | Re-triggers failed GitHub Actions check runs. |
 | `prReplyToReviewThread({ threadId, body })` | Posts a reply on a GitHub review thread. |
 | `prResolveReviewThread({ threadId })` | Marks a review thread as resolved. |

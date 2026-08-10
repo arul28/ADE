@@ -1115,6 +1115,46 @@ describe("summarizeDiffStats", () => {
 
     expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
   });
+
+  it("does not treat a normal diff containing shortening notices as compacted", () => {
+    // Editing the compactor (or this matcher) produces a real diff whose own
+    // added lines quote both notice strings. An unanchored search called that
+    // change compacted and reported it as zero additions and deletions.
+    const diff = [
+      "@@ -1,4 +1,6 @@",
+      '+    `[ADE] Large ${label} was shortened to keep this chat fast.`,',
+      '+    `[ADE] ${omittedBytes} bytes were left out.`,',
+      "-  const old = true;",
+    ].join("\n");
+
+    expect(summarizeDiffStats(diff)).toEqual({ additions: 2, deletions: 1 });
+  });
+
+  /**
+   * The notice became user-facing when phones started receiving the same
+   * compacted events, so its wording changed. The case above pins the old text
+   * that is already written into transcripts on disk; this one pins the new.
+   */
+  it("recognizes a compacted diff preview written with the current wording", () => {
+    const diff = [
+      "[ADE] Large file diff was shortened to keep this chat fast.",
+      "Original size: 120000 bytes.",
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "+ first preview line",
+      "- first removed line",
+      "----- END FIRST PREVIEW -----",
+      "",
+      "[ADE] 87000 bytes were left out.",
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "+ last preview line",
+      "- last removed line",
+      "----- END LAST PREVIEW -----",
+    ].join("\n");
+
+    expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
+  });
 });
 
 describe("readRecord", () => {

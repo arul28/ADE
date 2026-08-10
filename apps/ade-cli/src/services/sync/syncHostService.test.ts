@@ -6633,6 +6633,9 @@ describe("outbound changeset ack retries", () => {
         "operations",
         "attempt_transcripts",
         "sync_cluster_state",
+        // 39% of the synced project database, for rows the phone re-fetches on
+        // demand through the required `prs.refresh` action anyway.
+        "pull_request_snapshots",
       ]));
 
       peer.ws.send(encodeSyncEnvelope({
@@ -6662,6 +6665,59 @@ describe("outbound changeset ack retries", () => {
         toDbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2,
       });
       expect((incrementalEnvelope.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  /**
+   * `pull_request_snapshots` was 39% of a real 28 MB synced project database
+   * (258 rows averaging 42 KB, one `files_json` at 1.58 MB) for data the phone
+   * already pulls on demand. The list rows it renders live must keep flowing.
+   */
+  it("keeps slim PR rows flowing to a phone while withholding the heavy snapshot blobs", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const prRow = (dbVersion: number, table: string, seq: number): CrsqlChangeRow => ({
+      table,
+      pk: `pr-${seq}`,
+      cid: "payload",
+      val: `payload-${seq}`,
+      col_version: dbVersion,
+      db_version: dbVersion,
+      site_id: "site-host",
+      cl: 1,
+      seq,
+    });
+    const state = {
+      dbVersion: 1,
+      changes: [prRow(1, "pull_requests", 0)],
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // connectPeer defaults to an iOS phone, which is what scopes the filter.
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-pr-filter", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+
+      state.dbVersion = 2;
+      state.changes.push(prRow(2, "pull_request_snapshots", 1));
+      state.changes.push(prRow(2, "pull_requests", 2));
+
+      const batch = await waitForValue(
+        () => peer?.envelopes
+          .filter((envelope) => envelope.type === "changeset_batch")
+          .map((envelope) => envelope.payload as SyncChangesetBatchPayload)
+          .find((payload) => payload.toDbVersion === 2),
+        "post-snapshot changeset batch",
+      );
+
+      const tables = batch.changes.map((change) => change.table);
+      expect(tables).toContain("pull_requests");
+      expect(tables).not.toContain("pull_request_snapshots");
     } finally {
       peer?.ws.close();
       await host.dispose();
@@ -10782,19 +10838,23 @@ describe("chat event replay buffer (resumable chat streams)", () => {
     };
 
     const compacted = compactChatEventEnvelopeForSync(desktopEnvelope);
+    // The wire now runs the same compaction the stored transcript does, so the
+    // redaction notice and the byte accounting are the storage policy's: the
+    // original size is measured over the pretty-printed serialization the
+    // compactor works on, not a compact `JSON.stringify`.
     expect(compacted.event).toMatchObject({
       type: "tool_result",
       result: {
         output: {
           images: [
-            `[ADE] Inline image data omitted from mobile chat sync (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
+            `[ADE] Inline image was left out (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
             smallImage,
           ],
           message: "generated two previews",
         },
         count: 2,
       },
-      resultOriginalBytes: Buffer.byteLength(JSON.stringify(result), "utf8"),
+      resultOriginalBytes: Buffer.byteLength(JSON.stringify(result, null, 2), "utf8"),
       resultOmittedBytes: Buffer.byteLength(largeImage, "utf8"),
     });
     expect(desktopEnvelope.event).toMatchObject({ result });

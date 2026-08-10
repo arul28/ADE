@@ -266,6 +266,13 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import {
+  RENDERER_RECOVERY_DELAY_MS,
+  RENDERER_RECOVERY_WINDOW_MS,
+  coarseRenderProcessGoneReason,
+  createRendererCrashRecoveryBudget,
+  isRecoverableRenderProcessGone,
+} from "./rendererCrashRecovery";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
@@ -644,6 +651,11 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
 
 async function createWindow(args: {
   logger?: Logger;
+  /**
+   * Reports a lost renderer as a product fact. Optional so window creation
+   * stays usable before the analytics service exists.
+   */
+  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
   onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
 } = {}): Promise<BrowserWindow> {
@@ -782,6 +794,8 @@ async function createWindow(args: {
     });
   });
 
+  const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
+
   win.webContents.on("render-process-gone", (_event, details) => {
     args.logger?.error("window.render_process_gone", {
       windowId: win.id,
@@ -789,6 +803,60 @@ async function createWindow(args: {
       exitCode: details.exitCode,
       url: win.webContents.getURL(),
     });
+
+    // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
+    // correction mid-crash-storm would either free the budget early or freeze it.
+    const decision = rendererRecoveryBudget.requestAttempt(details.reason, performance.now());
+    // A lost renderer is a product-level failure category, reported once per
+    // occurrence with Electron's own closed reason enum. `recovered` describes
+    // the OUTCOME, not the intent: a reload that was attempted and then failed
+    // is a window that stayed down, and reporting it as recovered would make the
+    // metric describe our try rather than the user's result. The budget bounds
+    // the volume — a boot-crash loop stops trying, so it cannot emit forever.
+    const crashReason = coarseRenderProcessGoneReason(details.reason);
+    const reportRecovery = (recovered: boolean): void => {
+      if (!isRecoverableRenderProcessGone(details.reason)) return;
+      args.onRendererRecovery?.({ crash_reason: crashReason, recovered });
+    };
+    if (!decision.recover) {
+      if (decision.cause === "budget-exhausted") {
+        args.logger?.error("window.render_process_recovery_abandoned", {
+          windowId: win.id,
+          reason: details.reason,
+          attempts: decision.attempts,
+          windowMs: RENDERER_RECOVERY_WINDOW_MS,
+        });
+        reportRecovery(false);
+      }
+      return;
+    }
+    const attempt = decision.attempt;
+
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      const recoveryUrl = getRendererUrl();
+      args.logger?.warn("window.render_process_recovering", {
+        windowId: win.id,
+        reason: details.reason,
+        attempt,
+        url: recoveryUrl,
+      });
+      // Load the canonical renderer URL rather than reloading whatever was last
+      // committed: a crash on the load-failure fallback page would otherwise
+      // just reload the error page.
+      win.loadURL(recoveryUrl).then(
+        () => reportRecovery(true),
+        (error) => {
+          args.logger?.error("window.render_process_recovery_failed", {
+            windowId: win.id,
+            reason: details.reason,
+            attempt,
+            err: toErrorMessage(error),
+          });
+          reportRecovery(false);
+        },
+      );
+    }, RENDERER_RECOVERY_DELAY_MS);
   });
 
   win.webContents.on("preload-error", (_event, preloadPath, error) => {
@@ -1534,6 +1602,17 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  /**
+   * One reporter for every window: a third `createWindow` site that forgets to
+   * wire this would silently stop reporting lost renderers.
+   */
+  const reportRendererRecovery = (outcome: { crash_reason: string; recovered: boolean }): void => {
+    productAnalyticsService.captureInternal({
+      event: "ade_renderer_recovered",
+      surface: "desktop",
+      properties: outcome,
+    });
+  };
   productAnalyticsService.captureInternal({
     event: "ade_app_installed",
     surface: "desktop",
@@ -6562,6 +6641,7 @@ app.whenReady().then(async () => {
         : readLastRemoteProjectBinding();
     const win = await createWindow({
       logger: getActiveContext().logger,
+      onRendererRecovery: reportRendererRecovery,
       onCreated: (createdWindow) =>
         registerWindowSession(createdWindow, null, restoredRemoteBinding),
       onCloseRequested: handleMainWindowCloseRequested,
@@ -7395,6 +7475,7 @@ app.whenReady().then(async () => {
   const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
+    onRendererRecovery: reportRendererRecovery,
     onCreated: (createdWindow) =>
       registerWindowSession(
         createdWindow,

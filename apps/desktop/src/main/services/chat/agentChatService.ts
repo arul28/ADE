@@ -133,8 +133,11 @@ import {
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
+import {
+  compactChatEventForStorage,
+  compactRunningCommandOutput,
+} from "../../../shared/chatEventCompaction";
 import type { createSessionService } from "../sessions/sessionService";
-import type { SessionSettlementBlocker } from "../../../shared/types/sessions";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
 import {
@@ -7222,279 +7225,6 @@ export function createAgentChatService(args: {
     options?: { keepOversizeNewest?: boolean },
   ): AgentChatEventEnvelope[] =>
     keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
-
-  const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
-  const STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES = 16 * 1024;
-  const STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES = 64 * 1024;
-  const STORED_TOOL_RESULT_MAX_BYTES = 16 * 1024;
-  const STORED_TOOL_RESULT_FAILED_MAX_BYTES = 64 * 1024;
-  const STORED_FILE_DIFF_MAX_BYTES = 32 * 1024;
-  const STORED_REASONING_MAX_BYTES = 8 * 1024;
-  const STORED_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
-
-  const utf8Bytes = (value: string): number => Buffer.byteLength(value, "utf8");
-
-  const inlineImageDataUrlBytes = (value: string | null | undefined): number | null => {
-    if (!value || !/^data:image\//i.test(value.trim())) return null;
-    return utf8Bytes(value);
-  };
-
-  const redactStoredInlineImageDataUrls = (
-    value: unknown,
-  ): { value: unknown; omittedBytes: number; changed: boolean } => {
-    const seen = new WeakSet<object>();
-    const visit = (candidate: unknown, depth: number): { value: unknown; omittedBytes: number; changed: boolean } => {
-      if (typeof candidate === "string") {
-        const bytes = inlineImageDataUrlBytes(candidate);
-        if (bytes == null || bytes <= STORED_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-          return { value: candidate, omittedBytes: 0, changed: false };
-        }
-        return {
-          value: `[ADE] Inline image data omitted from stored chat history (${bytes} bytes).`,
-          omittedBytes: bytes,
-          changed: true,
-        };
-      }
-      if (!candidate || typeof candidate !== "object") {
-        return { value: candidate, omittedBytes: 0, changed: false };
-      }
-      if (depth >= 32) {
-        return {
-          value: "[ADE] Deep structured payload omitted from stored chat history.",
-          omittedBytes: 0,
-          changed: true,
-        };
-      }
-      if (seen.has(candidate)) {
-        return { value: "[Circular]", omittedBytes: 0, changed: true };
-      }
-      seen.add(candidate);
-      if (Array.isArray(candidate)) {
-        let omittedBytes = 0;
-        let changed = false;
-        const next = candidate.map((entry) => {
-          const result = visit(entry, depth + 1);
-          omittedBytes += result.omittedBytes;
-          changed ||= result.changed;
-          return result.value;
-        });
-        seen.delete(candidate);
-        return { value: changed ? next : candidate, omittedBytes, changed };
-      }
-      let omittedBytes = 0;
-      let changed = false;
-      const next: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(candidate)) {
-        const result = visit(entry, depth + 1);
-        next[key] = result.value;
-        omittedBytes += result.omittedBytes;
-        changed ||= result.changed;
-      }
-      seen.delete(candidate);
-      return { value: changed ? next : candidate, omittedBytes, changed };
-    };
-    return visit(value, 0);
-  };
-
-  const sliceUtf8FromStart = (value: string, maxBytes: number): string => {
-    if (maxBytes <= 0) return "";
-    if (utf8Bytes(value) <= maxBytes) return value;
-    let low = 0;
-    let high = value.length;
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      if (utf8Bytes(value.slice(0, mid)) <= maxBytes) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return value.slice(0, low);
-  };
-
-  const sliceUtf8FromEnd = (value: string, maxBytes: number): string => {
-    if (maxBytes <= 0) return "";
-    if (utf8Bytes(value) <= maxBytes) return value;
-    let low = 0;
-    let high = value.length;
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      if (utf8Bytes(value.slice(value.length - mid)) <= maxBytes) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return value.slice(value.length - low);
-  };
-
-  const compactStoredTextPayload = (
-    label: string,
-    text: string,
-    maxBytes: number,
-  ): { text: string; originalBytes: number; omittedBytes: number } | null => {
-    const originalBytes = utf8Bytes(text);
-    if (originalBytes <= maxBytes) return null;
-
-    const prefix = [
-      `[ADE] Large ${label} was shortened for stored chat history.`,
-      `Original size: ${originalBytes} bytes. Full content was not stored.`,
-      "",
-      "----- BEGIN FIRST PREVIEW -----",
-      "",
-    ].join("\n");
-    const suffix = [
-      "",
-      "----- END LAST PREVIEW -----",
-    ].join("\n");
-    const overheadBytes = utf8Bytes(prefix) + utf8Bytes(suffix) + 512;
-    const previewBudgetBytes = Math.max(512, maxBytes - overheadBytes);
-    const halfBudgetBytes = Math.max(256, Math.floor(previewBudgetBytes / 2));
-    const head = sliceUtf8FromStart(text, halfBudgetBytes);
-    const tail = sliceUtf8FromEnd(text, Math.max(256, previewBudgetBytes - utf8Bytes(head)));
-    const omittedBytes = Math.max(0, originalBytes - utf8Bytes(head) - utf8Bytes(tail));
-    const omitted = [
-      "",
-      "----- END FIRST PREVIEW -----",
-      "",
-      `[ADE] ${omittedBytes} bytes omitted from stored chat history.`,
-      "",
-      "----- BEGIN LAST PREVIEW -----",
-      "",
-    ].join("\n");
-    return {
-      text: `${prefix}${head}${omitted}${tail}${suffix}`,
-      originalBytes,
-      omittedBytes,
-    };
-  };
-
-  const stringifyPayloadForCompaction = (value: unknown): { text: string; structured: boolean } => {
-    if (typeof value === "string") return { text: value, structured: false };
-    try {
-      const json = JSON.stringify(value, null, 2);
-      if (typeof json === "string") return { text: json, structured: true };
-      return { text: String(value), structured: false };
-    } catch {
-      return { text: String(value), structured: false };
-    }
-  };
-
-  const compactStoredUnknownPayload = (
-    label: string,
-    value: unknown,
-    maxBytes: number,
-  ): { value: unknown; originalBytes: number; omittedBytes: number } | null => {
-    const serialized = stringifyPayloadForCompaction(value);
-    const compacted = compactStoredTextPayload(label, serialized.text, maxBytes);
-    if (!compacted) return null;
-    if (!serialized.structured) {
-      return { value: compacted.text, originalBytes: compacted.originalBytes, omittedBytes: compacted.omittedBytes };
-    }
-    return {
-      value: {
-        summary: `[ADE] Large ${label} was shortened for stored chat history.`,
-        originalBytes: compacted.originalBytes,
-        omittedBytes: compacted.omittedBytes,
-        preview: compacted.text,
-      },
-      originalBytes: compacted.originalBytes,
-      omittedBytes: compacted.omittedBytes,
-    };
-  };
-
-  const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEvent => {
-    if (event.type === "command") {
-      const maxBytes = event.status === "failed"
-        ? STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES
-        : event.status === "running"
-          ? STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES
-          : STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES;
-      const compacted = compactStoredTextPayload("command output", event.output, maxBytes);
-      return compacted
-        ? {
-            ...event,
-            output: compacted.text,
-            outputOriginalBytes: compacted.originalBytes,
-            outputOmittedBytes: compacted.omittedBytes,
-          }
-        : event;
-    }
-
-    if (event.type === "tool_result") {
-      const maxBytes = event.status === "failed" || event.status === "interrupted"
-        ? STORED_TOOL_RESULT_FAILED_MAX_BYTES
-        : STORED_TOOL_RESULT_MAX_BYTES;
-      const redacted = redactStoredInlineImageDataUrls(event.result);
-      const compacted = compactStoredUnknownPayload("tool result", redacted.value, maxBytes);
-      if (!redacted.changed && !compacted) return event;
-      const originalBytes = redacted.changed
-        ? utf8Bytes(stringifyPayloadForCompaction(event.result).text)
-        : compacted?.originalBytes ?? 0;
-      return {
-        ...event,
-        result: compacted?.value ?? redacted.value,
-        resultOriginalBytes: originalBytes,
-        resultOmittedBytes: redacted.omittedBytes + (compacted?.omittedBytes ?? 0),
-      };
-    }
-
-    if (event.type === "file_change") {
-      const compacted = compactStoredTextPayload("file diff", event.diff, STORED_FILE_DIFF_MAX_BYTES);
-      return compacted
-        ? {
-            ...event,
-            diff: compacted.text,
-            diffOriginalBytes: compacted.originalBytes,
-            diffOmittedBytes: compacted.omittedBytes,
-          }
-        : event;
-    }
-
-    if (event.type === "reasoning") {
-      const compacted = compactStoredTextPayload("reasoning", event.text, STORED_REASONING_MAX_BYTES);
-      return compacted
-        ? {
-            ...event,
-            text: compacted.text,
-            textOriginalBytes: compacted.originalBytes,
-            textOmittedBytes: compacted.omittedBytes,
-          }
-        : event;
-    }
-
-    if (event.type === "codex_image_generation") {
-      const resultBytes = inlineImageDataUrlBytes(event.result);
-      const savedPathIsInline = inlineImageDataUrlBytes(event.savedPath) != null;
-      if (resultBytes != null && resultBytes > STORED_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-        return {
-          ...event,
-          result: null,
-          ...(savedPathIsInline ? { savedPath: null } : {}),
-          resultOriginalBytes: resultBytes,
-          resultOmittedBytes: resultBytes,
-        };
-      }
-      return savedPathIsInline ? { ...event, savedPath: null } : event;
-    }
-
-    if (event.type === "codex_image_view") {
-      const urlBytes = inlineImageDataUrlBytes(event.url);
-      const pathIsInline = inlineImageDataUrlBytes(event.path) != null;
-      if (urlBytes != null && urlBytes > STORED_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
-        return {
-          ...event,
-          url: null,
-          ...(pathIsInline ? { path: null } : {}),
-          urlOriginalBytes: urlBytes,
-          urlOmittedBytes: urlBytes,
-        };
-      }
-      return pathIsInline ? { ...event, path: null } : event;
-    }
-
-    return event;
-  };
 
   // The single policy for what bounds the in-memory event ring: an event-count
   // cap, then a byte budget. Applied wherever the ring is (re)written.
@@ -24937,7 +24667,7 @@ export function createAgentChatService(args: {
       const turnId = turnIdFromParams ?? state.itemTurnIdByItemId.get(itemId) ?? state.activeTurnId;
       if (state.commandOutputStorageClosedItemIds.has(itemId)) return true;
       const next = `${state.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
-      const compacted = compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+      const compacted = compactRunningCommandOutput(next);
       state.commandOutputByItemId.set(itemId, compacted?.text ?? next);
       evictOldestEntries(state.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
       if (compacted) state.commandOutputStorageClosedItemIds.add(itemId);
@@ -26944,7 +26674,7 @@ export function createAgentChatService(args: {
       const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
       const compacted = storageClosed
         ? null
-        : compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+        : compactRunningCommandOutput(next);
       if (!storageClosed) {
         runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
         evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
@@ -39474,129 +39204,6 @@ export function createAgentChatService(args: {
     return false;
   };
 
-  const getSettlementBlockers = async (
-    sessionId: string,
-    options: { includeCurrentTurn?: boolean } = {},
-  ): Promise<SessionSettlementBlocker[]> => {
-    const normalizedSessionId = sessionId.trim();
-    const row = sessionService.get(normalizedSessionId);
-    if (!row) return [];
-
-    const chatBacked = isChatToolType(row.toolType);
-    const summary = chatBacked ? await getSessionSummary(normalizedSessionId) : null;
-    const managed = managedSessions.get(normalizedSessionId) ?? null;
-    const blockers: SessionSettlementBlocker[] = [];
-    const add = (code: SessionSettlementBlocker["code"], message: string): void => {
-      if (!blockers.some((blocker) => blocker.code === code)) {
-        blockers.push({ code, message });
-      }
-    };
-
-    if (row.attentionRequestedAt || summary?.awaitingInput || summary?.pendingInputItemId) {
-      add("pending_input", "Resolve the pending input or approval before settling.");
-    }
-    if (row.lastTurnFailedAt) {
-      add("turn_failed", "The latest turn failed; complete or explicitly recover the work before settling.");
-    }
-
-    const scheduledWork = summary?.scheduledWork
-      ?? await listScheduledWork({ sessionId: normalizedSessionId }).catch(() => []);
-    if (scheduledWork.some((item) => item.status !== "completed" && item.status !== "cancelled")) {
-      add("scheduled_work", "Cancel or complete the session's scheduled work before settling.");
-    }
-
-    const runtime = managed?.runtime ?? null;
-    if (options.includeCurrentTurn) {
-      const chatTurnActive = managed?.session.status === "active" || summary?.status === "active";
-      const cliTurnActive = isTrackedAgentCliToolType(row.toolType)
-        && ptyService?.getRuntimeState(normalizedSessionId, row.status) === "running";
-      if (chatTurnActive || cliTurnActive) {
-        add("active_workload", "Wait for the active primary turn to finish before settling.");
-      }
-    }
-    const hasWorkBeyondCurrentTurn = (() => {
-      if (!runtime) return false;
-      switch (runtime.kind) {
-        case "codex":
-          return runtime.manualCompactionPending
-            || runtime.approvals.size > 0
-            || runtime.activeSubagents.size > 0
-            || runtime.pendingPlanFollowups.length > 0;
-        case "claude":
-          return runtime.pendingSteers.length > 0
-            || runtime.approvals.size > 0
-            || runtime.activeSubagents.size > 0
-            || runtime.liveBackgroundTaskIds.size > 0;
-        case "opencode":
-          return runtime.pendingApprovals.size > 0 || runtime.pendingSteers.length > 0;
-        case "cursor":
-          return runtime.activeCloudRunId != null
-            || runtime.pendingSteers.length > 0
-            || runtime.permissionWaiters.size > 0;
-        case "droid":
-          return runtime.pendingSteers.length > 0 || runtime.permissionWaiters.size > 0;
-        default:
-          return false;
-      }
-    })();
-
-    let activeSubagents: AgentChatSubagentSnapshot[] = [];
-    if (chatBacked) {
-      try {
-        activeSubagents = await getTrackedSubagents(normalizedSessionId);
-      } catch {
-        // The resident runtime checks above remain authoritative when a
-        // provider cannot reconstruct historical subagent snapshots.
-      }
-    }
-    if (hasWorkBeyondCurrentTurn || activeSubagents.some((snapshot) => snapshot.status === "running")) {
-      add("active_workload", "Wait for active subagents or background work to finish before settling.");
-    }
-
-    if (summary?.codexGoal && summary.codexGoal.status !== "complete") {
-      add("unfinished_goal", "Mark the active Codex goal complete or clear it before settling.");
-    }
-    if (summary?.claudeGoal) {
-      add("unfinished_goal", "Complete or clear the active Claude goal before settling.");
-    }
-
-    if (chatBacked) try {
-      let latestTodos = managed?.todoItems ?? null;
-      if (!managed) {
-        const transcriptPath = resolveBestTranscriptPathForSessionId(normalizedSessionId);
-        if (transcriptPath) {
-          for (const envelope of parseAgentChatTranscript(
-            readHistoryFileSync(transcriptPath).toString("utf8"),
-          )) {
-            if (
-              envelope.sessionId === normalizedSessionId
-              && envelope.event.type === "todo_update"
-            ) {
-              latestTodos = envelope.event.items;
-            }
-          }
-        }
-      }
-      if (latestTodos?.some((item) => item.status !== "completed")) {
-        add("unfinished_plan", "Complete every remaining plan or task item before settling.");
-      }
-    } catch {
-      // Transcript hydration is best-effort; never invent a blocker without
-      // structured evidence.
-    }
-
-    if (summary?.completion && summary.completion.status !== "completed") {
-      add(
-        "incomplete_report",
-        summary.completion.status === "blocked"
-          ? "The completion report is blocked; resolve the blocker before settling."
-          : "The completion report is partial; finish the remaining work before settling.",
-      );
-    }
-
-    return blockers;
-  };
-
   // Broader than hasActiveWorkloads: a session that's between turns still
   // owns a live agent runtime (Claude SDK client, Codex app-server, etc.) the
   // user expects to keep using after switching away and back. Project context
@@ -44468,7 +44075,6 @@ export function createAgentChatService(args: {
     getSessionSummary,
     ensureSessionSurface,
     hasActiveWorkloads,
-    getSettlementBlockers,
     hasRetainableSessions,
     countActiveForLane,
     disposeForLane,

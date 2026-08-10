@@ -16,6 +16,7 @@ import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/pro
 import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
+import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
   EMPTY_WORK_SESSION_FILTERS,
   normalizeWorkSessionFilters,
@@ -378,11 +379,17 @@ function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
     const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
     const layoutId = typeof candidate.layoutId === "string" ? candidate.layoutId.trim() : "";
     if (!id || !layoutId || seenSetIds.has(id)) continue;
-    const sessionIds = normalizeStringArray(candidate.sessionIds).filter((sid) => {
-      if (seenSessionIds.has(sid)) return false;
+    // Membership is capped: each tile renders a full live session surface, so a
+    // set persisted by an older uncapped build is trimmed here rather than
+    // rebuilding that heap on load. Members past the cap are left unclaimed
+    // (not marked seen) so they stay available as normal single sessions.
+    const sessionIds: string[] = [];
+    for (const sid of normalizeStringArray(candidate.sessionIds)) {
+      if (sessionIds.length >= MAX_WORK_GRID_TILES) break;
+      if (seenSessionIds.has(sid)) continue;
       seenSessionIds.add(sid);
-      return true;
-    });
+      sessionIds.push(sid);
+    }
     // A "grid" needs at least 2 members; a 0/1-member set collapses to single view.
     if (sessionIds.length < 2) continue;
     seenSetIds.add(id);

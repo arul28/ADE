@@ -810,6 +810,17 @@ describe("prPollingService", () => {
   });
 });
 
+/**
+ * Settlement resolves declared sessions by id and swept sessions through the
+ * paged listing. Harnesses declare one list; this derives the lookup from it.
+ */
+function withSessionLookup<T extends { list: () => Array<{ id: string }> }>(service: T) {
+  return {
+    ...service,
+    get: (sessionId: string) => service.list().find((session) => session.id === sessionId) ?? null,
+  };
+}
+
 describe("prMergeAutoSettlementService", () => {
   function createMemoryDb() {
     const values = new Map<string, unknown>();
@@ -829,21 +840,24 @@ describe("prMergeAutoSettlementService", () => {
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [
           {
+            laneId: "lane-1",
             id: "chat-ready",
             toolType: "codex-chat",
             archivedAt: null,
             settledAt: settledSessionIds.has("chat-ready") ? "2026-03-24T12:01:05.000Z" : null,
           },
           {
+            laneId: "lane-1",
             id: "cli-blocked",
             toolType: "codex",
             archivedAt: null,
             settledAt: settledSessionIds.has("cli-blocked") ? "2026-03-24T12:01:05.000Z" : null,
           },
           {
+            laneId: "lane-1",
             id: "raw-shell",
             toolType: "shell",
             archivedAt: null,
@@ -851,7 +865,7 @@ describe("prMergeAutoSettlementService", () => {
           },
         ]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent,
     });
     const openPr = createSummary({ state: "open" });
@@ -906,15 +920,16 @@ describe("prMergeAutoSettlementService", () => {
     });
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [{
+          laneId: "lane-1",
           id: "chat-waiting",
           toolType: "claude-chat",
           archivedAt: null,
           settledAt: settled ? "2026-03-24T12:01:05.000Z" : null,
         }]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent: vi.fn(),
     });
     const openPr = createSummary({
@@ -987,7 +1002,7 @@ describe("prMergeAutoSettlementService", () => {
     const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [{
           id: "chat-ready",
           toolType: "claude-chat",
@@ -995,7 +1010,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent: vi.fn(),
     });
     const oldMerge = createSummary({
@@ -1061,13 +1076,13 @@ describe("prMergeAutoSettlementService", () => {
     const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [
-          { id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
-          { id: "chat-other", toolType: "codex-chat", archivedAt: null, settledAt: null },
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+          { laneId: "lane-1", id: "chat-other", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent: vi.fn(),
     });
     const openPr = createSummary({ state: "open" });
@@ -1102,7 +1117,7 @@ describe("prMergeAutoSettlementService", () => {
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [{
           id: "chat-ready",
           toolType: "claude-chat",
@@ -1110,7 +1125,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent,
     });
 
@@ -1165,7 +1180,7 @@ describe("prMergeAutoSettlementService", () => {
     const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: {
+      sessionService: withSessionLookup({
         list: vi.fn(() => [{
           id: "chat-ready",
           toolType: "codex-chat",
@@ -1173,7 +1188,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         settleSessionsWithOutcome,
-      } as any,
+      }) as any,
       emitEvent: vi.fn(),
     });
     const openPr = createSummary({ state: "open" });
@@ -1202,6 +1217,169 @@ describe("prMergeAutoSettlementService", () => {
       enabledSince: null,
       handledPrIds: [],
     });
+  });
+
+  /**
+   * A merged PR with no declared chat links used to sweep the whole lane, and
+   * that sweep deliberately bypasses settlement blockers — so one merge could
+   * file chats that belonged to a different, still-open PR.
+   */
+  function createLaneSweepService(overrides: {
+    sessions: Array<{ id: string; toolType: string; laneId?: string }>;
+    /** Sessions the lane listing does not return (e.g. past its page size). */
+    omitFromListing?: string[];
+  }) {
+    const db = createMemoryDb();
+    const settledSessionIds = new Set<string>();
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+      ids.forEach((id) => settledSessionIds.add(id));
+      return ids;
+    });
+    const rowFor = (session: { id: string; toolType: string; laneId?: string }) => ({
+      laneId: "lane-1",
+      ...session,
+      archivedAt: null,
+      settledAt: settledSessionIds.has(session.id) ? "2026-03-24T12:01:05.000Z" : null,
+    });
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        get: vi.fn((sessionId: string) => {
+          const match = overrides.sessions.find((session) => session.id === sessionId);
+          return match ? rowFor(match) : null;
+        }),
+        // Deliberately excludes declared sessions: a lane page can miss them,
+        // and the linked path must not depend on this listing.
+        list: vi.fn(() => overrides.sessions
+          .filter((session) => !(overrides.omitFromListing ?? []).includes(session.id))
+          .map(rowFor)),
+        settleSessionsWithOutcome,
+      } as any,
+      emitEvent: vi.fn(),
+    });
+    return { service, settleSessionsWithOutcome };
+  }
+
+  it("does not settle sessions another open PR in the lane claims", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [
+        { laneId: "lane-1", id: "chat-merged-work", toolType: "codex-chat" },
+        { laneId: "lane-1", id: "chat-other-pr", toolType: "codex-chat" },
+      ],
+    });
+    // The merged PR declares nothing (created via `gh pr create`); the sibling
+    // PR is still open and explicitly owns `chat-other-pr`.
+    const unlinkedPr = createSummary({ id: "pr-unlinked", state: "open" });
+    const siblingPr = createSummary({
+      id: "pr-sibling",
+      githubPrNumber: 102,
+      state: "merged",
+      mergedAt: "2026-03-24T11:00:00.000Z",
+      chatSessionIds: ["chat-other-pr"],
+    });
+
+    await service.processSnapshot({
+      prs: [unlinkedPr, siblingPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...unlinkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        siblingPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-merged-work"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+    expect(settleSessionsWithOutcome).not.toHaveBeenCalledWith(
+      ["chat-other-pr"],
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("settles nothing on an unlinked merge while another PR in the lane is still live", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [{ laneId: "lane-1", id: "chat-ambiguous", toolType: "codex-chat" }],
+    });
+    const unlinkedPr = createSummary({ id: "pr-unlinked", state: "open" });
+    const stillOpenPr = createSummary({ id: "pr-open", githubPrNumber: 102, state: "open" });
+
+    await service.processSnapshot({
+      prs: [unlinkedPr, stillOpenPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...unlinkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        stillOpenPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    // Ownership is genuinely ambiguous: the open PR's own merge files the lane.
+    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+  });
+
+  it("settles declared sessions beyond the lane listing limit", async () => {
+    // The lane listing is paged. A session the PR explicitly named must not be
+    // dropped just because a long-lived lane pushed it past that page.
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [{ laneId: "lane-1", id: "chat-past-page", toolType: "codex-chat" }],
+      omitFromListing: ["chat-past-page"],
+    });
+    const linkedPr = createSummary({ state: "open", chatSessionIds: ["chat-past-page"] });
+
+    await service.processSnapshot({ prs: [linkedPr], polledAt: "2026-03-24T12:00:00.000Z" });
+    await service.processSnapshot({
+      prs: [{ ...linkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" }],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-past-page"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
+  });
+
+  it("still settles exactly the declared sessions when a PR links its chats", async () => {
+    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+      sessions: [
+        { laneId: "lane-1", id: "chat-linked", toolType: "codex-chat" },
+        { laneId: "lane-1", id: "chat-unrelated", toolType: "codex-chat" },
+      ],
+    });
+    const linkedPr = createSummary({ state: "open", chatSessionIds: ["chat-linked"] });
+    const stillOpenPr = createSummary({ id: "pr-open", githubPrNumber: 102, state: "open" });
+
+    await service.processSnapshot({
+      prs: [linkedPr, stillOpenPr],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [
+        { ...linkedPr, state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" },
+        stillOpenPr,
+      ],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    // A declaration is explicit, so a live sibling PR does not suppress it.
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
+    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+      ["chat-linked"],
+      "PR #101 merged",
+      "2026-03-24T12:01:05.000Z",
+      "pr_merge",
+    );
   });
 });
 

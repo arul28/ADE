@@ -603,30 +603,8 @@ export type SessionDeltaSummary = {
   computedAt: string | null;
 };
 
-export type SessionSettlementBlockerCode =
-  | "pending_input"
-  | "turn_failed"
-  | "scheduled_work"
-  | "active_workload"
-  | "unfinished_goal"
-  | "unfinished_plan"
-  | "incomplete_report";
-
-export type SessionSettlementBlocker = {
-  code: SessionSettlementBlockerCode;
-  message: string;
-};
-
-export type AgentSessionSettlementResult =
-  | {
-      ok: true;
-      sessionId: string;
-    }
-  | {
-      ok: false;
-      sessionId: string;
-      blockers: SessionSettlementBlocker[];
-    };
+// Settlement-blocker types were removed along with `session.settleSelfSession`;
+// the rationale lives with the action itself, in services/adeActions/registry.ts.
 
 export type SessionLifecycleSettings = {
   autoSettleLaneSessionsOnPrMerge: boolean;

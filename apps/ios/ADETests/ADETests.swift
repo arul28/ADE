@@ -17712,7 +17712,7 @@ final class ADETests: XCTestCase {
     ]
 
     XCTAssertFalse(workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallback,
+      fallbackTranscript: { fallback },
       sessionStatus: "idle",
       liveTranscript: live
     ))
@@ -22118,6 +22118,78 @@ final class ADETests: XCTestCase {
     XCTAssertNil(workToolResultPreview(""))
     XCTAssertEqual(workToolResultPreview("   \n\nHello\nWorld"), "Hello")
     XCTAssertEqual(workToolResultPreview("  padded line  "), "padded line")
+  }
+
+  func testAggregateDiffStatsCountsRealDiffLines() {
+    let diff = [
+      "--- a/file.swift",
+      "+++ b/file.swift",
+      "@@ -1,3 +1,3 @@",
+      " context",
+      "+added",
+      "-removed",
+    ].joined(separator: "\n")
+
+    let stats = aggregateDiffStats(diff)
+    XCTAssertEqual(stats.additions, 1)
+    XCTAssertEqual(stats.deletions, 1)
+  }
+
+  /// The host now applies the same compaction to the live push that it applies
+  /// to storage, so phones receive shortened `file_change` diffs mid-stream and
+  /// not only after hydration. The wrapper's `----- BEGIN FIRST PREVIEW -----`
+  /// separators start with `-` and were counted as deletions, and the previews
+  /// hold only the head and tail of the change — so any count is wrong twice
+  /// over while rendering as an exact `+N / -N`. Matches the desktop's
+  /// `summarizeDiffStats`, which reports nothing for the same input.
+  func testAggregateDiffStatsReportsNothingForACompactedDiff() {
+    let currentWording = [
+      "[ADE] Large file diff was shortened to keep this chat fast.",
+      "Original size: 120000 bytes.",
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "+ first preview line",
+      "- first removed line",
+      "----- END FIRST PREVIEW -----",
+      "",
+      "[ADE] 87000 bytes were left out.",
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "+ last preview line",
+      "- last removed line",
+      "----- END LAST PREVIEW -----",
+    ].joined(separator: "\n")
+
+    XCTAssertTrue(workDiffWasShortened(currentWording))
+    let currentStats = aggregateDiffStats(currentWording)
+    XCTAssertEqual(currentStats.additions, 0)
+    XCTAssertEqual(currentStats.deletions, 0)
+
+    // Transcripts written before the notice became user-facing carry the old
+    // wording and must still be recognized when they hydrate onto a phone.
+    let legacyWording = [
+      "[ADE] Large file diff was shortened for stored chat history.",
+      "Original size: 120000 bytes. Full content was not stored.",
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "+ first preview line",
+      "----- END FIRST PREVIEW -----",
+      "",
+      "[ADE] 87000 bytes omitted from stored chat history.",
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "- last removed line",
+      "----- END LAST PREVIEW -----",
+    ].joined(separator: "\n")
+
+    XCTAssertTrue(workDiffWasShortened(legacyWording))
+    let legacyStats = aggregateDiffStats(legacyWording)
+    XCTAssertEqual(legacyStats.additions, 0)
+    XCTAssertEqual(legacyStats.deletions, 0)
+
+    // A diff that merely mentions the phrase without the byte-accounting line
+    // is not a wrapper, and must keep being counted.
+    XCTAssertFalse(workDiffWasShortened("+[ADE] Large file diff was shortened\n-old"))
   }
 
   func testMakeWorkChatEventPreservesUserMessageAttachments() {

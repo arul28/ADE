@@ -473,6 +473,51 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("keeps a renderer-crash report to the reason and the outcome", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_renderer_recovered",
+      surface: "desktop",
+      properties: {
+        crash_reason: "oom",
+        recovered: true,
+        // A crash handler has the window's URL and title in scope; neither may
+        // cross the boundary.
+        url: "file:///Users/alice/private-project/index.html",
+        window_title: "secret-project — ADE",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages).toHaveLength(1);
+    expect(harness.messages[0]?.properties).toMatchObject({ crash_reason: "oom", recovered: true });
+    expect(JSON.stringify(harness.messages)).not.toContain("private-project");
+    expect(JSON.stringify(harness.messages)).not.toContain("secret-project");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("still reports the renderer crash that exhausted the recovery budget", () => {
+    // The recovery budget allows 3 reloads per rolling 60s. At an equal
+    // per-minute analytics budget the three successes consumed it and the one
+    // occurrence that matters most — the window stayed down — was always
+    // dropped as rate-limited.
+    const harness = makeHarness();
+    const capture = (recovered: boolean) => harness.service.captureInternal({
+      event: "ade_renderer_recovered",
+      surface: "desktop",
+      properties: { crash_reason: "crashed", recovered },
+    });
+
+    expect(capture(true)).toEqual({ accepted: true, reason: "accepted" });
+    expect(capture(true)).toEqual({ accepted: true, reason: "accepted" });
+    expect(capture(true)).toEqual({ accepted: true, reason: "accepted" });
+    expect(capture(false)).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages).toHaveLength(4);
+    expect(harness.messages[3]?.properties).toMatchObject({ recovered: false });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("does not forward arbitrary build-controlled version text", () => {
     const harness = makeHarness({ appVersion: "../../private/project\nsecret" });
     expect(harness.service.capture({

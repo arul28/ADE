@@ -92,11 +92,12 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_update_prompted`
 - `ade_tool_fetched`
 - `ade_brain_recovered`
+- `ade_renderer_recovered`
 - `ade_publish_failing`
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
 
-The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
+The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
 Changing automatic-install preferences records the existing `ade_feature_used`
 event at the update-service owner boundary with `feature: "updates"`,
