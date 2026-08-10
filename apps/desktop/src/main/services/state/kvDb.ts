@@ -4040,6 +4040,21 @@ export async function openKvDb(
     }
   };
 
+  /**
+   * Log and rethrow, so the storage doctor records a real failure.
+   *
+   * Deliberately unlike the synchronous `runMaintenanceSafely` above, which
+   * swallows into an `unsupported` result. "Unsupported" means "this handle
+   * does not implement the step" — reporting a locked database or a malformed
+   * table that way makes the maintenance journal, the analytics event, and the
+   * Settings run summary all show a tidy completed sweep. `runStep` already
+   * catches and records `error` per action, so rethrowing is what surfaces it,
+   * and a failing step still does not abort the rest of the run.
+   *
+   * Rows deleted before the throw stay deleted; the next sweep continues from
+   * there. That is why a partial multi-table prune is safe to report as failed
+   * rather than as a partial success nobody looks at.
+   */
   const runMaintenanceSafelyAsync = async (
     action: keyof DbMaintenanceApi,
     operation: () => Promise<DbMaintenanceResult>,
@@ -4051,7 +4066,7 @@ export async function openKvDb(
         action,
         error: error instanceof Error ? error.message : String(error),
       });
-      return unsupportedMaintenanceResult();
+      throw error;
     }
   };
 

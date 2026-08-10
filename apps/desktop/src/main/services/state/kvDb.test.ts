@@ -857,6 +857,25 @@ describe("retention maintenance", () => {
     }
   });
 
+  // A locked or malformed database must not read as "step not supported" —
+  // that renders as a tidy completed sweep in the journal, the analytics event,
+  // and the Settings summary.
+  it("surfaces a prune failure instead of reporting it as unsupported", async () => {
+    const { db } = await openScratchDb();
+    try {
+      db.run("drop table ai_usage_log");
+      // The table is gone, so the step is genuinely unsupported and says so.
+      const missing = await db.maintenance!.pruneAiUsageLog();
+      expect(missing.skippedReason).toBe("unsupported");
+
+      // But a real SQL failure propagates rather than masquerading as that.
+      db.run("create table ai_usage_log (id text primary key)");
+      await expect(db.maintenance!.pruneAiUsageLog()).rejects.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
   // SQLite orders INTEGER before TEXT, so an epoch-number timestamp would match
   // every cutoff; CRR repair can also leave an empty-string timestamp.
   it("does not treat a non-text or empty timestamp as expired", async () => {
