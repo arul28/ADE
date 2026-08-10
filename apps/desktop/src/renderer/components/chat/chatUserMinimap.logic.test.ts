@@ -14,7 +14,6 @@ import {
   resolveMinimapIndexFromPointer,
   resolveMinimapPreviewTranslateY,
   resolveMinimapRailHeightStyle,
-  resolveMinimapRailTopInset,
   resolveMinimapSideGutter,
   resolveMinimapTopPercent,
   resolveRowAnchorAtScrollTop,
@@ -314,26 +313,8 @@ describe("chatUserMinimap.logic", () => {
       expect(minimapRailInert(0)).toBe(true);
     });
 
-    it("resolveMinimapRailTopInset is 0 with no floating PR pane", () => {
-      expect(resolveMinimapRailTopInset(null, 200)).toBe(0);
-    });
-
-    it("resolveMinimapRailTopInset subtracts the two viewport rects", () => {
-      // REGRESSION: the pane is positioned against the chat surface and the rail
-      // against the message-list root, which sits ~200px lower (header +
-      // hairline). The inset is the RECT DELTA plus the gap — never
-      // `pane top constant + pane height + gap`, which would read 12 + 260 + 12
-      // = 284 here and push the rail a whole header-height too far down.
-      expect(resolveMinimapRailTopInset(300, 200)).toBe(112);
-      // Same pane, taller header: the inset shrinks by exactly the extra chrome.
-      expect(resolveMinimapRailTopInset(300, 260)).toBe(52);
-    });
-
-    it("resolveMinimapRailTopInset never goes negative or NaN", () => {
-      // Pane bottom above the list root (short pane under a tall header).
-      expect(resolveMinimapRailTopInset(100, 200)).toBe(0);
-      expect(resolveMinimapRailTopInset(Number.NaN, 200)).toBe(0);
-      expect(resolveMinimapRailTopInset(300, Number.NaN)).toBe(0);
+    it("sizes the rail from the full list height", () => {
+      expect(resolveMinimapRailHeightStyle(21, 300)).toBe("160px");
     });
   });
 

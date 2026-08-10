@@ -29,6 +29,7 @@ import {
   type OpenProjectBinding,
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
+  type PromptStashEntry,
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
@@ -106,9 +107,12 @@ import {
   type ComposerPromptStashHandle,
 } from "./ComposerPromptStash";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
+type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
 const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
 const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
@@ -1474,7 +1478,8 @@ export function AgentChatComposer({
   usageViewModel = null,
   compactionPulse = false,
   draft,
-  lastSentUserMessage = null,
+  promptHistory = [],
+  onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
   attachmentPersistenceUnavailableReason = null,
@@ -1612,8 +1617,10 @@ export function AgentChatComposer({
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
   draft: string;
-  /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
-  lastSentUserMessage?: string | null;
+  /** Chronological prompts from the selected chat, oldest first. */
+  promptHistory?: readonly AgentChatPromptHistoryEntry[];
+  /** Called when keyboard history selects a prompt so the transcript can follow it. */
+  onPromptHistoryNavigate?: (entry: AgentChatPromptHistoryEntry | null) => void;
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
@@ -1892,6 +1899,73 @@ export function AgentChatComposer({
   // freeze trigger/menu re-evaluation so half-composed text can't open or
   // retarget the command menu; detection re-runs once on compositionend.
   const imeComposingRef = useRef(false);
+  const promptHistoryIndexRef = useRef<number | null>(null);
+  const promptHistoryStashRef = useRef<Promise<PromptStashEntry | null> | null>(null);
+  const promptHistoryDraftBeforeRef = useRef<string | null>(null);
+  const promptHistoryAppliedDraftRef = useRef<string | null>(null);
+  const promptHistoryObservedDraftRef = useRef(draft);
+  const promptHistorySequenceTimerRef = useRef<number | null>(null);
+  const promptHistorySequenceActiveRef = useRef(false);
+  const promptHistorySequenceDirectionRef = useRef<PromptHistoryArrowKey | null>(null);
+  const cancelPromptHistorySequence = useCallback(() => {
+    if (promptHistorySequenceTimerRef.current !== null) {
+      window.clearTimeout(promptHistorySequenceTimerRef.current);
+      promptHistorySequenceTimerRef.current = null;
+    }
+    promptHistorySequenceActiveRef.current = false;
+    promptHistorySequenceDirectionRef.current = null;
+  }, []);
+  const armPromptHistorySequence = useCallback((direction: PromptHistoryArrowKey) => {
+    cancelPromptHistorySequence();
+    promptHistorySequenceActiveRef.current = true;
+    promptHistorySequenceDirectionRef.current = direction;
+    promptHistorySequenceTimerRef.current = window.setTimeout(() => {
+      promptHistorySequenceTimerRef.current = null;
+      promptHistorySequenceActiveRef.current = false;
+    }, PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS);
+  }, [cancelPromptHistorySequence]);
+  const clearPromptHistory = useCallback(() => {
+    const wasNavigating = promptHistoryIndexRef.current !== null;
+    cancelPromptHistorySequence();
+    promptHistoryIndexRef.current = null;
+    if (wasNavigating) promptHistoryStashRef.current = null;
+    promptHistoryDraftBeforeRef.current = null;
+    promptHistoryAppliedDraftRef.current = null;
+    if (wasNavigating) onPromptHistoryNavigate?.(null);
+  }, [cancelPromptHistorySequence, onPromptHistoryNavigate]);
+
+  useEffect(() => {
+    clearPromptHistory();
+  }, [clearPromptHistory, sessionId]);
+
+  useEffect(() => {
+    const cancelIfActive = () => {
+      if (promptHistorySequenceActiveRef.current) cancelPromptHistorySequence();
+    };
+    window.addEventListener("pointerdown", cancelIfActive, true);
+    window.addEventListener("wheel", cancelIfActive, true);
+    window.addEventListener("touchstart", cancelIfActive, true);
+    return () => {
+      window.removeEventListener("pointerdown", cancelIfActive, true);
+      window.removeEventListener("wheel", cancelIfActive, true);
+      window.removeEventListener("touchstart", cancelIfActive, true);
+    };
+  }, [cancelPromptHistorySequence]);
+
+  useEffect(() => () => cancelPromptHistorySequence(), [cancelPromptHistorySequence]);
+
+  useEffect(() => {
+    const previousDraft = promptHistoryObservedDraftRef.current;
+    promptHistoryObservedDraftRef.current = draft;
+    if (
+      promptHistoryIndexRef.current !== null
+      && draft !== previousDraft
+      && draft !== promptHistoryAppliedDraftRef.current
+    ) {
+      clearPromptHistory();
+    }
+  }, [clearPromptHistory, draft]);
+
   const useRichComposer = smartLinkEditorEnabled
     || iosElementContextItems.length > 0
     || appControlContextItems.length > 0
@@ -3748,9 +3822,137 @@ export function AgentChatComposer({
     return orchestratorModeActive ? "rgba(217, 70, 239, 0.36)" : null;
   }, [orchestratorModeActive]);
 
+  const applyPromptHistoryEntry = useCallback((
+    entry: AgentChatPromptHistoryEntry,
+    index: number,
+    currentText: string,
+    direction: PromptHistoryArrowKey,
+  ) => {
+    if (promptHistoryIndexRef.current === null) {
+      promptHistoryDraftBeforeRef.current = currentText;
+    }
+    promptHistoryIndexRef.current = index;
+    promptHistoryAppliedDraftRef.current = entry.text;
+    armPromptHistorySequence(direction);
+    if (useRichComposer) {
+      setRichEditorText(entry.text);
+      onDraftChange(entry.text);
+      requestAnimationFrame(() => richEditorRef.current?.focus({ preventScroll: true }));
+    } else {
+      onDraftChange(entry.text);
+      restoreTextareaCaret(entry.text.length);
+    }
+    onPromptHistoryNavigate?.(entry);
+  }, [armPromptHistorySequence, onDraftChange, onPromptHistoryNavigate, restoreTextareaCaret, setRichEditorText, useRichComposer]);
+
+  const stashDraftBeforeHistory = useCallback((currentText: string) => {
+    if (!currentText.trim() && attachments.length === 0) return;
+    promptHistoryDraftBeforeRef.current = currentText;
+    if (typeof window.ade?.agentChat?.promptStashes?.create === "function") {
+      promptHistoryStashRef.current = promptStashRef.current?.activatePreservingDraft() ?? null;
+    }
+  }, [attachments.length]);
+
+  const restorePromptHistoryDraft = useCallback(() => {
+    const promptHistoryStash = promptHistoryStashRef.current;
+    promptHistoryStashRef.current = null;
+    const text = promptHistoryDraftBeforeRef.current ?? "";
+    promptHistoryIndexRef.current = null;
+    promptHistoryDraftBeforeRef.current = null;
+    promptHistoryAppliedDraftRef.current = null;
+    if (useRichComposer) {
+      setRichEditorText(text);
+      onDraftChange(text);
+      requestAnimationFrame(() => richEditorRef.current?.focus({ preventScroll: true }));
+    } else {
+      onDraftChange(text);
+      restoreTextareaCaret(text.length);
+    }
+    onPromptHistoryNavigate?.(null);
+    if (promptHistoryStash) {
+      void promptHistoryStash.then((entry) => {
+        if (entry) void promptStashRef.current?.consume(entry);
+      });
+    }
+  }, [onDraftChange, onPromptHistoryNavigate, restoreTextareaCaret, setRichEditorText, useRichComposer]);
+
+  const handlePromptHistoryNavigation = useCallback((event: React.KeyboardEvent<HTMLElement>): boolean => {
+    if (!promptHistory.length || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return false;
+    const target = event.currentTarget;
+    const currentText = target instanceof HTMLTextAreaElement ? target.value : serializeRichEditor();
+    const currentIndex = promptHistoryIndexRef.current;
+    const selection = target instanceof HTMLTextAreaElement ? null : window.getSelection();
+    const selectionCollapsed = target instanceof HTMLTextAreaElement
+      ? target.selectionStart === target.selectionEnd
+      : !selection || !selection.rangeCount || selection.getRangeAt(0).collapsed;
+    if (!selectionCollapsed) {
+      cancelPromptHistorySequence();
+      return false;
+    }
+
+    const cursorOffset = target instanceof HTMLTextAreaElement
+      ? target.selectionStart ?? currentText.length
+      : getRichCursorTextOffset();
+    const atFirstLine = currentText.lastIndexOf("\n", Math.max(0, cursorOffset - 1)) < 0;
+    const atLastLine = currentText.indexOf("\n", cursorOffset) < 0;
+    if (
+      promptHistorySequenceActiveRef.current
+      && promptHistorySequenceDirectionRef.current !== event.key
+    ) {
+      // A direction change is an action of its own. It ends the rapid sequence
+      // before the normal line-boundary rules decide whether this arrow can
+      // enter history in the opposite direction.
+      cancelPromptHistorySequence();
+    }
+    const sequenceActive = promptHistorySequenceActiveRef.current
+      && promptHistorySequenceDirectionRef.current === event.key;
+
+    if (currentIndex === null) {
+      // Up from a new draft is the history gesture. Preserve the draft in the
+      // existing per-chat stash flow before replacing it with the latest sent
+      // prompt. Down from a new draft remains native textarea behavior.
+      if (event.key !== "ArrowUp") return false;
+      const latestIndex = promptHistory.length - 1;
+      const entry = promptHistory[latestIndex];
+      if (!entry) return false;
+      event.preventDefault();
+      stashDraftBeforeHistory(currentText);
+      applyPromptHistoryEntry(entry, latestIndex, currentText, event.key);
+      return true;
+    }
+
+    // While the user is actively holding a three-second same-direction arrow
+    // sequence, that direction always means history. Once the sequence expires
+    // or is interrupted, native multiline caret motion wins until the caret
+    // reaches the relevant line boundary.
+    if (!sequenceActive && (event.key === "ArrowUp" ? !atFirstLine : !atLastLine)) return false;
+
+    event.preventDefault();
+    const nextIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
+    if (nextIndex < 0) {
+      // There is no history before the oldest prompt. Do not wrap or move the
+      // caret when the user keeps pressing ArrowUp at the top.
+      return true;
+    }
+    if (nextIndex >= promptHistory.length) {
+      restorePromptHistoryDraft();
+      return true;
+    }
+    const entry = promptHistory[nextIndex];
+    if (!entry) return true;
+    applyPromptHistoryEntry(entry, nextIndex, currentText, event.key);
+    return true;
+  }, [applyPromptHistoryEntry, cancelPromptHistorySequence, getRichCursorTextOffset, promptHistory, restorePromptHistoryDraft, serializeRichEditor, stashDraftBeforeHistory]);
+
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
+    const isPlainHistoryArrow =
+      (event.key === "ArrowUp" || event.key === "ArrowDown")
+      && !commandModified
+      && !event.shiftKey
+      && !event.altKey;
+    if (!isPlainHistoryArrow) cancelPromptHistorySequence();
     if (
       event.key.toLowerCase() === "s"
       && commandModified
@@ -3762,6 +3964,7 @@ export function AgentChatComposer({
       return;
     }
     if (promptStashRef.current?.handleMenuKeyDown(event)) {
+      cancelPromptHistorySequence();
       event.preventDefault();
       return;
     }
@@ -3822,6 +4025,7 @@ export function AgentChatComposer({
 
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") cancelPromptHistorySequence();
       if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
       if (event.key === "ArrowDown") { event.preventDefault(); commandMenuRef.current?.moveDown(); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); commandMenuRef.current?.moveUp(); return; }
@@ -3839,30 +4043,23 @@ export function AgentChatComposer({
         ? target.selectionStart === 0 && target.selectionEnd === 0
         : getRichCursorTextOffset() === 0;
       if (atPromptStart && focusLastImageAttachment()) {
+        cancelPromptHistorySequence();
         event.preventDefault();
         return;
       }
-      // Terminal-style recall: ArrowUp on the first line fills the last message
-      // you sent (so you can re-run or tweak it). Skipped for multi-line drafts
-      // (so ArrowUp still navigates between lines) and when nothing was sent yet.
-      if (target instanceof HTMLTextAreaElement) {
-        const recall = lastSentUserMessage?.trim() ?? "";
-        const isMultiLine = target.value.indexOf("\n") !== -1;
-        const onFirstLine = target.selectionStart === target.selectionEnd
-          && target.value.slice(0, target.selectionStart).indexOf("\n") === -1;
-        if (recall && !isMultiLine && onFirstLine && recall !== draft) {
-          event.preventDefault();
-          onDraftChange(recall);
-          requestAnimationFrame(() => {
-            const el = textareaRef.current;
-            if (el) {
-              el.focus({ preventScroll: true });
-              el.selectionStart = el.selectionEnd = el.value.length;
-            }
-          });
-          return;
-        }
-      }
+      // Terminal-style recall: ArrowUp on the first line enters this chat's
+      // prompt history while multiline drafts keep normal text editing.
+      if (handlePromptHistoryNavigation(event)) return;
+    }
+
+    if (
+      event.key === "ArrowDown"
+      && !commandModified
+      && !event.shiftKey
+      && !event.altKey
+      && handlePromptHistoryNavigation(event)
+    ) {
+      return;
     }
 
     if (event.key === "@" && !commandModified && !event.altKey) {
@@ -4061,6 +4258,7 @@ export function AgentChatComposer({
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
     if (!editor) return;
+    clearPromptHistory();
     const inputType = (event?.nativeEvent as InputEvent | undefined)?.inputType ?? "";
     if (!imeComposingRef.current && (inputType === "insertParagraph" || /\s$/.test(editor.textContent ?? ""))) {
       if (tokenizeSmartLinksInEditor()) return;
@@ -4080,7 +4278,7 @@ export function AgentChatComposer({
       setCommandMenuTrigger(null);
     }
     captureRichSelection();
-  }, [captureRichSelection, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [captureRichSelection, clearPromptHistory, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
@@ -5455,8 +5653,14 @@ export function AgentChatComposer({
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 onKeyUp={captureRichSelection}
-                onMouseUp={captureRichSelection}
-                onBlur={captureRichSelection}
+                onMouseUp={() => {
+                  cancelPromptHistorySequence();
+                  captureRichSelection();
+                }}
+                onBlur={() => {
+                  cancelPromptHistorySequence();
+                  captureRichSelection();
+                }}
                 onClick={(event) => {
                   const target = event.target as HTMLElement | null;
                   const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
@@ -5533,6 +5737,7 @@ export function AgentChatComposer({
                 value={draft}
                 onChange={(event) => {
                   const val = event.target.value;
+                  clearPromptHistory();
                   onDraftChange(val);
                   if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
                     setSmartLinkEditorEnabled(true);
@@ -5583,6 +5788,8 @@ export function AgentChatComposer({
                 placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                onMouseUp={cancelPromptHistorySequence}
+                onBlur={cancelPromptHistorySequence}
               />
             </div>
           )}

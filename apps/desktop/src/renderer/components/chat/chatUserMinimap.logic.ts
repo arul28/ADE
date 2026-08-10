@@ -25,9 +25,6 @@ export const CHAT_USER_MINIMAP_RAIL_PADDING_PX = 32;
 /** Below this available height the rail is more noise than navigation. */
 export const CHAT_USER_MINIMAP_RAIL_MIN_AVAILABLE_PX = 140;
 
-/** Breathing room kept between the floating PR pane's bottom edge and the rail. */
-export const CHAT_USER_MINIMAP_PR_PANE_GAP_PX = 12;
-
 const PREVIEW_MAX_CHARS = 140;
 const ASSISTANT_PREVIEW_MAX_CHARS = 220;
 
@@ -285,31 +282,7 @@ export function resolveMinimapPreviewTranslateY(index: number, itemCount: number
 }
 
 /**
- * Rail starts below the floating PR pane when one is mounted.
- *
- * BOTH inputs are viewport-space edges, and that is the whole point: the pane is
- * positioned against the chat SURFACE (`absolute top-3`) while the rail is
- * positioned against the message-list root, which sits below the chat header and
- * the sync hairline. Measuring a pane HEIGHT and adding its `top-3` back as a
- * constant would silently be wrong by the height of everything between those two
- * origins — a header, a banner, a hairline — and no constant can fix that. A
- * viewport-space subtraction stays correct for any future chrome above the list.
- */
-export function resolveMinimapRailTopInset(
-  prPaneBottomViewportPx: number | null,
-  listRootTopViewportPx: number,
-): number {
-  if (prPaneBottomViewportPx === null) return 0;
-  if (!Number.isFinite(prPaneBottomViewportPx) || !Number.isFinite(listRootTopViewportPx)) return 0;
-  return Math.max(
-    0,
-    prPaneBottomViewportPx - listRootTopViewportPx + CHAT_USER_MINIMAP_PR_PANE_GAP_PX,
-  );
-}
-
-/**
- * Height in px (not vh): the rail centres in the space REMAINING below the PR
- * pane, which is not the viewport height.
+ * Height in px (not vh): the rail centres in the full message-list column.
  */
 export function resolveMinimapRailHeightStyle(itemCount: number, availablePx: number): string {
   const naturalHeight = (itemCount - 1) * CHAT_USER_MINIMAP_TICK_SPACING_PX;

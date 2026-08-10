@@ -1435,11 +1435,9 @@ describe("AgentChatPane remote startup", () => {
 });
 
 describe("AgentChatPane pane reserve", () => {
-  // Wide enough that a floating pane does NOT fit in the centered column's own
-  // side margin ((1000 - 832) / 2 = 84px < the 276px pane), so the chat must
-  // reserve a gutter — the only regime where this bug is visible at all.
+  // Wide enough that a right chat-actions pane does NOT fit in the centered
+  // column's own side margin ((1000 - 832) / 2 = 84px < the 276px pane).
   const OBSERVED_WIDTH_PX = 1000;
-  const EXPECTED_RESERVE = "276px";
   let originalResizeObserver: unknown;
 
   beforeEach(() => {
@@ -1473,7 +1471,7 @@ describe("AgentChatPane pane reserve", () => {
     return shell.style.getPropertyValue("--chat-pane-reserve-left").trim();
   }
 
-  it("reserves a left gutter for the floating PR pane on the session surface", async () => {
+  it("keeps the left reserve at zero for the floating PR pane", async () => {
     const session = buildSession("session-1", { title: "PR pane chat" });
     installAdeMocks({ sessions: [session] });
     seedDrawerStore();
@@ -1482,9 +1480,7 @@ describe("AgentChatPane pane reserve", () => {
 
     const { container } = renderPane(session);
 
-    await waitFor(() => {
-      expect(readLeftReserve(container)).toBe(EXPECTED_RESERVE);
-    });
+    await waitFor(() => expect(readLeftReserve(container)).toBe("0px"));
   });
 
   it("reserves nothing on the draft surface, which renders no floating panes", async () => {

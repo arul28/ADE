@@ -84,7 +84,7 @@ import {
   collapseChatTranscriptEvents,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
-import { ChatPrPaneInsetContext } from "./chatPrPaneInset";
+import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
@@ -137,6 +137,7 @@ function renderMessageList(
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
+    scrollToPromptHistoryRequest?: { eventKey: string; requestId: number } | null;
     hasOlderHistory?: boolean;
     loadingOlderHistory?: boolean;
     olderHistoryError?: string | null;
@@ -165,6 +166,7 @@ function renderMessageList(
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
         onRestoreCancelledQueue={options?.onRestoreCancelledQueue}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
+        scrollToPromptHistoryRequest={options?.scrollToPromptHistoryRequest}
         hasOlderHistory={options?.hasOlderHistory}
         loadingOlderHistory={options?.loadingOlderHistory}
         olderHistoryError={options?.olderHistoryError}
@@ -200,20 +202,6 @@ const transcriptProofArtifact: ComputerUseArtifactView = {
   reviewNote: null,
 };
 
-/** The message list under a floating PR pane publishing `prPaneBottomViewportPx`. */
-function renderMessageListUnderPrPane(
-  events: AgentChatEventEnvelope[],
-  prPaneBottomViewportPx: number | null,
-) {
-  return render(
-    <MemoryRouter initialEntries={[{ pathname: "/" }]}>
-      <ChatPrPaneInsetContext.Provider value={prPaneBottomViewportPx}>
-        <AgentChatMessageList events={events} />
-      </ChatPrPaneInsetContext.Provider>
-    </MemoryRouter>,
-  );
-}
-
 function makeRect(box: { top?: number; left?: number; width?: number; height?: number }): DOMRect {
   const top = box.top ?? 0;
   const left = box.left ?? 0;
@@ -235,25 +223,22 @@ function makeRect(box: { top?: number; left?: number; width?: number; height?: n
 /**
  * jsdom has no layout, so every box measures 0×0: the minimap rail decides it
  * is inert and `resolveMinimapIndexFromPointer` returns null for every pointer
- * Y. Stub the two boxes the rail actually reads — the list root it is
- * positioned against, and its own hit strip.
+ * Y. Stub the two boxes the rail actually reads — the list root and its own
+ * hit strip.
  */
 function stubMinimapLayout(options?: {
   listWidth?: number;
   listHeight?: number;
-  /** Viewport-space top edge of the list root — the frame the PR pane converts into. */
-  listTop?: number;
   railTop?: number;
   railHeight?: number;
 }): { railTop: number; railHeight: number } {
   const listWidth = options?.listWidth ?? 960;
   const listHeight = options?.listHeight ?? 600;
-  const listTop = options?.listTop ?? 0;
   const railTop = options?.railTop ?? 100;
   const railHeight = options?.railHeight ?? 400;
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     if (this.hasAttribute("data-chat-message-list-root")) {
-      return makeRect({ width: listWidth, height: listHeight, top: listTop });
+      return makeRect({ width: listWidth, height: listHeight });
     }
     if (this.tagName === "BUTTON" && this.closest("[data-testid='chat-user-minimap']")) {
       return makeRect({ top: railTop, height: railHeight, width: 24 });
@@ -2021,22 +2006,11 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcript.scrollTop).toBe(0);
   });
 
-  it("insets the rail by the PR pane's rect delta, not by its height", () => {
-    // REGRESSION: the floating PR pane is positioned against the chat surface
-    // while the rail is positioned against the message-list root, which sits
-    // 200px lower (chat header + sync hairline). Converting a published HEIGHT
-    // with the pane's `top-3` constant would read 12 + 240 + 12 = 264 here and
-    // push the rail a whole header below where it belongs.
-    stubMinimapLayout({ listTop: 200 });
-    renderMessageListUnderPrPane(MINIMAP_TRANSCRIPT, 300);
-
-    // 300 (pane bottom) - 200 (list root top) + 12 (gap).
-    expect(screen.getByTestId("chat-user-minimap").style.top).toBe("112px");
-  });
-
-  it("drops the rail inset entirely when no PR pane is floating", () => {
-    stubMinimapLayout({ listTop: 200 });
-    renderMessageListUnderPrPane(MINIMAP_TRANSCRIPT, null);
+  it("keeps the rail anchored when a PR pane is floating", () => {
+    // The PR pane is an overlay. Its presence must not move the transcript's
+    // history markers down into the space below the card.
+    stubMinimapLayout();
+    renderMessageList(MINIMAP_TRANSCRIPT);
 
     expect(screen.getByTestId("chat-user-minimap").style.top).toBe("0px");
   });
@@ -2324,6 +2298,28 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(transcript.scrollTop).toBe(0);
+  });
+
+  it("scrolls to the prompt selected by composer history", () => {
+    const view = renderMessageList(MINIMAP_TRANSCRIPT);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+
+    const target = MINIMAP_TRANSCRIPT[2]!;
+    if (target.event.type !== "user_message") throw new Error("test target must be a user message");
+    const request = {
+      eventKey: promptHistoryEventKey({ timestamp: target.timestamp, event: target.event }),
+      requestId: 1,
+    };
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={MINIMAP_TRANSCRIPT} scrollToPromptHistoryRequest={request} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(transcript.scrollTop).toBeGreaterThan(0);
   });
 
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock

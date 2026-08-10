@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import type {
   IosElementContextItem,
@@ -1137,6 +1137,226 @@ describe("AgentChatComposer", () => {
 
     expect(props.onRemoveAttachment).toHaveBeenCalledWith("/tmp/pasted-image.png");
     expect(document.activeElement).toBe(textbox);
+  });
+
+  it("cycles the selected chat's prompt history and restores the draft", () => {
+    const onDraftChange = vi.fn();
+    const onPromptHistoryNavigate = vi.fn();
+    const promptHistory = [
+      { text: "First prompt", eventKey: "prompt-1" },
+      { text: "Second prompt", eventKey: "prompt-2" },
+    ] as const;
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      onDraftChange,
+      onPromptHistoryNavigate,
+      promptHistory,
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("Second prompt");
+    expect(onPromptHistoryNavigate).toHaveBeenLastCalledWith(promptHistory[1]);
+
+    view.rerender(<AgentChatComposer {...props} draft="Second prompt" />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("First prompt");
+    expect(onPromptHistoryNavigate).toHaveBeenLastCalledWith(promptHistory[0]);
+
+    view.rerender(<AgentChatComposer {...props} draft="First prompt" />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("Second prompt");
+
+    view.rerender(<AgentChatComposer {...props} draft="Second prompt" />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("unfinished draft");
+    expect(onPromptHistoryNavigate).toHaveBeenLastCalledWith(null);
+  });
+
+  it("keeps multiline caret motion after an interrupted history sequence", () => {
+    const onDraftChange = vi.fn();
+    const promptHistory = [
+      { text: "Older line one\nOlder line two", eventKey: "prompt-1" },
+      { text: "Latest line one\nLatest line two", eventKey: "prompt-2" },
+    ] as const;
+    const props = buildComposerProps({
+      draft: "",
+      onDraftChange,
+      promptHistory,
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[1].text);
+
+    view.rerender(<AgentChatComposer {...props} draft={promptHistory[1].text} />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.pointerDown(document.body);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    // The click canceled the rapid-history sequence. At the end of a multiline
+    // prompt, a single ArrowUp belongs to native caret movement.
+    expect(onDraftChange).toHaveBeenCalledTimes(1);
+
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[0].text);
+  });
+
+  it("treats a direction change as an interruption of the rapid sequence", () => {
+    const onDraftChange = vi.fn();
+    const promptHistory = [
+      { text: "Oldest line one\nOldest line two", eventKey: "prompt-1" },
+      { text: "Middle line one\nMiddle line two", eventKey: "prompt-2" },
+      { text: "Latest line one\nLatest line two", eventKey: "prompt-3" },
+    ] as const;
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      onDraftChange,
+      promptHistory,
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    view.rerender(<AgentChatComposer {...props} draft={promptHistory[2].text} />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    view.rerender(<AgentChatComposer {...props} draft={promptHistory[1].text} />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+    view.rerender(<AgentChatComposer {...props} draft={promptHistory[2].text} />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+
+    // The Up after a Down is no longer part of the Down sequence. At the end
+    // of a multiline prompt it therefore belongs to native caret movement.
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenCalledTimes(3);
+  });
+
+  it("expires the rapid-history window after three seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const onDraftChange = vi.fn();
+      const promptHistory = [
+        { text: "Older line one\nOlder line two", eventKey: "prompt-1" },
+        { text: "Latest line one\nLatest line two", eventKey: "prompt-2" },
+      ] as const;
+      const props = buildComposerProps({
+        draft: "",
+        onDraftChange,
+        promptHistory,
+        turnActive: false,
+      });
+      const view = render(<AgentChatComposer {...props} />);
+      const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+      textbox.focus();
+      textbox.setSelectionRange(0, 0);
+      fireEvent.keyDown(textbox, { key: "ArrowUp" });
+      view.rerender(<AgentChatComposer {...props} draft={promptHistory[1].text} />);
+      textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+      act(() => vi.advanceTimersByTime(3_001));
+      fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+      expect(onDraftChange).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("auto-stashes an unsent draft before selecting the latest prompt", async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: "stash-auto-1",
+      text: "unfinished draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-08-10T12:00:00.000Z",
+    });
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create,
+          delete: vi.fn().mockResolvedValue(true),
+        },
+      },
+    };
+    const onDraftChange = vi.fn();
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      onDraftChange,
+      promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
+      turnActive: false,
+    });
+    render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      text: "unfinished draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+    }, null));
+    expect(onDraftChange).toHaveBeenCalledWith("Latest prompt");
+  });
+
+  it("consumes the auto-stash when history restores the original draft", async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: "stash-auto-restore-1",
+      text: "unfinished draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-08-10T12:00:00.000Z",
+    });
+    const remove = vi.fn().mockResolvedValue(true);
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create,
+          delete: remove,
+        },
+      },
+    };
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+
+    view.rerender(<AgentChatComposer {...props} draft="Latest prompt" />);
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      { id: "stash-auto-restore-1" },
+      null,
+    ));
   });
 
   it("stop only interrupts the active turn", () => {
