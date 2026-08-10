@@ -929,12 +929,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [getActiveProjectRoot]);
 
-  const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
+  const refreshLaneGithubPrTags = useCallback(async (
+    options?: { force?: boolean; automaticRefresh?: boolean },
+  ): Promise<boolean> => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
     try {
       const snapshot = await getGitHubSnapshotCoalesced(
-        { force: options?.force === true },
+        {
+          force: options?.force === true,
+          ...(options?.automaticRefresh === true ? { automaticRefresh: true } : {}),
+        },
         { projectRoot: startedRoot },
       );
       if (requestId !== laneGithubPrTagsRequestRef.current) return false;
@@ -1124,7 +1129,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const timer = window.setTimeout(() => {
       if (getActiveProjectRoot() !== startedRoot) return;
       laneGithubSnapshotForceRefreshProjectRootRef.current = startedRoot;
-      void refreshLaneGithubPrTags({ force: true }).then((refreshSucceeded) => {
+      void refreshLaneGithubPrTags({ force: true, automaticRefresh: true }).then((refreshSucceeded) => {
         if (shouldRetryLaneGithubSnapshotForceRefresh({
           currentProjectRoot: getActiveProjectRoot(),
           markedProjectRoot: laneGithubSnapshotForceRefreshProjectRootRef.current,
@@ -1156,7 +1161,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         void refreshLaneGithubPrTags();
       } else if (event.type === "pr-notification") {
         void refreshLanePrTags({ refreshMapped: true });
-        void refreshLaneGithubPrTags({ force: true });
+        void refreshLaneGithubPrTags({ force: true, automaticRefresh: true });
       }
     });
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags]);

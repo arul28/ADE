@@ -196,6 +196,8 @@ export function GitHubTab({
     silent?: boolean;
     includeExternalClosed?: boolean;
     historyPageLimit?: number;
+    /** A timer or a `prs-updated` reaction, not a person pressing Refresh. */
+    automaticRefresh?: boolean;
   }) => {
     const requestKey = snapshotRequestKey(options);
     const inFlightSnapshot = inFlightSnapshotRef.current;
@@ -218,6 +220,9 @@ export function GitHubTab({
       return getGitHubSnapshotCoalesced(
         {
           force: options?.force === true,
+          // Only sent when true: an automatic refresh is the exception, and the
+          // healthy-path payload stays the shape every caller already expects.
+          ...(options?.automaticRefresh === true ? { automaticRefresh: true } : {}),
           ...(requestKey.includeExternalClosed ? {
             includeExternalClosed: true,
             historyPageLimit: requestKey.historyPageLimit,
@@ -242,6 +247,10 @@ export function GitHubTab({
         if (projectRootRef.current === requestProjectRoot && isCurrentSnapshotRequest()) {
           setError(formatGitHubSnapshotError(err));
         }
+        // Stamp on failure too. The `prs-updated` effect gates on this ref, so
+        // leaving it stale meant a failing GitHub never bought any quiet here:
+        // every poll tick re-fired a forced snapshot plus a hot-refresh timer.
+        lastSnapshotLoadedAtRef.current = Date.now();
         return snapshotRef.current as GitHubPrSnapshot;
       })
       .finally(() => {
@@ -297,6 +306,7 @@ export function GitHubTab({
       void loadSnapshot({
         force: true,
         silent: true,
+        automaticRefresh: true,
         ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
       });
     }, GITHUB_TAB_HOT_REFRESH_DELAY_MS);
@@ -388,6 +398,7 @@ export function GitHubTab({
     void loadSnapshot({
       force: true,
       silent: true,
+      automaticRefresh: true,
       ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
     });
   }, [currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);

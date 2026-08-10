@@ -412,11 +412,33 @@ describe("createSyncRemoteCommandService", () => {
 
     expect(getGithubSnapshot).toHaveBeenCalledWith({
       force: false,
+      automaticRefresh: false,
       includeExternalClosed: true,
       historyPageLimit: 4,
       revalidate: false,
       includeStateCounts: true,
     });
+  });
+
+  it("forwards the automatic-refresh opt-out for remote GitHub snapshot reads", async () => {
+    const getGithubSnapshot = vi.fn().mockResolvedValue({ repoPullRequests: [] });
+    const { service } = createService({ prService: { getGithubSnapshot } });
+
+    // A remote poller asking for a forced snapshot must still respect the
+    // host's GitHub failure ladder; a remote client that omits the field (an
+    // older mobile build) keeps today's user-initiated bypass.
+    await service.execute(makePayload("prs.getGitHubSnapshot", {
+      force: true,
+      automaticRefresh: true,
+    }));
+    expect(getGithubSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({ force: true, automaticRefresh: true }),
+    );
+
+    await service.execute(makePayload("prs.getGitHubSnapshot", { force: true }));
+    expect(getGithubSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({ force: true, automaticRefresh: false }),
+    );
   });
 
   it("routes GitHub stack reads and mutations with typed repository arguments", async () => {

@@ -5464,6 +5464,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getGitHubSnapshot", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getGithubSnapshot({
       force: payload.force === true,
+      automaticRefresh: payload.automaticRefresh === true,
       includeExternalClosed: payload.includeExternalClosed === true,
       revalidate: payload.revalidate !== false,
       includeStateCounts: payload.includeStateCounts === true,

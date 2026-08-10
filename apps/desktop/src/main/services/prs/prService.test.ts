@@ -46,7 +46,11 @@ vi.mock("../shared/remoteTrackingBranch", () => ({
 }));
 
 import { buildIntegrationPreflight } from "./integrationPlanning";
-import { createPrService } from "./prService";
+import { githubReadFailureBackoffMs } from "./githubReadBackoff";
+import {
+  createPrService,
+  GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
+} from "./prService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,7 +80,6 @@ function makeMockDb() {
 
 const LANE_ID = "lane-42";
 const REPO = { owner: "test-owner", name: "test-repo" };
-const GITHUB_SNAPSHOT_TTL_MS_FOR_TEST = 120_000;
 
 function makeFakeLane(overrides?: Partial<Record<string, unknown>>) {
   return {
@@ -309,6 +312,14 @@ interface BuildServiceOpts {
   projectConfigService?: any;
   aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
+  /**
+   * What `git for-each-ref refs/remotes/` reports. Branch names mean "these are
+   * pushed"; `"unavailable"` makes the probe fail. Default is an empty listing,
+   * which the unpublished-branch skip reads as "cannot tell" and keeps every
+   * targeted lane lookup — the behavior the rest of this file was written
+   * against.
+   */
+  remoteTrackingRefs?: string[] | "unavailable";
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -321,6 +332,13 @@ function buildService(opts: BuildServiceOpts = {}) {
     const command = Array.isArray(args) ? args[0] : null;
     if (command === "rev-list") {
       return { exitCode: 0, stdout: "0\t1\n", stderr: "" };
+    }
+    if (command === "for-each-ref") {
+      const refs = opts.remoteTrackingRefs ?? [];
+      if (refs === "unavailable") {
+        return { exitCode: 128, stdout: "", stderr: "not a git repository" };
+      }
+      return { exitCode: 0, stdout: refs.length ? `${refs.join("\n")}\n` : "", stderr: "" };
     }
     if (command === "fetch" || command === "push") {
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -1025,6 +1043,297 @@ describe("prService repository-scoped GraphQL mutations", () => {
         capability: "write",
         repo: REPO,
       }));
+    }
+  });
+});
+
+describe("GitHub read failure backoff", () => {
+  const START_MS = Date.parse("2026-01-01T00:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // One restore point for the whole block. A forgotten `finally` would leak a
+  // stubbed Date.now into the 6,000 lines of tests that follow. Not
+  // restoreAllMocks: on Vitest 0.34 that also wipes the vi.mock factories.
+  afterEach(() => {
+    vi.spyOn(Date, "now").mockRestore();
+  });
+
+  /**
+   * Drives the service to the state every snapshot-backoff test starts from:
+   * one good snapshot cached, the cache gone stale, and one failed
+   * revalidation that armed the ladder.
+   */
+  async function withArmedSnapshotLadder(opts: BuildServiceOpts = {}) {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(START_MS);
+    const githubService = opts.githubService ?? makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
+        .mockRejectedValue(new Error("GitHub API rate limit reached")),
+    });
+    const { service } = buildService({
+      laneService: makeLaneService([]),
+      ...opts,
+      githubService,
+    });
+
+    await service.getGithubSnapshot();
+    nowSpy.mockReturnValue(START_MS + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
+    await service.getGithubSnapshot();
+    await flushMicrotasks(30);
+
+    return {
+      service,
+      githubService,
+      nowSpy,
+      callCount: () => githubService.apiRequest.mock.calls.length,
+      /** Advance to just past the first rung of the armed ladder. */
+      advancePastLadder: () => nowSpy.mockReturnValue(
+        START_MS + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1
+          + githubReadFailureBackoffMs(1, GITHUB_SNAPSHOT_TTL_MS_FOR_TEST) + 1,
+      ),
+    };
+  }
+
+  it("stops re-fetching a stale snapshot while GitHub keeps failing", async () => {
+    const armed = await withArmedSnapshotLadder();
+    const armedCallCount = armed.callCount();
+    expect(armedCallCount).toBe(2);
+
+    // Before the negative cache these reads each re-armed the fetch, because
+    // nothing republished the snapshot timestamp on failure.
+    for (let i = 0; i < 5; i += 1) {
+      const stale = await armed.service.getGithubSnapshot();
+      expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
+    }
+    await flushMicrotasks(30);
+    expect(armed.callCount()).toBe(armedCallCount);
+
+    armed.advancePastLadder();
+    await armed.service.getGithubSnapshot();
+    await flushMicrotasks(30);
+    expect(armed.callCount()).toBe(armedCallCount + 1);
+  });
+
+  it("lets a user-initiated refresh through the failure backoff", async () => {
+    const armed = await withArmedSnapshotLadder();
+    const quietCallCount = armed.callCount();
+
+    await armed.service.getGithubSnapshot();
+    await flushMicrotasks(30);
+    expect(armed.callCount()).toBe(quietCallCount);
+
+    await expect(armed.service.getGithubSnapshot({ force: true })).rejects.toThrow();
+    expect(armed.callCount()).toBeGreaterThan(quietCallCount);
+  });
+
+  // `force` means "skip the projection/TTL cache". Focus reconcile and the
+  // poller's lane discovery both need that and are not a user retrying a
+  // throttled API, so `force` alone must not reopen the tap.
+  it("keeps an automatic forced refresh behind the failure backoff", async () => {
+    const armed = await withArmedSnapshotLadder();
+    const quietCallCount = armed.callCount();
+    await expect(armed.service.getGithubSnapshot({ force: true, automaticRefresh: true }))
+      .rejects.toThrow("GitHub API rate limit reached");
+    expect(armed.callCount()).toBe(quietCallCount);
+  });
+
+  it("recovers immediately once GitHub answers again", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
+        .mockRejectedValueOnce(new Error("GitHub API rate limit reached"))
+        .mockResolvedValue({ data: [makeGitHubPull({ title: "Recovered PR" })] }),
+    });
+    const armed = await withArmedSnapshotLadder({ githubService });
+    await armed.service.getGithubSnapshot({ force: true });
+    await flushMicrotasks(30);
+    const recoveredCallCount = armed.callCount();
+
+    // A success clears the ladder, so the next stale read revalidates rather
+    // than sitting behind a cooldown that no longer describes anything.
+    armed.nowSpy.mockReturnValue(START_MS + (GITHUB_SNAPSHOT_TTL_MS_FOR_TEST * 2) + 2);
+    await armed.service.getGithubSnapshot();
+    await flushMicrotasks(30);
+    expect(armed.callCount()).toBeGreaterThan(recoveredCallCount);
+  });
+
+  // A snapshot rebuild also reads lanes and SQLite. Arming the GitHub ladder on
+  // one of those would silence GitHub for minutes and show the UI a lane error
+  // where a GitHub error belongs.
+  it("does not arm the GitHub ladder for a local failure", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const laneService = makeLaneService([]);
+    laneService.list = vi.fn(async () => {
+      throw new Error("lane database is locked");
+    });
+    const { service } = buildService({ githubService, laneService });
+
+    await expect(service.getGithubSnapshot({ force: true })).rejects.toThrow(
+      "lane database is locked",
+    );
+
+    // Ladder never armed, so the next read still reaches GitHub rather than
+    // replaying the local error.
+    laneService.list = vi.fn(async () => []);
+    await expect(service.getGithubSnapshot({ force: true })).resolves.toMatchObject({
+      repo: REPO,
+    });
+  });
+
+  it("does not replay one repo's failure against a different repo", async () => {
+    let repo = { owner: "test-owner", name: "test-repo" };
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ repo })),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
+        .mockRejectedValue(new Error("GitHub API rate limit reached")),
+    });
+    const armed = await withArmedSnapshotLadder({ githubService });
+    try {
+      const quietCallCount = armed.callCount();
+      repo = { owner: "test-owner", name: "other-repo" };
+
+      // Re-pointing the project invalidates the snapshot cache; the old repo's
+      // rate-limit error must not become the new repo's answer.
+      await armed.service.getGithubSnapshot().catch(() => undefined);
+      await flushMicrotasks(30);
+      expect(armed.callCount()).toBeGreaterThan(quietCallCount);
+    } finally {
+      armed.nowSpy.mockRestore();
+    }
+  });
+});
+
+describe("targeted lane branch lookups", () => {
+  const START_MS = Date.parse("2026-01-01T00:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.spyOn(Date, "now").mockRestore();
+  });
+
+  it("skips targeted lookups for lane branches that were never pushed", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({
+      githubService,
+      remoteTrackingRefs: ["main", "feature/pushed"],
+      laneService: makeLaneService([
+        makeFakeLane({ id: "lane-pushed", branchRef: "refs/heads/feature/pushed" }),
+        makeFakeLane({ id: "lane-local", branchRef: "refs/heads/feature/never-pushed" }),
+      ]),
+    });
+
+    await service.getGithubSnapshot({ force: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/pushed` }),
+    }));
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/never-pushed` }),
+    }));
+  });
+
+  it("keeps every targeted lookup when the remote-tracking probe fails", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({
+      githubService,
+      remoteTrackingRefs: "unavailable",
+      laneService: makeLaneService([
+        makeFakeLane({ id: "lane-local", branchRef: "refs/heads/feature/never-pushed" }),
+      ]),
+    });
+
+    await service.getGithubSnapshot({ force: true });
+
+    // Hiding a PR badge is worse than spending one call, so an unusable probe
+    // must not be read as "this branch was never pushed".
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/never-pushed` }),
+    }));
+  });
+
+  // The history sweep exists to recover a merged PR sitting past the fetched
+  // page window — and GitHub deletes the head branch on merge, so exactly those
+  // branches have no remote-tracking ref left. Applying the skip there would
+  // defeat the sweep's whole purpose.
+  it("does not apply the unpublished-branch skip to the history sweep", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({
+      githubService,
+      remoteTrackingRefs: ["main"],
+      laneService: makeLaneService([
+        makeFakeLane({ id: "lane-merged", branchRef: "refs/heads/feature/merged-and-deleted" }),
+      ]),
+    });
+
+    await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/merged-and-deleted` }),
+    }));
+  });
+
+  // A failed branch lookup must arm the ladder rather than fold into the
+  // snapshot as a confirmed-empty result, or the next rebuild asks again.
+  it("backs a failed lane branch lookup off without starving healthy branches", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(START_MS);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: Record<string, unknown> }) => {
+        if (args.query?.head === `${REPO.owner}:feature/flaky`) {
+          throw new Error("temporary GitHub failure");
+        }
+        return { data: [] };
+      }),
+    });
+    const { service } = buildService({
+      githubService,
+      laneService: makeLaneService([
+        makeFakeLane({ id: "lane-flaky", branchRef: "refs/heads/feature/flaky" }),
+        makeFakeLane({ id: "lane-ok", branchRef: "refs/heads/feature/ok" }),
+      ]),
+    });
+
+    try {
+      const callsFor = (branch: string) => githubService.apiRequest.mock.calls.filter(
+        ([args]: [any]) => args?.query?.head === `${REPO.owner}:${branch}`,
+      ).length;
+
+      await service.getGithubSnapshot({ force: true });
+      expect(callsFor("feature/flaky")).toBe(1);
+      expect(callsFor("feature/ok")).toBe(1);
+
+      await service.getGithubSnapshot({ force: true });
+      expect(callsFor("feature/flaky")).toBe(1);
+      expect(callsFor("feature/ok")).toBe(2);
+
+      nowSpy.mockReturnValue(
+        START_MS + githubReadFailureBackoffMs(1, GITHUB_SNAPSHOT_TTL_MS_FOR_TEST) + 1,
+      );
+      await service.getGithubSnapshot({ force: true });
+      expect(callsFor("feature/flaky")).toBe(2);
+    } finally {
+      nowSpy.mockRestore();
     }
   });
 });

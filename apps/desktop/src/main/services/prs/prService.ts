@@ -160,6 +160,11 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import {
+  createGithubReadBackoff,
+  isGithubRequestError,
+  markGithubRequestError,
+} from "./githubReadBackoff";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
@@ -1118,6 +1123,11 @@ function rowToSummary(row: PullRequestRow): PrSummary {
 const BACKGROUND_REFRESH_MAX_PRS = 4;
 const REFRESH_CONCURRENCY = 4;
 const TARGETED_LANE_PR_BRANCH_LOOKUP_CONCURRENCY = 4;
+
+/** Freshness window for the open-PR GitHub snapshot. */
+export const GITHUB_SNAPSHOT_TTL_MS = 120_000;
+/** Freshness window for a snapshot that carries closed/merged history. */
+export const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
@@ -3675,6 +3685,56 @@ export function createPrService({
     return branches;
   };
 
+  /**
+   * One ladder for every GitHub read this service makes — the whole-repo
+   * snapshot under a `snapshot:<repo>` key, each targeted lane-branch lookup
+   * under `branch:<repo>#<branch>`. Sharing it keeps the reset story in one
+   * place: a credential change clears all of them at once.
+   */
+  const githubReadBackoff = createGithubReadBackoff();
+
+  /**
+   * Remote-tracking branch names for the repository, or `null` when git could
+   * not answer.
+   *
+   * Keyed on remote-tracking refs rather than upstream config on purpose:
+   * `git push` writes `refs/remotes/<remote>/<branch>` even without `-u`, so a
+   * branch that has been pushed once shows up here whether or not anyone set an
+   * upstream. Lane worktrees share the repository's common git dir, so one read
+   * at the project root covers every lane.
+   *
+   * One enumeration rather than a pair of `--count=1` probes per branch: it is
+   * a single subprocess no matter how many lanes exist, and it avoids building
+   * a `for-each-ref` glob out of a branch name (a branch containing `*` or `?`
+   * would silently match the wrong refs).
+   */
+  const listRemoteTrackingBranches = async (): Promise<Set<string> | null> => {
+    try {
+      const result = await runGit(
+        ["for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes/"],
+        { cwd: projectRoot, timeoutMs: 8_000 },
+      );
+      // A truncated listing looks like a short one, and a short one reads as
+      // "these branches were never pushed" — which hides PR badges. Fail to
+      // "cannot tell" instead.
+      if (result.exitCode !== 0 || result.stdoutTruncated) return null;
+      const branches = new Set<string>();
+      for (const line of result.stdout.split("\n")) {
+        const branch = line.trim();
+        if (branch && branch !== "HEAD") branches.add(branch);
+      }
+      return branches;
+    } catch (error) {
+      logger.warn("prs.remote_tracking_branch_probe_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  // Per-branch failure ladder for targeted lane PR lookups. Without it a branch
+  // that GitHub keeps rejecting costs one call on every snapshot rebuild.
+  const laneBranchLookupKey = (repo: GitHubRepoRef, branch: string): string =>
+    `branch:${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#${branch}`;
+
   const fetchMissingSameRepoLanePulls = async (
     rawPulls: any[],
     repo: GitHubRepoRef,
@@ -3683,6 +3743,7 @@ export function createPrService({
     options: {
       skipBranchesWithLocalRows?: boolean;
       branchesCoveredByProjections?: Set<string> | null;
+      skipUnpublishedBranches?: boolean;
     } = {},
   ): Promise<any[]> => {
     const branchHasSameRepoPr = new Set<string>();
@@ -3720,8 +3781,46 @@ export function createPrService({
       candidateBranches.push(branch);
     }
 
+    if (candidateBranches.length === 0) return rawPulls;
+
+    // Backed-off branches drop out first so a rebuild where everything is in
+    // cooldown never pays for the git probe below.
+    const notBackedOff = candidateBranches.filter(
+      (branch) => !githubReadBackoff.isBackedOff(laneBranchLookupKey(repo, branch)),
+    );
+    if (notBackedOff.length === 0) return rawPulls;
+
+    // Drop branches that cannot have a PR before the budget is applied, not
+    // after — a never-pushed lane consuming one of the 12 slots is how a repo
+    // full of local-only lanes starves the lanes that do have PRs.
+    //
+    // Only on the open-list path. The history path exists to recover a merged
+    // PR sitting past the fetched page window, and GitHub (or ADE's own
+    // post-merge cleanup) deletes the head branch on merge — so the very PRs
+    // that path is for have no remote-tracking ref left to find. `git fetch
+    // --prune` erases it locally even when the remote branch survives.
+    const remoteTrackingBranches = options.skipUnpublishedBranches === true
+      ? await listRemoteTrackingBranches()
+      : null;
+    const eligibleBranches = remoteTrackingBranches === null || remoteTrackingBranches.size === 0
+      // Probe failed, history path, or the repo tracks no remote at all and we
+      // cannot tell a never-pushed branch from an unfetched one. Keep every
+      // lookup: hiding a PR badge is worse than spending a call.
+      ? notBackedOff
+      : notBackedOff.filter((branch) => remoteTrackingBranches.has(branch));
+    if (eligibleBranches.length !== candidateBranches.length) {
+      logger.debug("prs.targeted_lane_pull_lookups_filtered", {
+        owner: repo.owner,
+        repo: repo.name,
+        candidates: candidateBranches.length,
+        skippedBackoff: candidateBranches.length - notBackedOff.length,
+        skippedUnpublished: notBackedOff.length - eligibleBranches.length,
+        eligible: eligibleBranches.length,
+      });
+    }
+
     const MAX_TARGETED_LANE_PR_BRANCH_LOOKUPS = 12;
-    const targetedBranches = candidateBranches.slice(0, MAX_TARGETED_LANE_PR_BRANCH_LOOKUPS);
+    const targetedBranches = eligibleBranches.slice(0, MAX_TARGETED_LANE_PR_BRANCH_LOOKUPS);
     if (targetedBranches.length === 0) return rawPulls;
 
     const extras: any[] = [];
@@ -3730,7 +3829,7 @@ export function createPrService({
       TARGETED_LANE_PR_BRANCH_LOOKUP_CONCURRENCY,
       async (branch) => {
         try {
-          return await fetchAllPages<any>({
+          const pulls = await fetchAllPages<any>({
             path: `/repos/${repo.owner}/${repo.name}/pulls`,
             query: {
               state: "all",
@@ -3740,14 +3839,28 @@ export function createPrService({
             },
             maxPages: 1,
           });
+          githubReadBackoff.clear(laneBranchLookupKey(repo, branch));
+          return pulls;
         } catch (error) {
+          // `null`, not `[]`: "we do not know" rather than "this branch has no
+          // PRs". Arming the ladder is what stops the next rebuild from asking
+          // again, and the sentinel keeps the caller from ever folding a failed
+          // lookup into the snapshot as a confirmed-empty result.
+          githubReadBackoff.record(
+            laneBranchLookupKey(repo, branch),
+            error,
+            // A successful lookup buys quiet until the next snapshot rebuild.
+            // Floor on the shorter of the two rebuild windows so the ladder is
+            // never looser than the open-list cadence that drives it.
+            GITHUB_SNAPSHOT_TTL_MS,
+          );
           logger.warn("prs.github_snapshot_targeted_lane_pull_lookup_failed", {
             owner: repo.owner,
             repo: repo.name,
             branch,
             error: getErrorMessage(error),
           });
-          return [];
+          return null;
         }
       },
     );
@@ -4668,11 +4781,17 @@ export function createPrService({
     const pageSize = 100;
     const maxPages = args.maxPages ?? 10;
     for (let page = 1; page <= maxPages; page += 1) {
+      // The only place a GitHub read failure is tagged, and the snapshot
+      // rejection handler only arms its ladder on tagged errors. Every other
+      // GitHub call on the snapshot path either runs under `bestEffort` or
+      // catches per-branch, so nothing else can reject the rebuild today — a
+      // new one added there needs its own tag or it will silently fail to
+      // arm the backoff.
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: args.path,
         query: { ...(args.query ?? {}), per_page: pageSize, page }
-      });
+      }).catch((error: unknown) => { throw markGithubRequestError(error); });
       const batch = args.select ? args.select(data) : Array.isArray(data) ? (data as T[]) : [];
       out.push(...batch);
       if (batch.length < pageSize) break;
@@ -8941,11 +9060,25 @@ export function createPrService({
     historyPageLimit?: number;
     revalidate?: boolean;
     includeStateCounts?: boolean;
+    /**
+     * This `force` came from a background caller, so it must still respect the
+     * GitHub failure ladder.
+     *
+     * `force` means "do not serve me the TTL/projection cache". For a user
+     * pressing Refresh that also means "retry GitHub even if it is throttling
+     * us"; for a timer, a `prs-updated` reaction, or the poller it does not —
+     * and plenty of automatic callers legitimately need `force`, in the
+     * renderer as well as here, so `force` alone cannot be read as user intent.
+     *
+     * Modelled as an opt-out rather than a "userInitiated" opt-in because three
+     * transports reach `getGithubSnapshot` from the renderer (in-process IPC,
+     * the runtime action registry, and the sync remote command service). If one
+     * ever drops the field, an opt-out degrades to today's behavior; an opt-in
+     * would silently disable the user's Refresh button in a packaged build.
+     */
+    automaticRefresh?: boolean;
   };
 
-  const GITHUB_SNAPSHOT_TTL_MS = 120_000;
-  /** Freshness window for a snapshot that carries closed/merged history. */
-  const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
   const GITHUB_OPEN_SNAPSHOT_MAX_PAGES = 10;
   const GITHUB_HISTORY_INITIAL_PAGE_LIMIT = 2;
   const GITHUB_HISTORY_MAX_PAGE_LIMIT = 10;
@@ -8964,6 +9097,47 @@ export function createPrService({
     historyPageLimit: number;
     includeStateCounts: boolean;
   } | null = null;
+
+  // Negative cache for the snapshot fetch. A success buys GITHUB_SNAPSHOT_TTL_MS
+  // of quiet; before this, a failure bought zero, so a throttled GitHub turned
+  // every read, lane-visibility refresh, and focus reconcile back into a live
+  // request. The poller's own backoff never covered those callers.
+  //
+  // Keyed by repo, because the snapshot cache is repo-scoped too: re-pointing
+  // the project at a different GitHub repo must not replay the old repo's
+  // rate-limit error against the new one.
+  const githubSnapshotBackoffKey = (repo: GitHubRepoRef | null | undefined): string =>
+    `snapshot:${repoRefKey(repo) ?? "unknown"}`;
+
+  /**
+   * Bumped only when GitHub auth is dropped, so a request that was in flight
+   * across that change can tell its failure describes a credential nobody uses
+   * anymore. Deliberately not `githubSnapshotCacheEpoch`: that bumps on webhook
+   * ingest, PR mutations, and stack reconciles too, and gating on it meant a
+   * routine invalidation landing mid-fetch silently swallowed a real GitHub
+   * failure — the ladder would never arm exactly when the app was busiest.
+   */
+  let githubAuthGeneration = 0;
+
+  const recordGithubSnapshotFailure = (
+    repo: GitHubRepoRef | null | undefined,
+    error: unknown,
+  ): void => {
+    const { attempts, cooldownMs } = githubReadBackoff.record(
+      githubSnapshotBackoffKey(repo),
+      error,
+      // Always the open-list TTL, even when the closed-history variant failed.
+      // Open and history share one key, so flooring on the 10-minute history
+      // window would let opening History once during a blip suppress the cheap
+      // open-list refresh for ten minutes.
+      GITHUB_SNAPSHOT_TTL_MS,
+    );
+    logger.warn("prs.github_snapshot_failure_backoff", {
+      attempts,
+      cooldownMs,
+      error: getErrorMessage(error),
+    });
+  };
 
   const normalizeGithubHistoryPageLimit = (options: GithubSnapshotOptions = {}): number => {
     if (options.includeExternalClosed !== true) return 0;
@@ -9007,6 +9181,18 @@ export function createPrService({
   const clearGithubSnapshotAuthCache = (): void => {
     invalidateGithubSnapshotCache();
     githubSnapshotInFlight = null;
+    // Losing GitHub auth means a different quota and a different failure mode,
+    // so every ladder built against the old token — snapshot and per-branch
+    // alike — describes nothing. Leaving the per-branch ones armed hid lane PR
+    // badges for minutes after a successful reconnect.
+    //
+    // Note this fires on *disconnect* (the only caller is the not-connected
+    // branch of requireGithubSnapshotAuth). Swapping one working token for
+    // another keeps `connected` true and does not reach here, so a ladder armed
+    // by a repo-scoped 403 survives the swap; pressing Refresh is the escape
+    // hatch, since a user-initiated force skips the ladder entirely.
+    githubAuthGeneration += 1;
+    githubReadBackoff.clear();
   };
 
   const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
@@ -9409,6 +9595,7 @@ export function createPrService({
         branchesCoveredByProjections: options.includeExternalClosed === true
           ? sameRepoProjectionHeadBranches(repo, options)
           : null,
+        skipUnpublishedBranches: options.includeExternalClosed !== true,
       },
     );
     const observedStackNumbers = new Set<number>();
@@ -9473,7 +9660,21 @@ export function createPrService({
       invalidateGithubSnapshotCache();
     }
     const forceRequestEpoch = githubSnapshotCacheEpoch;
-    if (force && githubStatus.repo) {
+    /**
+     * The failure to replay for this repo, or null when GitHub is fair game.
+     *
+     * Read fresh at each call, never captured once: the awaits below can arm or
+     * clear the ladder from another in-flight request, and entries also expire
+     * lazily against `Date.now()`.
+     */
+    const snapshotBackoffError = (): Error | null =>
+      force && options.automaticRefresh !== true
+        ? null
+        : githubReadBackoff.lastError(githubSnapshotBackoffKey(githubStatus.repo));
+    // Stack reconciliation is a GitHub call of its own, so a forced-but-not
+    // user-initiated snapshot would spend one here before ever reaching the
+    // replay guard below.
+    if (force && githubStatus.repo && !snapshotBackoffError()) {
       await githubStackStore.reconcileRepository(
         githubStatus.repo,
         { notifySnapshotChanged: false },
@@ -9491,6 +9692,7 @@ export function createPrService({
       requestEpochOverride?: number,
     ): Promise<GitHubPrSnapshot> => {
       const requestEpoch = requestEpochOverride ?? githubSnapshotCacheEpoch;
+      const requestAuthGeneration = githubAuthGeneration;
       const includeExternalClosed = requestOptions.includeExternalClosed === true;
       const historyPageLimit = normalizeGithubHistoryPageLimit(requestOptions);
       const includeStateCounts = requestOptions.includeStateCounts === true
@@ -9504,6 +9706,9 @@ export function createPrService({
       };
       const request = getGithubSnapshotUncached(precheckedGithubStatus, requestOptions)
         .then((snapshot) => {
+          // GitHub answered, so the ladder describes nothing anymore — clear it
+          // even when the epoch moved on and this snapshot cannot be published.
+          githubReadBackoff.clear(githubSnapshotBackoffKey(precheckedGithubStatus.repo));
           const capturedAt = Date.now();
           const canPublishSnapshot =
             githubSnapshotInFlight === inFlight
@@ -9520,6 +9725,18 @@ export function createPrService({
             );
           }
           return canPublishSnapshot ? cachedGithubSnapshot ?? snapshot : snapshot;
+        }, (error) => {
+          // Only GitHub arms the GitHub ladder — a snapshot rebuild also reads
+          // lanes and SQLite, and a local hiccup must not silence GitHub.
+          //
+          // The generation check drops a failure from a request that was in
+          // flight when auth was dropped: without it the dead token's error
+          // arms the ladder and reads keep failing against a healthy token for
+          // the whole cooldown.
+          if (isGithubRequestError(error) && requestAuthGeneration === githubAuthGeneration) {
+            recordGithubSnapshotFailure(precheckedGithubStatus.repo, error);
+          }
+          throw error;
         })
         .finally(() => {
           if (githubSnapshotInFlight === inFlight) {
@@ -9529,6 +9746,24 @@ export function createPrService({
       inFlight = { request, includeExternalClosed, historyPageLimit, includeStateCounts };
       githubSnapshotInFlight = inFlight;
       return request;
+    };
+
+    /**
+     * Kick a background refresh for a caller that is being served cached or
+     * projected data, unless something says not to.
+     *
+     * The failure-ladder check is the reason both stale-cache and projection
+     * paths route through here: nothing republishes `cachedGithubSnapshotAt`
+     * when a fetch fails, so without it a stale snapshot re-arms the fetch on
+     * every single read for as long as GitHub stays down.
+     */
+    const maybeRevalidateInBackground = (revalidationOptions: GithubSnapshotOptions): void => {
+      if (revalidationOptions.revalidate === false) return;
+      if (snapshotBackoffError()) return;
+      if (githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) return;
+      void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
+        logger.warn("prs.github_snapshot_revalidation_failed", { error: getErrorMessage(error) });
+      });
     };
 
     const needsClosedHistory = options.includeExternalClosed === true;
@@ -9565,14 +9800,7 @@ export function createPrService({
               historyPageLimit: cachedGithubSnapshotHistoryPageLimit || GITHUB_HISTORY_INITIAL_PAGE_LIMIT,
             }
           : options;
-      if (options.revalidate !== false
-        && !githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
-        void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
-          logger.warn("prs.github_snapshot_revalidation_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
+      maybeRevalidateInBackground(revalidationOptions);
       return cachedSnapshot;
     }
     if (!force) {
@@ -9595,14 +9823,7 @@ export function createPrService({
           && githubPrStateCountsByRepo.has(githubPrStateCountsKey(projectedSnapshot.repo))
           ? { ...options, includeStateCounts: false }
           : options;
-        if (options.revalidate !== false
-          && !githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
-          void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
-            logger.warn("prs.github_snapshot_revalidation_failed", {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-        }
+        maybeRevalidateInBackground(revalidationOptions);
         return cachedGithubSnapshot ?? projectedSnapshot;
       }
     }
@@ -9610,6 +9831,13 @@ export function createPrService({
     if (!force && compatibleInFlight && githubSnapshotRequestSatisfies(compatibleInFlight, options)) {
       return compatibleInFlight.request;
     }
+
+    // Nothing local can answer this request and GitHub is still inside its
+    // failure ladder. Replay the recorded failure instead of spending the call.
+    // `snapshotBackoffError()` returns null for a user-initiated refresh, so
+    // pressing Refresh always reaches GitHub.
+    const replayError = snapshotBackoffError();
+    if (replayError) throw replayError;
 
     return startSnapshotRequest(
       githubStatus,
@@ -10715,7 +10943,7 @@ export function createPrService({
       // TTL-cached (120s) and single-flighted, so concurrent focus events
       // collapse onto one in-flight fetch — no stampede.
       try {
-        await getGithubSnapshot({ force: true });
+        await getGithubSnapshot({ force: true, automaticRefresh: true });
       } catch (error) {
         logger.warn("prs.reconcile_open_sweep_failed", { error: getErrorMessage(error) });
       }
@@ -10751,7 +10979,11 @@ export function createPrService({
           // projected (local github_pr_projections) snapshot when projections
           // exist and only dispatches the live fetch in the background, so the
           // merged/closed backfill never runs synchronously. This is the #402 heal.
-          await getGithubSnapshot({ force: true, includeExternalClosed: true });
+          await getGithubSnapshot({
+            force: true,
+            includeExternalClosed: true,
+            automaticRefresh: true,
+          });
           lastClosedSweepAtMs = Date.now();
           closedSwept = true;
         }
@@ -10793,7 +11025,8 @@ export function createPrService({
       // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
       // merged PR on the lane branch gets backfilled/mapped, then re-read.
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
-      // instead of returning possibly-stale local projections.
+      // instead of returning possibly-stale local projections. It is a direct
+      // user action, so it is also allowed past the GitHub failure ladder.
       await getGithubSnapshot({ force: true, includeExternalClosed: true });
       return withGithubStackMembership(
         getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
@@ -11144,7 +11377,9 @@ export function createPrService({
     },
 
     async discoverLanePullRequests(): Promise<PrSummary[]> {
-      await getGithubSnapshot({ force: true });
+      // Driven by prPollingService, not by a person — it keeps its own backoff
+      // and must not reopen the tap on a throttled GitHub.
+      await getGithubSnapshot({ force: true, automaticRefresh: true });
       return listRows().map(rowToSummary);
     },
 
