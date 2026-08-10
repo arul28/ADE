@@ -51,10 +51,7 @@ import {
   parseWakeReason,
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
-import {
-  resumeSettledSessionMachinery,
-  stopSettledSessionMachinery,
-} from "../sessions/sessionMachineryTeardown";
+import { stopSettledSessionMachinery } from "../sessions/sessionMachineryTeardown";
 import {
   getSessionLifecycleSettings,
   setSessionLifecycleSettings,
@@ -6983,10 +6980,6 @@ export function registerIpc({
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
       ctx.sessionService.unsettleSession(sessionId);
-      await resumeSettledSessionMachinery(
-        { sessionService: ctx.sessionService, agentChatService: ctx.agentChatService, logger: ctx.logger },
-        [sessionId],
-      );
     },
   );
 
@@ -7015,10 +7008,6 @@ export function registerIpc({
         (sessionId): sessionId is string => typeof sessionId === "string",
       );
       ctx.sessionService.unsettleSessions(unsettleIds);
-      await resumeSettledSessionMachinery(
-        { sessionService: ctx.sessionService, agentChatService: ctx.agentChatService, logger: ctx.logger },
-        unsettleIds,
-      );
     },
   );
 

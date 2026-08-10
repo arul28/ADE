@@ -48,6 +48,7 @@ import { createLaneTemplateService } from "../../desktop/src/main/services/lanes
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { releaseLaneRuntimeResources } from "../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import { resumeSettledSessionMachinery } from "../../desktop/src/main/services/sessions/sessionMachineryTeardown";
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
@@ -755,7 +756,27 @@ export async function createAdeRuntime(args: {
   // services. Session changes still use it once publishing is attached.
   let pushPublisherForPtySignals: PushPublisherService | null = null;
   let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
-  const sessionService = createSessionService({ db });
+  let sessionServiceRef: ReturnType<typeof createSessionService> | null = null;
+  // Late-bound for the same reason as the push publisher above: the chat
+  // service is constructed well after the session service that calls back into
+  // it when a settle is cleared.
+  let agentChatServiceForSettleResume:
+    | ReturnType<typeof createAgentChatService>
+    | null = null;
+  const sessionService = createSessionService({
+  db,
+  // Resume exactly the scheduled work settle paused, on every route that
+  // clears a settle — explicit unsettle and turn-start activity alike.
+  onSettleCleared: (sessionId) => {
+    const chat = agentChatServiceForSettleResume;
+    if (!chat) return;
+    void resumeSettledSessionMachinery(
+      { sessionService: sessionServiceRef!, agentChatService: chat, logger },
+      [sessionId],
+    ).catch(() => {});
+  },
+  });
+  sessionServiceRef = sessionService;
   sessionService.onChanged((event) => {
     pushEvent("runtime", { type: "terminal_session_changed", event });
     const session = sessionService.get(event.sessionId);
@@ -1431,6 +1452,7 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     aiIntegrationService,
   });
+  agentChatServiceForSettleResume = agentChatService;
   const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
     db,
     sessionService,

@@ -278,10 +278,7 @@ import type { ProductAnalyticsService } from "../../../../desktop/src/main/servi
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
-import {
-  resumeSettledSessionMachinery,
-  stopSettledSessionMachinery,
-} from "../../../../desktop/src/main/services/sessions/sessionMachineryTeardown";
+import { stopSettledSessionMachinery } from "../../../../desktop/src/main/services/sessions/sessionMachineryTeardown";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
@@ -4103,16 +4100,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("session.unsettleSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "session.unsettleSession requires sessionId.");
-    const ok = args.sessionService.unsettleSession(sessionId);
-    await resumeSettledSessionMachinery(
-      {
-        sessionService: args.sessionService,
-        agentChatService: args.agentChatService ?? null,
-        logger: args.logger,
-      },
-      [sessionId],
-    );
-    return { ok, sessionId };
+    return { ok: args.sessionService.unsettleSession(sessionId), sessionId };
   });
   // Bulk settle. `dismissPendingInput` is OPTIONAL and additive: mobile sends
   // it for the "Dismiss & settle" row action (the same thing desktop passes to
@@ -4154,16 +4142,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     return args.sessionService.settleSessions(sessionIds);
   });
   register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const unsettleIds = parseRemoteSessionIds(payload, "session.unsettleSessions");
-    args.sessionService.unsettleSessions(unsettleIds);
-    await resumeSettledSessionMachinery(
-      {
-        sessionService: args.sessionService,
-        agentChatService: args.agentChatService ?? null,
-        logger: args.logger,
-      },
-      unsettleIds,
-    );
+    args.sessionService.unsettleSessions(parseRemoteSessionIds(payload, "session.unsettleSessions"));
     return { ok: true };
   });
   register("session.snoozeSession", { viewerAllowed: true, queueable: true }, async (payload) => {

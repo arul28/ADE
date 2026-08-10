@@ -126,10 +126,7 @@ import {
   parseWakeReason,
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
-import {
-  resumeSettledSessionMachinery,
-  stopSettledSessionMachinery,
-} from "../sessions/sessionMachineryTeardown";
+import { stopSettledSessionMachinery } from "../sessions/sessionMachineryTeardown";
 import {
   getSessionLifecycleSettings,
   setSessionLifecycleSettings,
@@ -2147,13 +2144,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (!sessionService.unsettleSession(sessionId)) {
         throw new Error(`Session '${sessionId}' was not found.`);
       }
-      return (async () => {
-        await resumeSettledSessionMachinery(
-          { sessionService, agentChatService: runtime.agentChatService, logger: runtime.logger },
-          [sessionId],
-        );
-        return { ok: true, sessionId };
-      })();
+      return { ok: true, sessionId };
     },
     // Bulk settle/unsettle for renderer surfaces on remote-bound projects
     // (mirrors deleteSession's generic trust posture).
@@ -2204,13 +2195,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         ? record.sessionIds.filter((id): id is string => typeof id === "string")
         : [];
       sessionService.unsettleSessions(sessionIds);
-      return (async () => {
-        await resumeSettledSessionMachinery(
-          { sessionService, agentChatService: runtime.agentChatService, logger: runtime.logger },
-          sessionIds,
-        );
-        return { ok: true };
-      })();
+      return { ok: true };
     },
     // -----------------------------------------------------------------------
     // Snooze / wake / settle-override. Snooze is a synced VISIBILITY overlay:

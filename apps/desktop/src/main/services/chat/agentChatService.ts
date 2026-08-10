@@ -8374,6 +8374,9 @@ export function createAgentChatService(args: {
         defaultModelId: modelId,
         defaultReasoningEffort: reasoningEffort,
         resolveExecutionLane: resolveCtoExecutionLane,
+        // So the operator settle tears down the session's machinery like every
+        // other settle entry point rather than being the one path that skips it.
+        agentChatService: { stopBackgroundWork, setScheduledWorkPausedForSettle, listScheduledWork },
         laneService,
         prService: prService ?? null,
         fileService: fileService ?? null,
@@ -39351,39 +39354,37 @@ export function createAgentChatService(args: {
           // Those are exactly the ones that survived the old teardown.
           const control = getClaudeQueryControl(runtime.query);
           for (const taskId of [...runtime.liveBackgroundTaskIds]) {
-            // Same convention as `closeOpenClaudeBackgroundTasks`: a task ADE
-            // could not actually stop settles as FAILED with the reason, not as
-            // "stopped". Both close the row — leaving it open would keep the
-            // session claiming work forever — but only one of them claims ADE
-            // did the stopping.
-            let terminalStatus: ScheduledWorkEvent["status"] = "stopped";
-            let terminalSummary: string | undefined;
+            // A task ADE could not actually stop stays LIVE.
+            //
+            // Emitting a terminal row here would drop it from
+            // `liveBackgroundTaskIds`, which is what the caller measures the
+            // stop against — so a stop that failed, timed out, or found no stop
+            // control would be counted as a stop that worked, and the settled
+            // row would hide a process still burning tokens. Leaving it live is
+            // self-correcting: the SDK's next authoritative level drains it if
+            // it really did end.
             if (typeof control.stopTask !== "function") {
-              terminalStatus = "failed";
-              terminalSummary = "The Claude query did not expose a task stop control.";
-            } else {
-              try {
-                await awaitClaudeControlCall(
-                  `Stopping Claude background task '${taskId}'`,
-                  CLAUDE_STOP_TASK_TIMEOUT_MS,
-                  () => control.stopTask!(taskId),
-                );
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                terminalStatus = "failed";
-                terminalSummary = `Failed to stop background task: ${message}`;
-                logger.warn("agent_chat.settle_background_stop_failed", {
-                  sessionId: managed.session.id,
-                  taskId,
-                  error: message,
-                });
-              }
+              logger.warn("agent_chat.settle_background_stop_unavailable", {
+                sessionId: managed.session.id,
+                taskId,
+              });
+              continue;
             }
-            emitClaudeBackgroundTaskUpdate(managed, runtime, {
-              taskId,
-              status: terminalStatus,
-              ...(terminalSummary ? { summary: terminalSummary } : {}),
-            });
+            try {
+              await awaitClaudeControlCall(
+                `Stopping Claude background task '${taskId}'`,
+                CLAUDE_STOP_TASK_TIMEOUT_MS,
+                () => control.stopTask!(taskId),
+              );
+            } catch (error) {
+              logger.warn("agent_chat.settle_background_stop_failed", {
+                sessionId: managed.session.id,
+                taskId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              continue;
+            }
+            emitClaudeBackgroundTaskUpdate(managed, runtime, { taskId, status: "stopped" });
           }
           break;
         }

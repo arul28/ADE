@@ -210,11 +210,16 @@ and in tests.
   `apps/desktop/src/main/services/sessions/sessionMachineryTeardown.ts`. It
   pauses the session's scheduled work — pauses rather than cancels, and the
   pause is durable, so it carries an exact undo: the scheduler records which
-  sessions **settle** paused (`settlePausedSessionIds`) and every unsettle path
-  runs `resumeSettledSessionMachinery`, which resumes only those. A pause the
-  user took deliberately is never claimed and never resumed, and background
-  work is never restarted — ADE cannot re-spawn a shell it stopped. It also
-  calls
+  sessions **settle** paused (`settlePausedSessionIds`), and
+  `sessionService`'s `onSettleCleared` hook runs `resumeSettledSessionMachinery`
+  for every route that clears a settle. The hook sits at the column write rather
+  than in each caller because the most common unsettle is implicit —
+  `clearTurnStartMarkers`, i.e. a user sending the next message — and
+  per-caller wiring silently skipped it. A pause the user took deliberately is
+  never claimed and never resumed, and background work is never restarted: ADE
+  cannot re-spawn a shell it stopped. Settle itself is still explicit per entry
+  point because teardown must finish *before* the write; that includes the CTO
+  operator's `settleSession` tool. It also calls
   `agentChatService.stopBackgroundWork`, which stops every live child before
   the parent. **Terminal panes stay open**: an agent's background shell is
   thread background work, but a pane the user opened is theirs, and closing it

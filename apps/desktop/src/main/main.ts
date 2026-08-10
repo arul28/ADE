@@ -82,6 +82,7 @@ import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLock
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecycle";
+import { resumeSettledSessionMachinery } from "./services/sessions/sessionMachineryTeardown";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import { createSessionService } from "./services/sessions/sessionService";
@@ -2870,7 +2871,21 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
     });
 
-    const sessionService = createSessionService({ db });
+    let sessionServiceRef: ReturnType<typeof createSessionService> | null = null;
+    const sessionService = createSessionService({
+    db,
+    // Resume exactly the scheduled work settle paused, on every route that
+    // clears a settle — explicit unsettle and turn-start activity alike.
+    onSettleCleared: (sessionId) => {
+      const chat = agentChatServiceRef;
+      if (!chat) return;
+      void resumeSettledSessionMachinery(
+        { sessionService: sessionServiceRef!, agentChatService: chat, logger },
+        [sessionId],
+      ).catch(() => {});
+    },
+  });
+    sessionServiceRef = sessionService;
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
     });

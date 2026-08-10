@@ -24,6 +24,10 @@ import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { createSessionService } from "../../sessions/sessionService";
+import {
+  stopSettledSessionMachinery,
+  type SessionMachineryTeardownDeps,
+} from "../../sessions/sessionMachineryTeardown";
 import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
@@ -55,6 +59,12 @@ export interface CtoOperatorToolDeps {
     | "wakeSession"
     | "clearWokeMarker"
   >;
+  /**
+   * Only used to tear down what a settled session owns. Optional so the tools
+   * stay constructible without a chat runtime; absent, the settle still files
+   * the row, it just cannot stop the row's machinery.
+   */
+  agentChatService?: SessionMachineryTeardownDeps["agentChatService"];
   testService?: {
     listSuites: () => TestSuiteDefinition[];
     run: (args: { laneId: string; suiteId: string }) => Promise<TestRunSummary>;
@@ -552,6 +562,18 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ sessionId, outcome }) => {
       try {
+        // The operator settle is a real settle, so it stops the session's
+        // machinery like every other one. Without this the CTO could file a
+        // chat whose monitors kept polling and whose background fleet kept
+        // spending — the exact bug settle teardown exists to close, preserved
+        // in the one path that bypassed the shared entry points.
+        await stopSettledSessionMachinery(
+          {
+            sessionService: deps.sessionService,
+            agentChatService: deps.agentChatService ?? null,
+          },
+          [sessionId],
+        );
         const ok = deps.sessionService.settleSession(sessionId, {
           ...(outcome ? { outcome } : {}),
           source: "operator",

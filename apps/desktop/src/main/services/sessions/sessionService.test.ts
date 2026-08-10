@@ -66,6 +66,49 @@ afterEach(async () => {
 });
 
 describe("sessionService resume metadata", () => {
+  it("reports every route that clears a settle, including turn-start activity", async () => {
+    // Settle teardown pauses the session's scheduled work durably, so every
+    // route that un-settles has to resume it. Wiring that into each caller left
+    // `clearTurnStartMarkers` — a user simply sending the next message, the
+    // most common unsettle there is — silently bypassing the resume, so the
+    // hook lives at the column write instead.
+    const projectRoot = makeProjectRoot("ade-session-service-settle-cleared-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const cleared: string[] = [];
+    const svc = createSessionService({ db, onSettleCleared: (id) => cleared.push(id) });
+    for (const id of ["s-1", "s-2"]) {
+      svc.create({
+        sessionId: id,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: id,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${id}.log`,
+        toolType: "codex-chat",
+      });
+    }
+
+    svc.settleSession("s-1");
+    svc.unsettleSession("s-1");
+    expect(cleared).toEqual(["s-1"]);
+
+    svc.settleSession("s-1");
+    svc.clearTurnStartMarkers("s-1");
+    expect(cleared).toEqual(["s-1", "s-1"]);
+
+    svc.settleSession("s-2");
+    svc.unsettleSessions(["s-1", "s-2"]);
+    expect(cleared.slice(2)).toEqual(["s-1", "s-2"]);
+
+    // A missing row changes nothing, so it must not announce a clear.
+    svc.unsettleSession("nope");
+    expect(cleared).toHaveLength(4);
+  });
+
+
   it("reads terminal scrollback transparently from a compressed log", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-gzip-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
