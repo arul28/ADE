@@ -153,13 +153,15 @@ describe("fold equivalence: text", () => {
     expect(events).toHaveLength(3);
   });
 
-  it("interleaved messages each fold to what a client derives", () => {
+  it("does not fold two messages interleaved with each other", () => {
+    // iOS merges by item id across gaps; desktop merges only into the previous
+    // row and would keep four rows. They diverge, so nothing folds.
     const a = [textEvent("alpha ", 1, "msg_a"), textEvent("beta", 3, "msg_a")];
     const b = [textEvent("gamma ", 2, "msg_b"), textEvent("delta", 4, "msg_b")];
-    const { events } = foldChatEventEnvelopesForReplay([a[0]!, b[0]!, a[1]!, b[1]!]);
-    expect(events).toHaveLength(2);
-    expect((events[0]!.event as unknown as { text: string }).text).toBe(clientFoldText(a));
-    expect((events[1]!.event as unknown as { text: string }).text).toBe(clientFoldText(b));
+    const input = [a[0]!, b[0]!, a[1]!, b[1]!];
+    const { events, foldedAwayCount } = foldChatEventEnvelopesForReplay(input);
+    expect(foldedAwayCount).toBe(0);
+    expect(events).toEqual(input);
   });
 
   it("does not fold deltas without a stable id — clients merge those by adjacency", () => {
@@ -170,6 +172,34 @@ describe("fold equivalence: text", () => {
     const { events, foldedAwayCount } = foldChatEventEnvelopesForReplay(input);
     expect(foldedAwayCount).toBe(0);
     expect(events).toEqual(input);
+  });
+
+  it("does not fold text deltas separated by a non-text event", () => {
+    // Desktop merges into rows[rows.length - 1] and only when that row is a
+    // text row, so a tool call between two deltas ends the run. Folding across
+    // it would move the tool call after the whole message.
+    const input = [
+      textEvent("A", 1),
+      envelope({ type: "tool_call", tool: "grep", itemId: "tc", turnId: "turn_1" }, 2),
+      textEvent("B", 3),
+    ];
+    const { events, foldedAwayCount } = foldChatEventEnvelopesForReplay(input);
+    expect(foldedAwayCount).toBe(0);
+    expect(events.map((e) => (e.event as unknown as { type: string }).type))
+      .toEqual(["text", "tool_call", "text"]);
+  });
+
+  it("resumes folding after the interruption without merging across it", () => {
+    const input = [
+      textEvent("A", 1),
+      textEvent("B", 2),
+      envelope({ type: "tool_call", tool: "grep", itemId: "tc", turnId: "turn_1" }, 3),
+      textEvent("C", 4),
+      textEvent("D", 5),
+    ];
+    const { events } = foldChatEventEnvelopesForReplay(input);
+    expect(events.map((e) => (e.event as unknown as { text?: string }).text ?? "tool"))
+      .toEqual(["AB", "tool", "CD"]);
   });
 
   it("folds reasoning on the same rule as text", () => {
