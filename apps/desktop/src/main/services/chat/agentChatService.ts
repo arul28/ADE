@@ -8374,9 +8374,6 @@ export function createAgentChatService(args: {
         defaultModelId: modelId,
         defaultReasoningEffort: reasoningEffort,
         resolveExecutionLane: resolveCtoExecutionLane,
-        // So the operator settle tears down the session's machinery like every
-        // other settle entry point rather than being the one path that skips it.
-        agentChatService: { stopBackgroundWork },
         laneService,
         prService: prService ?? null,
         fileService: fileService ?? null,
@@ -14626,26 +14623,6 @@ export function createAgentChatService(args: {
       const emittedByProvider = stopState?.emitted === true;
       if (stopState && !emittedByProvider) {
         stopState.emitted = true;
-      }
-      // A stop we ATTEMPTED and could not confirm leaves the task live.
-      //
-      // Emitting a terminal row drops the task from `liveBackgroundTaskIds`,
-      // which is what `runtimeBackgroundWork` derives the row's user-visible
-      // liveness from — so an unconfirmed stop would make the session go quiet
-      // over a shell that is still running, which is the exact lie this whole
-      // feature exists to remove. Self-correcting: the SDK's next authoritative
-      // `background_tasks_changed` level drains it if it really did end.
-      //
-      // Only applies to a failed STOP. A turn-end close (`status: "completed"`)
-      // attempts nothing, so it still settles the row as before.
-      const stopAttemptFailed = canStopProviderTask && terminalStatus === "failed";
-      if (stopAttemptFailed) {
-        logger.warn("agent_chat.claude_background_stop_unconfirmed", {
-          sessionId: managed.session.id,
-          taskId,
-          summary: terminalSummary,
-        });
-        return;
       }
       if (!emittedByProvider) {
         emitClaudeBackgroundTaskUpdate(managed, runtime, {
@@ -39347,112 +39324,6 @@ export function createAgentChatService(args: {
    * stop, which silently inflated any before/after measurement. The number had
    * no consumer, so it is gone rather than approximated.
    */
-  const stopBackgroundWork = async (
-    { sessionId }: { sessionId: string },
-  ): Promise<{ skippedActiveTurn: boolean }> => {
-    const managed = managedSessions.get(sessionId.trim());
-    if (!managed || managed.closed || managed.deleted) return { skippedActiveTurn: false };
-    const runtime = managed.runtime;
-    if (!runtime) return { skippedActiveTurn: false };
-
-    // A live turn's own subagents are work the user can see happening, so they
-    // are never killed here. Its BACKGROUND work is different: the agent already
-    // detached it, it outlives the turn by construction, and an explicit settle
-    // is the user saying they are done with it. Skipping everything while a turn
-    // ran meant a settle during a turn tore down nothing at all, and the row
-    // then went quiet over shells that were still running.
-    const turnActive = managed.session.status === "active" || Boolean(runtime.activeTurnId);
-    if (totalBackgroundWork(runtimeBackgroundWork(runtime)) === 0) {
-      return { skippedActiveTurn: turnActive };
-    }
-
-    try {
-      switch (runtime.kind) {
-        case "claude": {
-          // Children first: this drains workflow agents, then subagents, then
-          // the background shells each of them owns. Skipped mid-turn — those
-          // subagents belong to the turn the user is watching.
-          if (!turnActive) {
-            await stopActiveClaudeSubagents(
-              managed,
-              runtime,
-              runtime.activeTurnId ?? undefined,
-              "Stopped when the session was settled",
-            );
-          }
-          // Anything still on the authoritative level had no `activeSubagents`
-          // entry to be reached through — a plain backgrounded shell, usually.
-          // Those are exactly the ones that survived the old teardown.
-          const control = getClaudeQueryControl(runtime.query);
-          for (const taskId of [...runtime.liveBackgroundTaskIds]) {
-            // A task ADE could not actually stop stays LIVE.
-            //
-            // Emitting a terminal row here would drop it from
-            // `liveBackgroundTaskIds`, which is what the caller measures the
-            // stop against — so a stop that failed, timed out, or found no stop
-            // control would be counted as a stop that worked, and the settled
-            // row would hide a process still burning tokens. Leaving it live is
-            // self-correcting: the SDK's next authoritative level drains it if
-            // it really did end.
-            if (typeof control.stopTask !== "function") {
-              logger.warn("agent_chat.settle_background_stop_unavailable", {
-                sessionId: managed.session.id,
-                taskId,
-              });
-              continue;
-            }
-            try {
-              await awaitClaudeControlCall(
-                `Stopping Claude background task '${taskId}'`,
-                CLAUDE_STOP_TASK_TIMEOUT_MS,
-                () => control.stopTask!(taskId),
-              );
-            } catch (error) {
-              logger.warn("agent_chat.settle_background_stop_failed", {
-                sessionId: managed.session.id,
-                taskId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              continue;
-            }
-            emitClaudeBackgroundTaskUpdate(managed, runtime, { taskId, status: "stopped" });
-          }
-          break;
-        }
-        case "cursor": {
-          // A cloud run is the turn's own execution, not detached background
-          // work, so a live turn keeps it.
-          if (turnActive) break;
-          const agentId = managed.session.cursorCloudAgentId;
-          if (!agentId) break;
-          for (const runId of [...runtime.cloudRuns.keys()]) {
-            await cancelCursorCloudRun({ agentId, runId }).catch((error: unknown) => {
-              logger.warn("agent_chat.settle_cloud_cancel_failed", {
-                sessionId: managed.session.id,
-                runId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          }
-          break;
-        }
-        default:
-          // Codex reports background subagents but exposes no per-subagent stop
-          // control, and opencode/droid/pi report no background work at all.
-          // Clearing ADE's tracking without actually stopping anything would
-          // make the row lie, so this is deliberately a no-op for them.
-          break;
-      }
-    } catch (error) {
-      logger.warn("agent_chat.settle_background_teardown_failed", {
-        sessionId: managed.session.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return { skippedActiveTurn: turnActive };
-  };
-
-
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
@@ -44334,7 +44205,6 @@ export function createAgentChatService(args: {
     getSessionSummary,
     ensureSessionSurface,
     hasActiveWorkloads,
-    stopBackgroundWork,
     hasRetainableSessions,
     countActiveForLane,
     disposeForLane,

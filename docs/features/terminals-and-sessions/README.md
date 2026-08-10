@@ -205,32 +205,17 @@ and in tests.
   presenting a false live/green agent.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
-  registry. Settle stops the machinery the session owns before it writes the
-  lifecycle column — see
-  `apps/desktop/src/main/services/sessions/sessionMachineryTeardown.ts`. It
-  calls `agentChatService.stopBackgroundWork`, which stops every live child
-  before the parent. Every settle entry point runs it, including the CTO
-  operator's `settleSession` tool, because the teardown has to finish *before*
-  the lifecycle write. **Scheduled work is deliberately left running**: pausing
-  it would be durable, and `settled_at` is cleared from seven places (including
-  the hot `setLastOutputPreview` path), so a pause without a complete undo would
-  silently disable a user's own monitors and crons forever. ADE's scheduled work
-  is already visible and user-manageable (`scheduledWork` / `nextWakeAt` on the
-  summary, a per-session pause toggle), and `canonicalSessionState` already
-  handles a settled chat woken by a schedule — green while the turn streams,
-  then re-settled. **Terminal panes stay open**: an agent's background shell is
-  thread background work, but a pane the user opened is theirs, and closing it
-  on settle would destroy scrollback nobody asked to lose. An ACTIVE foreground
-  turn is also left alone — its subagents are work the user can see happening,
-  and the row un-settles on its own activity anyway. What escapes is stated
-  rather than pretended away: processes an agent detached with
-  `nohup`/`setsid`/`disown` leave ADE's tree entirely, and Codex background
-  subagents are reported but expose no stop control. Every settle entry point
-  runs it — the single/bulk ADE actions, the `sessions.settle`/`settleMany`
-  IPC handlers, the `session.settle*` sync commands, and the PR-merge
-  auto-settle (which files a session even when it still owns scheduled work or
-  a live background task, and is therefore the path most likely to file one
-  that is still running something).
+  registry. Settle writes lifecycle state only — it deliberately does NOT stop
+  the session's background work. That was attempted and removed: teardown is
+  async, and `settled_at` is written and cleared from seven places, so a
+  teardown-then-write settle races real activity (a user starting a turn during
+  a provider stop call gets their background work stopped AND no settle), and
+  every guard tried against it either read a column that turn-start never
+  updates or had to be repeated at each of the settle entry points. Making
+  settle stop work needs a synchronous lifecycle revision that teardown can be
+  serialized against; it is not a wrapper around the existing write. Archive is
+  the one lifecycle path that does stop processes — see
+  `laneService.archive`, where the ordering is load-bearing.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native

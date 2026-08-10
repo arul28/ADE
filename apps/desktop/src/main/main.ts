@@ -3588,8 +3588,6 @@ app.whenReady().then(async () => {
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
       sessionService,
-      agentChatService,
-      logger,
       emitEvent: emitPrEvent,
     });
     laneTeardownDeps.agentChatService = {

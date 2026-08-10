@@ -11,10 +11,6 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import { isChatToolType } from "../sessions/chatSessionProjection";
-import {
-  stopSettledSessionMachinery,
-  type SessionMachineryTeardownDeps,
-} from "../sessions/sessionMachineryTeardown";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
   const mergedMs = Date.parse(mergedAt ?? "");
@@ -67,13 +63,6 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsWithOutcome">;
-  /**
-   * Optional so the service stays constructible in tests and headless hosts
-   * without a chat runtime. Absent, the settle still files the row — it just
-   * cannot stop what the row owns, which is the pre-teardown behaviour.
-   */
-  agentChatService?: SessionMachineryTeardownDeps["agentChatService"];
-  logger?: SessionMachineryTeardownDeps["logger"];
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
@@ -196,20 +185,6 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        //
-        // Because this path deliberately bypasses the settlement blockers, it
-        // is the one most likely to file a session that IS still running
-        // something — which is exactly why the teardown has to run here too.
-        // Without it, the merged lane's monitors kept polling and woke the
-        // thread hours after the PR landed.
-        await stopSettledSessionMachinery(
-          {
-            sessionService: args.sessionService,
-            agentChatService: args.agentChatService ?? null,
-            logger: args.logger ?? null,
-          },
-          [session.id],
-        );
         settledSessionIds.push(...args.sessionService.settleSessionsWithOutcome(
           [session.id],
           `PR #${pr.githubPrNumber} merged`,

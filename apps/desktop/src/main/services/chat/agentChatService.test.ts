@@ -11833,12 +11833,6 @@ describe("createAgentChatService", () => {
       // never in the quiet column.
       expect(live?.backgroundWork).toEqual({ workingCount: 3, monitoringCount: 1 });
 
-      // A live turn's own subagents are spared — they are work the user can see
-      // happening. Its DETACHED background work is not: the agent already
-      // backgrounded it, so an explicit settle stops it even mid-turn. Skipping
-      // everything mid-turn meant a settle during a turn tore down nothing.
-      await expect(service.stopBackgroundWork({ sessionId: session.id }))
-        .resolves.toEqual({ skippedActiveTurn: true });
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
