@@ -138,6 +138,50 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testAtSelectionRangePreservesTrailingProseAfterRootLevelSpacedFilePrefix() {
+    let text = "ask @my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:my file",
+      kind: .at,
+      title: "my file",
+      subtitle: nil,
+      insertText: "@my file"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "my ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@my " as NSString).length)
+    )
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @my file review this"
+    )
+  }
+
+  func testConfirmedFileChipTerminatesBeforeTrailingProse() {
+    let text = "ask @src/foo.swift about this" as NSString
+    let match = try! XCTUnwrap(detect(text as String))
+    let chipRange = NSRange(location: 4, length: ("@src/foo.swift" as NSString).length)
+
+    XCTAssertTrue(
+      WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+        match,
+        in: text,
+        chipRanges: [chipRange]
+      )
+    )
+    XCTAssertFalse(
+      WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+        try! XCTUnwrap(detect("ask @src/foo.swift")),
+        in: "ask @src/foo.swift" as NSString,
+        chipRanges: [chipRange]
+      )
+    )
+  }
+
   func testFileSearchQueryPreservesPathBeforeTrailingProse() {
     XCTAssertEqual(
       WorkComposerTriggerDetector.fileSearchQuery(for: "src/foo.ts about this"),

@@ -562,7 +562,7 @@ describe("fileService", () => {
     }
   });
 
-  it("matches a root-level extensionless file before trailing prose", async () => {
+  it("matches a root-level spaced extensionless file before trailing prose", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-root-spaced-prose-"));
     const { execSync } = await import("node:child_process");
     execSync("git init", { cwd: rootPath, stdio: "ignore" });
@@ -570,15 +570,15 @@ describe("fileService", () => {
     const service = createFileService({ laneService });
 
     try {
-      fs.writeFileSync(path.join(rootPath, "README"), "extensionless root file\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "my file"), "extensionless root file\n", "utf8");
 
       const quickOpen = await service.quickOpen({
         workspaceId: "workspace-1",
-        query: "README review this",
+        query: "my review this",
         includeIgnored: true,
       });
 
-      expect(quickOpen.map((item) => item.path)).toContain("README");
+      expect(quickOpen.map((item) => item.path)).toContain("my file");
     } finally {
       removeTestTree(rootPath);
     }

@@ -13,6 +13,8 @@ export type ComposerTrigger = {
   start: number;
 };
 
+export type ComposerSelectionKind = "file" | "mention";
+
 // Both triggers must sit at a word boundary (start of text or after
 // whitespace) and their token must run to the cursor. The slash token is a
 // command name only: no whitespace and no `/` inside, so paths like
@@ -58,12 +60,16 @@ function composerPathBasename(pathValue: string): string {
   return separator >= 0 ? pathValue.slice(separator + 1) : pathValue;
 }
 
-function composerPathPrefixForSelection(query: string, selectedLabel: string): string {
-  if (!/[\\/]/.test(selectedLabel)) return "";
+function composerPathPrefixForSelection(
+  query: string,
+  selectedLabel: string,
+  allowRootLevelFile: boolean,
+): string {
+  if (!allowRootLevelFile && !/[\\/]/.test(selectedLabel)) return "";
   const words = query.trim().split(/[ \t]+/).filter(Boolean);
   for (let wordCount = words.length - 1; wordCount > 0; wordCount -= 1) {
     const prefix = words.slice(0, wordCount).join(" ");
-    if (!/[\\/]/.test(prefix)) continue;
+    if (!allowRootLevelFile && !/[\\/]/.test(prefix)) continue;
     if (selectedLabel.toLowerCase().startsWith(prefix.toLowerCase())) return prefix;
   }
   return "";
@@ -79,6 +85,7 @@ function composerPathPrefixForSelection(query: string, selectedLabel: string): s
 export function composerTriggerForSelection(
   trigger: ComposerTrigger,
   label: string,
+  selectionKind: ComposerSelectionKind = "mention",
 ): ComposerTrigger {
   const selectedLabel = label.trim();
   if (trigger.type !== "at" || !selectedLabel) return trigger;
@@ -101,7 +108,11 @@ export function composerTriggerForSelection(
   // what the user typed before adding prose (for example, `src/my review`
   // selecting `src/my folder`). Preserve that accepted prefix as the splice
   // boundary without applying this heuristic to ordinary chat titles.
-  addCandidateLabel(composerPathPrefixForSelection(trigger.query, selectedLabel));
+  addCandidateLabel(composerPathPrefixForSelection(
+    trigger.query,
+    selectedLabel,
+    selectionKind === "file",
+  ));
 
   for (const candidateLabel of candidateLabels) {
     const matchedPrefix = trigger.query.slice(0, candidateLabel.length);

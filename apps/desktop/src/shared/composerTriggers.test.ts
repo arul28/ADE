@@ -121,7 +121,7 @@ describe("replaceComposerTriggerSpan", () => {
   it("narrows shorthand file labels without consuming trailing prose", () => {
     const text = "ask @foo.ts about this";
     const trigger = detectComposerTrigger(text, text.length)!;
-    const selected = composerTriggerForSelection(trigger, "src/foo.ts");
+    const selected = composerTriggerForSelection(trigger, "src/foo.ts", "file");
 
     expect(selected.query).toBe("foo.ts ");
     expect(replaceComposerTriggerSpan(text, selected, "@src/foo.ts ").text).toBe("ask @src/foo.ts about this");
@@ -130,7 +130,7 @@ describe("replaceComposerTriggerSpan", () => {
   it("narrows a spaced extensionless basename without consuming trailing prose", () => {
     const text = "ask @my folder about this";
     const trigger = detectComposerTrigger(text, text.length)!;
-    const selected = composerTriggerForSelection(trigger, "src/my folder");
+    const selected = composerTriggerForSelection(trigger, "src/my folder", "file");
 
     expect(selected.query).toBe("my folder ");
     expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe("ask @src/my folder about this");
@@ -139,12 +139,24 @@ describe("replaceComposerTriggerSpan", () => {
   it("preserves prose after an extensionless path-prefix match", () => {
     const text = "ask @src/my review this";
     const trigger = detectComposerTrigger(text, text.length)!;
-    const selected = composerTriggerForSelection(trigger, "src/my folder");
+    const selected = composerTriggerForSelection(trigger, "src/my folder", "file");
 
     expect(selected.query).toBe("src/my ");
     expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe(
       "ask @src/my folder review this",
     );
+  });
+
+  it("narrows a root-level spaced file prefix without consuming trailing prose", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "my file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@my file ").text).toBe(
+      "ask @my file review this",
+    );
+    expect(composerTriggerForSelection(trigger, "my file", "mention")).toEqual(trigger);
   });
 
   it("recognizes a confirmed @ token as a terminated trigger", () => {

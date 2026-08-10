@@ -2888,7 +2888,11 @@ export function AgentChatComposer({
     const detectedContext = getRichTriggerContext();
     if (!detectedContext) return false;
     const trigger = "triggerLabel" in insertion
-      ? composerTriggerForSelection(detectedContext.trigger, insertion.triggerLabel ?? "")
+      ? composerTriggerForSelection(
+        detectedContext.trigger,
+        insertion.triggerLabel ?? "",
+        insertion.chipKind === "file" ? "file" : "mention",
+      )
       : detectedContext.trigger;
     const context = trigger.query === detectedContext.trigger.query
       ? detectedContext
@@ -3996,7 +4000,7 @@ export function AgentChatComposer({
           insertTextIntoRichEditor(`@${item.path} `);
         }
       } else {
-        const trigger = composerTriggerForSelection(commandMenuTrigger, item.path);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.path, "file");
         const next = replaceComposerTriggerSpan(draft, trigger, `@${item.path} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
@@ -4018,7 +4022,7 @@ export function AgentChatComposer({
           insertTextIntoRichEditor(`${token} `);
         }
       } else {
-        const trigger = composerTriggerForSelection(commandMenuTrigger, item.mention.title);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.mention.title, "mention");
         const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);

@@ -213,18 +213,39 @@ enum WorkComposerTriggerDetector {
 
   /// Keep extensionless path prefixes separate from prose when the selected
   /// file's canonical path continues past the words typed before that prose.
-  /// Ordinary multiword chat titles intentionally do not use this heuristic.
   static func pathPrefixForSelection(query: String, selectedLabel: String) -> String {
-    guard selectedLabel.contains(where: { $0 == "/" || $0 == "\\" }) else { return "" }
     let words = query.split(whereSeparator: { $0 == " " || $0 == "\t" })
     guard words.count > 1 else { return "" }
 
     for wordCount in stride(from: words.count - 1, through: 1, by: -1) {
       let prefix = words.prefix(wordCount).joined(separator: " ")
-      guard prefix.contains("/") || prefix.contains("\\") else { continue }
       if selectedLabel.lowercased().hasPrefix(prefix.lowercased()) { return prefix }
     }
     return ""
+  }
+
+  /// A committed @ chip is complete once the following character is whitespace.
+  /// The live detector still accepts spaces for multiword queries, so the chip
+  /// range must explicitly terminate that otherwise ambiguous trigger.
+  static func hasConfirmedChipPrefix(
+    _ match: WorkComposerTriggerMatch,
+    in text: NSString,
+    chipRanges: [NSRange]
+  ) -> Bool {
+    guard match.kind == .at else { return false }
+    let matchEnd = NSMaxRange(match.range)
+    for chipRange in chipRanges {
+      guard chipRange.location == match.range.location,
+            chipRange.location >= 0,
+            NSMaxRange(chipRange) <= matchEnd,
+            NSMaxRange(chipRange) < text.length,
+            text.character(at: chipRange.location) == 0x40 else { continue }
+      let following = text.character(at: NSMaxRange(chipRange))
+      if following == 0x20 || following == 0x09 || following == 0x0A || following == 0x0D {
+        return true
+      }
+    }
+    return false
   }
 
   /// Keep prose typed after a selected @ item outside the replacement range.
@@ -1276,8 +1297,15 @@ struct WorkComposerTextView: UIViewRepresentable {
         in: textView.text as NSString,
         cursor: selection.location
       )
-      applyPromptInputTraits(protectingTrigger: match != nil)
-      parent.controller.update(match: match)
+      let resolvedMatch = match.flatMap { candidate in
+        WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+          candidate,
+          in: textView.text as NSString,
+          chipRanges: chips.map { $0.range }
+        ) ? nil : candidate
+      }
+      applyPromptInputTraits(protectingTrigger: resolvedMatch != nil)
+      parent.controller.update(match: resolvedMatch)
     }
 
     func commit(_ suggestion: WorkComposerSuggestion, replacing range: NSRange) {
