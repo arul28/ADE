@@ -377,6 +377,48 @@ scaffold through Git, but live chat/process state converges
 only when they join the same sync cluster (i.e. point at the same
 running sync authority).
 
+### Host-authoritative columns are peer-scoped
+
+Replication is not only a question of which *tables* cross the boundary. A few
+columns on tables that do replicate are decisions only the host can make, and
+the host refuses to let a controller author them.
+
+The current set is `terminal_sessions.settled_at`, `settle_override`, and
+`settle_source` (`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE` in `syncHostService.ts`).
+A settle is decided by `sessionService`, the only place that can weigh it
+against live work. Because the table replicates and cr-sqlite merges
+last-writer-wins per column, a controller that writes its own optimistic
+`settled_at` sends a value carrying no host lifecycle revision — and it merges
+in regardless of what the host decided, so a host that *rejected* the settle
+still ends up with a settled row. That is a guard defeated by a merge rather
+than by a caller, which no amount of host-side checking closes.
+
+The filter drops those columns from inbound changesets **from phone peers
+only**. Two properties make it different from the table-level
+`SYNC_HOST_AUTHORITATIVE_TABLES` rule:
+
+- **It is peer-scoped, and deliberately so.** A paired desktop runs the same
+  `sessionService` chokepoint, so its settle writes are host-decided too and
+  must keep replicating; broadening the filter would silently stop settle
+  propagating between two of one user's machines.
+- **It is a compatibility guard, not a security boundary.** `isMobileChangesetPeer`
+  reads the peer's own `hello` metadata, so it holds against an older iOS build
+  — which declares itself honestly — and not against a peer that lies. Current
+  iOS never writes these columns at all; it shows an in-flight settle through a
+  local overlay instead (`PendingSessionSettleStates.swift`).
+
+The drop is silent and per-column: the rest of the batch applies, including the
+phone's own snooze overlay (`snoozed_until` / `snoozed_at` / `woke_*`), which
+the phone legitimately owns because no host decision rides on it. The batch
+still acks `ok` — a rejecting ack would stall the peer's outbound cursor and
+make it resend the same range forever. A pre-fix phone's dropped value is
+therefore local-only divergence, never host corruption, and it heals when
+`refreshWorkSessions` next rewrites the row from the host's `work.listSessions`
+payload.
+
+See [terminals and sessions](../terminals-and-sessions/README.md#gotchas) for
+the lifecycle side of this invariant.
+
 ## Architecture layers
 
 ```
@@ -1110,7 +1152,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   CRR that governs brain ownership — never crosses the CRR boundary in
   either direction, so a peer can neither receive it nor author a
   winning `crsql_changes` row that would flip `brain_device_id`; brain
-  handover stays on the explicit host-transfer RPC), the inbound
+  handover stays on the explicit host-transfer RPC), the host-authoritative
+  *column* filter (`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE`:
+  `terminal_sessions.settled_at` / `settle_override` / `settle_source`,
+  dropped from inbound changesets **from phone peers only** — see
+  [Host-authoritative columns](#host-authoritative-columns-are-peer-scoped)),
+  the inbound
   changeset-batch ceilings (`MAX_INBOUND_CHANGESET_ROWS` / `_BYTES` ≈
   40× the outbound 250-row / 256 KB caps, i.e. ~10k rows / ~10 MB; an
   oversized `changeset_batch` is rejected with a `changeset_too_large`
@@ -2871,6 +2918,16 @@ feature is merged or because a deliberately isolated-port host is running.
   other. Related but independent: whether the host prunes a table is a third,
   orthogonal question — `linear_ingress_events` and `worker_agent_runs` are on
   the mobile-exclusion list yet deliberately never age-pruned on the host.
+
+- **A host-side check does not guard a replicated column.** If the host decides
+  a value, a controller writing that same column into its own replica can win
+  the merge and undo the decision — the check was never reached. The fix is to
+  stop the controller writing it (a local, non-persisted overlay is what buys
+  the optimistic feel) and to drop the column from that peer's inbound
+  changesets, not to add another host-side check. Both halves are needed: the
+  client change fixes new builds, the host filter covers every paired device
+  still on an old one. See
+  [Host-authoritative columns](#host-authoritative-columns-are-peer-scoped).
 
 - **The wire and the stored transcript share one chat-event compaction policy,
   and the wire runs storage compaction first.** `compactChatEventEnvelopeForSync`

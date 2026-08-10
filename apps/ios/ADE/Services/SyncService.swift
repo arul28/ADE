@@ -16130,6 +16130,18 @@ final class SyncService: ObservableObject {
   }
 
   #if DEBUG
+  /// Seed an in-flight settle intent without a paired host, so the read
+  /// chokepoint and the surfaces that depend on it can be tested directly. The
+  /// bug this guards — a reader going to the database instead of the chokepoint
+  /// — is invisible to a test of the overlay type alone.
+  @discardableResult
+  func beginPendingSessionSettleForTesting(
+    _ intent: PendingSessionSettleIntent,
+    for sessionId: String
+  ) -> UInt64 {
+    beginPendingSessionSettle(intent, for: sessionId)
+  }
+
   func seedRemoteProjectCatalogForTesting(_ catalog: [MobileProjectSummary]) {
     remoteProjectCatalog = catalog
     refreshProjectCatalog(preferRemoteSelection: true)

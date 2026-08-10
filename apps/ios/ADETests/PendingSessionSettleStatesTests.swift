@@ -274,3 +274,134 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertNil(others[1].settledAt)
   }
 }
+
+/// The overlay type is exhaustively covered above, but the defect that actually
+/// shipped was in the WIRING: a reader that went to the database instead of the
+/// read chokepoint, so a settle the user had just tapped stayed visible as a
+/// live agent on the widget, the Live Activity, and the Activity drawer. These
+/// pin the chokepoint itself.
+final class PendingSessionSettleOverlayWiringTests: XCTestCase {
+  private func makeLane(id: String) -> LaneSummary {
+    LaneSummary(
+      id: id, name: "Lane", description: nil, laneType: "worktree", baseRef: "main",
+      branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil,
+      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
+      createdAt: "", archivedAt: nil, devicesOpen: nil
+    )
+  }
+
+  private func makeSession(id: String, laneId: String) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: id,
+      laneId: laneId,
+      laneName: "Lane",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: "codex-chat",
+      title: "Chat",
+      status: "running",
+      startedAt: "2026-08-10T00:00:00.000Z",
+      endedAt: nil,
+      archivedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      // At rest between turns — the state a user actually settles from. A
+      // declared settle is honored only at rest (`WorkSessionCanonicalState`),
+      // so a mid-stream chat deliberately stays on the roster.
+      runtimeState: "idle",
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil,
+      chatSessionId: nil,
+      pendingInputItemId: nil
+    )
+  }
+
+  @MainActor
+  private func withService(
+    _ body: (SyncService, DatabaseService) async throws -> Void
+  ) async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-1', '/tmp/p1', 'P1', 'main', '2026-08-10T00:00:00.000Z', '2026-08-10T00:00:00.000Z');
+    """)
+    database.setActiveProjectId("project-1")
+    try database.replaceLaneSnapshots([makeLane(id: "lane-1")])
+    try database.replaceTerminalSessions([makeSession(id: "session-1", laneId: "lane-1")])
+    try await body(service, database)
+  }
+
+  @MainActor
+  func testFetchSessionsAppliesTheOverlayWhileTheDatabaseStaysUntouched() async throws {
+    try await withService { service, database in
+      service.beginPendingSessionSettleForTesting(
+        .settle(now: Date(), timestamp: "2026-08-10T12:00:00.000Z"),
+        for: "session-1"
+      )
+
+      let overlaid = try await service.fetchSessions().first { $0.id == "session-1" }
+      XCTAssertEqual(overlaid?.settledAt, "2026-08-10T12:00:00.000Z")
+
+      // The whole point of the overlay: nothing was written, so nothing can
+      // replicate upstream and defeat a host rejection by CRDT merge.
+      XCTAssertNil(database.fetchSession(id: "session-1")?.settledAt)
+    }
+  }
+
+  @MainActor
+  func testFetchSessionByIdGoesThroughTheSameChokepoint() async throws {
+    try await withService { service, _ in
+      service.beginPendingSessionSettleForTesting(
+        .settle(now: Date(), timestamp: "2026-08-10T12:00:00.000Z"),
+        for: "session-1"
+      )
+
+      let single = try await service.fetchSession(id: "session-1")
+      XCTAssertEqual(single?.settledAt, "2026-08-10T12:00:00.000Z")
+    }
+  }
+
+  /// The regression: `refreshActiveSessionsAndSnapshot` read the database
+  /// directly, so a just-settled chat stayed in `activeSessions` — which backs
+  /// the lock-screen widget, the Live Activity, and the in-app Activity drawer.
+  @MainActor
+  func testASettledChatLeavesTheWidgetAndActivityRosterImmediately() async throws {
+    try await withService { service, _ in
+      service.refreshActiveSessionsAndSnapshot()
+      XCTAssertTrue(
+        service.activeSessions.contains { $0.sessionId == "session-1" },
+        "precondition: a running chat is on the active roster"
+      )
+
+      service.beginPendingSessionSettleForTesting(
+        .settle(now: Date(), timestamp: "2026-08-10T12:00:00.000Z"),
+        for: "session-1"
+      )
+      service.refreshActiveSessionsAndSnapshot()
+
+      XCTAssertFalse(
+        service.activeSessions.contains { $0.sessionId == "session-1" },
+        "a settle the user just tapped must not keep reporting as a live agent"
+      )
+    }
+  }
+}

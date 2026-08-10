@@ -216,8 +216,8 @@ and in tests.
   serialized against; it is not a wrapper around the existing write. The approved
   plan for doing it is
   [settle-teardown-design.md](settle-teardown-design.md); its step 0
-  precondition — `settled_at` becoming host-authoritative, so no replica will be
-  able to defeat the coming revision guard by CRDT merge — has landed. Archive is
+  precondition — `settled_at` becoming host-authoritative, so a phone replica
+  cannot defeat the coming revision guard by CRDT merge — has landed. Archive is
   the one lifecycle path that does stop processes — see
   `laneService.archive`, where the ordering is load-bearing.
   `dismissPendingInput: true`
@@ -1392,6 +1392,18 @@ iOS Work surfaces:
   mirrors the desktop capability affordances, installs the returned persisted
   session summary, and routes CLI imports to the terminal screen or chat
   imports to the chat screen.
+- `apps/ios/ADE/Services/PendingSessionSettleStates.swift` — the phone's
+  counterpart to the hosted-web `sessionLifecycleOverlay`, and for the same
+  reason: the settle columns are host-authoritative, so the phone shows an
+  in-flight settle / unsettle / override through a purely local overlay rather
+  than a replicating write. `SyncService.localSessions()` /
+  `localSession(id:)` are the read chokepoint that applies it, and every UI
+  read must come through them or the row renders as if the user never tapped.
+  Each intent knows which host row satisfies it (a settle waits on a non-null
+  `settled_at` *and* the cleared override; an unsettle tolerates a surviving
+  `"active"` pin), and an intent retires on confirmation, on command failure,
+  or against a reachable-time staleness backstop. Snooze keeps its optimistic
+  column write plus rollback — see the invariant in [Gotchas](#gotchas).
 
 ## External CLI session import
 
@@ -1863,7 +1875,8 @@ runtime and agent chat runtime both layer the same identity envs
   filter is deliberately not applied to desktop peers: they run the same
   `sessionService` chokepoint, so their settle writes are host-decided and must
   keep replicating. The snooze columns are exempt — the phone owns its optimistic
-  write there because no host decision is at stake.
+  write there because no host decision is at stake. See
+  [sync → Host-authoritative columns](../sync-and-multi-device/README.md#host-authoritative-columns-are-peer-scoped).
 - **Settlement is not a pending-input response.** Never restore the old
   renderer sequence of `respondToInput` then settle. A provider decline may
   resume work, Codex plan declines may stage a revision, and a stale persisted
