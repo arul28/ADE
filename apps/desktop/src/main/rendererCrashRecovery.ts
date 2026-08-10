@@ -71,20 +71,31 @@ export function createRendererCrashRecoveryBudget(options: {
 export type RendererCrashRecoveryBudget = ReturnType<typeof createRendererCrashRecoveryBudget>;
 
 /**
- * Electron's documented reason values. Reported as-is only when they match, so
- * a future Electron string cannot widen what crosses the analytics boundary —
- * `reason` is a shared property key with no value allowlist of its own.
+ * The reason values a lost renderer can report, minus `clean-exit` — which is
+ * not a loss and never reaches analytics.
+ *
+ * Exported because the analytics property allowlist is built from it. Two
+ * hand-maintained copies of an enum drift, and the drift is silent here: a value
+ * this normalizer emits but the allowlist rejects ships an event stripped of its
+ * only payload.
  */
-const KNOWN_RENDER_PROCESS_GONE_REASONS: ReadonlySet<string> = new Set([
-  "clean-exit",
+export const RENDERER_GONE_ANALYTICS_REASONS = [
   "abnormal-exit",
   "killed",
   "crashed",
   "oom",
   "launch-failed",
   "integrity-failure",
+] as const;
+
+/** The bucket a future Electron string normalizes into. */
+export const RENDERER_GONE_UNKNOWN_REASON = "unknown";
+
+const KNOWN_RENDER_PROCESS_GONE_REASONS: ReadonlySet<string> = new Set<string>([
+  "clean-exit",
+  ...RENDERER_GONE_ANALYTICS_REASONS,
 ]);
 
 export function coarseRenderProcessGoneReason(reason: RenderProcessGoneReason): string {
-  return KNOWN_RENDER_PROCESS_GONE_REASONS.has(reason) ? reason : "unknown";
+  return KNOWN_RENDER_PROCESS_GONE_REASONS.has(reason) ? reason : RENDERER_GONE_UNKNOWN_REASON;
 }

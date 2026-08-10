@@ -90,6 +90,34 @@ export function createPrMergeAutoSettlementService(args: {
   // we have ever observed.
   const previouslyWatchablePrIds = new Set<string>();
 
+  /**
+   * The sessions a merged PR may consider, before the archived/settled/tool-type
+   * filter that applies to all three scopes.
+   *
+   * Declared sessions are looked up by id rather than found inside a lane page:
+   * the PR named them, so a long-lived lane whose session list runs past the
+   * page size must not silently drop the ones it named. The explicit lane check
+   * reproduces what the lane-scoped listing gave for free — a declared link can
+   * outlive a lane move, and only this lane's work is this merge's to file.
+   *
+   * The sweep keeps the bounded listing: it is a guess, and a guess should stay
+   * bounded.
+   */
+  const candidateSessionsFor = (scope: MergeSettlementScope, pr: PrSummary) => {
+    switch (scope.kind) {
+      case "ambiguous":
+        return [];
+      case "linked":
+        return [...scope.sessionIds]
+          .map((sessionId) => args.sessionService.get(sessionId))
+          .filter((session): session is NonNullable<typeof session> => session != null)
+          .filter((session) => session.laneId === pr.laneId);
+      case "sweep":
+        return args.sessionService.list({ laneId: pr.laneId, limit: 500 })
+          .filter((session) => !scope.claimedByOtherPrs.has(session.id));
+    }
+  };
+
   const processSnapshot = async ({
     prs,
     polledAt,
@@ -135,24 +163,7 @@ export function createPrMergeAutoSettlementService(args: {
     for (const pr of candidates) {
       const scope = resolveMergeSettlementScope(pr, prs);
 
-      // Declared sessions are looked up by id rather than found inside a lane
-      // page: the PR named them, so a long-lived lane whose session list runs
-      // past the page size must not silently drop the ones it named. The sweep
-      // keeps the bounded listing — it is a guess, and a guess should stay
-      // bounded.
-      const candidateSessions = scope.kind === "ambiguous"
-        ? []
-        : scope.kind === "linked"
-          ? [...scope.sessionIds]
-            .map((sessionId) => args.sessionService.get(sessionId))
-            .filter((session): session is NonNullable<typeof session> => session != null)
-            // A declared link can outlive a lane move; only this lane's work is
-            // this merge's to file.
-            .filter((session) => session.laneId === pr.laneId)
-          : args.sessionService.list({ laneId: pr.laneId, limit: 500 })
-            .filter((session) => !scope.claimedByOtherPrs.has(session.id));
-
-      const rows = candidateSessions.filter((session) =>
+      const rows = candidateSessionsFor(scope, pr).filter((session) =>
         !session.archivedAt
         && !session.settledAt
         && (isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)),

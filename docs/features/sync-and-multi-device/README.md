@@ -2815,7 +2815,7 @@ feature is merged or because a deliberately isolated-port host is running.
 - **A table only leaves `MOBILE_CHANGESET_EXCLUDED_TABLES` territory if the
   phone has another way to get it.** The diet is not "drop what looks big" — it
   is "drop what the phone re-fetches anyway." `pull_request_snapshots` is the
-  clearest case: 10.65 MB of a 26.8 MB synced project DB, and iOS reads it in
+  clearest case: 11.2 MB of a 28.1 MB synced project DB (39.7%), and iOS reads it in
   exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
   which it populates on demand through `prs.refresh` →
   `replacePullRequestHydration`. That works for every paired build, however old,

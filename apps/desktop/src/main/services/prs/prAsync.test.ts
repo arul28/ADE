@@ -814,12 +814,10 @@ describe("prPollingService", () => {
  * Settlement resolves declared sessions by id and swept sessions through the
  * paged listing. Harnesses declare one list; this derives the lookup from it.
  */
-function withSessionLookup<T extends { list: (...args: never[]) => Array<{ id: string }> }>(service: T) {
+function withSessionLookup<T extends { list: () => Array<{ id: string }> }>(service: T) {
   return {
     ...service,
-    get: (sessionId: string) =>
-      (service.list as unknown as () => Array<{ id: string }>)()
-        .find((session) => session.id === sessionId) ?? null,
+    get: (sessionId: string) => service.list().find((session) => session.id === sessionId) ?? null,
   };
 }
 

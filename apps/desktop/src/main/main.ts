@@ -271,6 +271,7 @@ import {
   RENDERER_RECOVERY_WINDOW_MS,
   coarseRenderProcessGoneReason,
   createRendererCrashRecoveryBudget,
+  isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
@@ -810,7 +811,7 @@ async function createWindow(args: {
     // once per occurrence with Electron's own closed reason enum and whether the
     // retry budget still allowed a reload. The budget bounds the volume: a
     // boot-crash loop stops trying, so it cannot emit forever.
-    if (details.reason !== "clean-exit") {
+    if (isRecoverableRenderProcessGone(details.reason)) {
       args.onRendererRecovery?.({
         crash_reason: coarseRenderProcessGoneReason(details.reason),
         recovered: decision.recover,
@@ -1595,6 +1596,17 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  /**
+   * One reporter for every window: a third `createWindow` site that forgets to
+   * wire this would silently stop reporting lost renderers.
+   */
+  const reportRendererRecovery = (outcome: { crash_reason: string; recovered: boolean }): void => {
+    productAnalyticsService.captureInternal({
+      event: "ade_renderer_recovered",
+      surface: "desktop",
+      properties: outcome,
+    });
+  };
   productAnalyticsService.captureInternal({
     event: "ade_app_installed",
     surface: "desktop",
@@ -6623,11 +6635,7 @@ app.whenReady().then(async () => {
         : readLastRemoteProjectBinding();
     const win = await createWindow({
       logger: getActiveContext().logger,
-      onRendererRecovery: (outcome) => productAnalyticsService.captureInternal({
-        event: "ade_renderer_recovered",
-        surface: "desktop",
-        properties: outcome,
-      }),
+      onRendererRecovery: reportRendererRecovery,
       onCreated: (createdWindow) =>
         registerWindowSession(createdWindow, null, restoredRemoteBinding),
       onCloseRequested: handleMainWindowCloseRequested,
@@ -7461,11 +7469,7 @@ app.whenReady().then(async () => {
   const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
-    onRendererRecovery: (outcome) => productAnalyticsService.captureInternal({
-      event: "ade_renderer_recovered",
-      surface: "desktop",
-      properties: outcome,
-    }),
+    onRendererRecovery: reportRendererRecovery,
     onCreated: (createdWindow) =>
       registerWindowSession(
         createdWindow,

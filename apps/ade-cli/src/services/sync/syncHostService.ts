@@ -285,8 +285,8 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   "budget_usage_records",
   "automation_runs",
   "automation_action_results",
-  // 10.8 MB of a 28 MB synced project database — 259 rows averaging 42 KB, one
-  // `files_json` at 1.65 MB — for data the phone was already fetching a second
+  // 11.2 MB of a 28.1 MB synced project database (39.7%) — 258 rows averaging
+  // 43 KB, one `files_json` at 1.65 MB — for data the phone was already fetching a second
   // time on its own. iOS reads this table in exactly one SELECT, the per-PR
   // detail query behind `fetchPullRequestSnapshot(prId:)`, and it reaches that
   // data through `prs.refresh` → `replacePullRequestHydration` on demand.

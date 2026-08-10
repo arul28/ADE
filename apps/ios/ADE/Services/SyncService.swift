@@ -7776,10 +7776,8 @@ final class SyncService: ObservableObject {
     Task { _ = try? await AccountService.shared.freshRelaySession() }
   }
 
-  func handleBackgroundTransition() {
-    backgroundedAt = Date()
-  }
-
+  /// Stamps the suspension the next resume is measured against.
+  ///
   /// `ADEApp` throttles the foreground hook to once a second, so a resume can be
   /// skipped and leave this stamp set — the next one then measures from the
   /// older background and over-estimates the gap. That is deliberate: an
@@ -7787,6 +7785,9 @@ final class SyncService: ObservableObject {
   /// while clearing the stamp on a skipped resume would resolve a genuinely
   /// long background to `.refreshOnly` and trust a socket iOS may already have
   /// suspended. The cheap error is the safe one.
+  func handleBackgroundTransition() {
+    backgroundedAt = Date()
+  }
 
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()

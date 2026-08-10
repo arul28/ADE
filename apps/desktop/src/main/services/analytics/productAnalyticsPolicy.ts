@@ -1,5 +1,9 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import {
+  RENDERER_GONE_ANALYTICS_REASONS,
+  RENDERER_GONE_UNKNOWN_REASON,
+} from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
 import type {
   ProductAnalyticsCapture,
@@ -73,7 +77,11 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_auto_apply_cancelled: 3,
   ade_update_prompted: 3,
   ade_brain_recovered: 3,
-  ade_renderer_recovered: 3,
+  // One more than the recovery budget's 3 attempts per rolling 60s. At exactly
+  // 3 the successful reloads consumed the whole minute and the one occurrence
+  // that reports the window STAYED down — the event that matters most — was
+  // always dropped as rate-limited.
+  ade_renderer_recovered: 4,
   ade_publish_failing: 3,
   ade_relay_suppressed: 3,
   ade_account_session_unreadable: 3,
@@ -200,12 +208,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   release_channel: new Set(["stable", "beta", "development", "unknown"]),
   summary_kind: new Set(["overall", "client", "provider", "model"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
-  // Electron's own closed enum for a lost renderer, plus the "unknown" bucket a
-  // future Electron string normalizes into. Deliberately not folded into
-  // `reason`: that key is pinned to the auto-update abort set, and widening it
-  // would weaken that event's guarantee.
-  crash_reason: new Set([
-    "abnormal-exit", "killed", "crashed", "oom", "launch-failed", "integrity-failure", "unknown",
+  // Derived from the normalizer's own enum so the two cannot drift. Deliberately
+  // not folded into `reason`: that key is pinned to the auto-update abort set,
+  // and widening it would weaken that event's guarantee.
+  crash_reason: new Set<string>([
+    ...RENDERER_GONE_ANALYTICS_REASONS,
+    RENDERER_GONE_UNKNOWN_REASON,
   ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
   install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
