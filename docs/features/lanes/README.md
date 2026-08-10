@@ -122,6 +122,22 @@ Shared code:
 - `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `StackChainItem`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/main/services/config/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
+Shared git engine (every lane service reaches git through these):
+
+- `src/main/services/git/git.ts` — `runGit` is the single spawn point. It holds
+  the process-wide 12-slot git concurrency semaphore (mutating commands bypass
+  it), invalidates the repo cache after any ref-affecting command, and exposes
+  `runGitRepoCached` for repo-wide reads plus `gitCommonDirFor` /
+  `knownGitCommonDir` for the cache key. `getHeadSha` — shared by `laneService`,
+  `autoRebaseService`, `rebaseSuggestionService`, and `gitOperationsService` —
+  is a cached read.
+- `src/main/services/git/gitRepoCache.ts` — the cache itself, keyed by the
+  repository's common git dir so every lane worktree of one repo shares entries.
+  Volatile (1.5 s) for ref SHAs, stable (5 min) for config-shaped answers, with
+  single-flight loads and epoch-guarded invalidation. `isRefAffectingGitCommand`
+  classifies argv as read or write for both the cache and the semaphore. See
+  [Architecture › Process budget](../../ARCHITECTURE.md#92-process-budget-concurrency-ceiling-and-the-repo-scoped-cache).
+
 iOS companion (`apps/ios/ADE/Views/Lanes/`):
 
 - `LaneColorPalette.swift`, `LaneColorSwatchPicker.swift` — iOS
@@ -378,6 +394,16 @@ type LaneStatus = {
 spawn. Ignored files are still not listed (no `--ignored`), so the `dirty`
 semantics are byte-identical to the porcelain v1 output this replaced.
 `headBranchRef` is absent when status was not computed at all.
+
+A refresh is expensive in processes, not in wall time per process: it fans out
+over every lane, inside several services that do not know about each other, and
+each git question is a spawn. On a 14-lane checkout one full refresh costs
+around 130 git processes. Two things keep that bounded — a global 12-process
+concurrency ceiling in `runGit`, and a cache keyed by the repository's common
+git dir that collapses the questions whose answer is the same for every lane
+(`git rev-parse <baseRef>` at the project root, the committer identity, the
+`origin` URL). Ref SHAs cache for 1.5 s, config-shaped answers for 5 minutes.
+See [Architecture › Process budget](../../ARCHITECTURE.md#92-process-budget-concurrency-ceiling-and-the-repo-scoped-cache).
 
 Status is cached for 10 s (`LANE_LIST_CACHE_TTL_MS`). The base ref used
 for ahead/behind is chosen by `shouldLaneTrackParent`: a child tracks its
@@ -934,6 +960,32 @@ open lanes; primary lanes render with a home icon.
   that need fresh status after a git operation must call
   `laneService.list({ refresh: true })` or mutate through the
   service rather than another path.
+- **The git repo cache is keyed by common git dir, and that is the point.**
+  `gitRepoCache.ts` buckets entries per *repository*, not per worktree, so all
+  of a project's lanes share one answer to a repo-wide question. Anything that
+  re-keys it per lane, per worktree path, or per service silently removes the
+  entire benefit while keeping all of the staleness risk. Keys must describe the
+  question (`rev-parse:<cwd>:<ref>`, `remote-url:origin`), never the caller —
+  two services asking the same thing are supposed to collide.
+- **Cache invalidation lives in `runGit`, not at call sites, and fires on
+  failure.** Any new lane code path that mutates git through `runGit` is already
+  covered; one that spawns git some other way is not, and will serve stale SHAs
+  for up to 1.5 s. It invalidates after failed commands too, because a rejected
+  push can still have moved a remote-tracking ref and an aborted rebase leaves
+  HEAD moved. If you add a git verb that changes refs, remotes, config, or the
+  worktree list, add it to `REF_AFFECTING_GIT_VERBS` — and if you add a
+  *read-only mood* of a verb already in that set, add it to the read-only
+  subcommand/flag tables, or every call of it will drop the whole repo's cache.
+- **Git run outside ADE does not invalidate anything.** A user committing in an
+  ADE terminal, or a script, or another machine, never passes through `runGit`.
+  The TTL is the only defense, which is why ref SHAs get 1.5 s. Do not widen
+  that window to buy throughput.
+- **Mutations deliberately bypass the git concurrency semaphore.** The 12-slot
+  cap exists to bound read fan-out; user-initiated writes skip the queue because
+  some of them run for minutes (`rebase --continue` allows 300 s) and the brain
+  is one gate for every project on the machine. Routing a mutation through the
+  queue "for consistency" reintroduces a priority inversion that the unbounded
+  code never had.
 - **OAuth redirect service is particularly fragile** — see
   [`oauth-redirect.md`](./oauth-redirect.md). Incoming callbacks
   involve three state machines (pending-start, pending-finalize,

@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   formatGitExecutionError,
+  getHeadSha,
   runGit,
   runGitMergeTree,
   runGitOrThrow,
@@ -168,5 +169,73 @@ describe("macOS git selection", () => {
     expect(message).toContain("ADE needs Git");
     expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
     expect(message).toContain("sudo xcodebuild -license");
+  });
+});
+
+
+describe("repo cache invalidation through runGit", () => {
+  function scratchRepo(): string {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-repo-cache-"));
+    fs.writeFileSync(path.join(repoRoot, "file.txt"), "one\n", "utf8");
+    git(repoRoot, ["init", "-b", "main"]);
+    git(repoRoot, ["config", "user.email", "ade@test.local"]);
+    git(repoRoot, ["config", "user.name", "ADE Test"]);
+    git(repoRoot, ["add", "."]);
+    git(repoRoot, ["commit", "-m", "one"]);
+    return repoRoot;
+  }
+
+  // `getHeadSha` is cached for 1.5s, so without the invalidation hook a commit
+  // made inside that window would keep reporting the pre-commit SHA — which is
+  // what `runLaneOperation` records as an operation's postHeadSha, and what
+  // Undo later refuses to act on.
+  it("serves a fresh HEAD immediately after a commit made through runGit", async () => {
+    const repoRoot = scratchRepo();
+    const before = await getHeadSha(repoRoot);
+    expect(before).toBeTruthy();
+    // Warm the cache a second time so a stale read would be served from it.
+    expect(await getHeadSha(repoRoot)).toBe(before);
+
+    fs.writeFileSync(path.join(repoRoot, "file.txt"), "two\n", "utf8");
+    await runGit(["add", "."], { cwd: repoRoot, timeoutMs: 20_000 });
+    await runGit(["commit", "-m", "two"], { cwd: repoRoot, timeoutMs: 20_000 });
+
+    expect(await getHeadSha(repoRoot)).not.toBe(before);
+  });
+
+  // The argv ADE actually uses for rebase/merge continuation. The verb sits
+  // behind one of git's own options, and missing it means HEAD moves without
+  // the cache noticing.
+  it("still invalidates when the verb sits behind a git -c option", async () => {
+    const repoRoot = scratchRepo();
+    const before = await getHeadSha(repoRoot);
+    expect(await getHeadSha(repoRoot)).toBe(before);
+
+    fs.writeFileSync(path.join(repoRoot, "file.txt"), "three\n", "utf8");
+    await runGit(["add", "."], { cwd: repoRoot, timeoutMs: 20_000 });
+    await runGit(["-c", "core.editor=true", "commit", "-m", "three"], {
+      cwd: repoRoot,
+      timeoutMs: 20_000,
+    });
+
+    expect(await getHeadSha(repoRoot)).not.toBe(before);
+  });
+
+  it("bounds concurrent read fan-out without dropping any result", async () => {
+    const repoRoot = scratchRepo();
+    const head = await getHeadSha(repoRoot);
+    // 40 distinct reads (distinct refs defeat the cache) all resolve under the
+    // semaphore rather than deadlocking or losing a result.
+    const results = await Promise.all(
+      Array.from({ length: 40 }, (_, index) => runGit(
+        ["rev-parse", index % 2 === 0 ? "HEAD" : "main"],
+        { cwd: repoRoot, timeoutMs: 20_000 },
+      )),
+    );
+    expect(results).toHaveLength(40);
+    for (const result of results) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe(head);
+    }
   });
 });

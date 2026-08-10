@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { getHeadSha, runGit, runGitOrThrow } from "./git";
+import { getHeadSha, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -1690,11 +1690,19 @@ export function createGitOperationsService({
     async getUserIdentity(args: { laneId: string }): Promise<GitUserIdentity> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
+      // Keyed by worktree, not repo. `git config` is repo-wide *unless* the
+      // repo enables `extensions.worktreeConfig`, in which case each lane can
+      // carry its own `user.name`/`user.email` — and a repo-wide key would then
+      // serve whichever lane asked first to all of them, mis-attributing
+      // commits. ADE never enables that extension, but a user's repo can, and
+      // these calls are per-lane anyway so a repo-wide key saves nothing
+      // measurable here.
       const readConfig = async (key: string): Promise<string> => {
-        const result = await runGit(["config", "--get", key], {
-          cwd: lane.worktreePath,
-          timeoutMs: 5_000,
-        });
+        const result = await runGitRepoCached(
+          ["config", "--get", key],
+          { cwd: lane.worktreePath, timeoutMs: 5_000 },
+          { key: `config:${lane.worktreePath}:${key}`, cacheClass: "stable" },
+        );
         return result.exitCode === 0 ? result.stdout.trim() : "";
       };
       const [name, email] = await Promise.all([readConfig("user.name"), readConfig("user.email")]);
@@ -1708,7 +1716,13 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(laneId);
       await assertLaneWorktreeRoot(lane);
       const [remoteRes, branchRes] = await Promise.all([
-        runGit(["remote", "get-url", "origin"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+        // Worktree-keyed for the same reason as the identity read above:
+        // `extensions.worktreeConfig` lets a lane override `remote.origin.url`.
+        runGitRepoCached(
+          ["remote", "get-url", "origin"],
+          { cwd: lane.worktreePath, timeoutMs: 8_000 },
+          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "stable" },
+        ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)
           : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
