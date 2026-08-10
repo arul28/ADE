@@ -9186,14 +9186,14 @@ final class SyncService: ObservableObject {
   /// without this nudge it would only become visible on the next unrelated
   /// read — which against a quiet host may be a long time.
   private func prunePendingSessionSettleStates(against sessions: [TerminalSessionSummary]) {
-    let now = Date()
-    // Hold first, then measure: after a hold every deadline is `now`, so the
+    let uptime = ProcessInfo.processInfo.systemUptime
+    // Hold first, then measure: after a hold every deadline is `uptime`, so the
     // backstop cannot fire against a command that is merely waiting for the
     // connection to come back.
     if !canSendLiveRequests() {
-      pendingSessionSettleStates.holdBackstop(now: now)
+      pendingSessionSettleStates.holdBackstop(uptime: uptime)
     }
-    guard pendingSessionSettleStates.prune(against: sessions, now: now) else { return }
+    guard pendingSessionSettleStates.prune(against: sessions, uptime: uptime) else { return }
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
@@ -9547,7 +9547,6 @@ final class SyncService: ObservableObject {
     if dismissPendingInput {
       args["dismissPendingInput"] = true
     }
-    let now = Date()
     try await sendSessionSettleCommand(
       sessionId: sessionId,
       action: "session.settleSessions",
@@ -9555,7 +9554,10 @@ final class SyncService: ObservableObject {
       // The bulk action answers with the ids it CHANGED, so an absent id means
       // the machine settled nothing. Mirrors the desktop `settleMany`.
       resultShape: .changedIdList,
-      intent: .settle(now: now, timestamp: iso8601WithFractionalSecondsFormatter.string(from: now))
+      intent: .settle(
+        uptime: ProcessInfo.processInfo.systemUptime,
+        timestamp: iso8601WithFractionalSecondsFormatter.string(from: Date())
+      )
     )
   }
 
@@ -9577,7 +9579,7 @@ final class SyncService: ObservableObject {
       // per-row verdict to check — so there is nothing to reject, exactly like
       // the desktop `unsettleMany`, which passes no `applied` predicate.
       resultShape: nil,
-      intent: .unsettle(now: Date())
+      intent: .unsettle(uptime: ProcessInfo.processInfo.systemUptime)
     )
   }
 
@@ -9590,7 +9592,7 @@ final class SyncService: ObservableObject {
       // The host reads "clear" as null; sending a JSON null through the
       // `[String: Any]` arg dictionary is not representable here.
       args: ["sessionId": sessionId, "override": override?.rawValue ?? "clear"],
-      intent: .settleOverride(override?.rawValue, now: Date())
+      intent: .settleOverride(override?.rawValue, uptime: ProcessInfo.processInfo.systemUptime)
     )
   }
 
@@ -18720,7 +18722,7 @@ final class SyncService: ObservableObject {
         // shorter than `staleAfter`, so re-stamping per attempt would let a
         // queue that never drains hold the overlay open forever — an unbounded
         // lie in place of a two-second flicker.
-        pendingSessionSettleStates.holdBackstop(now: Date())
+        pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
         // A drained chat creation produced a real session; drop the optimistic
         // "Pending sync" snapshot so the synced row takes over.
         if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
@@ -19432,7 +19434,7 @@ final class SyncService: ObservableObject {
     // than `staleAfter` would snap back to unsettled in the moments between
     // reconnecting and replaying it. Rebase the deadlines here, at the earliest
     // point the connection is usable, and re-arm the sweep that enforces them.
-    pendingSessionSettleStates.holdBackstop(now: Date())
+    pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
     schedulePendingSessionSettleBackstopSweep()
 
     if activeProjectId == nil {

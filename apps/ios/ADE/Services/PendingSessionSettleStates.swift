@@ -24,8 +24,14 @@ struct PendingSessionSettleIntent: Equatable {
   }
 
   var kind: Kind
-  /// When the command was sent, for the staleness backstop.
-  var startedAt: Date
+  /// When the command was sent, on the MONOTONIC clock
+  /// (`ProcessInfo.processInfo.systemUptime`), for the staleness backstop.
+  /// Deliberately not wall clock: an NTP correction or a manual time change
+  /// would otherwise expire a fresh overlay the instant time jumps forward, or
+  /// hold one far past the promised window when it jumps back. Same reasoning
+  /// as `backgroundedAtUptime` in `SyncService`. The displayed settle timestamp
+  /// stays a real `Date` — that one is shown to the user, not measured with.
+  var startedAtUptime: TimeInterval
   /// Identifies this specific command, so a slow one's failure cannot retire an
   /// intent the user has since replaced. Assigned by `begin`.
   fileprivate var token: UInt64 = 0
@@ -67,16 +73,16 @@ struct PendingSessionSettleIntent: Equatable {
     var settleOverride: String?
   }
 
-  static func settle(now: Date, timestamp: String) -> PendingSessionSettleIntent {
-    PendingSessionSettleIntent(kind: .settle(timestamp: timestamp), startedAt: now)
+  static func settle(uptime: TimeInterval, timestamp: String) -> PendingSessionSettleIntent {
+    PendingSessionSettleIntent(kind: .settle(timestamp: timestamp), startedAtUptime: uptime)
   }
 
-  static func unsettle(now: Date) -> PendingSessionSettleIntent {
-    PendingSessionSettleIntent(kind: .unsettle, startedAt: now)
+  static func unsettle(uptime: TimeInterval) -> PendingSessionSettleIntent {
+    PendingSessionSettleIntent(kind: .unsettle, startedAtUptime: uptime)
   }
 
-  static func settleOverride(_ value: String?, now: Date) -> PendingSessionSettleIntent {
-    PendingSessionSettleIntent(kind: .override(value), startedAt: now)
+  static func settleOverride(_ value: String?, uptime: TimeInterval) -> PendingSessionSettleIntent {
+    PendingSessionSettleIntent(kind: .override(value), startedAtUptime: uptime)
   }
 
   func applied(to session: TerminalSessionSummary) -> TerminalSessionSummary {
@@ -222,9 +228,9 @@ struct PendingSessionSettleStates: Equatable {
   ///
   /// Returns nothing on purpose — this can never resolve an intent, so it can
   /// never be a reason to repaint.
-  mutating func holdBackstop(now: Date) {
+  mutating func holdBackstop(uptime: TimeInterval) {
     for key in intents.keys {
-      intents[key]?.startedAt = now
+      intents[key]?.startedAtUptime = uptime
     }
   }
 
@@ -236,7 +242,7 @@ struct PendingSessionSettleStates: Equatable {
   /// expiry changes what the row should show and no database write accompanies
   /// it.
   @discardableResult
-  mutating func prune(against sessions: [TerminalSessionSummary], now: Date) -> Bool {
+  mutating func prune(against sessions: [TerminalSessionSummary], uptime: TimeInterval) -> Bool {
     guard !intents.isEmpty else { return false }
     let before = intents.count
     for session in sessions {
@@ -251,7 +257,7 @@ struct PendingSessionSettleStates: Equatable {
       guard !intent.replacedInFlight, movedSinceCommand, intent.isSatisfied(by: session) else { continue }
       intents.removeValue(forKey: session.id)
     }
-    intents = intents.filter { now.timeIntervalSince($0.value.startedAt) < PendingSessionSettleStates.staleAfter }
+    intents = intents.filter { uptime - $0.value.startedAtUptime < PendingSessionSettleStates.staleAfter }
     return intents.count != before
   }
 
