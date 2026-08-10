@@ -11778,11 +11778,11 @@ describe("createAgentChatService", () => {
     });
 
     it("splits the background level into working and monitoring counts on the session summary", async () => {
-      // The classifier is a DENYLIST: `local_bash` is known-passive and reads
-      // as monitoring, while `local_agent` — and anything unrecognised — counts
-      // as working. An allowlist here would silently drop a real subagent the
-      // first time the SDK renamed a task type, which is the exact failure the
-      // whole liveness state exists to prevent.
+      // The classifier is a DENYLIST: only a type whose whole job is to watch
+      // (`monitor`) reads as monitoring. A generic backgrounded shell, a real
+      // subagent, and anything unrecognised all count as working — an allowlist
+      // would silently drop a real subagent the first time the SDK renamed a
+      // task type, which is the exact failure this state exists to prevent.
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -11802,7 +11802,8 @@ describe("createAgentChatService", () => {
           type: "system",
           subtype: "background_tasks_changed",
           tasks: [
-            { task_id: "watch-ci", task_type: "local_bash", description: "Watch CI" },
+            { task_id: "watch-ci", task_type: "monitor", description: "Watch CI" },
+            { task_id: "run-build", task_type: "local_bash", description: "npm run build" },
             { task_id: "build-it", task_type: "local_agent", description: "Implement the feature" },
             { task_id: "who-knows", task_type: "some_future_sdk_type", description: "Unrecognised" },
           ],
@@ -11827,9 +11828,10 @@ describe("createAgentChatService", () => {
 
       const live = await service.getSessionSummary(session.id);
       // Total stays the single number the mobile roster and push publisher read.
-      expect(live?.activeBackgroundTaskCount).toBe(3);
-      // Unknown types land in `working`, never in the quiet column.
-      expect(live?.backgroundWork).toEqual({ workingCount: 2, monitoringCount: 1 });
+      expect(live?.activeBackgroundTaskCount).toBe(4);
+      // Unknown types — and a generic backgrounded build — land in `working`,
+      // never in the quiet column.
+      expect(live?.backgroundWork).toEqual({ workingCount: 3, monitoringCount: 1 });
 
       // A live turn is not ours to kill: its work is what the user can see
       // happening, so settle teardown declines rather than stopping it.

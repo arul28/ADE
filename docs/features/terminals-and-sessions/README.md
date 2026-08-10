@@ -208,8 +208,13 @@ and in tests.
   registry. Settle stops the machinery the session owns before it writes the
   lifecycle column — see
   `apps/desktop/src/main/services/sessions/sessionMachineryTeardown.ts`. It
-  pauses the session's scheduled work (pauses rather than cancels, so an
-  unsettle can bring hand-made schedules back) and calls
+  pauses the session's scheduled work — pauses rather than cancels, and the
+  pause is durable, so it carries an exact undo: the scheduler records which
+  sessions **settle** paused (`settlePausedSessionIds`) and every unsettle path
+  runs `resumeSettledSessionMachinery`, which resumes only those. A pause the
+  user took deliberately is never claimed and never resumed, and background
+  work is never restarted — ADE cannot re-spawn a shell it stopped. It also
+  calls
   `agentChatService.stopBackgroundWork`, which stops every live child before
   the parent. **Terminal panes stay open**: an agent's background shell is
   thread background work, but a pane the user opened is theirs, and closing it

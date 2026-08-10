@@ -1702,8 +1702,10 @@ describe("runtime session actions", () => {
 
     // The user-driven single-row unsettle (desktop row menu on a remote-bound
     // project, `ade code`'s /session unsettle) survives under a cto-gated name.
-    expect(sessionActions.unsettleSession({ sessionId: "session-1" }))
-      .toEqual({ ok: true, sessionId: "session-1" });
+    // Awaited because unsettle now resumes exactly the scheduled work settle
+    // paused; the lifecycle write itself still happens synchronously first.
+    await expect(sessionActions.unsettleSession({ sessionId: "session-1" }))
+      .resolves.toEqual({ ok: true, sessionId: "session-1" });
     expect(unsettleSession).toHaveBeenCalledWith("session-1");
   });
 

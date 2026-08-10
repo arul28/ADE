@@ -376,11 +376,21 @@ describe("classifyBackgroundWorkKind", () => {
   });
 
   it("classifies only the known-passive types as monitoring", () => {
-    for (const taskType of ["monitor", "monitor_mcp", "local_bash", "shell", "background", "bash"]) {
+    for (const taskType of ["monitor", "monitor_mcp"]) {
       expect(classifyBackgroundWorkKind(taskType)).toBe("monitoring");
     }
     expect(classifyBackgroundWorkKind("MONITOR")).toBe("monitoring");
-    expect(classifyBackgroundWorkKind(" local_bash ")).toBe("monitoring");
+    expect(classifyBackgroundWorkKind(" monitor_mcp ")).toBe("monitoring");
+  });
+
+  it("counts a generic backgrounded shell as working, not monitoring", () => {
+    // These types mean "the agent backgrounded a command" — a `tail -f` and a
+    // 20-minute build arrive under the same one. Mixed is unknown, and unknown
+    // is working; labelling them monitoring told the user nothing was being
+    // produced while a build was running.
+    for (const taskType of ["local_bash", "shell", "background", "bash"]) {
+      expect(classifyBackgroundWorkKind(taskType)).toBe("working");
+    }
   });
 
   it("drops inert types entirely", () => {
@@ -391,8 +401,8 @@ describe("classifyBackgroundWorkKind", () => {
 
   it("folds a mixed list into the two-state count", () => {
     expect(summarizeBackgroundWork(["subagent", "monitor", "local_bash", "plan", null])).toEqual({
-      workingCount: 2,
-      monitoringCount: 2,
+      workingCount: 3,
+      monitoringCount: 1,
     });
   });
 });

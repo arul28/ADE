@@ -39423,6 +39423,27 @@ export function createAgentChatService(args: {
     return { stopped: Math.max(0, before - after), skippedActiveTurn: false };
   };
 
+  /**
+   * Pause / resume a session's scheduled work as part of settle teardown.
+   *
+   * Separate from `setScheduledWorkPaused` (the user-facing toggle) because the
+   * two must not fight: settle claims a pause only when the user had not
+   * already taken one, and unsettle puts back exactly what settle took. Without
+   * the resume half, a settled-then-unsettled chat kept its monitors, crons,
+   * and scheduled turns disabled forever.
+   */
+  const setScheduledWorkPausedForSettle = async (
+    { sessionId, paused }: { sessionId: string; paused: boolean },
+  ): Promise<boolean> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) return false;
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) return false;
+    return paused
+      ? scheduledWorkScheduler.setSessionPausedForSettle(normalizedSessionId)
+      : scheduledWorkScheduler.resumeSessionPausedForSettle(normalizedSessionId);
+  };
+
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
@@ -44305,6 +44326,7 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     hasActiveWorkloads,
     stopBackgroundWork,
+    setScheduledWorkPausedForSettle,
     hasRetainableSessions,
     countActiveForLane,
     disposeForLane,

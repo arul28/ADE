@@ -133,14 +133,19 @@ const BADGE_BY_KIND: Record<SessionBadgeKind, SessionBadge> = {
  * unrecognised type as working. A new SDK task type shows up as "Working",
  * which is at worst slightly over-loud and at best exactly right. Adding a name
  * here is a deliberate act with a known job behind it.
+ *
+ * ── Why the generic shell types are NOT here ────────────────────────────────
+ *
+ * `local_bash` / `shell` / `background` / `bash` are how a provider reports
+ * "the agent backgrounded a command". That is a MIXED bag, not a passive one: a
+ * `tail -f` and a 20-minute `npm run build` arrive under the same type. Listing
+ * them here labelled every background build "Monitoring" — telling the user
+ * nothing was being produced while it was. Mixed is unknown, and by the rule
+ * above unknown is working. Only types whose whole job is to watch belong here.
  */
 const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
   "monitor",
   "monitor_mcp",
-  "local_bash",
-  "shell",
-  "background",
-  "bash",
 ]);
 
 /**
