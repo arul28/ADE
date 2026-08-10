@@ -224,9 +224,9 @@ enum WorkComposerTriggerDetector {
       let prefix = words.prefix(wordCount).joined(separator: " ")
       let matchesPath: Bool
       if prefix.contains("/") || prefix.contains("\\") {
-        matchesPath = selectedLabel.lowercased().hasPrefix(prefix.lowercased())
+        matchesPath = selectedLabel.lowercased().contains(prefix.lowercased())
       } else {
-        matchesPath = pathComponents.contains { $0.lowercased().hasPrefix(prefix.lowercased()) }
+        matchesPath = pathComponents.contains { $0.lowercased().contains(prefix.lowercased()) }
       }
       if matchesPath { return prefix }
     }

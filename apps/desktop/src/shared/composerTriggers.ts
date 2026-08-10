@@ -72,8 +72,8 @@ function composerPathPrefixForSelection(
     const prefix = words.slice(0, wordCount).join(" ");
     const normalizedPrefix = prefix.toLowerCase();
     const matchesPath = /[\\/]/.test(prefix)
-      ? selectedLabel.toLowerCase().startsWith(normalizedPrefix)
-      : pathComponents.some((component) => component.toLowerCase().startsWith(normalizedPrefix));
+      ? selectedLabel.toLowerCase().includes(normalizedPrefix)
+      : pathComponents.some((component) => component.toLowerCase().includes(normalizedPrefix));
     if (matchesPath) return prefix;
   }
   return "";
@@ -180,7 +180,7 @@ function confirmedFileTokenEnd(
   let bestEnd: number | null = null;
   while (end < limit) {
     const character = text[end]!;
-    if (character === "@" || character === "\r" || character === "\n") break;
+    if (character === "\r" || character === "\n") break;
     if (character === " " || character === "\t") {
       if (isFile(text.slice(start, end))) bestEnd = end;
       end += 1;

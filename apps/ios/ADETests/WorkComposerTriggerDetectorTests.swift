@@ -199,6 +199,25 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testAtSelectionRangePreservesTrailingProseAfterSubstringPathComponent() {
+    let text = "ask @ead review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:docs/README",
+      kind: .at,
+      title: "README",
+      subtitle: "docs",
+      insertText: "@docs/README"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "ead ")
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @docs/README review this"
+    )
+  }
+
   func testConfirmedFileChipTerminatesBeforeTrailingProse() {
     let text = "ask @src/foo.swift about this" as NSString
     let match = try! XCTUnwrap(detect(text as String))

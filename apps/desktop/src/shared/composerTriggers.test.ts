@@ -181,6 +181,17 @@ describe("replaceComposerTriggerSpan", () => {
     );
   });
 
+  it("preserves prose after a substring path-component match", () => {
+    const text = "ask @ead review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "docs/README", "file");
+
+    expect(selected.query).toBe("ead ");
+    expect(replaceComposerTriggerSpan(text, selected, "@docs/README ").text).toBe(
+      "ask @docs/README review this",
+    );
+  });
+
   it("recognizes a confirmed @ token as a terminated trigger", () => {
     const text = "ask @src/foo.ts about this";
     const trigger = detectComposerTrigger(text, text.length)!;
@@ -249,6 +260,15 @@ describe("findConfirmedComposerTokens", () => {
   it("requires a word boundary before the trigger char", () => {
     expect(findConfirmedComposerTokens("path/@src/foo.ts", confirm)).toEqual([]);
     expect(findConfirmedComposerTokens("a/test", confirm)).toEqual([]);
+  });
+
+  it("finds confirmed files whose names contain an at sign", () => {
+    const token = "@assets/icon@2x.png";
+    const text = `fix ${token} then continue`;
+    expect(findConfirmedComposerTokens(text, {
+      isFile: (body: string) => body === "assets/icon@2x.png",
+      isCommand: () => false,
+    })).toEqual([{ start: 4, end: 4 + token.length, kind: "file" }]);
   });
 });
 
