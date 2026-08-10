@@ -927,9 +927,9 @@ describe("prMergeAutoSettlementService", () => {
       order.push("stop");
       return { stopped: 1, skippedActiveTurn: false };
     });
-    const setScheduledWorkPaused = vi.fn(async ({ sessionId }: { sessionId: string }) => {
+    const setScheduledWorkPausedForSettle = vi.fn(async () => {
       order.push("pause");
-      return { sessionId, paused: true, nextWakeAt: null };
+      return true;
     });
     const rows = [{ id: "chat-live", toolType: "claude-chat", archivedAt: null, settledAt: null }];
     const service = createPrMergeAutoSettlementService({
@@ -941,7 +941,7 @@ describe("prMergeAutoSettlementService", () => {
       } as any,
       agentChatService: {
         stopBackgroundWork,
-        setScheduledWorkPaused,
+        setScheduledWorkPausedForSettle,
         listScheduledWork: vi.fn(async () => [{ id: "sched-1", status: "scheduled" }]),
       } as any,
       emitEvent: vi.fn(),
@@ -957,7 +957,7 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     expect(stopBackgroundWork).toHaveBeenCalledWith({ sessionId: "chat-live" });
-    expect(setScheduledWorkPaused).toHaveBeenCalledWith({ sessionId: "chat-live", paused: true });
+    expect(setScheduledWorkPausedForSettle).toHaveBeenCalledWith({ sessionId: "chat-live", paused: true });
     expect(order).toEqual(["pause", "stop", "settle"]);
   });
 
