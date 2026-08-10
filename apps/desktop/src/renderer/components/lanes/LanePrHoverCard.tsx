@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 
@@ -8,8 +8,9 @@ const VIEWPORT_PADDING = 8;
 
 /**
  * PR detail lists live outside their lane/session card so card overflow cannot
- * clip them. The anchor is measured only when the card opens; scroll/resize
- * dismisses it instead of installing a hot-path reposition listener.
+ * clip them. The anchor is measured only when the card opens; viewport
+ * scroll/resize dismisses it instead of installing a hot-path reposition
+ * listener. Internal panel scrolling remains available for long PR lists.
  */
 export function LanePrHoverCard({
   children,
@@ -26,6 +27,7 @@ export function LanePrHoverCard({
 }) {
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusPanelOnOpenRef = useRef(false);
   const [anchor, setAnchor] = useState<FixedAnchor | null>(null);
   const { ref: panelRef, position } = useClampedFixedPosition(anchor, label);
 
@@ -37,6 +39,7 @@ export function LanePrHoverCard({
 
   const close = useCallback(() => {
     cancelClose();
+    focusPanelOnOpenRef.current = false;
     setAnchor(null);
   }, [cancelClose]);
 
@@ -60,6 +63,25 @@ export function LanePrHoverCard({
     setAnchor({ x: rect.left, y: rect.bottom + GAP });
   }, [cancelClose]);
 
+  const focusTrigger = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const focusable = trigger.querySelector<HTMLElement>(
+      "button, a[href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])",
+    );
+    focusable?.focus();
+  }, []);
+
+  const openFromKeyboard = useCallback(() => {
+    focusPanelOnOpenRef.current = true;
+    open();
+  }, [open]);
+
+  const closeAndRestoreFocus = useCallback(() => {
+    close();
+    requestAnimationFrame(focusTrigger);
+  }, [close, focusTrigger]);
+
   const isWithinCard = useCallback((target: EventTarget | null): boolean => {
     return target instanceof Node && Boolean(
       triggerRef.current?.contains(target) || panelRef.current?.contains(target),
@@ -68,14 +90,28 @@ export function LanePrHoverCard({
 
   useEffect(() => {
     if (!anchor) return undefined;
-    const closeOnViewportChange = () => close();
+    const closeOnViewportChange = (event: Event) => {
+      if (event.type === "scroll" && event.target instanceof Node && panelRef.current?.contains(event.target)) {
+        return;
+      }
+      close();
+    };
     window.addEventListener("scroll", closeOnViewportChange, true);
     window.addEventListener("resize", closeOnViewportChange);
     return () => {
       window.removeEventListener("scroll", closeOnViewportChange, true);
       window.removeEventListener("resize", closeOnViewportChange);
     };
-  }, [anchor, close]);
+  }, [anchor, close, panelRef]);
+
+  useLayoutEffect(() => {
+    if (!anchor || !focusPanelOnOpenRef.current || !panelRef.current) return;
+    focusPanelOnOpenRef.current = false;
+    const firstInteractive = panelRef.current.querySelector<HTMLElement>(
+      "button, a[href], input, select, textarea, [role=\"button\"], [tabindex]:not([tabindex=\"-1\"])",
+    );
+    firstInteractive?.focus();
+  }, [anchor, panelRef]);
 
   useEffect(() => () => {
     if (closeTimerRef.current != null) clearTimeout(closeTimerRef.current);
@@ -94,6 +130,17 @@ export function LanePrHoverCard({
       onMouseEnter={open}
       onMouseLeave={scheduleClose}
       onFocus={open}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          event.stopPropagation();
+          openFromKeyboard();
+        } else if (event.key === "Escape" && anchor) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeAndRestoreFocus();
+        }
+      }}
       onBlur={(event) => {
         if (!isWithinCard(event.relatedTarget)) scheduleClose();
       }}
@@ -117,6 +164,12 @@ export function LanePrHoverCard({
       onMouseEnter={cancelClose}
       onMouseLeave={scheduleClose}
       onFocus={cancelClose}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeAndRestoreFocus();
+      }}
       onBlur={(event) => {
         if (!isWithinCard(event.relatedTarget)) scheduleClose();
       }}

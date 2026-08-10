@@ -38,6 +38,34 @@ export function detectComposerTrigger(text: string, cursorPos: number): Composer
 }
 
 /**
+ * Narrow an @ trigger to the selected item's leading label when the user has
+ * continued typing prose after it. The menu can keep a prefix suggestion
+ * visible while the query grows, but replacing the raw trigger must not erase
+ * that prose. Whitespace after the label belongs to the selected trigger so
+ * the replacement can add its own single separator.
+ */
+export function composerTriggerForSelection(
+  trigger: ComposerTrigger,
+  label: string,
+): ComposerTrigger {
+  const selectedLabel = label.trim();
+  if (trigger.type !== "at" || !selectedLabel) return trigger;
+
+  const matchedPrefix = trigger.query.slice(0, selectedLabel.length);
+  if (matchedPrefix.toLowerCase() !== selectedLabel.toLowerCase()) return trigger;
+
+  const remainder = trigger.query.slice(selectedLabel.length);
+  if (remainder.length > 0 && !/^[ \t]/.test(remainder)) {
+    return trigger;
+  }
+  const separator = remainder.match(/^[ \t]*/)?.[0] ?? "";
+  return {
+    ...trigger,
+    query: `${matchedPrefix}${separator}`,
+  };
+}
+
+/**
  * Replace exactly the trigger span (trigger character through the end of the
  * typed query) with `insertion`, leaving surrounding text untouched so
  * multiple tokens can coexist in one draft.

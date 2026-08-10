@@ -15,6 +15,7 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  composerTriggerForSelection,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -7339,7 +7340,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     let cancelled = false;
-    const query = range.query.toLowerCase();
+    const query = range.query.trim().toLowerCase();
+    const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {
+      if (!query) return true;
+      const label = suggestion.label.toLowerCase();
+      return (
+        label.includes(query)
+        || query.startsWith(`${label} `)
+        || suggestion.insertText.toLowerCase().includes(query)
+        || Boolean(suggestion.detail?.toLowerCase().includes(query))
+      );
+    };
     const localSuggestions = (): MentionSuggestion[] => [
       ...lanes.map((lane) => ({
         kind: "lane" as const,
@@ -7353,20 +7364,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         insertText: `@chat:${session.sessionId}`,
         detail: session.laneId,
       })),
-    ].filter((suggestion) => (
-      !query
-      || suggestion.label.toLowerCase().includes(query)
-      || suggestion.insertText.toLowerCase().includes(query)
-      || suggestion.detail?.toLowerCase().includes(query)
-    ));
+    ].filter(matchesMentionQuery);
     const attachedSuggestions = (): MentionSuggestion[] => selectedMentions
       .filter((suggestion) => suggestion.attachment && suggestion.filePath)
-      .filter((suggestion) => (
-        !query
-        || suggestion.label.toLowerCase().includes(query)
-        || suggestion.insertText.toLowerCase().includes(query)
-        || suggestion.detail?.toLowerCase().includes(query)
-      ));
+      .filter(matchesMentionQuery);
 
     const publishSuggestions = (remote: MentionSuggestion[] = []) => {
       if (cancelled) return;
@@ -7452,7 +7453,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           .filter((pr) => {
             const title = String(pr.title ?? "");
             const number = String(pr.number ?? pr.prNumber ?? "");
-            return !query || title.toLowerCase().includes(query) || number.includes(query);
+            const loweredTitle = title.toLowerCase();
+            return !query || loweredTitle.includes(query) || query.startsWith(`${loweredTitle} `) || number.includes(query);
           })
           .slice(0, 5)
           .map((pr) => {
@@ -12331,8 +12333,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addNotice, chatRowBudget, lanes, models, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
-    const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
-    if (trigger?.type !== "at") return;
+    const detectedTrigger = detectComposerTrigger(prompt, promptCursorRef.current);
+    if (detectedTrigger?.type !== "at") return;
+    const trigger = composerTriggerForSelection(
+      detectedTrigger,
+      suggestion.kind === "file" ? suggestion.filePath ?? suggestion.label : suggestion.label,
+    );
     const next = replaceComposerTriggerSpan(prompt, trigger, `${suggestion.insertText} `);
     setPromptValue(next.text, next.caret);
     setSelectedMentions((prev) => {

@@ -32,7 +32,10 @@ function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): numbe
   if (byRank !== 0) return byRank;
   const aUpdated = Date.parse(a.updatedAt ?? "");
   const bUpdated = Date.parse(b.updatedAt ?? "");
-  if (Number.isFinite(aUpdated) && Number.isFinite(bUpdated) && aUpdated !== bUpdated) {
+  const aHasUpdated = Number.isFinite(aUpdated);
+  const bHasUpdated = Number.isFinite(bUpdated);
+  if (aHasUpdated !== bHasUpdated) return aHasUpdated ? -1 : 1;
+  if (aHasUpdated && aUpdated !== bUpdated) {
     return bUpdated - aUpdated;
   }
   return b.githubPrNumber - a.githubPrNumber;

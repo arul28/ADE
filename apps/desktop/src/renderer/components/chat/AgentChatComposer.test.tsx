@@ -714,6 +714,31 @@ describe("AgentChatComposer", () => {
     expect(view.container.querySelector("[aria-hidden]")?.textContent).not.toContain("@chat:chat-1");
   });
 
+  it("does not consume prose after a matching spaced chat mention", async () => {
+    const onSearchMentions = vi.fn().mockResolvedValue([{
+      kind: "chat" as const,
+      id: "chat-1",
+      title: "a b c",
+    }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      onSearchMentions,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+    const draft = "ask @a b c about this";
+
+    fireEvent.change(textbox, {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    fireEvent.click(await screen.findByText("a b c"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @chat:chat-1 about this");
+  });
+
   it("uses lane attachment search for at-command suggestions before a session exists", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "docs/README.md", type: "file" }]);
 

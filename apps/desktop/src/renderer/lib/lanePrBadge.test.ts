@@ -9,9 +9,9 @@ import {
   selectPrimaryLanePr,
 } from "./lanePrBadge";
 
-type TestPr = { id: string; state: PrState; updatedAt: string; githubPrNumber: number };
+type TestPr = { id: string; state: PrState; updatedAt?: string | null; githubPrNumber: number };
 
-function pr(id: string, state: PrState, updatedAt: string, githubPrNumber: number): TestPr {
+function pr(id: string, state: PrState, updatedAt: string | null | undefined, githubPrNumber: number): TestPr {
   return { id, state, updatedAt, githubPrNumber };
 }
 
@@ -67,6 +67,14 @@ describe("pickPrimaryPr", () => {
         pr("merged", "merged", "2026-07-02T00:00:00Z", 2),
       ],
       expected: "merged",
+    },
+    {
+      name: "valid activity beats a missing timestamp",
+      prs: [
+        pr("missing", "open", null, 99),
+        pr("known", "open", "2026-07-03T00:00:00Z", 1),
+      ],
+      expected: "known",
     },
   ];
 

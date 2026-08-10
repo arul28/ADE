@@ -257,6 +257,19 @@ describe("chat mention ranking", () => {
     expect(ranked.map((r) => r.id)).toEqual(["exact", "prefix", "sub"]);
   });
 
+  it("keeps a title match when prose follows the mention", () => {
+    const ranked = rankChatMentionSuggestions(
+      [
+        { id: "short", title: "a b c", lastActivityAt: 10 },
+        { id: "other", title: "unrelated", lastActivityAt: 100 },
+      ],
+      "a b c about this",
+      10,
+    );
+
+    expect(ranked.map((r) => r.id)).toEqual(["short"]);
+  });
+
   it("honors the per-kind cap and is stable for equal rows", () => {
     const ties = [
       { id: "z", title: "same", lastActivityAt: 5 },

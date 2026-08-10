@@ -281,7 +281,9 @@ The full card is one full-bleed row with three lines:
    id on the machine the project tab is bound to. When a lane has multiple PRs,
    the badge represents the newest open/draft PR, or the newest terminal
    activity when no PR is active, and its `+N` list is rendered in a
-   viewport-clamped portal so the session card cannot clip the details. While the owning lane is
+   viewport-clamped portal so the session card cannot clip the details. The portal remains
+   keyboard reachable (ArrowDown opens it, Escape closes it and restores focus) and its own
+   list can scroll without dismissing. While the owning lane is
    mid background AI naming, every visible lane-label position (singleton row,
    hover detail, or grouped header) uses the shared animated `Naming lane…`
    placeholder; the persisted deterministic fallback stays hidden unless

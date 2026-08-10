@@ -77,6 +77,25 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertNil(detect("@a@b"))
   }
 
+  func testAtSelectionRangePreservesTrailingProse() {
+    let text = "ask @src/foo.swift about this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/foo.swift",
+      kind: .at,
+      title: "foo.swift",
+      subtitle: "src",
+      insertText: "@src/foo.swift"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "src/foo.swift ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@src/foo.swift " as NSString).length)
+    )
+  }
+
   func testEmailDoesNotTrigger() {
     // The `@` is glued to a preceding non-space char, so emails never trigger.
     XCTAssertNil(detect("ping foo@bar"))

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  composerTriggerForSelection,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -91,6 +92,23 @@ describe("detectComposerTrigger", () => {
 });
 
 describe("replaceComposerTriggerSpan", () => {
+  it("keeps prose after a selected mention prefix", () => {
+    const trigger = detectComposerTrigger("ask @a b c about this", 20)!;
+    const selected = composerTriggerForSelection(trigger, "a b c");
+
+    expect(selected.query).toBe("a b c ");
+    expect(replaceComposerTriggerSpan("ask @a b c about this", selected, "@chat:chat-1 ")).toEqual({
+      text: "ask @chat:chat-1 about this",
+      caret: 17,
+    });
+  });
+
+  it("does not shorten a partial or non-prefix selection", () => {
+    const trigger = detectComposerTrigger("@abc", 4)!;
+    expect(composerTriggerForSelection(trigger, "a b c")).toEqual(trigger);
+    expect(composerTriggerForSelection(trigger, "other")).toEqual(trigger);
+  });
+
   it("replaces exactly the trigger span mid-sentence", () => {
     const text = "fix @src/f then run /te tomorrow";
     const trigger = { start: 20, query: "te" };

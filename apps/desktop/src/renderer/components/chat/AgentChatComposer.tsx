@@ -41,6 +41,7 @@ import type {
 } from "../../../shared/types/orchestration";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import {
+  composerTriggerForSelection,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -2723,7 +2724,7 @@ export function AgentChatComposer({
   // and flattens chips, so serialized indices cannot be mapped back onto DOM
   // positions. Chips, <br>, and block edges terminate the run and act as
   // word boundaries.
-  const getRichTriggerContext = useCallback((): { trigger: ComposerTrigger; range: Range } | null => {
+  const getRichTriggerContext = useCallback((queryOverride?: string): { trigger: ComposerTrigger; range: Range } | null => {
     const editor = richEditorRef.current;
     if (!editor) return null;
     const selection = window.getSelection();
@@ -2751,8 +2752,11 @@ export function AgentChatComposer({
       walker = walker.previousSibling;
     }
 
-    const trigger = detectComposerTrigger(runText, runText.length);
-    if (!trigger) return null;
+    const detectedTrigger = detectComposerTrigger(runText, runText.length);
+    if (!detectedTrigger) return null;
+    const trigger = queryOverride == null
+      ? detectedTrigger
+      : { ...detectedTrigger, query: queryOverride };
 
     let remaining = trigger.start;
     let startNode: Text = caretNode;
@@ -2767,9 +2771,22 @@ export function AgentChatComposer({
       remaining -= length;
     }
 
+    let endRemaining = trigger.start + 1 + trigger.query.length;
+    let endNode: Text = caretNode;
+    let endOffset = caretOffset;
+    for (const node of runNodes) {
+      const length = node === caretNode ? caretOffset : (node.textContent ?? "").length;
+      if (endRemaining <= length) {
+        endNode = node;
+        endOffset = endRemaining;
+        break;
+      }
+      endRemaining -= length;
+    }
+
     const range = document.createRange();
     range.setStart(startNode, startOffset);
-    range.setEnd(caretNode, caretOffset);
+    range.setEnd(endNode, endOffset);
     return { trigger, range };
   }, []);
 
@@ -2778,7 +2795,7 @@ export function AgentChatComposer({
   // no trigger span can be located (caller falls back to caret insertion).
   const replaceRichTriggerWith = useCallback((insertion:
     | { text: string }
-    | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string }
+    | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string; triggerLabel?: string }
   ): boolean => {
     const editor = richEditorRef.current;
     if (!editor) return false;
@@ -2789,7 +2806,14 @@ export function AgentChatComposer({
       selection?.removeAllRanges();
       selection?.addRange(saved);
     }
-    const context = getRichTriggerContext();
+    const detectedContext = getRichTriggerContext();
+    if (!detectedContext) return false;
+    const trigger = "triggerLabel" in insertion
+      ? composerTriggerForSelection(detectedContext.trigger, insertion.triggerLabel ?? "")
+      : detectedContext.trigger;
+    const context = trigger.query === detectedContext.trigger.query
+      ? detectedContext
+      : getRichTriggerContext(trigger.query);
     if (!context) return false;
     selection?.removeAllRanges();
     selection?.addRange(context.range);
@@ -3883,11 +3907,16 @@ export function AgentChatComposer({
       }
       // Replace exactly the @query trigger span with the confirmed token.
       if (useRichComposer) {
-        if (!replaceRichTriggerWith({ chipKind: "file", chipText: `@${item.path}` })) {
+        if (!replaceRichTriggerWith({
+          chipKind: "file",
+          chipText: `@${item.path}`,
+          triggerLabel: item.path,
+        })) {
           insertTextIntoRichEditor(`@${item.path} `);
         }
       } else {
-        const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `@${item.path} `);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.path);
+        const next = replaceComposerTriggerSpan(draft, trigger, `@${item.path} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
@@ -3902,11 +3931,13 @@ export function AgentChatComposer({
           chipKind: "mention",
           chipText: token,
           chipLabel: item.mention.title,
+          triggerLabel: item.mention.title,
         })) {
           insertTextIntoRichEditor(`${token} `);
         }
       } else {
-        const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `${token} `);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.mention.title);
+        const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }

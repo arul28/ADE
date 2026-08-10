@@ -194,6 +194,45 @@ enum WorkComposerTriggerDetector {
       return nil
     }
   }
+
+  /// Keep prose typed after a selected @ item outside the replacement range.
+  /// The trigger detector intentionally accepts spaces for multi-word names;
+  /// this second pass uses the selected row's label to distinguish that name
+  /// from a trailing sentence.
+  static func matchForSelection(
+    _ match: WorkComposerTriggerMatch,
+    suggestion: WorkComposerSuggestion
+  ) -> WorkComposerTriggerMatch {
+    guard match.kind == .at else { return match }
+    let rawLabel = suggestion.insertText.hasPrefix("@")
+      ? String(suggestion.insertText.dropFirst())
+      : suggestion.title
+    let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !label.isEmpty else { return match }
+
+    let query = match.query as NSString
+    let labelLength = (label as NSString).length
+    guard query.length >= labelLength else { return match }
+    let prefix = query.substring(to: labelLength)
+    guard prefix.lowercased() == label.lowercased() else { return match }
+
+    let remainder = query.substring(from: labelLength) as NSString
+    guard remainder.length == 0 || remainder.character(at: 0) == 0x20 || remainder.character(at: 0) == 0x09 else {
+      return match
+    }
+    var separatorLength = 0
+    while separatorLength < remainder.length {
+      let character = remainder.character(at: separatorLength)
+      guard character == 0x20 || character == 0x09 else { break }
+      separatorLength += 1
+    }
+    let consumedQuery = query.substring(to: labelLength + separatorLength)
+    return WorkComposerTriggerMatch(
+      kind: match.kind,
+      query: consumedQuery,
+      range: NSRange(location: match.range.location, length: 1 + (consumedQuery as NSString).length)
+    )
+  }
 }
 
 // MARK: - Suggestion model
@@ -368,7 +407,8 @@ final class WorkComposerSuggestionController: ObservableObject {
 
   func commit(_ suggestion: WorkComposerSuggestion) {
     guard let match = activeMatch else { return }
-    onCommit?(suggestion, match.range)
+    let commitMatch = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    onCommit?(suggestion, commitMatch.range)
     clear()
   }
 

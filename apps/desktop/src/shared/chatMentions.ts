@@ -251,6 +251,10 @@ function scoreChatMentionMatch(
   if (!loweredQuery.length) return 0;
   const target = haystack.toLowerCase();
   if (target === loweredQuery) return 0;
+  // Once a title is an exact prefix, keep it visible while the user continues
+  // ordinary prose after the mention. Exact longer titles still win above this
+  // fallback, so a real multi-word title is selected before a shorter prefix.
+  if (loweredQuery.startsWith(`${target} `)) return 1;
   if (target.startsWith(loweredQuery)) return 1;
   if (target.includes(loweredQuery)) return 2;
   // Subsequence fallback: every query char appears in order.
