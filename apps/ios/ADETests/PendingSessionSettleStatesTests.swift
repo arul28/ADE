@@ -374,20 +374,52 @@ final class PendingSessionSettleStatesTests: XCTestCase {
   /// while the reconnect replay — with its own longer timeout — is still running.
   func testAQueuedCommandStaysOutstandingUntilTheReplayAnswers() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.attachQueuedOperation("op-1", for: "session-1", token: token)
 
     // Queued: no `restartBackstop`. Far past the window, it must survive.
     states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter * 5))
     XCTAssertNotNil(states["session-1"])
 
     let replayedAt = addUptime(now, PendingSessionSettleStates.staleAfter * 5)
-    states.markAnswered(for: "session-1", uptime: replayedAt)
+    states.markAnswered(forOperation: "op-1", uptime: replayedAt)
 
     states.prune(against: [session()], uptime: addUptime(replayedAt, 1))
     XCTAssertNotNil(states["session-1"])
 
     states.prune(against: [session()], uptime: addUptime(replayedAt, PendingSessionSettleStates.staleAfter))
     XCTAssertNil(states["session-1"])
+  }
+
+  /// Two commands for one session queued together drain in append order. The
+  /// first replay's completion must not resolve the second's intent — that
+  /// would start its window before its own replay had even begun.
+  func testAReplayResolvesOnlyItsOwnQueuedIntent() {
+    var states = PendingSessionSettleStates()
+    let first = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.attachQueuedOperation("op-first", for: "session-1", token: first)
+    let second = states.begin(.unsettle(uptime: now), for: "session-1", baseline: nil)
+    states.attachQueuedOperation("op-second", for: "session-1", token: second)
+
+    states.markAnswered(forOperation: "op-first", uptime: now)
+
+    // Still the first operation's id on record? No — the live intent is the
+    // second, and it has not been replayed, so it stays outstanding.
+    states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter * 3))
+    XCTAssertNotNil(states["session-1"])
+  }
+
+  /// A replay the host refuses must retire its intent. Leaving it outstanding
+  /// would paint a refused state indefinitely, since an outstanding intent
+  /// deliberately cannot expire.
+  func testATerminallyRejectedReplayRetiresItsIntent() {
+    var states = PendingSessionSettleStates()
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.attachQueuedOperation("op-1", for: "session-1", token: token)
+
+    XCTAssertTrue(states.clear(forOperation: "op-1"))
+    XCTAssertNil(states["session-1"])
+    XCTAssertFalse(states.clear(forOperation: "op-1"))
   }
 
   func testASlowCommandCannotExtendAnIntentTheUserReplaced() {

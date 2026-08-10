@@ -9334,6 +9334,11 @@ final class SyncService: ObservableObject {
     return token
   }
 
+  private func clearPendingSessionSettle(forOperation operationId: String) {
+    guard pendingSessionSettleStates.clear(forOperation: operationId) else { return }
+    scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
+  }
+
   private func clearPendingSessionSettle(_ sessionId: String, token: UInt64) {
     guard pendingSessionSettleStates[sessionId] != nil else { return }
     pendingSessionSettleStates.clear(sessionId, token: token)
@@ -9420,7 +9425,7 @@ final class SyncService: ObservableObject {
     // `lifecycleCall` call sites that pass no `applied` predicate.
     resultShape: SessionLifecycleResultShape? = .envelope,
     rollback: @escaping () -> Void
-  ) async throws -> Bool {
+  ) async throws -> String? {
     let scope = chatCommandScope(for: trimmed)
     let result: Any
     do {
@@ -9445,13 +9450,17 @@ final class SyncService: ObservableObject {
       throw sessionLifecycleNotAppliedError(action)
     }
     // `{queued: true}` is durable acceptance by THIS device, not an answer from
-    // the host — it has not seen the command yet.
-    return !syncCommandResultWasQueued(result)
+    // the host — it has not seen the command yet. Returns the queued
+    // operation's id so the caller can bind its optimistic state to it.
+    return syncQueuedCommandId(result)
   }
 
-  private func syncCommandResultWasQueued(_ result: Any) -> Bool {
-    guard let record = result as? [String: Any] else { return false }
-    return record["ok"] == nil && record["queued"] as? Bool == true
+  private func syncQueuedCommandId(_ result: Any) -> String? {
+    guard let record = result as? [String: Any],
+          record["ok"] == nil,
+          record["queued"] as? Bool == true
+    else { return nil }
+    return (record["commandId"] as? String).flatMap(normalizedLifecycleSessionId)
   }
 
   /// Settle-family command: shows the change through the local overlay, which is
@@ -9466,7 +9475,7 @@ final class SyncService: ObservableObject {
     guard let trimmed = normalizedLifecycleSessionId(sessionId) else { return }
     guard supportsRemoteAction(action) else { throw sessionLifecycleUnsupportedError(action) }
     let token = beginPendingSessionSettle(intent, for: trimmed)
-    let answered = try await sendSessionLifecycleCommand(
+    let queuedCommandId = try await sendSessionLifecycleCommand(
       sessionId: trimmed,
       action: action,
       args: args,
@@ -9476,9 +9485,13 @@ final class SyncService: ObservableObject {
     // Only a real answer starts the window. `staleAfter` bounds the wait for the
     // CHANGESET, and the request itself may run to a longer timeout than that,
     // so counting from send would expire a command that is still valid. A
-    // durably-queued command has not been answered at all — it stays
-    // outstanding until `flushPendingOperations` replays it.
-    guard answered else { return }
+    // durably-queued command has not been answered at all — bind the intent to
+    // that operation so the replay's outcome, success or terminal failure,
+    // resolves this intent and no other.
+    if let queuedCommandId {
+      pendingSessionSettleStates.attachQueuedOperation(queuedCommandId, for: trimmed, token: token)
+      return
+    }
     pendingSessionSettleStates.restartBackstop(
       for: trimmed,
       token: token,
@@ -9541,18 +9554,6 @@ final class SyncService: ObservableObject {
         )
       }
     )
-  }
-
-  /// Session ids a replayed settle-family command applies to, so the overlay
-  /// can tell which outstanding intents that replay just answered.
-  private func queuedLifecycleSessionIds(action: String, args: [String: Any]) -> [String] {
-    guard action.hasPrefix("session.") else { return [] }
-    var ids: [String] = []
-    if let single = args["sessionId"] as? String { ids.append(single) }
-    if let many = args["sessionIds"] as? [Any] {
-      ids.append(contentsOf: many.compactMap { $0 as? String })
-    }
-    return ids.compactMap(normalizedLifecycleSessionId)
   }
 
   private func normalizedLifecycleSessionId(_ sessionId: String) -> String? {
@@ -18754,12 +18755,10 @@ final class SyncService: ObservableObject {
         // shorter than `staleAfter`, so re-stamping per attempt would let a
         // queue that never drains hold the overlay open forever — an unbounded
         // lie in place of a two-second flicker.
-        for sessionId in queuedLifecycleSessionIds(action: operation.action, args: args) {
-          pendingSessionSettleStates.markAnswered(
-            for: sessionId,
-            uptime: ProcessInfo.processInfo.systemUptime
-          )
-        }
+        pendingSessionSettleStates.markAnswered(
+          forOperation: operation.id,
+          uptime: ProcessInfo.processInfo.systemUptime
+        )
         pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
         schedulePendingSessionSettleBackstopSweep()
         // A drained chat creation produced a real session; drop the optimistic
@@ -18778,6 +18777,11 @@ final class SyncService: ObservableObject {
         }
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           removePendingOperation(operation)
+          // Terminal: the host rejected the replay (a dismiss-and-settle whose
+          // prompt has since changed, say). Retire the intent — leaving it
+          // outstanding would paint a state the host refused, indefinitely,
+          // because an outstanding intent is deliberately unexpirable.
+          clearPendingSessionSettle(forOperation: operation.id)
           if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
             removePendingChatCreation(id: operation.id)
           }
@@ -19874,7 +19878,10 @@ extension SyncService {
           if stillLive, isSyncRequestTimeoutError(error) {
             verifyTransportAliveAfterSilence(error as NSError, trigger: "request_timeout")
           }
-          return ["queued": true]
+          // `commandId` lets a caller tie local optimistic state to the exact
+          // queued operation, so the replay's outcome resolves that state and
+          // nothing else's.
+          return ["queued": true, "commandId": commandId]
         }
         throw error
       }
@@ -19883,7 +19890,7 @@ extension SyncService {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "Offline — command dropped."])
     }
     try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
-    return ["queued": true]
+    return ["queued": true, "commandId": commandId]
   }
 
   // MARK: - Workspace snapshot debounce

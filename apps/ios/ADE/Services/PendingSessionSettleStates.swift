@@ -73,6 +73,11 @@ struct PendingSessionSettleIntent: Equatable {
   /// and an intent the sweep has already removed cannot be restored by
   /// restarting its window afterwards.
   fileprivate var awaitingResponse = true
+  /// The durable queue entry this command became, when it was queued offline.
+  /// Replay outcomes are matched on this rather than the session id: two
+  /// commands for one session can be queued together, and the first replay's
+  /// completion must not resolve the second's intent.
+  fileprivate var queuedOperationId: String?
 
   struct Baseline: Equatable {
     var settledAt: String?
@@ -226,14 +231,34 @@ struct PendingSessionSettleStates: Equatable {
     intents[sessionId]?.startedAtUptime = uptime
   }
 
+  /// Bind an intent to the durable queue entry its command became.
+  mutating func attachQueuedOperation(_ operationId: String, for sessionId: String, token: UInt64) {
+    guard intents[sessionId]?.token == token else { return }
+    intents[sessionId]?.queuedOperationId = operationId
+  }
+
   /// A durably-queued command has now been replayed and answered. Until this,
   /// the `queued` sentinel is not an answer — the host has not seen the command
   /// at all — so the intent stays outstanding rather than starting a window it
   /// could expire inside while the replay is still running.
-  mutating func markAnswered(for sessionId: String, uptime: TimeInterval) {
-    guard intents[sessionId] != nil else { return }
-    intents[sessionId]?.awaitingResponse = false
-    intents[sessionId]?.startedAtUptime = uptime
+  mutating func markAnswered(forOperation operationId: String, uptime: TimeInterval) {
+    guard let key = key(forOperation: operationId) else { return }
+    intents[key]?.awaitingResponse = false
+    intents[key]?.startedAtUptime = uptime
+  }
+
+  /// The replay failed terminally — the host refused it. Retire the intent
+  /// rather than leave it outstanding, which would paint a refused state
+  /// indefinitely because an outstanding intent cannot expire.
+  @discardableResult
+  mutating func clear(forOperation operationId: String) -> Bool {
+    guard let key = key(forOperation: operationId) else { return false }
+    intents.removeValue(forKey: key)
+    return true
+  }
+
+  private func key(forOperation operationId: String) -> String? {
+    intents.first { $0.value.queuedOperationId == operationId }?.key
   }
 
   /// Forget everything in flight — used when the ground the overlay refers to
