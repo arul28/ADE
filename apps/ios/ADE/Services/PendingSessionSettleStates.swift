@@ -67,6 +67,12 @@ struct PendingSessionSettleIntent: Equatable {
   /// converged. Briefly trailing the truth beats confidently showing the wrong
   /// command's result.
   fileprivate var replacedInFlight = false
+  /// True until the command's own request returns. The backstop bounds the wait
+  /// for the CHANGESET, so it must not run while the request itself is still
+  /// legitimately outstanding — the request may take longer than `staleAfter`,
+  /// and an intent the sweep has already removed cannot be restored by
+  /// restarting its window afterwards.
+  fileprivate var awaitingResponse = true
 
   struct Baseline: Equatable {
     var settledAt: String?
@@ -216,6 +222,7 @@ struct PendingSessionSettleStates: Equatable {
   /// command cannot extend an intent the user has since replaced.
   mutating func restartBackstop(for sessionId: String, token: UInt64, uptime: TimeInterval) {
     guard intents[sessionId]?.token == token else { return }
+    intents[sessionId]?.awaitingResponse = false
     intents[sessionId]?.startedAtUptime = uptime
   }
 
@@ -269,7 +276,10 @@ struct PendingSessionSettleStates: Equatable {
       guard !intent.replacedInFlight, movedSinceCommand, intent.isSatisfied(by: session) else { continue }
       intents.removeValue(forKey: session.id)
     }
-    intents = intents.filter { uptime - $0.value.startedAtUptime < PendingSessionSettleStates.staleAfter }
+    intents = intents.filter { entry in
+      entry.value.awaitingResponse
+        || uptime - entry.value.startedAtUptime < PendingSessionSettleStates.staleAfter
+    }
     return intents.count != before
   }
 

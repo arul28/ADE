@@ -183,7 +183,8 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testAnIntentWhoseChangesetNeverArrivesExpires() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.restartBackstop(for: "session-1", token: token, uptime: now)
 
     let justBefore = addUptime(now, PendingSessionSettleStates.staleAfter - 1)
     states.prune(against: [session(settledAt: nil)], uptime: justBefore)
@@ -199,7 +200,8 @@ final class PendingSessionSettleStatesTests: XCTestCase {
   /// command is still on its way, then settle it again when the queue drains.
   func testAQueuedSettleDoesNotExpireWhileTheHostIsUnreachable() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.restartBackstop(for: "session-1", token: token, uptime: now)
 
     var clock = now
     for _ in 0..<10 {
@@ -214,7 +216,8 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testTheBackstopResumesOnceTheHostIsReachableAgain() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.restartBackstop(for: "session-1", token: token, uptime: now)
 
     // Offline for well past the budget, then reachable: the clock restarts from
     // the moment we could have been answered, not from the tap.
@@ -258,7 +261,8 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     var states = PendingSessionSettleStates()
     let unsettled = session()
     states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: unsettled)
-    states.begin(.unsettle(uptime: now), for: "session-1", baseline: unsettled)
+    let token = states.begin(.unsettle(uptime: now), for: "session-1", baseline: unsettled)
+    states.restartBackstop(for: "session-1", token: token, uptime: now)
 
     // The row has not moved yet — `settled_at` is still nil, which is also what
     // the unsettle wants. It must NOT count as confirmation.
@@ -344,11 +348,35 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertNil(states["session-1"])
   }
 
+  /// The sweep armed when the command was sent must not remove an intent whose
+  /// request is still outstanding — restarting the window afterwards cannot
+  /// bring back an intent that is already gone.
+  func testAnOutstandingRequestCannotBeExpiredBySweepOrPrune() {
+    var states = PendingSessionSettleStates()
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+
+    // Well past the deadline, but the request has not answered yet.
+    states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter * 3))
+    XCTAssertNotNil(states["session-1"])
+
+    let answeredAt = addUptime(now, PendingSessionSettleStates.staleAfter * 3)
+    states.restartBackstop(for: "session-1", token: token, uptime: answeredAt)
+
+    states.prune(against: [session()], uptime: addUptime(answeredAt, 1))
+    XCTAssertNotNil(states["session-1"])
+
+    states.prune(against: [session()], uptime: addUptime(answeredAt, PendingSessionSettleStates.staleAfter))
+    XCTAssertNil(states["session-1"], "once answered, the window applies normally")
+  }
+
   func testASlowCommandCannotExtendAnIntentTheUserReplaced() {
     var states = PendingSessionSettleStates()
     let stale = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
-    states.begin(.unsettle(uptime: now), for: "session-1", baseline: nil)
+    let current = states.begin(.unsettle(uptime: now), for: "session-1", baseline: nil)
+    states.restartBackstop(for: "session-1", token: current, uptime: now)
 
+    // The replaced command answers late; it must not push the newer intent's
+    // deadline out.
     states.restartBackstop(for: "session-1", token: stale, uptime: addUptime(now, 100))
 
     states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter))
