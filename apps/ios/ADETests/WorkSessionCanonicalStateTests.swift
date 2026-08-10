@@ -826,6 +826,51 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(remaining.first?.id, echoes[1].id, "the newer echo must survive")
   }
 
+  /// Reconciliation runs repeatedly against the same transcript — `loadTranscript`
+  /// reconciles, then the post-send pass reconciles again — so retiring by a
+  /// consumed count would retire the survivor on the second call.
+  func testRepeatedReconciliationAgainstOneRowKeepsTheUnrepresentedEcho() {
+    var echoes = [
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now)),
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now.addingTimeInterval(1))),
+    ]
+    let oneRow = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: iso(now),
+        sequence: 1,
+        event: .userMessage(
+          text: "continue",
+          attachments: nil,
+          turnId: nil,
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      )
+    ]
+
+    for pass in 1...3 {
+      echoes = workLocalEchoesRetiredByTranscript(echoes, transcript: oneRow)
+      XCTAssertEqual(
+        echoes.count, 2,
+        "pass \(pass): one canonical row must not retire both identical echoes"
+      )
+    }
+    // The rendered timeline still shows one row and one echo, not two of each.
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: oneRow,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: echoes
+    )
+    let userMessages = snapshot.timeline.filter { entry in
+      if case .message(let message) = entry.payload { return message.role == "user" }
+      return false
+    }
+    XCTAssertEqual(userMessages.count, 2)
+  }
+
   func testBothIdenticalEchoesRetireOnceBothRowsArrive() {
     let echoes = [
       WorkLocalEchoMessage(text: "continue", timestamp: iso(now)),

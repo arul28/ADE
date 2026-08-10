@@ -2218,6 +2218,42 @@ func workUnrepresentedLocalEchoMessages(
   }
 }
 
+/// The echoes still worth keeping after the transcript has caught up.
+///
+/// Idempotent by construction, which is the requirement: reconciliation runs
+/// more than once against the same transcript (`loadTranscript` reconciles, then
+/// the post-send pass reconciles again). Consuming a represented count per call
+/// is not idempotent — with two identical sends and one canonical row, the first
+/// call correctly retires one echo and the second applies the same count to the
+/// already-pruned array and retires the survivor.
+///
+/// Retiring a key only once the transcript holds at least as many rows as there
+/// are echoes for it is stable under repetition, and costs nothing in between:
+/// `buildWorkTimeline` filters the surplus out of the rendered timeline, and
+/// that filter is a pure function of the full echo list.
+func workLocalEchoesRetiredByTranscript(
+  _ echoes: [WorkLocalEchoMessage],
+  transcript: [WorkChatEnvelope]
+) -> [WorkLocalEchoMessage] {
+  guard !echoes.isEmpty else { return echoes }
+  let representedCounts = workRepresentedEchoKeyCounts(from: transcript)
+  guard !representedCounts.isEmpty else { return echoes }
+
+  var echoCounts: [String: Int] = [:]
+  for echo in echoes {
+    guard let key = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else { continue }
+    echoCounts[key, default: 0] += 1
+  }
+
+  return echoes.filter { echo in
+    guard let key = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments),
+          let represented = representedCounts[key],
+          let outstanding = echoCounts[key]
+    else { return true }
+    return represented < outstanding
+  }
+}
+
 /// How many times each echo dedupe key is already represented in the transcript,
 /// counting delivered user messages and pending steers.
 func workRepresentedEchoKeyCounts(from transcript: [WorkChatEnvelope]) -> [String: Int] {

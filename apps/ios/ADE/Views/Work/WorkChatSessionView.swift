@@ -1311,8 +1311,14 @@ struct WorkChatSessionView: View {
         .onPreferenceChange(WorkChatPrependProbePreferenceKey.self) { sample in
           // Recorded into a reference box, not @State: this fires on every
           // layout pass and must not invalidate the transcript.
-          scrollMetrics.probeRowId = sample?.rowId
-          scrollMetrics.probeRowY = sample?.y
+          // Keep the last real measurement rather than clearing on nil. The
+          // probed row can be recycled out of the LazyVStack while an older-page
+          // request is in flight, and forgetting it there means the page lands
+          // with no anchor to arm and pushes whatever the reader moved on to.
+          if let sample {
+            scrollMetrics.probeRowId = sample.rowId
+            scrollMetrics.probeRowY = sample.y
+          }
           restorePrependAnchorIfNeeded(probed: sample)
         }
         .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in

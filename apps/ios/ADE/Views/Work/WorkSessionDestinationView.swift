@@ -2686,15 +2686,7 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func reconcileLocalEchoMessages() {
-    guard !localEchoMessages.isEmpty else { return }
-    // Counted rather than set-membership: two sends of the same text share one
-    // dedupe key, and a single matching transcript row must retire exactly one
-    // of them. `sending` now releases as soon as the host accepts a message, so
-    // back-to-back identical sends are easy to produce.
-    let next = workUnrepresentedLocalEchoMessages(
-      localEchoMessages,
-      representedKeyCounts: workRepresentedEchoKeyCounts(from: transcript)
-    )
+    let next = workLocalEchoesRetiredByTranscript(localEchoMessages, transcript: transcript)
     guard next.count != localEchoMessages.count else { return }
     localEchoMessages = next
   }
