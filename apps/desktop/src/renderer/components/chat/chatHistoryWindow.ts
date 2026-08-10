@@ -121,17 +121,48 @@ export function advanceOlderHistoryCursor(
   return page.startOffset;
 }
 
+/**
+ * A page that starts mid-turn is the reason "load earlier" often appears to do
+ * nothing: pages are cut by BYTES, so one page of a long streamed reply can be
+ * 200 superseded `text` delta rows that fold to a single rendered line. The
+ * reader scrolls up, waits, and gets no new content.
+ *
+ * Anchoring on user turns fixes that from the renderer: keep pulling pages until
+ * the accumulated span reaches a `user_message` — the start of a turn — so the
+ * newly-loaded region always contains at least one whole turn and renders as
+ * real content.
+ */
+function isTurnBoundaryEvent(entry: AgentChatEventEnvelope): boolean {
+  return entry.event.type === "user_message";
+}
+
 export async function readOlderHistoryBatch(args: {
   sessionId: string;
   beforeOffset: number;
   readPage: (beforeOffset: number) => Promise<AgentChatEventHistoryPage>;
   isCurrent: () => boolean;
   maxEmptyPages?: number;
+  /**
+   * Upper bound on pages pulled per trigger, covering BOTH empty pages (a page
+   * spanning one oversized JSONL line) and the turn-anchoring extension. Keeps a
+   * pathological transcript — no user turn for thousands of events — from
+   * turning one scroll into an unbounded read; the next scroll re-triggers.
+   */
+  maxPages?: number;
+  /**
+   * Stop extending once this many events are loaded even if no turn boundary
+   * was reached. A single turn can legitimately span several pages; past this
+   * point the reader has plenty of real content and the next scroll continues.
+   */
+  maxAnchorEvents?: number;
 }): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number } | null> {
   let currentOffset = args.beforeOffset;
   let nextCursor = args.beforeOffset;
-  const maxEmptyPages = args.maxEmptyPages ?? 8;
-  for (let attempt = 0; attempt < maxEmptyPages; attempt += 1) {
+  const maxPages = args.maxPages ?? args.maxEmptyPages ?? 8;
+  const maxAnchorEvents = args.maxAnchorEvents ?? 400;
+  const collected: AgentChatEventEnvelope[][] = [];
+  let collectedCount = 0;
+  for (let attempt = 0; attempt < maxPages; attempt += 1) {
     const page = await args.readPage(currentOffset);
     if (!args.isCurrent()) return null;
     if (page.unavailable === true) {
@@ -148,16 +179,21 @@ export async function readOlderHistoryBatch(args: {
       throw new Error("Earlier-message cursor did not advance.");
     }
     nextCursor = advancedCursor;
-    if (page.events?.length) {
-      return {
-        events: page.events.filter((event) => event.sessionId === args.sessionId),
-        nextCursor,
-      };
+
+    const pageEvents = (page.events ?? []).filter((event) => event.sessionId === args.sessionId);
+    if (pageEvents.length) {
+      collected.unshift(pageEvents);
+      collectedCount += pageEvents.length;
     }
+
+    // Head of the transcript reached — nothing left to anchor to.
     if (nextCursor <= 0) break;
+    // Stop as soon as the loaded span starts on a turn boundary.
+    if (collected.length && collected[0]!.some(isTurnBoundaryEvent)) break;
+    if (collectedCount >= maxAnchorEvents) break;
     currentOffset = nextCursor;
   }
-  return { events: [], nextCursor };
+  return { events: collected.flat(), nextCursor };
 }
 
 export function resolveMergedSnapshotHistoryCursor(args: {
