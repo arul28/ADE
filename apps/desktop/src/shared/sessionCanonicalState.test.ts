@@ -345,9 +345,17 @@ describe("background work liveness", () => {
 
   it("never lets background work mask a raised hand or a declared settle", () => {
     expect(state({ pendingInputItemId: "i-1", runtimeState: "idle", backgroundWork: working }).phase).toBe("needs_you");
-    expect(
-      state({ runtimeState: "idle", settledAt: new Date(NOW).toISOString(), backgroundWork: working }).phase,
-    ).toBe("settled");
+    const settledWithWork = state({
+      runtimeState: "idle",
+      settledAt: new Date(NOW).toISOString(),
+      backgroundWork: working,
+    });
+    expect(settledWithWork.phase).toBe("settled");
+    // The phase holds — a declared settle is the user's call — but liveness
+    // still reports the live work, because settle does not stop it today and a
+    // settled row that silently owns a running shell is the same lie at the
+    // other end of the lifecycle.
+    expect(settledWithWork.liveness).toBe("background");
   });
 
   it("leaves a silent session stale rather than claiming it is working", () => {

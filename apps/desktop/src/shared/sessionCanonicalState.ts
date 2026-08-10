@@ -301,12 +301,29 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
   if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
-    // Deliberately NOT promoted by background work. Settle now tears the
-    // session's machinery down (`stopSessionBackgroundWork`), so a settled row
-    // with live work is a teardown that has not finished draining, not a state
-    // worth advertising — and re-lighting it would let a stubborn monitor
-    // out-vote the user's explicit "this is done".
-    return { phase: "settled", badge: null, liveness: null };
+    // The PHASE stays settled: a declared settle is a human judgment call, and
+    // re-lighting the row would let a stubborn monitor out-vote the user's
+    // explicit "this is done".
+    //
+    // But `liveness` still reports the truth, because settle does NOT stop
+    // background work today — archive is the only lifecycle path that stops
+    // processes. A settled session can therefore legitimately still own a live
+    // background shell, subagent, or Cursor cloud run, and a surface that wants
+    // to show "settled, but something is still running" must be able to. The
+    // phase alone would hide it, which is the exact failure this module exists
+    // to prevent — just at the other end of the lifecycle.
+    //
+    // Making settle stop that work is a separate change; it needs a synchronous
+    // lifecycle revision teardown can serialize against, not a wrapper around
+    // this write. See the settle-teardown design doc.
+    const settledWork = args.backgroundWork;
+    return {
+      phase: "settled",
+      badge: null,
+      liveness: totalBackgroundWork(settledWork) <= 0
+        ? null
+        : (settledWork?.workingCount ?? 0) > 0 ? "background" : "monitoring",
+    };
   }
 
   const ended = args.status !== "running";
