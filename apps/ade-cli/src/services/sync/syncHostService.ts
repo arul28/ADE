@@ -313,6 +313,30 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   // visible-lane refresh upserts here, so scrolling was pushing changesets to
   // every phone.
   "pull_request_snapshots",
+  // Event logs the phone stores and never reads. Each exists in
+  // `DatabaseBootstrap.sql` so an inbound changeset still applies, but there is
+  // no Swift read path for any of them — verified: zero references outside that
+  // schema file. Excluding them stops the phone paying apply and storage cost
+  // for rows it cannot surface.
+  //
+  // This list is an OUTBOUND filter only — it drops rows from mobile
+  // changesets and never touches CRR metadata, so unlike a local-only
+  // conversion it carries no apply hazard for a peer on an older build.
+  // Existing rows on a paired device are left alone, and the peer's ack
+  // watermark still advances through the filtered versions.
+  //
+  // `linear_ingress_events` and `worker_agent_runs` are included here but
+  // deliberately NOT age-pruned on the host: the first is the webhook replay
+  // guard, the second is a lifecycle table (see RETAINED_EVENT_LOG_TABLES in
+  // kvDb.ts). Not shipping them to a phone that cannot read them is orthogonal
+  // to how long the host keeps them.
+  "linear_ingress_events",
+  "linear_sync_events",
+  "linear_workflow_run_events",
+  "worker_agent_runs",
+  "worker_agent_cost_events",
+  "pack_events",
+  "cto_session_logs",
 ]);
 
 // Tables the host alone is authoritative for. `sync_cluster_state` is the

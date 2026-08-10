@@ -14,6 +14,8 @@ import {
   AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_DAYS,
   INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
+  AI_USAGE_LOG_RETENTION_DAYS,
+  EVENT_LOG_RETENTION_DAYS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
 } from "../state/dbMaintenanceApi";
@@ -66,6 +68,22 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     policyClass: "derived",
     policy: { maxAgeDays: PR_SNAPSHOT_RETENTION_DAYS },
     enforcement: "both",
+  },
+  {
+    id: "db.ai_usage_log",
+    kind: "table",
+    description: "AI usage history behind Stats and the per-feature daily budget check.",
+    policyClass: "operational",
+    policy: { maxAgeDays: AI_USAGE_LOG_RETENTION_DAYS },
+    enforcement: "doctor",
+  },
+  {
+    id: "db.event_logs",
+    kind: "table",
+    description: "Linear sync/workflow, worker cost, and pack event history.",
+    policyClass: "operational",
+    policy: { maxAgeDays: EVENT_LOG_RETENTION_DAYS },
+    enforcement: "doctor",
   },
   {
     id: "db.core",
