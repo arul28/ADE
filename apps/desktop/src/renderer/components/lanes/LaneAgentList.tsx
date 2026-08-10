@@ -9,17 +9,26 @@ import type { LaneAgent, LaneAgentActivity } from "./laneAgents";
 
 function activityColor(activity: LaneAgentActivity): string {
   switch (activity) {
-    case "working": return COLORS.success;
+    case "working":
+    case "monitoring": return COLORS.success;
     case "awaiting-input": return COLORS.warning;
     case "ended": return COLORS.danger;
     default: return COLORS.textDim;
   }
 }
 
-/** Tiny live pulse — spins while working/awaiting, static dot otherwise. */
+const ACTIVITY_TITLE: Record<LaneAgentActivity, string> = {
+  working: "Working",
+  monitoring: "Monitoring",
+  "awaiting-input": "Awaiting input",
+  idle: "Idle",
+  ended: "Ended",
+};
+
+/** Tiny live pulse — spins while live, static dot otherwise. */
 function ActivityPulse({ activity }: { activity: LaneAgentActivity }): React.ReactElement {
   const color = activityColor(activity);
-  if (activity === "working" || activity === "awaiting-input") {
+  if (activity === "working" || activity === "monitoring" || activity === "awaiting-input") {
     return (
       <span
         className="shrink-0 animate-spin"
@@ -29,8 +38,11 @@ function ActivityPulse({ activity }: { activity: LaneAgentActivity }): React.Rea
           borderRadius: "50%",
           border: `1.5px solid ${color}`,
           borderTopColor: "transparent",
+          // A watch loop is live but not urgent — the same spinner, quieter, so
+          // "still building" and "just watching" are told apart at a glance.
+          ...(activity === "monitoring" ? { opacity: 0.55 } : {}),
         }}
-        title={activity === "working" ? "Working" : "Awaiting input"}
+        title={ACTIVITY_TITLE[activity]}
       />
     );
   }
@@ -38,7 +50,7 @@ function ActivityPulse({ activity }: { activity: LaneAgentActivity }): React.Rea
     <span
       className="shrink-0"
       style={{ width: 8, height: 8, borderRadius: "50%", background: color }}
-      title={activity === "ended" ? "Ended" : "Idle"}
+      title={ACTIVITY_TITLE[activity]}
     />
   );
 }

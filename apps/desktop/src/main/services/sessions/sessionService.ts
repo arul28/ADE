@@ -367,6 +367,7 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
+
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
    * probe, run the update, broadcast. Keeps every SQL literal at its call site.
@@ -1457,7 +1458,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     /** Clears a declared settle plus any `'settled'` override. */
     unsettleSession(sessionId: string): boolean {
-      return mutateSessionMeta(sessionId, (id) => {
+      const changed = mutateSessionMeta(sessionId, (id) => {
         db.run(
           `
             update terminal_sessions
@@ -1469,6 +1470,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
           [id],
         );
       });
+      return changed;
     },
 
     /** Explicit settle override, cleared with `settled_at` on real activity. */
@@ -1754,7 +1756,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {
-      return mutateSessionMeta(sessionId, (id) => {
+      const changed = mutateSessionMeta(sessionId, (id) => {
         db.run(
           `
             update terminal_sessions
@@ -1770,6 +1772,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
           [id],
         );
       });
+      return changed;
     },
 
     deleteSession(sessionId: string): boolean {

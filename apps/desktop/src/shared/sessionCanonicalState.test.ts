@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { parseSessionSettleOverride } from "./types/sessions";
 import {
+  backgroundWorkFromSummary,
   canonicalSessionState,
+  classifyBackgroundWorkKind,
   isSessionFiledAsSnoozed,
   isSessionSnoozed,
   isSessionSnoozeExpired,
   isWakingSessionError,
   resolveSessionWakeReason,
+  summarizeBackgroundWork,
   SESSION_STALE_AFTER_MS,
   type CanonicalSessionInputs,
 } from "./sessionCanonicalState";
@@ -288,5 +291,148 @@ describe("parseSessionSettleOverride: a typo must not silently clear a pin", () 
     // iOS sends this string because JSON null is not representable in its
     // [String: Any] argument dictionary.
     expect(parseSessionSettleOverride("Clear")).toBeNull();
+  });
+});
+
+describe("background work liveness", () => {
+  const working = { workingCount: 1, monitoringCount: 0 };
+  const monitoring = { workingCount: 0, monitoringCount: 2 };
+
+  it("promotes a resting chat with live background work back to running", () => {
+    // Before this, a Claude chat whose turn ended while its background agents
+    // kept going read `ready`, so the Work dot, TopBar rollup and dock badge
+    // all showed nothing while the agents were mid-run.
+    const resting = state({ toolType: "claude-chat", runtimeState: "idle" });
+    expect(resting.phase).toBe("ready");
+    expect(resting.liveness).toBeNull();
+
+    const promoted = state({ toolType: "claude-chat", runtimeState: "idle", backgroundWork: working });
+    expect(promoted.phase).toBe("running");
+    expect(promoted.liveness).toBe("background");
+  });
+
+  it("promotes a resting CLI session too, not just chats", () => {
+    const promoted = state({ toolType: "codex", runtimeState: "idle", backgroundWork: working });
+    expect(promoted.phase).toBe("running");
+    expect(promoted.liveness).toBe("background");
+  });
+
+  it("reads monitoring only when watch loops are the sole live work", () => {
+    expect(state({ runtimeState: "idle", backgroundWork: monitoring }).liveness).toBe("monitoring");
+    // One real job alongside monitors is still "working" — the loudest live
+    // commitment wins, never the quietest.
+    expect(
+      state({ runtimeState: "idle", backgroundWork: { workingCount: 1, monitoringCount: 3 } }).liveness,
+    ).toBe("background");
+  });
+
+  it("marks a genuinely live turn as turn liveness", () => {
+    expect(state({ runtimeState: "running" }).liveness).toBe("turn");
+  });
+
+  it("never lets lingering background work mask a failure", () => {
+    // A failed turn with an orphaned monitor still ticking must read Failed.
+    expect(
+      state({ toolType: "claude-chat", runtimeState: "idle", lastTurnFailedAt: new Date(NOW).toISOString(), backgroundWork: working }).phase,
+    ).toBe("failed");
+    expect(
+      state({ status: "completed", exitCode: 1, backgroundWork: working }).phase,
+    ).toBe("failed");
+    expect(
+      state({ status: "completed", runtimeState: "killed", backgroundWork: working }).phase,
+    ).toBe("failed");
+  });
+
+  it("never lets background work mask a raised hand or a declared settle", () => {
+    expect(state({ pendingInputItemId: "i-1", runtimeState: "idle", backgroundWork: working }).phase).toBe("needs_you");
+    const settledWithWork = state({
+      runtimeState: "idle",
+      settledAt: new Date(NOW).toISOString(),
+      backgroundWork: working,
+    });
+    expect(settledWithWork.phase).toBe("settled");
+    // The phase holds — a declared settle is the user's call — but liveness
+    // still reports the live work, because settle does not stop it today and a
+    // settled row that silently owns a running shell is the same lie at the
+    // other end of the lifecycle.
+    expect(settledWithWork.liveness).toBe("background");
+  });
+
+  it("leaves a silent session stale rather than claiming it is working", () => {
+    const silentSince = new Date(NOW - SESSION_STALE_AFTER_MS - 1_000).toISOString();
+    expect(state({ lastActivityAt: silentSince, backgroundWork: working }).phase).toBe("stale");
+  });
+
+  it("ignores an empty or absent background-work record", () => {
+    expect(state({ runtimeState: "idle", backgroundWork: null }).phase).toBe("idle");
+    expect(
+      state({ runtimeState: "idle", backgroundWork: { workingCount: 0, monitoringCount: 0 } }).phase,
+    ).toBe("idle");
+  });
+});
+
+describe("classifyBackgroundWorkKind", () => {
+  it("treats every unrecognised task type as working", () => {
+    // The load-bearing property: an allowlist would silently drop a real
+    // subagent the first time an SDK renamed a task type.
+    expect(classifyBackgroundWorkKind("some_future_sdk_type")).toBe("working");
+    expect(classifyBackgroundWorkKind(undefined)).toBe("working");
+    expect(classifyBackgroundWorkKind(null)).toBe("working");
+    expect(classifyBackgroundWorkKind("  ")).toBe("working");
+    expect(classifyBackgroundWorkKind("subagent")).toBe("working");
+    expect(classifyBackgroundWorkKind("local_workflow")).toBe("working");
+  });
+
+  it("classifies only the known-passive types as monitoring", () => {
+    for (const taskType of ["monitor", "monitor_mcp"]) {
+      expect(classifyBackgroundWorkKind(taskType)).toBe("monitoring");
+    }
+    expect(classifyBackgroundWorkKind("MONITOR")).toBe("monitoring");
+    expect(classifyBackgroundWorkKind(" monitor_mcp ")).toBe("monitoring");
+  });
+
+  it("counts a generic backgrounded shell as working, not monitoring", () => {
+    // These types mean "the agent backgrounded a command" — a `tail -f` and a
+    // 20-minute build arrive under the same one. Mixed is unknown, and unknown
+    // is working; labelling them monitoring told the user nothing was being
+    // produced while a build was running.
+    for (const taskType of ["local_bash", "shell", "background", "bash"]) {
+      expect(classifyBackgroundWorkKind(taskType)).toBe("working");
+    }
+  });
+
+  it("drops inert types entirely", () => {
+    expect(classifyBackgroundWorkKind("plan")).toBe("inert");
+    expect(classifyBackgroundWorkKind("dream")).toBe("inert");
+    expect(summarizeBackgroundWork(["plan", "dream"])).toEqual({ workingCount: 0, monitoringCount: 0 });
+  });
+
+  it("folds a mixed list into the two-state count", () => {
+    expect(summarizeBackgroundWork(["subagent", "monitor", "local_bash", "plan", null])).toEqual({
+      workingCount: 3,
+      monitoringCount: 1,
+    });
+  });
+});
+
+describe("backgroundWorkFromSummary", () => {
+  it("prefers the explicit split when present", () => {
+    expect(
+      backgroundWorkFromSummary({ backgroundWork: { workingCount: 0, monitoringCount: 3 }, activeBackgroundTaskCount: 9 }),
+    ).toEqual({ workingCount: 0, monitoringCount: 3 });
+  });
+
+  it("counts a split-less payload as working, never as passive", () => {
+    // An older peer or a remote runtime mid-upgrade sends only the total.
+    // Assuming those are monitors would under-report live work.
+    expect(backgroundWorkFromSummary({ activeBackgroundTaskCount: 2 })).toEqual({
+      workingCount: 2,
+      monitoringCount: 0,
+    });
+  });
+
+  it("returns null when nothing is live", () => {
+    expect(backgroundWorkFromSummary({})).toBeNull();
+    expect(backgroundWorkFromSummary({ activeBackgroundTaskCount: 0 })).toBeNull();
   });
 });

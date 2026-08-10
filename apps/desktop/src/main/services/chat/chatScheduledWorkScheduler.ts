@@ -629,6 +629,7 @@ export function createChatScheduledWorkScheduler(
       await updatePauseStatuses(sessionId);
     },
 
+
     async refreshGlobalPause(): Promise<void> {
       await start();
       await updatePauseStatuses();

@@ -11777,6 +11777,74 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
+    it("splits the background level into working and monitoring counts on the session summary", async () => {
+      // The classifier is a DENYLIST: only a type whose whole job is to watch
+      // (`monitor`) reads as monitoring. A generic backgrounded shell, a real
+      // subagent, and anything unrecognised all count as working — an allowlist
+      // would silently drop a real subagent the first time the SDK renamed a
+      // task type, which is the exact failure this state exists to prevent.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bgsplit-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [
+            { task_id: "watch-ci", task_type: "monitor", description: "Watch CI" },
+            { task_id: "run-build", task_type: "local_bash", description: "npm run build" },
+            { task_id: "build-it", task_type: "local_agent", description: "Implement the feature" },
+            { task_id: "who-knows", task_type: "some_future_sdk_type", description: "Unrecognised" },
+          ],
+        };
+        await turnDonePromise;
+        // The jobs finish on their own; the level is the authoritative drain.
+        yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bgsplit-1", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "kick off background work" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:watch-ci"
+        && (e.event as any).status === "running");
+
+      const live = await service.getSessionSummary(session.id);
+      // Total stays the single number the mobile roster and push publisher read.
+      expect(live?.activeBackgroundTaskCount).toBe(4);
+      // Unknown types — and a generic backgrounded build — land in `working`,
+      // never in the quiet column.
+      expect(live?.backgroundWork).toEqual({ workingCount: 3, monitoringCount: 1 });
+
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+
+      // Background work outlives the turn by design, so the turn ending does not
+      // drain it — only the SDK's own empty level does. Once drained, the record
+      // is omitted entirely rather than riding along as a zero on every read.
+      const drained = await service.getSessionSummary(session.id);
+      expect(drained?.activeBackgroundTaskCount).toBe(0);
+      expect(drained?.backgroundWork).toBeUndefined();
+    });
+
     it("uses the SDK background level to distinguish background and foreground local_bash tasks", async () => {
       // `local_bash` is the implementation kind for both foreground and
       // background Bash. Only the SDK's authoritative membership level makes

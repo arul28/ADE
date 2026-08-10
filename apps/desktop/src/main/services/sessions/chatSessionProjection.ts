@@ -77,6 +77,7 @@ export function projectChatOntoSession(
     nextWakeAt: chat.nextWakeAt,
     chatActivityMode: chat.interactionMode === "plan" ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
+    ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
     ...(chat.orchestrationRunId
       ? {

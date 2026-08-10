@@ -54,13 +54,13 @@ export type AgentRunState = {
   metaResolved: boolean;
   /**
    * Live background-task ids for this run, tracked from the `background_task`
-   * flavour of `scheduled_work_update`. Claude spawns background subagents that
-   * keep working after the foreground turn bookends, and the desktop sidebar
-   * already treats that as Working (`sessionStatusPresentation.ts` overrides
-   * ready/idle when `activeBackgroundTaskCount > 0`). This set is the
-   * publisher's copy of the same fact — both derive from agentChatService's
-   * live background-task level — so Activity cannot publish "is done" over a
-   * session that is demonstrably still working.
+   * flavour of `scheduled_work_update`. Agents spawn background work that keeps
+   * running after the foreground turn bookends, and desktop already treats that
+   * as Working (`sessionCanonicalState.ts` promotes a resting session with live
+   * background work back to the `running` phase). This set is the publisher's
+   * copy of the same fact — both derive from agentChatService's live
+   * background-task level — so Activity cannot publish "is done" over a session
+   * that is demonstrably still working.
    */
   backgroundTaskIds: Set<string>;
   /**
@@ -160,8 +160,9 @@ export function agentAttentionPhase(run: AgentRunState): AttentionPhase {
   if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") return "needs_you";
   // Belt and braces over the `deferredTerminalPhase` state machine in
   // `onChatEvent`: whatever route left the run at a quiet phase, a session with
-  // live background subagents is Working. This mirrors the sidebar override in
-  // apps/desktop/src/shared/sessionStatusPresentation.ts — the two surfaces
+  // live background subagents is Working. This mirrors the phase promotion in
+  // apps/desktop/src/shared/sessionCanonicalState.ts, where live background
+  // work lifts a resting session back to `running` — the two surfaces
   // disagreeing about the same session is exactly the bug this guards.
   // `failed` is deliberately not overridden: a failure needs the user now, and
   // burying it under "working" would cost them the signal.

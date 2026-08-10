@@ -1001,7 +1001,6 @@ describe("appStore", () => {
         activeCount: 1,
         needsAttentionCount: 2,
         indicator: "running-needs-attention" as const,
-        byLaneId: {},
       };
       useAppStore.getState().setTerminalAttention(snapshot);
       expect(useAppStore.getState().terminalAttention).toEqual(snapshot);

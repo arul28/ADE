@@ -366,12 +366,18 @@ function diskChatStatus(row: TerminalSessionRow, sidecarAwaiting: boolean): Sync
 function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   if (live.awaitingInput) return "awaiting";
   if (live.status === "active") return "running";
-  // Claude's background subagents keep working after the foreground turn ends,
-  // and agentChatService reports the chat `idle` for the whole of it. The
-  // desktop sidebar overrides that to Working
-  // (`sessionStatusPresentation.ts` — `activeBackgroundTaskCount > 0`); the
-  // roster has to agree, or Activity maps the session idle → stale → Done and
-  // reports a live agent as finished.
+  // Background work keeps running after the foreground turn ends, and
+  // agentChatService reports the chat `idle` for the whole of it. Desktop
+  // promotes that back to the `running` phase
+  // (`sessionCanonicalState.ts` — `backgroundWork`); the roster has to agree,
+  // or Activity maps the session idle → stale → Done and reports a live agent
+  // as finished.
+  //
+  // The count is cross-runtime, not Claude-only: it now also covers Codex
+  // background subagents and Cursor cloud runs, so this branch fires for them
+  // too without any change here. The phone deliberately reads the TOTAL rather
+  // than the working/monitoring split — a roster row has one status, and
+  // "something is still running" is the fact it needs.
   if ((live.activeBackgroundTaskCount ?? 0) > 0) return "running";
   if (live.status === "idle") return "idle";
   return "ended";

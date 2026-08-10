@@ -6030,7 +6030,7 @@ export function registerIpc({
       .list({ includeArchived: true, includeStatus: false })
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
       .catch(() => null);
-    ctx.laneService.archive(arg);
+    await ctx.laneService.archive(arg);
     try {
       releaseLaneRuntimeResources(ctx, arg.laneId);
     } finally {
@@ -6997,9 +6997,10 @@ export function registerIpc({
     async (_event, arg: { sessionIds?: unknown }): Promise<void> => {
       const ctx = ensureSessionContext();
       if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
-      ctx.sessionService.unsettleSessions(
-        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+      const unsettleIds = arg.sessionIds.filter(
+        (sessionId): sessionId is string => typeof sessionId === "string",
       );
+      ctx.sessionService.unsettleSessions(unsettleIds);
     },
   );
 

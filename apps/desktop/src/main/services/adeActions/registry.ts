@@ -2506,7 +2506,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     archive: async (args?: { laneId?: string }): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const lane = await findLaneForArchive(laneId);
-      runtime.laneService.archive({ laneId });
+      await runtime.laneService.archive({ laneId });
       try {
         releaseLaneRuntimeResources(runtime, laneId);
       } finally {

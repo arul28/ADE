@@ -40,11 +40,68 @@ export type SessionBadge = {
   label: string;
 };
 
+/**
+ * WHY a `running` phase is running. The phase alone cannot answer it, and the
+ * answer changes the copy: "Working 14s" is a live turn, "Background work ×2"
+ * is a turn that ended while its jobs kept going, and "Monitoring" is a watch
+ * loop that will never finish on its own.
+ *
+ * Deliberately not a phase. Filing, filtering, buckets, and the push wire all
+ * key off the phase, and every one of them wants these three treated
+ * identically: work is happening, nothing is asked of you. Splitting the phase
+ * would have forced a matching split into iOS's `AgentRunPhase`, the roster
+ * status, and `canonicalStatusBucket` for a distinction only the label cares
+ * about.
+ */
+export type SessionLiveness = "turn" | "background" | "monitoring";
+
 export type CanonicalSessionState = {
   phase: CanonicalSessionPhase;
   /** Non-null ONLY for attention states — capsules never render for calm ones. */
   badge: SessionBadge | null;
+  /** Non-null ONLY for `running`. See `SessionLiveness`. */
+  liveness: SessionLiveness | null;
 };
+
+/**
+ * Live work a session still owns after its foreground turn bookends — background
+ * shells, monitors, and subagent fleets that outlive the turn that spawned them.
+ *
+ * Split two ways because users need to tell "still building" apart from "just
+ * watching CI": a `monitoring` row is safe to walk away from, a `working` row
+ * is not. See `classifyBackgroundWorkKind` for how the split is decided.
+ */
+export type SessionBackgroundWork = {
+  /** Jobs doing real work. Anything unrecognised lands here — see the classifier. */
+  workingCount: number;
+  /** Jobs that only watch: monitors, tails, polling loops. */
+  monitoringCount: number;
+};
+
+export function totalBackgroundWork(work: SessionBackgroundWork | null | undefined): number {
+  if (!work) return 0;
+  return Math.max(0, work.workingCount) + Math.max(0, work.monitoringCount);
+}
+
+/**
+ * Read a session summary's background work, tolerating a payload that carries
+ * only the older total.
+ *
+ * `activeBackgroundTaskCount` predates the working/monitoring split and is still
+ * the field the mobile roster and the push publisher read, so it stays the wire
+ * total. A summary that arrives with the total but no split (an older peer, a
+ * remote runtime mid-upgrade) is counted as WORKING — same denylist principle as
+ * `classifyBackgroundWorkKind`: unclassified is never assumed passive.
+ */
+export function backgroundWorkFromSummary(summary: {
+  backgroundWork?: SessionBackgroundWork | null;
+  activeBackgroundTaskCount?: number | null;
+}): SessionBackgroundWork | null {
+  if (summary.backgroundWork) return summary.backgroundWork;
+  const total = summary.activeBackgroundTaskCount ?? 0;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { workingCount: Math.trunc(total), monitoringCount: 0 };
+}
 
 /**
  * A session still marked running that has produced no output for this long is
@@ -59,6 +116,72 @@ const BADGE_BY_KIND: Record<SessionBadgeKind, SessionBadge> = {
   failed: { kind: "failed", label: "Failed" },
   stale: { kind: "stale", label: "Stale" },
 };
+
+/**
+ * Task types that only WATCH. A session whose ONLY live work is on this list
+ * reads "Monitoring" rather than "Working".
+ *
+ * ── Why a denylist, and why it must stay one ────────────────────────────────
+ *
+ * The obvious shape is an allowlist of "these are real subagents". It is also
+ * the wrong one: provider agent-type names drift with every SDK release, so the
+ * first unfamiliar name silently drops a genuinely working agent out of the
+ * count and the row goes quiet while the agent is mid-run — the exact failure
+ * this whole state exists to prevent.
+ *
+ * The rule, therefore: classify only what we KNOW is passive, and treat every
+ * unrecognised type as working. A new SDK task type shows up as "Working",
+ * which is at worst slightly over-loud and at best exactly right. Adding a name
+ * here is a deliberate act with a known job behind it.
+ *
+ * ── Why the generic shell types are NOT here ────────────────────────────────
+ *
+ * `local_bash` / `shell` / `background` / `bash` are how a provider reports
+ * "the agent backgrounded a command". That is a MIXED bag, not a passive one: a
+ * `tail -f` and a 20-minute `npm run build` arrive under the same type. Listing
+ * them here labelled every background build "Monitoring" — telling the user
+ * nothing was being produced while it was. Mixed is unknown, and by the rule
+ * above unknown is working. Only types whose whole job is to watch belong here.
+ */
+const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
+  "monitor",
+  "monitor_mcp",
+]);
+
+/**
+ * Types that hold no live work at all — they describe a turn's *thinking*, not
+ * a process. Counting them would put a "Working" pill on a session whose only
+ * outstanding item is a plan document.
+ */
+const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
+
+export type BackgroundWorkKind = "working" | "monitoring" | "inert";
+
+/**
+ * The ONE classifier for live background work, shared by every runtime adapter
+ * so Claude's `local_bash` and Codex's monitor land in the same column.
+ */
+export function classifyBackgroundWorkKind(taskType: string | null | undefined): BackgroundWorkKind {
+  const normalized = typeof taskType === "string" ? taskType.trim().toLowerCase() : "";
+  if (!normalized) return "working";
+  if (INERT_TASK_TYPES.has(normalized)) return "inert";
+  if (MONITOR_TASK_TYPES.has(normalized)) return "monitoring";
+  return "working";
+}
+
+/** Fold a list of live task types into the two-state count. */
+export function summarizeBackgroundWork(
+  taskTypes: Iterable<string | null | undefined>,
+): SessionBackgroundWork {
+  let workingCount = 0;
+  let monitoringCount = 0;
+  for (const taskType of taskTypes) {
+    const kind = classifyBackgroundWorkKind(taskType);
+    if (kind === "working") workingCount += 1;
+    else if (kind === "monitoring") monitoringCount += 1;
+  }
+  return { workingCount, monitoringCount };
+}
 
 export type CanonicalSessionInputs = {
   status: TerminalSessionStatus;
@@ -89,6 +212,16 @@ export type CanonicalSessionInputs = {
    * so exitCode can't carry this). Cleared when the next turn starts.
    */
   lastTurnFailedAt?: string | null;
+  /**
+   * Live background work owned by the session (monitors, background shells,
+   * subagent fleets still running after the turn bookends).
+   *
+   * In-memory and runtime-derived by design: after a restart nothing is live,
+   * because orphaned background work is not live work. There is deliberately no
+   * persisted column behind this — a resurrected "Working" pill on a session
+   * whose process died with the app is worse than no pill at all.
+   */
+  backgroundWork?: SessionBackgroundWork | null;
   nowMs?: number;
   /** Chat sessions idle between turns are "ready", not running/ended. */
   isChatTool?: (toolType: TerminalToolType | null | undefined) => boolean;
@@ -113,11 +246,40 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  *   4. failed — non-zero exit / killed / chat turn death,
  *   5. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
  *   6. running,
- *   7. resting states — ready (idle chat, quiet "your move"), idle, ended.
+ *   7. resting states — ready (idle chat, quiet "your move"), idle, ended,
+ *      EXCEPT when the session still owns live background work, which promotes
+ *      the row back to `running` (see `restingPhaseWithBackgroundWork`).
+ *
+ * Note where the background-work promotion sits: below failure, below stale.
+ * A stale "Working" pill must never mask a failed session — so a chat whose
+ * turn died reads Failed even while its orphaned monitor is still ticking, and
+ * a session silent past the stale threshold still reads Stale, because "nothing
+ * has happened in three hours" is the fact worth surfacing regardless of what
+ * claims to be alive.
  */
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
   const chat = args.isChatTool?.(args.toolType) ?? false;
+
+  /**
+   * A resting session that still owns live background work is not resting.
+   * Returns the promoted `running` state, or the caller's resting state when
+   * nothing is live.
+   */
+  const restingPhaseWithBackgroundWork = (
+    resting: CanonicalSessionState,
+  ): CanonicalSessionState => {
+    const work = args.backgroundWork;
+    if (totalBackgroundWork(work) <= 0) return resting;
+    return {
+      phase: "running",
+      badge: null,
+      // Monitoring only when watch loops are the SOLE live work. One real job
+      // alongside three monitors is still "Working" — the honest summary of a
+      // session is its loudest live commitment, not its quietest.
+      liveness: (work?.workingCount ?? 0) > 0 ? "background" : "monitoring",
+    };
+  };
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
@@ -126,7 +288,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     || args.attentionRequestedAt
     || args.attentionSource === "provider_structured"
   ) {
-    return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
+    return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you, liveness: null };
   }
 
   // 2. Declared settle (or a "settled" override). No timestamp math: activity
@@ -139,7 +301,29 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
   if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
-    return { phase: "settled", badge: null };
+    // The PHASE stays settled: a declared settle is a human judgment call, and
+    // re-lighting the row would let a stubborn monitor out-vote the user's
+    // explicit "this is done".
+    //
+    // But `liveness` still reports the truth, because settle does NOT stop
+    // background work today — archive is the only lifecycle path that stops
+    // processes. A settled session can therefore legitimately still own a live
+    // background shell, subagent, or Cursor cloud run, and a surface that wants
+    // to show "settled, but something is still running" must be able to. The
+    // phase alone would hide it, which is the exact failure this module exists
+    // to prevent — just at the other end of the lifecycle.
+    //
+    // Making settle stop that work is a separate change; it needs a synchronous
+    // lifecycle revision teardown can serialize against, not a wrapper around
+    // this write. See the settle-teardown design doc.
+    const settledWork = args.backgroundWork;
+    return {
+      phase: "settled",
+      badge: null,
+      liveness: totalBackgroundWork(settledWork) <= 0
+        ? null
+        : (settledWork?.workingCount ?? 0) > 0 ? "background" : "monitoring",
+    };
   }
 
   const ended = args.status !== "running";
@@ -148,20 +332,20 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // failure. Keep it badge-free and let the session row's red dot carry the
     // ended state.
     if (args.status === "disposed") {
-      return { phase: "stopped", badge: null };
+      return { phase: "stopped", badge: null, liveness: null };
     }
     // 4. Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed
     // runtime — all deterministic "failed" signals a terminal-backed session
     // reports.
     if (typeof args.exitCode === "number" && args.exitCode !== 0) {
-      return { phase: "failed", badge: BADGE_BY_KIND.failed };
+      return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
     }
     if (args.status === "failed") {
-      return { phase: "failed", badge: BADGE_BY_KIND.failed };
+      return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
     }
     if (args.runtimeState === "killed") {
-      return { phase: "failed", badge: BADGE_BY_KIND.failed };
+      return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
     }
     // Chats never "end" like PTYs — they rest between turns. A turn that died
     // on a runtime/API error is a real failure the row must carry (chats have
@@ -170,39 +354,43 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // is genuinely over — ended, not perpetually "your move".
     if (chat) {
       if (args.lastTurnFailedAt) {
-        return { phase: "failed", badge: BADGE_BY_KIND.failed };
+        return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
       }
       if (args.status === "detached") {
-        return { phase: "ended", badge: null };
+        return { phase: "ended", badge: null, liveness: null };
       }
-      return { phase: "ready", badge: null };
+      return restingPhaseWithBackgroundWork({ phase: "ready", badge: null, liveness: null });
     }
     // A clean process exit only says the CLI ended. Settlement is a lifecycle
     // declaration made by the user (or the lane PR-merge policy), never
     // inferred from process mechanics. There is no "derived clean-exit settle"
     // anywhere in ADE — if you find a comment claiming otherwise, it is stale.
-    return { phase: "ended", badge: null };
+    return { phase: "ended", badge: null, liveness: null };
   }
 
   // Chat rows keep status "running" even when a turn dies — surface the
   // persisted failure marker ahead of the calm running/ready states.
   if (chat && args.lastTurnFailedAt) {
-    return { phase: "failed", badge: BADGE_BY_KIND.failed };
+    return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
   }
 
   // 6. Stale: running but silent past the threshold.
   if (isSilentPast(args.lastActivityAt, nowMs, SESSION_STALE_AFTER_MS)) {
-    return { phase: "stale", badge: BADGE_BY_KIND.stale };
+    return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
   }
 
   // Idle chats between turns are ready (calm); idle agent CLIs at an
   // undetected prompt stay actionable via the caller's existing idle rules —
   // canonical keeps them "idle" (calm) because there is no deterministic ask.
   if (args.runtimeState === "idle") {
-    return chat ? { phase: "ready", badge: null } : { phase: "idle", badge: null };
+    return restingPhaseWithBackgroundWork(
+      chat
+        ? { phase: "ready", badge: null, liveness: null }
+        : { phase: "idle", badge: null, liveness: null },
+    );
   }
 
-  return { phase: "running", badge: null };
+  return { phase: "running", badge: null, liveness: "turn" };
 }
 
 /**

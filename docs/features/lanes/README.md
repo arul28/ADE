@@ -546,9 +546,21 @@ a lane parented to primary would always show zero behind.
    current branch. When both the parent link and the resolved base ref are
    unchanged, reparent short-circuits without touching git so a redundant
    apply is a no-op rather than a stack rebase.
-7. **Archive / reclaim / restore** — `archive` sets `archived_at` and
-   `status = 'archived'` but keeps the worktree and generated files on disk,
-   then emits a `lane-archived` lifecycle event. `archiveAndReclaim` is the
+7. **Archive / reclaim / restore** — `archive` stops the lane's runtime work
+   (chats, PTYs, file watchers, auto-rebase) through the shared
+   `stopLaneRuntimeWork` helper, then sets `archived_at` and
+   `status = 'archived'` while keeping the worktree and generated files on
+   disk, then emits a `lane-archived` lifecycle event. The stop is `await`ed
+   and its ORDER is load-bearing: every caller releases the lane's port lease
+   and proxy route (`releaseLaneRuntimeResources`) the moment archive resolves,
+   and archive used to be a bare status write — so the lease and route went
+   back to the pool while the lane's dev servers and agents were still bound to
+   those ports, and the abandoned processes went on holding them indefinitely
+   because an archived lane is filtered out of every surface that could have
+   shown them. Individual stop steps are best-effort (one stuck watcher must not
+   make a lane un-archivable) and failures are logged as
+   `lane_runtime_teardown.step_failed`. `delete` runs the same steps through its
+   own `runStep` progress reporting, since the delete dialog shows each one. `archiveAndReclaim` is the
    separate, typed-confirmation path: it preserves the lane row, branch,
    chats, and metadata while stopping lane-owned processes and removing only
    the ADE-managed worktree and lane pack data. Before sizing or removing a

@@ -1,9 +1,11 @@
 import type { SessionSettleOverride, TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import {
+  backgroundWorkFromSummary,
   canonicalSessionState,
   canonicalStatusBucket,
   isSessionFiledAsSnoozed,
   type CanonicalSessionState,
+  type SessionBackgroundWork,
   type SessionBadge,
 } from "../../shared/sessionCanonicalState";
 import {
@@ -20,19 +22,22 @@ export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended"
 export type SessionStatusBucket = Exclude<SessionStatusFilter, "all">;
 export type SessionFilingBucket = SessionStatusBucket | "snoozed";
 
-export type LaneTerminalAttentionSummary = {
-  runningCount: number;
-  activeCount: number;
-  needsAttentionCount: number;
-  indicator: TerminalRunIndicatorState;
-};
-
+/**
+ * App-wide rollup for the Work tab indicator and the dock badge.
+ *
+ * Deliberately has NO per-lane breakdown. It used to carry a `byLaneId` map
+ * that nothing ever read: the Lanes tab gets its per-lane rollup from
+ * `laneListSnapshotService.summarizeLaneRuntime` in the main process, which is
+ * also what the synced lane list and mobile use. Keeping a second, unread
+ * derivation here meant two answers to "is this lane busy" that could disagree
+ * the moment either moved — so the unread one is gone rather than wired up, and
+ * the main-process rollup stays the single per-lane source.
+ */
 export type TerminalAttentionSummary = {
   runningCount: number;
   activeCount: number;
   needsAttentionCount: number;
   indicator: TerminalRunIndicatorState;
-  byLaneId: Record<string, LaneTerminalAttentionSummary>;
 };
 
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
@@ -143,6 +148,7 @@ type SessionCanonicalUiInput = {
   nextWakeAt?: string | null;
   chatActivityMode?: TerminalSessionSummary["chatActivityMode"];
   activeBackgroundTaskCount?: number;
+  backgroundWork?: SessionBackgroundWork | null;
   nowMs?: number;
 };
 
@@ -168,6 +174,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     nextWakeAt: session.nextWakeAt,
     chatActivityMode: session.chatActivityMode,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount,
+    backgroundWork: backgroundWorkFromSummary(session),
   };
 }
 
@@ -185,6 +192,7 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     settleOverride: session.settleOverride ?? null,
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
+    backgroundWork: backgroundWorkFromSummary(session),
     nowMs: session.nowMs,
     isChatTool: isChatToolType,
   });
@@ -220,10 +228,11 @@ export function sessionStatusDisplay(
   session: SessionCanonicalUiInput,
   overlay: SessionStatusOverlay = {},
 ): SessionStatusPresentation | null {
-  const phase = sessionCanonicalUiState(session).phase;
-  return sessionStatusPresentation(phase, overlay, {
+  const state = sessionCanonicalUiState(session);
+  return sessionStatusPresentation(state.phase, overlay, {
     chatActivityMode: session.chatActivityMode,
-    activeBackgroundTaskCount: session.activeBackgroundTaskCount,
+    liveness: state.liveness,
+    backgroundWork: backgroundWorkFromSummary(session),
     nextWakeAt: session.nextWakeAt,
     nowMs: session.nowMs,
   });
@@ -298,7 +307,8 @@ export function sessionStatusDot(
   session: SessionCanonicalUiInput,
   overlay: SessionStatusOverlay = {},
 ): SessionStatusDot {
-  const phase = sessionCanonicalUiState(session).phase;
+  const state = sessionCanonicalUiState(session);
+  const phase = state.phase;
   if (phase === "settled") {
     return {
       cls: "rounded-full border border-white/35 bg-transparent",
@@ -306,7 +316,13 @@ export function sessionStatusDot(
       label: "Settled",
     };
   }
-  const presentation = sessionStatusPresentation(phase, overlay);
+  // The dot's label is its tooltip, so it takes the same activity context as
+  // the full status slot — otherwise a monitoring row's dot reads "Working".
+  const presentation = sessionStatusPresentation(phase, overlay, {
+    chatActivityMode: session.chatActivityMode,
+    liveness: state.liveness,
+    backgroundWork: backgroundWorkFromSummary(session),
+  });
   if (presentation) {
     return {
       cls: `rounded-full ${SESSION_TONE_DOT_CLASS[presentation.tone]}`,
@@ -343,37 +359,25 @@ function legacySessionStatusDot(phase: CanonicalSessionPhase): SessionStatusDot 
  * Rollup that feeds the Work tab indicator and dock badge. needsAttention is
  * the LOUD tier only (canonical needs_you) — a merely resting chat no longer
  * lights the tab amber; only a deterministic ask does.
+ *
+ * A session whose turn ended but whose background work is still live projects
+ * to `running` (see `canonicalSessionState`), so it counts here without any
+ * special case — which is the whole point of promoting background work into
+ * the phase rather than only into the row's label.
  */
 export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): TerminalAttentionSummary {
   let runningCount = 0;
   let activeCount = 0;
   let needsAttentionCount = 0;
-  const byLane: Record<string, { runningCount: number; activeCount: number; needsAttentionCount: number }> = {};
 
   for (const session of sessions) {
     const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
     const isLoud = phase === "needs_you";
     const isWorking = phase === "starting" || phase === "running" || phase === "stale";
     if (!isLoud && !isWorking) continue;
-    const lane = byLane[session.laneId] ?? { runningCount: 0, activeCount: 0, needsAttentionCount: 0 };
-    lane.runningCount += 1;
     runningCount += 1;
-    if (isLoud) {
-      lane.needsAttentionCount += 1;
-      needsAttentionCount += 1;
-    } else {
-      lane.activeCount += 1;
-      activeCount += 1;
-    }
-    byLane[session.laneId] = lane;
-  }
-
-  const byLaneId: Record<string, LaneTerminalAttentionSummary> = {};
-  for (const [laneId, lane] of Object.entries(byLane)) {
-    byLaneId[laneId] = {
-      ...lane,
-      indicator: indicatorFromCounts(lane.runningCount, lane.needsAttentionCount)
-    };
+    if (isLoud) needsAttentionCount += 1;
+    else activeCount += 1;
   }
 
   return {
@@ -381,6 +385,5 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
     activeCount,
     needsAttentionCount,
     indicator: indicatorFromCounts(runningCount, needsAttentionCount),
-    byLaneId
   };
 }

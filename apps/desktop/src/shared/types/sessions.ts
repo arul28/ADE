@@ -13,6 +13,7 @@ import type {
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
+import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed" | "detached";
 
@@ -253,6 +254,12 @@ export type TerminalSessionSummary = {
   chatActivityMode?: "planning" | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
   activeBackgroundTaskCount?: number;
+  /**
+   * The same live work split into working vs monitoring
+   * (`classifyBackgroundWorkKind`). `activeBackgroundTaskCount` stays the total
+   * so the mobile roster and push publisher keep reading one number.
+   */
+  backgroundWork?: SessionBackgroundWork;
   /** First tag mirrored from the backing Claude SDK session pointer. */
   claudeTag?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */

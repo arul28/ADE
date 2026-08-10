@@ -4,11 +4,22 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
+import {
+  backgroundWorkFromSummary,
+  totalBackgroundWork,
+  type SessionBackgroundWork,
+} from "../../../shared/sessionCanonicalState";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
-/** Unified live state for an agent row, glanceable at a list level. */
-export type LaneAgentActivity = "working" | "awaiting-input" | "idle" | "ended";
+/**
+ * Unified live state for an agent row, glanceable at a list level.
+ *
+ * `monitoring` is a live state, not a calm one — it sorts and pulses with
+ * `working`. It exists so a lane whose agents are only watching CI reads
+ * differently from one where three agents are mid-build.
+ */
+export type LaneAgentActivity = "working" | "monitoring" | "awaiting-input" | "idle" | "ended";
 
 export type LaneAgent = {
   /** Session id (chat or terminal) — used to open the agent in the Work tab. */
@@ -30,11 +41,25 @@ export type LaneAgent = {
 /** CLI tool types that are agents (not plain shells). */
 const SHELL_TOOL_TYPES = new Set<TerminalToolType>(["shell"]);
 
+/**
+ * A session whose turn is over but whose background jobs are not is still a
+ * live agent. Without this the Lanes list showed nothing at all while a
+ * background fleet ran — the row read "idle" for the whole of it.
+ */
+function backgroundActivity(summary: {
+  backgroundWork?: SessionBackgroundWork;
+  activeBackgroundTaskCount?: number;
+}): LaneAgentActivity | null {
+  const work = backgroundWorkFromSummary(summary);
+  if (totalBackgroundWork(work) <= 0) return null;
+  return (work?.workingCount ?? 0) > 0 ? "working" : "monitoring";
+}
+
 function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
   if (summary.status === "ended") return "ended";
   if (summary.awaitingInput) return "awaiting-input";
   if (summary.status === "active") return "working";
-  return "idle";
+  return backgroundActivity(summary) ?? "idle";
 }
 
 function cliActivity(summary: TerminalSessionSummary): LaneAgentActivity {
@@ -45,10 +70,10 @@ function cliActivity(summary: TerminalSessionSummary): LaneAgentActivity {
   ) return "awaiting-input";
   switch (summary.runtimeState) {
     case "running": return "working";
-    case "waiting-input": return "idle";
+    case "waiting-input": return backgroundActivity(summary) ?? "idle";
     case "exited":
     case "killed": return "ended";
-    default: return "idle";
+    default: return backgroundActivity(summary) ?? "idle";
   }
 }
 
@@ -77,9 +102,38 @@ function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
     activity: chatActivity(summary),
     lastHint: summary.awaitingInput
       ? "Awaiting your input"
-      : summary.summary?.trim() || summary.lastOutputPreview?.trim() || null,
+      : backgroundHint(summary, summary.status === "active")
+        ?? summary.summary?.trim()
+        ?? summary.lastOutputPreview?.trim()
+        ?? null,
     lastActivityAt: summary.lastActivityAt ?? summary.startedAt,
   };
+}
+
+/**
+ * Background work is the more useful hint than a stale last-output preview:
+ * the preview describes the turn that already ended, the count describes what
+ * is still running.
+ *
+ * Callers pass `turnActive` explicitly rather than having this re-read a status
+ * field — chat and CLI summaries spell "a turn is running" differently
+ * (`status: "active"` vs `runtimeState: "running"`), and a single stringly-typed
+ * guard here would silently match neither for one of them.
+ */
+function backgroundHint(
+  summary: {
+    backgroundWork?: SessionBackgroundWork;
+    activeBackgroundTaskCount?: number;
+  },
+  turnActive: boolean,
+): string | null {
+  // A live turn's own output is the better story than a job count.
+  if (turnActive) return null;
+  const work = backgroundWorkFromSummary(summary);
+  const total = totalBackgroundWork(work);
+  if (total <= 0) return null;
+  const noun = (work?.workingCount ?? 0) > 0 ? "background job" : "monitor";
+  return `${total} ${noun}${total === 1 ? "" : "s"} still running`;
 }
 
 function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
@@ -96,7 +150,10 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
       || summary.attentionRequestedAt
       || summary.attentionSource === "provider_structured"
       ? "Awaiting your input"
-      : summary.summary?.trim() || summary.lastOutputPreview?.trim() || null,
+      : backgroundHint(summary, summary.runtimeState === "running")
+        ?? summary.summary?.trim()
+        ?? summary.lastOutputPreview?.trim()
+        ?? null,
     lastActivityAt: summary.endedAt ?? summary.startedAt,
   };
 }
@@ -132,9 +189,10 @@ export function buildLaneAgents(
   // most recently active first.
   const rank: Record<LaneAgentActivity, number> = {
     working: 0,
-    "awaiting-input": 1,
-    idle: 2,
-    ended: 3,
+    monitoring: 1,
+    "awaiting-input": 2,
+    idle: 3,
+    ended: 4,
   };
   return agents.sort((a, b) => {
     if (rank[a.activity] !== rank[b.activity]) return rank[a.activity] - rank[b.activity];

@@ -45,6 +45,61 @@ function cli(overrides: Partial<TerminalSessionSummary>): TerminalSessionSummary
 }
 
 describe("buildLaneAgents", () => {
+  it("keeps a resting agent live while its background work is", () => {
+    // The Lanes agent list read "idle" for the whole of a background fleet's
+    // run, because the turn had ended and nothing downstream looked at what the
+    // session still owned.
+    const [working, monitoring, quiet] = buildLaneAgents(
+      [
+        chat({
+          sessionId: "c-working",
+          status: "idle",
+          lastOutputPreview: "Turn finished",
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 1, monitoringCount: 1 },
+        }),
+        chat({
+          sessionId: "c-monitoring",
+          status: "idle",
+          lastOutputPreview: "Turn finished",
+          activeBackgroundTaskCount: 1,
+          backgroundWork: { workingCount: 0, monitoringCount: 1 },
+        }),
+        chat({ sessionId: "c-quiet", status: "idle", lastOutputPreview: "Turn finished" }),
+      ],
+      [],
+    );
+
+    // Live rows sort ahead of the genuinely idle one, working ahead of watching.
+    expect(working.sessionId).toBe("c-working");
+    expect(working.activity).toBe("working");
+    expect(monitoring.sessionId).toBe("c-monitoring");
+    expect(monitoring.activity).toBe("monitoring");
+    expect(quiet.activity).toBe("idle");
+
+    // The hint reports what is still running rather than the finished turn's
+    // stale preview.
+    expect(working.lastHint).toBe("2 background jobs still running");
+    expect(monitoring.lastHint).toBe("1 monitor still running");
+    expect(quiet.lastHint).toBe("Turn finished");
+  });
+
+  it("counts a split-less CLI summary as working, and never over a live turn", () => {
+    // An older peer or a remote runtime mid-upgrade sends only the total. It
+    // must not be assumed passive, and a live turn's own output still wins.
+    const [resting] = buildLaneAgents([], [
+      cli({ id: "t-resting", runtimeState: "waiting-input", activeBackgroundTaskCount: 3 }),
+    ]);
+    expect(resting.activity).toBe("working");
+    expect(resting.lastHint).toBe("3 background jobs still running");
+
+    const [live] = buildLaneAgents([], [
+      cli({ id: "t-live", runtimeState: "running", lastOutputPreview: "compiling", activeBackgroundTaskCount: 3 }),
+    ]);
+    expect(live.activity).toBe("working");
+    expect(live.lastHint).toBe("compiling");
+  });
+
   it("excludes plain shells", () => {
     const agents = buildLaneAgents(
       [],

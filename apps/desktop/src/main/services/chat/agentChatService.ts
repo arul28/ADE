@@ -473,6 +473,11 @@ import {
 } from "../skills/agentSkillRuntimeService";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  summarizeBackgroundWork,
+  totalBackgroundWork,
+  type SessionBackgroundWork,
+} from "../../../shared/sessionCanonicalState";
+import {
   isBackgroundShellCommand,
   isNonAgentTaskRun,
   isRealSubagent,
@@ -1509,6 +1514,13 @@ type ClaudeRuntime = {
    * protect the long-lived query from idle cleanup and runtime eviction.
    */
   liveBackgroundTaskIds: Set<string>;
+  /**
+   * Raw SDK `task_type` per live background task, kept beside the level set so
+   * `runtimeBackgroundWork` can split working from monitoring without going
+   * through `activeSubagents` — which does not hold an entry for every plain
+   * background shell, and would silently classify those as unknown.
+   */
+  backgroundTaskTypeById: Map<string, string>;
   /** True after this CLI process has emitted its first authoritative level. */
   backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
@@ -1568,6 +1580,7 @@ type ClaudeRuntime = {
 
 function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.liveBackgroundTaskIds.clear();
+  runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
 }
 
@@ -2129,6 +2142,87 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   if (runtime.kind === "pi") return false;
   return false;
+}
+
+// Frozen because it is returned by reference to every caller with no live work;
+// a single mutation would otherwise follow every session in the process.
+const NO_BACKGROUND_WORK: SessionBackgroundWork = Object.freeze({
+  workingCount: 0,
+  monitoringCount: 0,
+});
+
+/**
+ * Live work a chat session still owns after its foreground turn bookends,
+ * classified working vs monitoring for `canonicalSessionState`.
+ *
+ * ── Scope, stated honestly ──────────────────────────────────────────────────
+ *
+ * This reads RESIDENT runtime state only. It is therefore in-memory and empty
+ * after a restart, which is the intended contract: orphaned background work is
+ * not live work, and a persisted count would resurrect a "Working" pill over a
+ * process that died with the app.
+ *
+ * What it does NOT see, and cannot without new tracking:
+ *   • processes an agent detached with `nohup`/`setsid`/`disown` — they leave
+ *     ADE's process tree entirely,
+ *   • long-lived processes started inside a user-owned terminal pane, which are
+ *     the user's to manage and deliberately out of scope,
+ *   • opencode / droid / pi work — those harnesses expose no background-task,
+ *     subagent, or remote-run level to track at all, so they contribute zero
+ *     here. That is a checked fact per harness, not a default: the switch below
+ *     is exhaustive over `ChatRuntime["kind"]`, so a newly landed harness fails
+ *     to compile until someone decides which column it belongs in.
+ */
+function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWork {
+  if (!runtime) return NO_BACKGROUND_WORK;
+  switch (runtime.kind) {
+    case "claude": {
+      // The level set is authoritative for what is still live; the per-task
+      // types recorded alongside it decide which column each lands in.
+      return summarizeBackgroundWork(
+        [...runtime.liveBackgroundTaskIds].map(
+          (taskId) => runtime.backgroundTaskTypeById.get(taskId) ?? null,
+        ),
+      );
+    }
+    case "codex": {
+      // Codex reports no task_type, so a backgrounded subagent is a real agent
+      // doing real work — the unknown-is-working default is also the right one.
+      const backgroundTypes: Array<string | null> = [];
+      for (const subagent of runtime.activeSubagents.values()) {
+        if (subagent.background) backgroundTypes.push(null);
+      }
+      return summarizeBackgroundWork(backgroundTypes);
+    }
+    case "cursor": {
+      // A cloud run keeps executing on Cursor's infrastructure after the local
+      // turn ends — the clearest case of work outliving its turn ADE has.
+      return summarizeBackgroundWork(new Array(runtime.cloudRuns.size).fill(null));
+    }
+    // ── Harnesses with no background-work surface ───────────────────────────
+    //
+    // Listed individually rather than swept up by a `default`, so the
+    // exhaustiveness check below turns "a new harness landed" into a compile
+    // error instead of a silent zero. Pi (#1054/#1055) is the case that proved
+    // the point: its runtime carries only turn-scoped state — activeTurnId,
+    // busy, pendingSteers, activeCompactionId, lease — with no subagent,
+    // background-task, or remote-run tracking of any kind, and it is absent
+    // from `SUBAGENT_CAPABILITIES` so `resolveSubagentCapability` already
+    // degrades it to the no-op descriptor. Zero here is a verified fact about
+    // Pi, not an unexamined default.
+    case "opencode":
+    case "droid":
+    case "pi":
+      return NO_BACKGROUND_WORK;
+    default: {
+      // A new harness must state whether it owns work that outlives a turn.
+      // Getting this wrong in the silent direction is the exact bug this whole
+      // module exists to fix, so the decision is compulsory.
+      const exhaustive: never = runtime;
+      void exhaustive;
+      return NO_BACKGROUND_WORK;
+    }
+  }
 }
 
 function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
@@ -14333,6 +14427,7 @@ export function createAgentChatService(args: {
     if (terminal) {
       runtime.seenBackgroundTaskIds.delete(args.taskId);
       runtime.liveBackgroundTaskIds.delete(args.taskId);
+      runtime.backgroundTaskTypeById.delete(args.taskId);
       runtime.backgroundTaskTitleById.delete(args.taskId);
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
@@ -14354,11 +14449,14 @@ export function createAgentChatService(args: {
     tasks: unknown,
   ): void => {
     const nextIds = new Set<string>();
+    const nextTaskTypes = new Map<string, string>();
     for (const rawTask of Array.isArray(tasks) ? tasks : []) {
       const task = asRecord(rawTask);
       const taskId = compactString(task?.task_id);
       if (!task || !taskId) continue;
       nextIds.add(taskId);
+      const rawLevelTaskType = compactString(task.task_type);
+      if (rawLevelTaskType) nextTaskTypes.set(taskId, rawLevelTaskType);
 
       const description = compactString(task.description) ?? "Background work";
       if (isClaudeAgentBackgroundTaskType(task.task_type)) {
@@ -14424,6 +14522,10 @@ export function createAgentChatService(args: {
 
     runtime.liveBackgroundTaskIds.clear();
     for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
+    runtime.backgroundTaskTypeById.clear();
+    for (const [taskId, taskType] of nextTaskTypes) {
+      runtime.backgroundTaskTypeById.set(taskId, taskType);
+    }
     runtime.backgroundTasksLevelObserved = true;
     managed.lastActivityTimestamp = Date.now();
   };
@@ -29120,6 +29222,7 @@ export function createAgentChatService(args: {
       taskTodos: { seeded: false, byId: new Map() },
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),
+      backgroundTaskTypeById: new Map(),
       backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
       stoppingBackgroundTaskIds: new Map(),
@@ -38683,9 +38786,8 @@ export function createAgentChatService(args: {
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
-    const activeBackgroundTaskCount = liveManaged?.runtime?.kind === "claude"
-      ? liveManaged.runtime.liveBackgroundTaskIds.size
-      : 0;
+    const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
+    const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
     let nextWakeAt: string | null = null;
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
@@ -38802,6 +38904,10 @@ export function createAgentChatService(args: {
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
       activeBackgroundTaskCount,
+      // Omitted when nothing is live, like every other optional field here: a
+      // zero record carries no information and would ride along on every
+      // summary read for every session.
+      ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -39194,6 +39300,30 @@ export function createAgentChatService(args: {
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
+  /**
+   * Stop the background work a session still owns, WITHOUT closing the session
+   * or interrupting a turn the user is watching.
+   *
+   * This is the runtime half of settle teardown. Settle used to be a pure
+   * column write: the row went quiet and every monitor, background shell and
+   * subagent it had spawned kept running — burning tokens, holding ports, and
+   * (via scheduled work) waking the thread hours later.
+   *
+   * Two rules shape what it touches:
+   *
+   *   • An ACTIVE foreground turn is left alone. Its subagents belong to work
+   *     the user can see happening, and killing them because the row was filed
+   *     would be worse than the leak. A settled session that is still streaming
+   *     un-settles on its own activity anyway.
+   *   • Children stop before parents. Stopping only the parent leaves the fleet
+   *     running and untracked, which is how a "stopped" agent keeps spending.
+   *
+   * Deliberately returns no count. An earlier version reported "how much was
+   * stopped" and could not keep the number honest: `closeOpenClaudeBackgroundTasks`
+   * (reached through `stopActiveClaudeSubagents`) closes a shell it failed to
+   * stop, which silently inflated any before/after measurement. The number had
+   * no consumer, so it is gone rather than approximated.
+   */
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;

@@ -66,6 +66,8 @@ afterEach(async () => {
 });
 
 describe("sessionService resume metadata", () => {
+
+
   it("reads terminal scrollback transparently from a compressed log", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-gzip-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);

@@ -10443,7 +10443,7 @@ export function createPrService({
         continue;
       }
       try {
-        laneService.archive({ laneId });
+        await laneService.archive({ laneId });
         archivedLaneIds.push(laneId);
       } catch {
         skippedLaneIds.push(laneId);
