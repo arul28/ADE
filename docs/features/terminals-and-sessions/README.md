@@ -221,8 +221,9 @@ and in tests.
   subagents are reported but expose no stop control. Every settle entry point
   runs it — the single/bulk ADE actions, the `sessions.settle`/`settleMany`
   IPC handlers, the `session.settle*` sync commands, and the PR-merge
-  auto-settle (which bypasses settlement blockers and is therefore the path
-  most likely to file a session that is still running something).
+  auto-settle (which files a session even when it still owns scheduled work or
+  a live background task, and is therefore the path most likely to file one
+  that is still running something).
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native
