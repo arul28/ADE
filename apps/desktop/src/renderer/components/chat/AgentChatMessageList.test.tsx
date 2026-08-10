@@ -85,6 +85,7 @@ import {
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { ChatPrPaneInsetContext } from "./chatPrPaneInset";
+import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -335,6 +336,9 @@ const originalAde = globalThis.window.ade;
 
 beforeEach(() => {
   resetTranscriptCollapseCacheForTests();
+  // Workspace roots are cached per module so several chat surfaces share one
+  // IPC read; clear it so each test starts from its own listWorkspaces mock.
+  resetFilesWorkspaceCacheForTests();
   globalThis.window.ade = {
     ...(originalAde ?? {}),
     files: {
@@ -3777,8 +3781,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("−1").length).toBeGreaterThanOrEqual(1);
 
-    // Undo affordance lives on the FilesChangedPanel header and routes to /files.
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    // The turn summary's action opens the Files tab for the lane — it is NOT a
+    // revert (reverting is checkpoint-scoped and lives on the turn_diff_summary
+    // panel), so it is labelled for what it does.
+    fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
   });
 
@@ -4079,7 +4085,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
     expect(rendered.container.textContent).toMatch(/1 file changed/);
 
-    fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe(
       "/files::{\"laneId\":\"lane-123\"}",
     );
@@ -4711,23 +4717,25 @@ describe("older-history prefetch runway", () => {
 });
 
 describe("transcript tool-activity identity stability", () => {
+  // ONE entry object reused across builds — that is what production does: the
+  // entries come from the cached collapse pipeline, so a settled turn hands back
+  // the same objects on every rebuild. Fresh objects per call would model a
+  // transcript that never reuses anything and defeat the check under test.
+  const settledEntry = {
+    id: "entry-1",
+    createdAt: "2026-03-17T10:00:00.000Z",
+    label: "Edit",
+    tone: "tool",
+    status: "success",
+    entryKind: "file_change",
+    turnId: "turn-1",
+    changedFiles: [{ path: "/root/a.ts", kind: "modify", additions: 1, deletions: 0, diff: "" }],
+  };
   const buildRows = (tail: string) => groupConsecutiveWorkLogRows([
     {
       key: "work-1",
       timestamp: "2026-03-17T10:00:00.000Z",
-      event: {
-        type: "work_log_entry",
-        entry: {
-          id: "entry-1",
-          createdAt: "2026-03-17T10:00:00.000Z",
-          label: "Edit",
-          tone: "tool",
-          status: "success",
-          entryKind: "file_change",
-          turnId: "turn-1",
-          changedFiles: [{ path: "/root/a.ts", kind: "modify", additions: 1, deletions: 0, diff: "" }],
-        },
-      },
+      event: { type: "work_log_entry", entry: settledEntry },
     },
     {
       key: "done-1",

@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from "react";
-import { defaultUrlTransform } from "react-markdown";
+import { useLocation } from "react-router-dom";
 import type { FilesWorkspace } from "../../../shared/types";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 
@@ -132,13 +132,6 @@ export function resolveWorkspacePathFromHref(href: string | undefined): Workspac
   return looksLikeWorkspacePath(href) ? candidate : null;
 }
 
-export function chatMarkdownUrlTransform(value: string): string {
-  if (/^file:/i.test(value) || isWindowsAbsolutePath(value)) {
-    return value;
-  }
-  return defaultUrlTransform(value);
-}
-
 /**
  * Maps a path an agent reported onto a Files-tab target: which workspace owns
  * it, and the path relative to that workspace root.
@@ -151,7 +144,8 @@ export function chatMarkdownUrlTransform(value: string): string {
  */
 export function resolveFilesNavigationTarget(args: {
   path: string | WorkspacePathLocation;
-  workspaces: FilesWorkspace[];
+  /** Only the root and its lane are read — keeps test fixtures honest. */
+  workspaces: readonly Pick<FilesWorkspace, "rootPath" | "laneId">[];
   fallbackLaneId: string | null;
 }): { openFilePath: string; laneId: string | null; startLine?: number; startColumn?: number } | null {
   const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
@@ -204,6 +198,14 @@ export function resolveFilesNavigationTarget(args: {
  */
 export type ChatWorkspacePathOpener = (path: string | WorkspacePathLocation) => void;
 
+export type ChatWorkspacePathContextValue = {
+  openWorkspacePath: ChatWorkspacePathOpener;
+  /** Absolute worktree path → lane-relative, for display. */
+  formatWorkspaceDisplayPath: (path: string) => string;
+  /** Warm the workspace roots so display formatting can resolve. */
+  ensureWorkspacesLoaded: () => void;
+};
+
 /**
  * Builds the opener: resolve the path against the known workspaces, then route
  * to the Files tab with the lane and `:line` carried in navigation state.
@@ -214,29 +216,92 @@ export type ChatWorkspacePathOpener = (path: string | WorkspacePathLocation) => 
  * outside every workspace, should do nothing rather than navigate somewhere
  * arbitrary.
  */
+/**
+ * Workspace roots are app-global and change only when lanes do, so they are
+ * cached per module: several chat surfaces mount an opener at once (the pane
+ * and the message list each provide one) and they should not each pay an IPC
+ * round trip.
+ *
+ * Loading stays LAZY — chat surfaces deliberately do not fetch on mount, or
+ * every open chat would pay for roots it may never need. The cache is warmed
+ * either by the first path click or by `ensureWorkspacesLoaded`, which callers
+ * that need lane-relative *display* call at the moment they render paths.
+ * `force` re-reads after a resolve miss, which is how a lane created since the
+ * warm-up is picked up.
+ */
+let cachedFilesWorkspaces: FilesWorkspace[] | null = null;
+let inflightFilesWorkspaces: Promise<FilesWorkspace[]> | null = null;
+
+export function resetFilesWorkspaceCacheForTests(): void {
+  cachedFilesWorkspaces = null;
+  inflightFilesWorkspaces = null;
+}
+
+async function loadFilesWorkspaces(force = false): Promise<FilesWorkspace[]> {
+  if (!force && cachedFilesWorkspaces) return cachedFilesWorkspaces;
+  const listWorkspaces = typeof window !== "undefined" ? window.ade?.files?.listWorkspaces : undefined;
+  if (typeof listWorkspaces !== "function") return cachedFilesWorkspaces ?? [];
+  // A forced read must not be answered by a request that started BEFORE the
+  // caller discovered its miss — that response predates the lane it is looking
+  // for, so the "re-read after a miss" recovery would never actually recover.
+  if (force && inflightFilesWorkspaces) {
+    await inflightFilesWorkspaces.catch(() => undefined);
+  }
+  if (!inflightFilesWorkspaces) {
+    inflightFilesWorkspaces = listWorkspaces()
+      .then((next) => {
+        cachedFilesWorkspaces = next;
+        return next;
+      })
+      .catch(() => cachedFilesWorkspaces ?? [])
+      .finally(() => {
+        inflightFilesWorkspaces = null;
+      });
+  }
+  return inflightFilesWorkspaces;
+}
+
 export function useWorkspacePathOpener(args: {
+  /**
+   * The chat's lane. The router's `location.state.laneId` is folded in here
+   * rather than at one call site, so the pane-level and list-level providers
+   * cannot disagree about which lane a relative path belongs to.
+   */
   laneId: string | null;
   navigate: (to: string, options: { state: Record<string, unknown> }) => void;
   onOpened?: (openFilePath: string, laneId: string | null) => void;
-}): { openWorkspacePath: ChatWorkspacePathOpener; formatWorkspaceDisplayPath: (path: string) => string } {
-  const { laneId, navigate, onOpened } = args;
-  const [workspaces, setWorkspaces] = React.useState<FilesWorkspace[]>([]);
+}): ChatWorkspacePathContextValue {
+  const { laneId: laneIdArg, navigate, onOpened } = args;
+  const routeState = useLocation().state as { laneId?: unknown } | null;
+  const laneId = laneIdArg
+    ?? (typeof routeState?.laneId === "string" ? routeState.laneId : null);
+  const [workspaces, setWorkspaces] = React.useState<FilesWorkspace[]>(() => cachedFilesWorkspaces ?? []);
+
+  /**
+   * Load the roots on demand. Chat surfaces deliberately do NOT fetch on mount —
+   * every open chat would pay an IPC round trip — so resolution stays lazy and
+   * callers that need lane-relative *display* (rather than navigation) ask for
+   * it at the moment they render paths, e.g. when a files-changed summary is
+   * expanded.
+   */
+  const ensureWorkspacesLoaded = React.useCallback(() => {
+    // No early return on the module cache: this instance's state is what
+    // `formatWorkspaceDisplayPath` reads, and an instance that mounted before
+    // the cache was warmed would otherwise stay empty for its whole lifetime
+    // and keep rendering raw absolute paths. `loadFilesWorkspaces` already
+    // short-circuits on a warm cache, so this costs a microtask.
+    void loadFilesWorkspaces().then((next) => setWorkspaces(next));
+  }, []);
 
   const openWorkspacePath = React.useCallback(async (path: string | WorkspacePathLocation) => {
     let resolvedWorkspaces = workspaces;
     let target = resolveFilesNavigationTarget({ path, workspaces: resolvedWorkspaces, fallbackLaneId: laneId });
     const candidate = typeof path === "string" ? parseWorkspacePathLocation(path) : path;
     if (!target && candidate && (candidate.path.startsWith("/") || isWindowsAbsolutePath(candidate.path))) {
-      const listWorkspaces = window.ade?.files?.listWorkspaces;
-      if (typeof listWorkspaces === "function") {
-        try {
-          resolvedWorkspaces = await listWorkspaces();
-          setWorkspaces(resolvedWorkspaces);
-          target = resolveFilesNavigationTarget({ path, workspaces: resolvedWorkspaces, fallbackLaneId: laneId });
-        } catch {
-          target = null;
-        }
-      }
+      // A lane created since the warm-up read: re-read once before giving up.
+      resolvedWorkspaces = await loadFilesWorkspaces(true);
+      setWorkspaces(resolvedWorkspaces);
+      target = resolveFilesNavigationTarget({ path, workspaces: resolvedWorkspaces, fallbackLaneId: laneId });
     }
     if (!target) return;
     navigate("/files", {
@@ -254,25 +319,32 @@ export function useWorkspacePathOpener(args: {
     resolveFilesNavigationTarget({ path, workspaces, fallbackLaneId: laneId })?.openFilePath ?? path
   ), [workspaces, laneId]);
 
-  return { openWorkspacePath, formatWorkspaceDisplayPath };
+  return React.useMemo(
+    () => ({ openWorkspacePath, formatWorkspaceDisplayPath, ensureWorkspacesLoaded }),
+    [openWorkspacePath, formatWorkspaceDisplayPath, ensureWorkspacesLoaded],
+  );
 }
 
-const ChatWorkspacePathContext = createContext<ChatWorkspacePathOpener | null>(null);
+const ChatWorkspacePathContext = createContext<ChatWorkspacePathContextValue | null>(null);
 
 export function ChatWorkspacePathProvider({
-  onOpenWorkspacePath,
+  value,
   children,
 }: {
-  onOpenWorkspacePath: ChatWorkspacePathOpener | null;
+  value: ChatWorkspacePathContextValue | null;
   children: React.ReactNode;
 }) {
   return (
-    <ChatWorkspacePathContext.Provider value={onOpenWorkspacePath}>
+    <ChatWorkspacePathContext.Provider value={value}>
       {children}
     </ChatWorkspacePathContext.Provider>
   );
 }
 
-export function useChatWorkspacePathOpener(): ChatWorkspacePathOpener | null {
+export function useChatWorkspacePaths(): ChatWorkspacePathContextValue | null {
   return useContext(ChatWorkspacePathContext);
+}
+
+export function useChatWorkspacePathOpener(): ChatWorkspacePathOpener | null {
+  return useContext(ChatWorkspacePathContext)?.openWorkspacePath ?? null;
 }

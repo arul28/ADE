@@ -286,7 +286,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
                 {dirname(file.path) ? (
                   <span className="min-w-0 shrink truncate text-[12px] text-fg/35">{dirname(file.path)}/</span>
                 ) : null}
-                <span className="shrink-0 text-[12px] text-fg/60">{basename(file.path)}</span>
+                <span className="min-w-0 shrink-[0.2] truncate text-[12px] text-fg/60">{basename(file.path)}</span>
               </span>
               <div className="flex shrink-0 items-center gap-1.5 max-sm:hidden">
                 {file.additions > 0 && <span className="text-[11px] text-emerald-400/70">+{file.additions}</span>}

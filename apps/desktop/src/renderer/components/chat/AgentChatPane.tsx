@@ -3362,7 +3362,7 @@ export function AgentChatPane({
   // Provided for the WHOLE pane, not just the transcript: the proposed-plan
   // card and question-option previews render agent markdown from the composer
   // subtree, and without an opener their file paths fall back to inert text.
-  const { openWorkspacePath: openChatWorkspacePath } = useWorkspacePathOpener({ laneId, navigate });
+  const chatWorkspacePaths = useWorkspacePathOpener({ laneId, navigate });
   const openAiProvidersSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
@@ -12761,7 +12761,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
-    <ChatWorkspacePathProvider onOpenWorkspacePath={openChatWorkspacePath}>
+    <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell

@@ -59,9 +59,9 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
+import { chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
   ChatWorkspacePathProvider,
-  chatMarkdownUrlTransform,
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
   resolveWorkspacePathFromHref,
@@ -1513,13 +1513,11 @@ function WorkspacePathLink({
 const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
   onOpenWorkspacePath,
-  workspaceLaneId,
   mosaic,
   mosaicScopeKey,
 }: {
   markdown: string;
-  onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
-  workspaceLaneId?: string | null;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   mosaic?: MosaicRenderContext;
   /** Stable transcript-row key scoping mosaic answered state per message. */
   mosaicScopeKey?: string;
@@ -1527,8 +1525,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
-    onOpenWorkspacePath?.(path, workspaceLaneId ?? null);
-  }, [onOpenWorkspacePath, workspaceLaneId]);
+    onOpenWorkspacePath?.(path);
+  }, [onOpenWorkspacePath]);
 
   return (
     <div
@@ -1753,15 +1751,29 @@ function DiffPreview({ diff }: { diff: string }) {
 
 /* ── Activity indicator ── */
 
-const ACTIVITY_LABELS: Record<string, string> = {
+// Must cover every `activity` value the runtimes emit (see the union in
+// shared/types/chat.ts) — an unmapped value now falls through to the raw
+// identifier, so a gap here shows the user `web_searching`.
+const ACTIVITY_LABELS: Record<Extract<AgentChatEvent, { type: "activity" }>["activity"], string> = {
   thinking: "Thinking",
   working: "Working",
   editing_file: "Editing",
   running_command: "Running command",
   searching: "Searching",
   reading: "Reading",
-  tool_calling: "Calling tool"
+  tool_calling: "Calling tool",
+  web_searching: "Searching the web",
+  spawning_agent: "Starting agent"
 };
+
+/**
+ * The map is typed against the `activity` union so a new runtime value is a
+ * compile error rather than a raw identifier on screen; events arrive as plain
+ * strings, so reading takes a widened view.
+ */
+function activityLabel(activity: string): string | undefined {
+  return (ACTIVITY_LABELS as Record<string, string>)[activity];
+}
 
 /**
  * The live label for the working indicator.
@@ -1778,7 +1790,7 @@ export function resolveWorkingIndicatorLabel(
   activeEntries: readonly ChatWorkLogEntry[],
 ): string | null {
   if (!activity) return null;
-  const label = ACTIVITY_LABELS[activity] ?? activity;
+  const label = activityLabel(activity) ?? activity;
   if (activity !== "editing_file") return label;
 
   for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
@@ -1968,7 +1980,7 @@ function ReasoningStateDots({ animated }: { animated: boolean }) {
 }
 
 function formatActivityText(activity: string, detail?: string): string {
-  const label = ACTIVITY_LABELS[activity] ?? activity;
+  const label = activityLabel(activity) ?? activity;
   return detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}…`;
 }
 
@@ -4173,21 +4185,18 @@ function DoneTurnDivider({
   onInsertDraft,
   onRevealChatTerminal,
   sessionId,
-  onUndoChanges,
-  onOpenWorkspacePath,
+  onReviewInFiles,
   turnFileEntries,
-  formatWorkspaceDisplayPath,
   hasCheckpointDiffSummary,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
   timestamp: string;
   durationMs: number | null;
   toolEntries: ChatWorkLogEntry[];
-  onUndoChanges?: () => void;
-  onOpenWorkspacePath?: (path: string) => void;
+  /** Opens the Files tab for this lane. Not a revert — see handleReviewChanges. */
+  onReviewInFiles?: () => void;
   /** Raw (un-deduped) code-change entries for this turn. */
   turnFileEntries?: ChatWorkLogEntry[];
-  formatWorkspaceDisplayPath?: (path: string) => string;
   /**
    * True when this turn moved HEAD and therefore already rendered a
    * checkpoint-backed `turn_diff_summary` row (real diffs + SHA-scoped revert).
@@ -4302,14 +4311,10 @@ function DoneTurnDivider({
         ) : null}
       </AnimatePresence>
       {hasCheckpointDiffSummary ? null : (
-        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
-          <ChatTurnFilesChangedSummary
-            entries={turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES}
-            onUndo={onUndoChanges}
-            onOpenPath={onOpenWorkspacePath}
-            formatDisplayPath={formatWorkspaceDisplayPath}
-          />
-        </div>
+        <ChatTurnFilesChangedSummary
+          entries={turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES}
+          onReviewInFiles={onReviewInFiles}
+        />
       )}
       {turnProof.length > 0 && proofOpen ? (
         <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
@@ -4367,11 +4372,23 @@ function stabilizeEntryMap(
   previous: Map<string, ChatWorkLogEntry[]>,
   next: Map<string, ChatWorkLogEntry[]>,
 ): Map<string, ChatWorkLogEntry[]> {
+  const stabilized = new Map<string, ChatWorkLogEntry[]>();
   for (const [key, entries] of next) {
     const before = previous.get(key);
-    if (before && sameEntryList(before, entries)) next.set(key, before);
+    stabilized.set(key, before && sameEntryList(before, entries) ? before : entries);
   }
-  return next;
+  return stabilized;
+}
+
+function entryMapsIdentical(
+  previous: Map<string, ChatWorkLogEntry[]>,
+  next: Map<string, ChatWorkLogEntry[]>,
+): boolean {
+  if (previous.size !== next.size) return false;
+  for (const [key, entries] of next) {
+    if (previous.get(key) !== entries) return false;
+  }
+  return true;
 }
 
 /**
@@ -4400,11 +4417,15 @@ export function stabilizeTranscriptToolActivity(
   const activeFileEntries = sameEntryList(previous.activeFileEntries, next.activeFileEntries)
     ? previous.activeFileEntries
     : next.activeFileEntries;
+  // Both maps must be checked: they are derived from the same turn entries
+  // through different filters (`byDoneRowKey` drops `file_change` entries), so a
+  // turn whose file changes moved while its tool entries did not would otherwise
+  // pass this guard and have its fresh file entries discarded.
   if (
     activeEntries === previous.activeEntries
     && activeFileEntries === previous.activeFileEntries
-    && byDoneRowKey.size === previous.byDoneRowKey.size
-    && [...byDoneRowKey].every(([key, entries]) => previous.byDoneRowKey.get(key) === entries)
+    && entryMapsIdentical(previous.byDoneRowKey, byDoneRowKey)
+    && entryMapsIdentical(previous.fileEntriesByDoneRowKey, fileEntriesByDoneRowKey)
   ) {
     return previous;
   }
@@ -4570,8 +4591,6 @@ type EventRowProps = {
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
   turnFileEntries?: ChatWorkLogEntry[];
-  /** Maps an absolute worktree path to a lane-relative one for display. */
-  formatWorkspaceDisplayPath?: (path: string) => string;
   /** This turn already rendered a checkpoint-backed `turn_diff_summary` row. */
   hasCheckpointDiffSummary?: boolean;
   onInsertDraft?: (text: string) => void;
@@ -4627,7 +4646,6 @@ const EventRow = React.memo(function EventRow({
   onNavigateSuggestion,
   onReviewChanges,
   turnFileEntries,
-  formatWorkspaceDisplayPath,
   hasCheckpointDiffSummary,
   onInsertDraft,
   onRevealChatTerminal,
@@ -4738,10 +4756,8 @@ const EventRow = React.memo(function EventRow({
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
-          onUndoChanges={onReviewChanges}
+          onReviewInFiles={onReviewChanges}
           turnFileEntries={turnFileEntries}
-          onOpenWorkspacePath={onOpenWorkspacePath}
-          formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
           hasCheckpointDiffSummary={hasCheckpointDiffSummary}
         />
       ) : null}
@@ -5424,7 +5440,9 @@ function AgentChatMessageListMain({
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasOlderHistory, maybeRequestOlderHistory]);
+    // `containerHeight` re-arms the observer after a resize (and after the first
+    // measurement) so its runway does not stay latched at the 300px fallback.
+  }, [containerHeight, hasOlderHistory, maybeRequestOlderHistory]);
 
   useEffect(() => {
     onApprovalRef.current = onApproval;
@@ -5480,6 +5498,12 @@ function AgentChatMessageListMain({
     // so leaving them in would stack blank gaps during a streaming turn.
     () => groupChatTranscriptRows(rows).filter((row) => !isAutomaticContextUsageEvent(row.event)),
     [rows],
+  );
+  // Same lookup-map shape as turnProofByRowKey / turnEndDurationByRowKey rather
+  // than rescanning the summaries once per rendered row.
+  const checkpointDiffTurnIds = useMemo(
+    () => new Set((turnDiffSummaries ?? []).map((summary) => summary.turnId)),
+    [turnDiffSummaries],
   );
   const previousToolActivityRef = useRef<TranscriptToolActivity | null>(null);
   const transcriptToolActivity = useMemo(() => {
@@ -5568,11 +5592,12 @@ function AgentChatMessageListMain({
     : null;
   const currentLaneId = laneId ?? locationLaneId;
 
-  const { openWorkspacePath, formatWorkspaceDisplayPath } = useWorkspacePathOpener({
+  const workspacePaths = useWorkspacePathOpener({
     laneId: currentLaneId,
     navigate,
     onOpened: onOpenWorkspacePath,
   });
+  const openWorkspacePath = workspacePaths.openWorkspacePath;
 
   const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
     navigate(suggestion.href);
@@ -5709,11 +5734,15 @@ function AgentChatMessageListMain({
   const inlineProofByRowKey = turnProofTimeline.inlineByRowKey;
   const unanchoredProofArtifacts = turnProofTimeline.unanchored;
 
+  // Opens the Files tab for this chat's lane. It is NOT a revert: reverting is
+  // checkpoint-scoped and lives on the `turn_diff_summary` panel, which has the
+  // before/after SHAs. It also must not gate on the LATEST turn's file count —
+  // every done divider in the thread renders this, so that gate made the
+  // control a silent no-op on every turn but the last.
   const handleReviewChanges = useCallback(() => {
-    if (!turnSummary?.changedFileCount) return;
     const state = currentLaneId ? { laneId: currentLaneId } : undefined;
     navigate("/files", state ? { state } : undefined);
-  }, [currentLaneId, navigate, turnSummary]);
+  }, [currentLaneId, navigate]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;
@@ -6447,8 +6476,8 @@ function AgentChatMessageListMain({
     // row; the done divider's entry-derived fallback stands down for it so the
     // turn never shows two "files changed" summaries.
     const hasCheckpointDiffSummary = envelope.event.type === "done"
-      && Boolean(currentTurn)
-      && (turnDiffSummaries ?? []).some((summary) => summary.turnId === currentTurn);
+      && currentTurn != null
+      && checkpointDiffTurnIds.has(currentTurn);
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
@@ -6490,7 +6519,6 @@ function AgentChatMessageListMain({
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
           turnFileEntries={turnFileEntries}
-          formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
           hasCheckpointDiffSummary={hasCheckpointDiffSummary}
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
@@ -6547,7 +6575,6 @@ function AgentChatMessageListMain({
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
         turnFileEntries={turnFileEntries}
-        formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
         hasCheckpointDiffSummary={hasCheckpointDiffSummary}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
@@ -6633,7 +6660,7 @@ function AgentChatMessageListMain({
   const showJumpToLatest = !stickToBottom && !sessionEnded;
 
   return (
-    <ChatWorkspacePathProvider onOpenWorkspacePath={openWorkspacePath}>
+    <ChatWorkspacePathProvider value={workspacePaths}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""

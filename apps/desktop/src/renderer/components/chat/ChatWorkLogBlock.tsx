@@ -16,6 +16,7 @@ import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -297,7 +298,7 @@ function fileExtBadge(path: string): string {
   return ext.length > 4 ? "FILE" : ext;
 }
 
-export type AggregatedFile = {
+type AggregatedFile = {
   path: string;
   kind: ChatWorkLogFileChange["kind"];
   additions: number;
@@ -306,7 +307,7 @@ export type AggregatedFile = {
   status: EntryStatus;
 };
 
-export function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[] {
+function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[] {
   const map = new Map<string, AggregatedFile>();
   for (const entry of entries) {
     if (entry.entryKind === "file_change" && entry.changedFiles?.length) {
@@ -356,10 +357,6 @@ export function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): Aggregat
     }
   }
   return [...map.values()];
-}
-
-export function chatWorkLogHasFileChanges(entries: ChatWorkLogEntry[]): boolean {
-  return aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)).length > 0;
 }
 
 export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): ChatWorkLogEntry[] {
@@ -794,11 +791,12 @@ function FilesChangedPanel({
 /**
  * Turn-level "Files changed" — ONE collapsed row at the end of a turn.
  *
- * The per-burst `FilesChangedPanel` is off in the timeline (see
- * `ChatWorkLogBlock`'s `showFileChanges`): a turn whose tool runs are broken up
- * by prose renders one `work_log_group` per run, so the per-burst panel stacked
- * six times through a single reply. This aggregates the whole turn's entries,
- * deduped by path with a net diffstat, and starts collapsed.
+ * The timeline drops `work_log_group` rows wholesale, so this is the only
+ * per-turn files summary in the thread. It replaced a per-burst panel that
+ * rendered once per uninterrupted run of tool entries — a turn whose runs were
+ * broken up by prose stacked six near-identical panels through one reply. This
+ * aggregates the whole turn's entries, deduped by path with a net diffstat, and
+ * starts collapsed.
  *
  * It is the harness-independent fallback: it reads only `ChatWorkLogEntry`
  * file/tool events, so it works for every runtime (claude/codex/cursor/droid/
@@ -806,21 +804,25 @@ function FilesChangedPanel({
  * DID move HEAD, the checkpoint-backed `turn_diff_summary` event renders
  * instead — that one can offer real diffs and a SHA-scoped revert.
  *
- * `formatDisplayPath` maps the absolute worktree path the tool reported to a
- * lane-relative one; the full path stays in the row's tooltip.
+ * Paths render lane-relative (the absolute path the tool reported stays in the
+ * row's tooltip) and open in the Files tab, both via the chat's workspace-path
+ * context.
  */
 export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChangedSummary({
   entries,
-  onUndo,
-  onOpenPath,
-  formatDisplayPath,
+  onReviewInFiles,
 }: {
   entries: ChatWorkLogEntry[];
-  onUndo?: () => void;
-  onOpenPath?: (path: string) => void;
-  formatDisplayPath?: (path: string) => string;
+  onReviewInFiles?: () => void;
 }) {
+  // Opening and display-formatting are two halves of the same hook, so both ride
+  // the chat's workspace-path context rather than being threaded as props.
+  const workspacePaths = useChatWorkspacePaths();
+  const onOpenPath = workspacePaths?.openWorkspacePath;
+  const formatDisplayPath = workspacePaths?.formatWorkspaceDisplayPath;
+  const ensureWorkspacesLoaded = workspacePaths?.ensureWorkspacesLoaded;
   const [open, setOpen] = useState(false);
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
   const files = useMemo(
     () => aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)),
     [entries],
@@ -832,11 +834,17 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
   const Caret = open ? CaretDown : CaretRight;
 
   return (
-    <div className="min-w-0 max-w-full space-y-1.5 overflow-hidden">
+    <div className="mt-2 w-full min-w-0 max-w-[var(--chat-content-width,52rem)] space-y-1.5 overflow-hidden">
       <div className="flex min-w-0 max-w-full items-center gap-2">
         <button
           type="button"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => {
+            // Paths are only rendered once expanded, so this is the moment the
+            // lane-relative form is needed — and the cheapest point to warm the
+            // workspace roots without an IPC call on every chat mount.
+            if (!open) ensureWorkspacesLoaded?.();
+            setOpen((value) => !value);
+          }}
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
         >
@@ -855,13 +863,13 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
             </span>
           ) : null}
         </button>
-        {onUndo ? (
+        {onReviewInFiles ? (
           <button
             type="button"
-            onClick={onUndo}
+            onClick={onReviewInFiles}
             className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40 transition-colors hover:text-fg/65"
           >
-            Undo
+            Review in Files
           </button>
         ) : null}
       </div>
@@ -869,12 +877,31 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
         <div className="min-w-0 max-w-full space-y-0.5 overflow-hidden pl-[18px]">
           {files.map((file) => {
             const display = formatDisplayPath ? formatDisplayPath(file.path) : file.path;
+            const hasDiff = file.diff.trim().length > 0;
+            const expanded = expandedFiles[file.path] ?? false;
             return (
+              <div key={file.path}>
               <div
-                key={file.path}
-                className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1"
+                className={cn(
+                  "group/file relative flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1",
+                  hasDiff && "hover:bg-white/[0.025]",
+                )}
               >
-                <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                {/* The diff payload rides on the work-log entry, so it is the
+                    only in-thread way to see what changed on a turn that never
+                    moved HEAD (no checkpoint, hence no `turn_diff_summary`).
+                    The toggle covers the whole row — a 28x14 badge is below the
+                    minimum pointer target — and the path button sits above it. */}
+                {hasDiff ? (
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-label={`${expanded ? "Hide" : "Show"} diff for ${display}`}
+                    onClick={() => setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))}
+                    className="absolute inset-0 rounded-[6px]"
+                  />
+                ) : null}
+                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                   {fileExtBadge(file.path)}
                 </span>
                 {onOpenPath ? (
@@ -882,14 +909,14 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
                     type="button"
                     onClick={() => onOpenPath(file.path)}
                     title={file.path}
-                    className="min-w-0 flex-1 truncate text-left font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65 underline decoration-transparent underline-offset-2 transition-colors hover:text-accent hover:decoration-accent/50"
+                    className="relative min-w-0 flex-1 truncate text-left font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65 underline decoration-transparent underline-offset-2 transition-colors hover:text-accent hover:decoration-accent/50"
                   >
                     {display}
                   </button>
                 ) : (
                   <span
                     title={file.path}
-                    className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65"
+                    className="pointer-events-none min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65"
                   >
                     {display}
                   </span>
@@ -909,6 +936,8 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
                     −{file.deletions}
                   </span>
                 ) : null}
+              </div>
+              {expanded && hasDiff ? <DiffBody diff={file.diff} /> : null}
               </div>
             );
           })}
@@ -1028,8 +1057,6 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal,
   sessionId,
   animate: _animate = true,
-  showToolCalls = true,
-  showFileChanges = true,
 }: {
   entries: ChatWorkLogEntry[];
   summary?: ChatWorkLogGroupEvent["summary"];
@@ -1040,15 +1067,6 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
   animate?: boolean;
-  showToolCalls?: boolean;
-  /**
-   * Per-burst "N files changed" panel. The chat timeline turns this OFF: a long
-   * turn produces one `work_log_group` per uninterrupted run of tool entries, so
-   * leaving it on stacks six near-identical panels through a single reply. The
-   * turn-level `ChatTurnFilesChangedSummary` (rendered once, at the turn's end
-   * divider, deduped across the whole turn) is the canonical surface instead.
-   */
-  showFileChanges?: boolean;
 }) {
   const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
     const readOnly: ChatWorkLogEntry[] = [];
@@ -1065,20 +1083,18 @@ export function ChatWorkLogBlock({
     [codeChangeEntries],
   );
 
-  const hasReadOnly = showToolCalls && readOnlyEntries.length > 0;
-  const hasCodeChange = showFileChanges && aggregatedFiles.length > 0;
+  const hasReadOnly = readOnlyEntries.length > 0;
+  const hasCodeChange = aggregatedFiles.length > 0;
   if (!hasReadOnly && !hasCodeChange) return null;
 
   return (
     <div className={cn("min-w-0 max-w-full space-y-3 overflow-hidden", className)}>
-      {showToolCalls ? (
-        <LocalhostServersStrip
-          entries={entries}
-          sessionId={sessionId}
-          onInsertDraft={onInsertDraft}
-          onRevealChatTerminal={onRevealChatTerminal}
-        />
-      ) : null}
+      <LocalhostServersStrip
+        entries={entries}
+        sessionId={sessionId}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+      />
       {hasReadOnly ? (
         <ToolCallsPanel
           entries={readOnlyEntries}

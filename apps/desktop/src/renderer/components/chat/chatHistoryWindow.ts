@@ -121,27 +121,27 @@ export function advanceOlderHistoryCursor(
   return page.startOffset;
 }
 
+function isTurnBoundaryEvent(entry: AgentChatEventEnvelope): boolean {
+  return entry.event.type === "user_message";
+}
+
 /**
+ * Reads one "load earlier" batch, anchored on a turn boundary.
+ *
  * A page that starts mid-turn is the reason "load earlier" often appears to do
  * nothing: pages are cut by BYTES, so one page of a long streamed reply can be
  * 200 superseded `text` delta rows that fold to a single rendered line. The
  * reader scrolls up, waits, and gets no new content.
  *
- * Anchoring on user turns fixes that from the renderer: keep pulling pages until
- * the accumulated span reaches a `user_message` — the start of a turn — so the
- * newly-loaded region always contains at least one whole turn and renders as
- * real content.
+ * So keep pulling pages until the accumulated span reaches a `user_message` —
+ * the start of a turn — and the newly-loaded region always contains at least one
+ * whole turn and renders as real content.
  */
-function isTurnBoundaryEvent(entry: AgentChatEventEnvelope): boolean {
-  return entry.event.type === "user_message";
-}
-
 export async function readOlderHistoryBatch(args: {
   sessionId: string;
   beforeOffset: number;
   readPage: (beforeOffset: number) => Promise<AgentChatEventHistoryPage>;
   isCurrent: () => boolean;
-  maxEmptyPages?: number;
   /**
    * Upper bound on pages pulled per trigger, covering BOTH empty pages (a page
    * spanning one oversized JSONL line) and the turn-anchoring extension. Keeps a
@@ -158,7 +158,7 @@ export async function readOlderHistoryBatch(args: {
 }): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number } | null> {
   let currentOffset = args.beforeOffset;
   let nextCursor = args.beforeOffset;
-  const maxPages = args.maxPages ?? args.maxEmptyPages ?? 8;
+  const maxPages = args.maxPages ?? 8;
   const maxAnchorEvents = args.maxAnchorEvents ?? 400;
   const collected: AgentChatEventEnvelope[][] = [];
   let collectedCount = 0;
@@ -172,7 +172,10 @@ export async function readOlderHistoryBatch(args: {
       throw new Error("Earlier-message page did not match this chat.");
     }
     if (page.sessionFound === false) {
-      return { events: [], nextCursor: 0 };
+      // Pages already pulled in this batch are real transcript content, and
+      // `nextCursor: 0` latches "no older history" — dropping them here would
+      // lose them until a reload.
+      return { events: collected.flat(), nextCursor: 0 };
     }
     const advancedCursor = advanceOlderHistoryCursor(currentOffset, page);
     if (advancedCursor == null) {
