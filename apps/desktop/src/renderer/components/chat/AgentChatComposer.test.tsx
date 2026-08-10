@@ -701,6 +701,28 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("foo.ts")).toBeTruthy();
   });
 
+  it("keeps trailing prose when selecting a shorthand file match", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const draft = "ask @foo.ts about this";
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("foo.ts"));
+    fireEvent.click(await screen.findByText("foo.ts"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @src/foo.ts about this");
+  });
+
   it("keeps an extensionless spaced file path intact before trailing prose", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/my folder", type: "file" }]);
 

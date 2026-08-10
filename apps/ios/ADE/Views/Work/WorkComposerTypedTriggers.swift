@@ -226,28 +226,45 @@ enum WorkComposerTriggerDetector {
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !label.isEmpty else { return match }
 
-    let query = match.query as NSString
-    let labelLength = (label as NSString).length
-    guard query.length >= labelLength else { return match }
-    let prefix = query.substring(to: labelLength)
-    guard prefix.lowercased() == label.lowercased() else { return match }
+    var candidateLabels = [label]
+    if let basename = label.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last {
+      let basenameString = String(basename)
+      if !candidateLabels.contains(where: { $0.lowercased() == basenameString.lowercased() }) {
+        candidateLabels.append(basenameString)
+      }
+    }
+    let searchableQuery = fileSearchQuery(for: match.query)
+    if searchableQuery != match.query,
+       label.lowercased().hasSuffix(searchableQuery.lowercased()),
+       !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
+      candidateLabels.append(searchableQuery)
+    }
 
-    let remainder = query.substring(from: labelLength) as NSString
-    guard remainder.length == 0 || remainder.character(at: 0) == 0x20 || remainder.character(at: 0) == 0x09 else {
-      return match
+    let query = match.query as NSString
+    for candidateLabel in candidateLabels {
+      let labelLength = (candidateLabel as NSString).length
+      guard query.length >= labelLength else { continue }
+      let prefix = query.substring(to: labelLength)
+      guard prefix.lowercased() == candidateLabel.lowercased() else { continue }
+
+      let remainder = query.substring(from: labelLength) as NSString
+      guard remainder.length == 0 || remainder.character(at: 0) == 0x20 || remainder.character(at: 0) == 0x09 else {
+        continue
+      }
+      var separatorLength = 0
+      while separatorLength < remainder.length {
+        let character = remainder.character(at: separatorLength)
+        guard character == 0x20 || character == 0x09 else { break }
+        separatorLength += 1
+      }
+      let consumedQuery = query.substring(to: labelLength + separatorLength)
+      return WorkComposerTriggerMatch(
+        kind: match.kind,
+        query: consumedQuery,
+        range: NSRange(location: match.range.location, length: 1 + (consumedQuery as NSString).length)
+      )
     }
-    var separatorLength = 0
-    while separatorLength < remainder.length {
-      let character = remainder.character(at: separatorLength)
-      guard character == 0x20 || character == 0x09 else { break }
-      separatorLength += 1
-    }
-    let consumedQuery = query.substring(to: labelLength + separatorLength)
-    return WorkComposerTriggerMatch(
-      kind: match.kind,
-      query: consumedQuery,
-      range: NSRange(location: match.range.location, length: 1 + (consumedQuery as NSString).length)
-    )
+    return match
   }
 }
 

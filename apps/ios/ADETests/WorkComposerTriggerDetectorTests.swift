@@ -96,6 +96,25 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testAtSelectionRangePreservesTrailingProseAfterShorthandFileQuery() {
+    let text = "ask @foo.swift about this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/foo.swift",
+      kind: .at,
+      title: "foo.swift",
+      subtitle: "src",
+      insertText: "@src/foo.swift"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "foo.swift ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@foo.swift " as NSString).length)
+    )
+  }
+
   func testFileSearchQueryPreservesPathBeforeTrailingProse() {
     XCTAssertEqual(
       WorkComposerTriggerDetector.fileSearchQuery(for: "src/foo.ts about this"),

@@ -117,6 +117,24 @@ describe("replaceComposerTriggerSpan", () => {
     expect(composerTriggerForSelection(trigger, "other")).toEqual(trigger);
   });
 
+  it("narrows shorthand file labels without consuming trailing prose", () => {
+    const text = "ask @foo.ts about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/foo.ts");
+
+    expect(selected.query).toBe("foo.ts ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/foo.ts ").text).toBe("ask @src/foo.ts about this");
+  });
+
+  it("narrows a spaced extensionless basename without consuming trailing prose", () => {
+    const text = "ask @my folder about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my folder");
+
+    expect(selected.query).toBe("my folder ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe("ask @src/my folder about this");
+  });
+
   it("replaces exactly the trigger span mid-sentence", () => {
     const text = "fix @src/f then run /te tomorrow";
     const trigger = { start: 20, query: "te" };

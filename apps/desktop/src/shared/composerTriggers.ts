@@ -53,6 +53,11 @@ export function composerFileSearchQuery(query: string): string {
   return FILE_QUERY_RE.exec(trimmed)?.[1] ?? trimmed;
 }
 
+function composerPathBasename(pathValue: string): string {
+  const separator = Math.max(pathValue.lastIndexOf("/"), pathValue.lastIndexOf("\\"));
+  return separator >= 0 ? pathValue.slice(separator + 1) : pathValue;
+}
+
 /**
  * Narrow an @ trigger to the selected item's leading label when the user has
  * continued typing prose after it. The menu can keep a prefix suggestion
@@ -67,18 +72,33 @@ export function composerTriggerForSelection(
   const selectedLabel = label.trim();
   if (trigger.type !== "at" || !selectedLabel) return trigger;
 
-  const matchedPrefix = trigger.query.slice(0, selectedLabel.length);
-  if (matchedPrefix.toLowerCase() !== selectedLabel.toLowerCase()) return trigger;
-
-  const remainder = trigger.query.slice(selectedLabel.length);
-  if (remainder.length > 0 && !/^[ \t]/.test(remainder)) {
-    return trigger;
-  }
-  const separator = remainder.match(/^[ \t]*/)?.[0] ?? "";
-  return {
-    ...trigger,
-    query: `${matchedPrefix}${separator}`,
+  const candidateLabels = [selectedLabel];
+  const addCandidateLabel = (candidate: string) => {
+    if (!candidate || candidateLabels.some((existing) => existing.toLowerCase() === candidate.toLowerCase())) return;
+    candidateLabels.push(candidate);
   };
+  // File suggestions can be selected from a basename or a shorter path
+  // suffix even though the row inserts the full path. Treat those as the
+  // selected prefix so prose after the shorthand remains outside the splice.
+  addCandidateLabel(composerPathBasename(selectedLabel));
+  const searchableQuery = composerFileSearchQuery(trigger.query);
+  if (searchableQuery !== trigger.query && selectedLabel.toLowerCase().endsWith(searchableQuery.toLowerCase())) {
+    addCandidateLabel(searchableQuery);
+  }
+
+  for (const candidateLabel of candidateLabels) {
+    const matchedPrefix = trigger.query.slice(0, candidateLabel.length);
+    if (matchedPrefix.toLowerCase() !== candidateLabel.toLowerCase()) continue;
+
+    const remainder = trigger.query.slice(candidateLabel.length);
+    if (remainder.length > 0 && !/^[ \t]/.test(remainder)) continue;
+    const separator = remainder.match(/^[ \t]*/)?.[0] ?? "";
+    return {
+      ...trigger,
+      query: `${matchedPrefix}${separator}`,
+    };
+  }
+  return trigger;
 }
 
 /**
