@@ -5,6 +5,10 @@ struct MobileAccessGateView: View {
   let accountLoading: Bool
   let accountSignedIn: Bool
   let hasPairedHost: Bool
+  /// A saved pairing exists but its credential cannot be read back. Distinct
+  /// from "not paired": the user has already done the pairing step, so telling
+  /// them to do it again without saying why reads as the app ignoring them.
+  var credentialUnreadable: Bool = false
   let onContinue: () -> Void
 
   @EnvironmentObject private var syncService: SyncService
@@ -79,14 +83,31 @@ struct MobileAccessGateView: View {
                   presentedSheet = .pairMachine
                 }
               } label: {
-                Text("Continue without an account")
+                Text(credentialUnreadable ? "Pair again" : "Continue without an account")
                   .font(.subheadline.weight(.semibold))
-                  .foregroundStyle(ADEColor.textSecondary)
+                  .foregroundStyle(credentialUnreadable ? ADEColor.accent : ADEColor.textSecondary)
                   .frame(minHeight: 44)
                   .frame(maxWidth: .infinity)
                   .contentShape(Rectangle())
               }
               .buttonStyle(.plain)
+
+              // A pairing whose credential cannot be read is a fault, not a
+              // missing step. Without this the button re-presents the same
+              // connect sheet the user already completed, with nothing to
+              // explain why it did not take.
+              if credentialUnreadable {
+                Text(
+                  """
+                  This iPhone is paired with a computer, but the saved key for it \
+                  can no longer be read. Pair again to restore the connection.
+                  """
+                )
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textMuted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+              }
 
               if syncService.connectionState == .connecting,
                  let stage = syncService.accountConnectStageLabel {

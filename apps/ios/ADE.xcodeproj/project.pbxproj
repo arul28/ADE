@@ -75,6 +75,7 @@
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
 		B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* SyncRecoveryPolicy.swift */; };
 		B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */; };
+		B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000001F /* PairedHostCredentialStateTests.swift */; };
 		B70000000000000000000099 /* SyncAccountConnectRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */; };
 		B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* SyncTransportSelectionTests.swift */; };
 		B80000000000000000000002 /* SyncConnectionRace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* SyncConnectionRace.swift */; };
@@ -271,6 +272,7 @@
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
 		C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* MobileTrustResetPolicy.swift */; };
+		C5B00000000000000000001F /* PairedHostCredentialState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000001F /* PairedHostCredentialState.swift */; };
 		C5B000000000000000000002 /* SSHBootstrapModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000002 /* SSHBootstrapModels.swift */; };
 		C5B000000000000000000003 /* SSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* SSHPrivateKeyParser.swift */; };
 		C5B000000000000000000004 /* SSHGeneratedKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000004 /* SSHGeneratedKey.swift */; };
@@ -477,6 +479,7 @@
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
 		B70000000000000000000001 /* SyncRecoveryPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicy.swift; path = ADE/Services/SyncRecoveryPolicy.swift; sourceTree = "<group>"; };
 		B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicyTests.swift; path = ADETests/SyncRecoveryPolicyTests.swift; sourceTree = "<group>"; };
+		B7000000000000000000001F /* PairedHostCredentialStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairedHostCredentialStateTests.swift; path = ADETests/PairedHostCredentialStateTests.swift; sourceTree = "<group>"; };
 		B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncAccountConnectRecoveryTests.swift; path = ADETests/SyncAccountConnectRecoveryTests.swift; sourceTree = "<group>"; };
 		B90000000000000000000001 /* SyncTransportSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTransportSelectionTests.swift; path = ADETests/SyncTransportSelectionTests.swift; sourceTree = "<group>"; };
 		B80000000000000000000001 /* SyncConnectionRace.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncConnectionRace.swift; path = ADE/Services/SyncConnectionRace.swift; sourceTree = "<group>"; };
@@ -568,6 +571,7 @@
 		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
 		E3A5721EB84321D201716BC3 /* ADETests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5A000000000000000000001 /* MobileTrustResetPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileTrustResetPolicy.swift; path = ADE/Services/MobileTrustResetPolicy.swift; sourceTree = "<group>"; };
+		C5A00000000000000000001F /* PairedHostCredentialState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairedHostCredentialState.swift; path = ADE/Services/PairedHostCredentialState.swift; sourceTree = "<group>"; };
 		C5A000000000000000000002 /* SSHBootstrapModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapModels.swift; path = ADE/Services/SSHBootstrapModels.swift; sourceTree = "<group>"; };
 		C5A000000000000000000003 /* SSHPrivateKeyParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPrivateKeyParser.swift; path = ADE/Services/SSHPrivateKeyParser.swift; sourceTree = "<group>"; };
 		C5A000000000000000000004 /* SSHGeneratedKey.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHGeneratedKey.swift; path = ADE/Services/SSHGeneratedKey.swift; sourceTree = "<group>"; };
@@ -928,6 +932,7 @@
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
+				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
 				C5A000000000000000000002 /* SSHBootstrapModels.swift */,
 				C5A000000000000000000003 /* SSHPrivateKeyParser.swift */,
 				C5A000000000000000000004 /* SSHGeneratedKey.swift */,
@@ -1088,6 +1093,7 @@
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
+				B7000000000000000000001F /* PairedHostCredentialStateTests.swift */,
 				B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */,
 				B90000000000000000000001 /* SyncTransportSelectionTests.swift */,
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
@@ -1411,6 +1417,7 @@
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
 				C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */,
+				C5B00000000000000000001F /* PairedHostCredentialState.swift in Sources */,
 				C5B000000000000000000002 /* SSHBootstrapModels.swift in Sources */,
 				C5B000000000000000000003 /* SSHPrivateKeyParser.swift in Sources */,
 				C5B000000000000000000004 /* SSHGeneratedKey.swift in Sources */,
@@ -1600,6 +1607,7 @@
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */,
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,
+				B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */,
 				B70000000000000000000099 /* SyncAccountConnectRecoveryTests.swift in Sources */,
 				B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */,
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,

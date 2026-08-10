@@ -18671,11 +18671,17 @@ final class SyncService: ObservableObject {
 
   /// True when this device is paired to a machine (active or last-saved
   /// profile). Push registration only runs while paired.
-  var hasPairedHost: Bool {
-    guard let profile = activeHostProfile ?? loadProfile(), profile.authKind == "paired" else {
-      return false
+  /// Whether a saved pairing exists and, separately, whether its credential can
+  /// still be read. A pairing whose credential is gone is not the same thing as
+  /// no pairing, and the difference is what the user is told.
+  var pairedHostCredentialState: PairedHostCredentialState {
+    syncPairedHostCredentialState(profile: activeHostProfile ?? loadProfile()) { profile in
+      tokenForProfile(profile)
     }
-    return tokenForProfile(profile) != nil
+  }
+
+  var hasPairedHost: Bool {
+    pairedHostCredentialState.isUsable
   }
 
   var pairingDeviceId: String { deviceId }

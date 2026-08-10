@@ -145,6 +145,7 @@ struct ContentView: View {
         accountLoading: accountService.phase == .loading,
         accountSignedIn: accountService.isSignedIn,
         hasPairedHost: syncService.hasPairedHost,
+        credentialUnreadable: syncService.pairedHostCredentialState == .credentialUnreadable,
         onContinue: {
           mobileLaunchAccess.grantAccess()
           if syncService.hasPairedHost, syncService.connectionState.isHostUnreachable {
