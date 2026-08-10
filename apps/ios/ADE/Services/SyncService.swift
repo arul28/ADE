@@ -18673,6 +18673,16 @@ final class SyncService: ObservableObject {
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
         removePendingOperation(operation)
+        // A settle taken offline is durably queued, and `holdBackstop` only
+        // re-stamps its deadline on reads — none of which happen while offline,
+        // so the last hold can be minutes stale by the time the connection is
+        // back. Without this the first reachable read would expire the overlay
+        // and flip the row to unsettled moments before this command's changeset
+        // lands. Deliberately on the SUCCESS path only: the retry cadence is
+        // shorter than `staleAfter`, so re-stamping per attempt would let a
+        // queue that never drains hold the overlay open forever — an unbounded
+        // lie in place of a two-second flicker.
+        pendingSessionSettleStates.holdBackstop(now: Date())
         // A drained chat creation produced a real session; drop the optimistic
         // "Pending sync" snapshot so the synced row takes over.
         if operation.kind == "command", isQueuedChatCreationAction(operation.action) {

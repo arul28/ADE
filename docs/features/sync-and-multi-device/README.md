@@ -414,7 +414,9 @@ still acks `ok` — a rejecting ack would stall the peer's outbound cursor and
 make it resend the same range forever. A pre-fix phone's dropped value is
 therefore local-only divergence, never host corruption, and it heals when
 `refreshWorkSessions` next rewrites the row from the host's `work.listSessions`
-payload.
+payload — a full replace within the active project's lanes, not a per-row merge,
+so the host's value always wins. Rows in a project the phone has not activated
+stay stale until it is.
 
 See [terminals and sessions](../terminals-and-sessions/README.md#gotchas) for
 the lifecycle side of this invariant.
