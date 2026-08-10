@@ -103,6 +103,7 @@ import type {
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_FOLDED_REPLAY_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -110,6 +111,7 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
+import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -8084,6 +8086,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ?? (history?.truncated === true && tailStartOffset > 0);
         }
         events = events.map(compactChatEventEnvelopeForSync);
+        // Fold streaming deltas into the message they belong to. Snapshot-only
+        // and capability-gated: the replay-buffer resume path below stays
+        // unfolded because its per-event `seq` monotonicity is load-bearing for
+        // the client's `seq <= lastSeq` drop rule, and it carries only a small
+        // recent gap. `sourceEvents` keeps the pre-fold envelopes so delivery
+        // bookkeeping still marks every collapsed delta as sent.
+        let sourceEvents: AgentChatEventEnvelope[] = events;
+        if (peer.metadata?.capabilities?.includes(SYNC_FOLDED_REPLAY_CAPABILITY)) {
+          const folded = foldChatEventEnvelopesForReplay(events);
+          if (folded.foldedAwayCount > 0) {
+            args.logger.debug("sync_host.chat_replay_folded", {
+              sessionId,
+              beforeCount: events.length,
+              afterCount: folded.events.length,
+              foldedAwayCount: folded.foldedAwayCount,
+            });
+          }
+          sourceEvents = folded.sources;
+          events = folded.events;
+        }
         peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
         peer.chatTranscriptScanOffsets.delete(sessionId);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
@@ -8097,7 +8119,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
-        for (const event of events) {
+        // Mark the PRE-fold envelopes: a collapsed delta still has its own
+        // delivery key, and leaving it unmarked lets the transcript pump
+        // re-send it as a separate event the client would render twice.
+        for (const event of sourceEvents) {
           markChatEventSent(peer, event);
         }
         hydrationSucceeded = true;

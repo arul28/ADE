@@ -884,9 +884,17 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    converge there. Overlapping wake-ups are coalesced, delayed path tasks carry
    a connection-generation guard, and an automatic reconnect never tears down
    an already-live connection. The socket declares the
-   `chunkedEnvelopes` capability, offers zlib-wrapped `deflate` in
-   `hello.compression`, and sets a 32 MiB `maximumMessageSize` receive
-   budget. The phone does not use either new wire behavior until the host
+   `chunkedEnvelopes`, `binaryEnvelopes`, and `foldedReplay` capabilities,
+   offers zlib-wrapped `deflate` in `hello.compression`, and sets a 32 MiB
+   `maximumMessageSize` receive budget. `binaryEnvelopes` lets the host send a
+   compressed payload as a binary frame instead of base64 inside JSON, which is
+   how the phone avoids the +33% the base64 tax costs on exactly the bytes
+   compression just removed; `SyncBinaryFrame` in `SyncService.swift` decodes
+   it, and a data frame without the `ADE1` magic still takes the text path.
+   iOS is the only peer that needs this, because `URLSessionWebSocketTask`
+   cannot negotiate permessage-deflate the way browser and Node peers do.
+   `foldedReplay` lets a `chat_subscribe` snapshot arrive with each message's
+   streaming deltas already collapsed into one event. The phone does not use either new wire behavior until the host
    confirms it in `hello_ok`, so an older host stays on the exact legacy path.
    Relay candidates first append `ready=2`. A new Worker sends `accepted/v2`
    before bridge setup and `ready/v2` only after both pipe and validated local

@@ -213,4 +213,62 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
     assembler.reset()
     XCTAssertNil(assembler.add(chunkId: "e", index: 1, total: 2, part: base64("2")))
   }
+  // MARK: - Binary envelope container
+
+  private func binaryFrame(header: [String: Any], body: Data) -> Data {
+    let headerJSON = try! JSONSerialization.data(withJSONObject: header)
+    var frame = Data("ADE1".utf8)
+    var length = UInt32(headerJSON.count).bigEndian
+    withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
+    frame.append(headerJSON)
+    frame.append(body)
+    return frame
+  }
+
+  func testDecodesBinaryContainerHeaderAndBody() {
+    let frame = binaryFrame(header: ["version": 1, "type": "chat_event"], body: Data("raw-bytes".utf8))
+    XCTAssertTrue(SyncBinaryFrame.isBinaryFrame(frame))
+    let decoded = SyncBinaryFrame.decode(frame)
+    XCTAssertEqual(decoded?.header["type"] as? String, "chat_event")
+    XCTAssertEqual(decoded?.body, Data("raw-bytes".utf8))
+  }
+
+  func testTextDeliveredAsDataIsNotTreatedAsBinary() {
+    // Transports do deliver text frames as data; only the magic marks a
+    // binary envelope, so a JSON frame must stay on the text path.
+    let json = Data("{\"version\":1,\"type\":\"chat_event\"}".utf8)
+    XCTAssertFalse(SyncBinaryFrame.isBinaryFrame(json))
+    XCTAssertNil(SyncBinaryFrame.decode(json))
+  }
+
+  func testRejectsTruncatedAndOversizedHeaderLengths() {
+    let frame = binaryFrame(header: ["version": 1, "type": "chat_event"], body: Data("body".utf8))
+    XCTAssertNil(SyncBinaryFrame.decode(frame.prefix(6)))
+
+    var lying = frame
+    var huge = UInt32(SyncBinaryFrame.maxHeaderBytes + 1).bigEndian
+    withUnsafeBytes(of: &huge) { bytes in
+      for (offset, byte) in bytes.enumerated() { lying[lying.startIndex + 4 + offset] = byte }
+    }
+    XCTAssertNil(SyncBinaryFrame.decode(lying))
+  }
+
+  func testDecodesFromASlicedDataBuffer() {
+    // URLSession hands back Data slices with a non-zero startIndex; absolute
+    // indexing into one is how a container decoder silently reads garbage.
+    let frame = binaryFrame(header: ["version": 1, "type": "chat_event"], body: Data("sliced".utf8))
+    let padded = Data([0xEE, 0xEE]) + frame
+    let slice = padded.dropFirst(2)
+    XCTAssertTrue(SyncBinaryFrame.isBinaryFrame(slice))
+    XCTAssertEqual(SyncBinaryFrame.decode(slice)?.body, Data("sliced".utf8))
+  }
+
+  func testBinaryChunkPartsReassembleIntoData() {
+    var assembler = SyncEnvelopeChunkAssembler()
+    XCTAssertNil(assembler.addBinary(chunkId: "bin", index: 0, total: 2, part: Data([0x01, 0x02])))
+    XCTAssertEqual(
+      assembler.addBinary(chunkId: "bin", index: 1, total: 2, part: Data([0x03])),
+      Data([0x01, 0x02, 0x03])
+    )
+  }
 }
