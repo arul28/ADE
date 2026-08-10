@@ -4,6 +4,8 @@
 to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
 and the race-matrix tests have been seen to pass.
 
+**Step 0 is implemented** — see amendment 6 in §3c-i for the host-side half.
+
 Settle currently writes a lifecycle column and stops nothing. A session filed as
 "done" can still own a background shell, a subagent fleet, or a Cursor cloud run
 — burning tokens and holding ports behind a row that has left every live-work
@@ -221,6 +223,32 @@ should go with it — it exists only to undo a write we will no longer make.
 Snooze columns (`snoozed_until`, `snoozed_at`, `woke_*`) are out of scope here;
 they are written by the same helper but are not guarded by a revision and have
 no teardown attached.
+
+**Amendment 6 — how the host treats a pre-fix client (implemented, step 0).**
+Removing the write from iOS fixes new builds and nothing else: a paired phone on
+an older build keeps writing `settled_at` into its replica, and a CRDT merge
+never reaches the caller a host-side check would guard. Waiting for clients to
+update is not a guarantee, so the host enforces it.
+
+`syncHostService` drops inbound `terminal_sessions` changes for `settled_at`,
+`settle_override`, and `settle_source` when the peer is a phone
+(`isMobileChangesetPeer`), alongside the existing `sync_cluster_state`
+brain-seizure filter. The drop is per-column and silent: the rest of the batch —
+including the phone's own snooze overlay, which it legitimately owns — applies
+normally, and the batch still acks `ok`, because a rejected ack would stall the
+peer's outbound cursor and make it resend the same range forever.
+
+It is scoped to phone peers deliberately. A paired **desktop** runs the same
+`sessionService` chokepoint, so its settle writes are host-decided too and must
+keep replicating; broadening the filter would silently stop settle propagating
+between two of a user's own machines.
+
+No capability negotiation is involved — no wire shape changes and the client
+needs to know nothing. The visible consequence for a pre-fix phone is that its
+optimistic value is now local-only divergence rather than authoritative
+corruption, and it self-heals: `refreshWorkSessions` rewrites local rows from the
+host's `work.listSessions` payload via `replaceTerminalSessions`. Host authority
+wins, which is the whole point of the precondition.
 
 ### 3c-ii. Where the revision column lives
 

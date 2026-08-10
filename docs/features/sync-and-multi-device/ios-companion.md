@@ -2030,6 +2030,22 @@ The iOS pieces:
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
   callers. Mobile has no local write path for lifecycle, so these commands are
   the mechanism, and the connect-time descriptor list gates the affordances.
+- **The settle columns are host-authoritative and the phone never writes them.**
+  `settled_at`, `settle_override`, and `settle_source` are decided by the host's
+  `sessionService`, which is the only place that can weigh a settle against live
+  work. `terminal_sessions` is a CRR table, so a local optimistic write on the
+  phone replicates upstream carrying no host lifecycle revision — it can win a
+  merge against a host that *rejected* the settle and file a live session as
+  done. `Database.updateSessionSnoozeOverlay` therefore cannot write them at all;
+  it is scoped to the snooze overlay, which keeps its optimistic write plus
+  rollback because those columns guard no host decision. Instant feedback for
+  settle comes from `PendingSessionSettleStates` — a local, non-persisted overlay
+  applied when session rows are read, resolved when the host's changeset confirms
+  it, when the command fails, or by a bounded staleness backstop. The host
+  enforces the same rule against phones on older builds by dropping those columns
+  from inbound phone changesets (`syncHostService`), and such a phone self-heals
+  on the next `refreshWorkSessions`. See
+  [settle-teardown design §3c-i](../terminals-and-sessions/settle-teardown-design.md).
 - `apps/ios/ADE/Views/Work/WorkSessionCanonicalState.swift` is the Swift mirror
   of the shared derivation, including the settle-override tier and
   `isSessionFiledAsSnoozed`. It also owns the row's status vocabulary:

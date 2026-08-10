@@ -215,7 +215,11 @@ and in tests.
   settle stop work needs a synchronous lifecycle revision that teardown can be
   serialized against; it is not a wrapper around the existing write. Archive is
   the one lifecycle path that does stop processes — see
-  `laneService.archive`, where the ordering is load-bearing.
+  `laneService.archive`, where the ordering is load-bearing. The approved plan
+  for making settle stop work is
+  [settle-teardown-design.md](settle-teardown-design.md); its step 0
+  precondition — `settled_at` becoming host-authoritative, so no replica can
+  defeat the revision guard by CRDT merge — has landed.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native
@@ -1848,6 +1852,18 @@ runtime and agent chat runtime both layer the same identity envs
 - **Process exit is not settlement.** A clean exit-0 row remains ended until an
   agent/user declaration or the enabled PR-merge policy settles it. New
   lifecycle surfaces must not infer task completion from process mechanics.
+- **`settled_at` / `settle_override` / `settle_source` are host-authoritative —
+  a controller must never write them into its replica.** `terminal_sessions` is
+  a CRR table, so such a write replicates upstream carrying no host lifecycle
+  revision, and can win a merge against a host that *rejected* the settle. That
+  defeats the guard by merge rather than by caller, which no amount of host-side
+  checking closes. iOS shows a local pending overlay instead
+  (`PendingSessionSettleStates.swift`), and `syncHostService` drops those columns
+  from inbound **phone** changesets so an older build cannot bypass the rule. The
+  filter is deliberately not applied to desktop peers: they run the same
+  `sessionService` chokepoint, so their settle writes are host-decided and must
+  keep replicating. The snooze columns are exempt — the phone owns its optimistic
+  write there because no host decision is at stake.
 - **Settlement is not a pending-input response.** Never restore the old
   renderer sequence of `respondToInput` then settle. A provider decline may
   resume work, Codex plan declines may stage a revision, and a stale persisted
