@@ -682,6 +682,25 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
+  it("keeps an exact file match available after trailing prose", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/foo.ts about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/foo.ts"));
+    expect(await screen.findByText("foo.ts")).toBeTruthy();
+  });
+
   it("keeps spaced chat mentions searchable and displays the chat title in the chip", async () => {
     const onSearchMentions = vi.fn().mockResolvedValue([{
       kind: "chat" as const,

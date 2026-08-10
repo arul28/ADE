@@ -162,6 +162,9 @@ struct WorkComposerTriggerMatch: Equatable {
 enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
   private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
+  private static let fileQueryRegex = try! NSRegularExpression(
+    pattern: "^((?:.+?\\.[A-Za-z0-9_-]+)|(?:\\S+[\\\\/]\\S+))(?:[ \\t]+.*)?$"
+  )
 
   static func detect(in text: NSString, cursor: Int) -> WorkComposerTriggerMatch? {
     guard cursor >= 0, cursor <= text.length else { return nil }
@@ -193,6 +196,19 @@ enum WorkComposerTriggerDetector {
     default:
       return nil
     }
+  }
+
+  /// Keep path-like file labels searchable when the user continues ordinary
+  /// prose, while leaving multiword chat-name queries untouched.
+  static func fileSearchQuery(for query: String) -> String {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    let nsQuery = trimmed as NSString
+    let range = NSRange(location: 0, length: nsQuery.length)
+    guard let match = fileQueryRegex.firstMatch(in: trimmed, range: range) else { return trimmed }
+    let labelRange = match.range(at: 1)
+    guard labelRange.location != NSNotFound else { return trimmed }
+    return nsQuery.substring(with: labelRange)
   }
 
   /// Keep prose typed after a selected @ item outside the replacement range.
@@ -333,7 +349,7 @@ final class WorkComposerSuggestionController: ObservableObject {
         if let match = activeMatch, match.kind == .at {
           // An @ trigger typed against the previous lane re-fetches against
           // the new one instead of keeping the superseded results.
-          scheduleFileFetch(query: match.query)
+          scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
         } else if isLoading {
           isLoading = false
         }
@@ -401,7 +417,7 @@ final class WorkComposerSuggestionController: ObservableObject {
       isLoading = false
       suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
     case .at:
-      scheduleFileFetch(query: match.query)
+      scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
     }
   }
 

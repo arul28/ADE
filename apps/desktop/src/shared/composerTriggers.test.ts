@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
@@ -58,6 +59,12 @@ describe("detectComposerTrigger", () => {
     // it for searching, so cached suggestions remain visible while the next
     // word is being typed.
     expect(detectComposerTrigger("@a ", 3)).toEqual({ type: "at", query: "a ", start: 0 });
+  });
+
+  it("narrows path-like file queries before trailing prose", () => {
+    expect(composerFileSearchQuery("src/foo.ts about this")).toBe("src/foo.ts");
+    expect(composerFileSearchQuery("src/my file.ts about this")).toBe("src/my file.ts");
+    expect(composerFileSearchQuery("a b c")).toBe("a b c");
   });
 
   it("does not let an at query cross a newline or another at sign", () => {

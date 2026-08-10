@@ -96,6 +96,21 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  func testFileSearchQueryPreservesPathBeforeTrailingProse() {
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/foo.ts about this"),
+      "src/foo.ts"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/my file.ts about this"),
+      "src/my file.ts"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "a b c"),
+      "a b c"
+    )
+  }
+
   func testEmailDoesNotTrigger() {
     // The `@` is glued to a preceding non-space char, so emails never trigger.
     XCTAssertNil(detect("ping foo@bar"))

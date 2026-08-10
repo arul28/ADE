@@ -15,6 +15,7 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
@@ -7341,6 +7342,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     let cancelled = false;
     const query = range.query.trim().toLowerCase();
+    const fileQuery = composerFileSearchQuery(range.query).toLowerCase();
     const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {
       if (!query) return true;
       const label = suggestion.label.toLowerCase();
@@ -7391,16 +7393,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // (shallowest paths first) instead of returning nothing, matching the
         // desktop composer's `@` behavior. The cache keys on the query string,
         // so "" caches like any typed query.
-        const filesPromise = cache.filesByQuery.get(query)
-          ? Promise.resolve(cache.filesByQuery.get(query)!)
+        const filesPromise = cache.filesByQuery.get(fileQuery)
+          ? Promise.resolve(cache.filesByQuery.get(fileQuery)!)
           : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
             workspaceId: laneId,
-            query,
+            query: fileQuery,
             limit: MENTION_FILE_ROWS,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];
-              cache.filesByQuery.set(query, safeFiles);
+              cache.filesByQuery.set(fileQuery, safeFiles);
               return safeFiles;
             })
             .catch(() => []);
