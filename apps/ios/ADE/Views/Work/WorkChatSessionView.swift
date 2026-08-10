@@ -92,6 +92,10 @@ func workChatShouldContinueAutomaticOlderHistory(
 struct WorkChatPrependAnchor {
   let rowId: String
   let rowY: CGFloat
+  /// The reader's offset when the prepend was armed. Not what the correction is
+  /// applied to — it is how the reader's own scrolling is separated from the
+  /// insertion, since the probed row moves by both.
+  let offsetY: CGFloat
   /// Layout passes to wait for before giving up, so an abandoned prepend cannot
   /// leave the anchor armed to fire on an unrelated later change.
   var remainingAttempts: Int
@@ -719,6 +723,7 @@ struct WorkChatSessionView: View {
     scrollMetrics.prependAnchor = WorkChatPrependAnchor(
       rowId: previousFirstId,
       rowY: previousFirstRowY,
+      offsetY: scrollMetrics.offsetY,
       remainingAttempts: workChatPrependAnchorAttempts
     )
   }
@@ -732,9 +737,16 @@ struct WorkChatSessionView: View {
   func restorePrependAnchorIfNeeded(probed: WorkChatPrependProbeSample?) {
     guard var anchor = scrollMetrics.prependAnchor else { return }
 
-    // Only a measurement of the anchored row itself can say how far it moved.
-    let displacement = probed?.rowId == anchor.rowId ? (probed?.y ?? anchor.rowY) - anchor.rowY : 0
-    guard displacement > 0.5 else {
+    // The anchored row moves by the height inserted above it *minus* whatever
+    // the reader scrolled in the meantime, because scrolling moves the row up
+    // the screen too. Adding the offset change back isolates the insertion:
+    // with an inserted height H and a user scroll D, the row moves H - D and the
+    // offset moves D, so the sum is H either way — and a pure scroll with no
+    // prepend sums to zero and correctly restores nothing.
+    let rowShift = probed?.rowId == anchor.rowId ? (probed?.y ?? anchor.rowY) - anchor.rowY : 0
+    let scrolled = scrollMetrics.offsetY - anchor.offsetY
+    let insertedHeight = rowShift + scrolled
+    guard insertedHeight > 0.5 else {
       anchor.remainingAttempts -= 1
       scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
       return
@@ -748,12 +760,9 @@ struct WorkChatSessionView: View {
     var transaction = Transaction()
     transaction.disablesAnimations = true
     withTransaction(transaction) {
-      // Corrected from the *live* offset, not the captured one. The reader can
-      // keep scrolling between arming and the layout pass that measures the
-      // displacement; correcting from an offset captured at arm time would snap
-      // them back to where they were when the page started loading. Only the
-      // inserted height needs undoing.
-      scrollPosition.scrollTo(y: scrollMetrics.offsetY + displacement)
+      // Applied to the live offset so a scroll during the prepend is kept;
+      // only the inserted height is undone.
+      scrollPosition.scrollTo(y: scrollMetrics.offsetY + insertedHeight)
     }
   }
 
