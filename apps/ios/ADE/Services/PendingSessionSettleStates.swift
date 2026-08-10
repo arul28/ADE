@@ -226,6 +226,16 @@ struct PendingSessionSettleStates: Equatable {
     intents[sessionId]?.startedAtUptime = uptime
   }
 
+  /// A durably-queued command has now been replayed and answered. Until this,
+  /// the `queued` sentinel is not an answer — the host has not seen the command
+  /// at all — so the intent stays outstanding rather than starting a window it
+  /// could expire inside while the replay is still running.
+  mutating func markAnswered(for sessionId: String, uptime: TimeInterval) {
+    guard intents[sessionId] != nil else { return }
+    intents[sessionId]?.awaitingResponse = false
+    intents[sessionId]?.startedAtUptime = uptime
+  }
+
   /// Forget everything in flight — used when the ground the overlay refers to
   /// moves, e.g. a project or host switch, where the session ids it holds no
   /// longer describe what is on screen.

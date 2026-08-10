@@ -369,6 +369,27 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertNil(states["session-1"], "once answered, the window applies normally")
   }
 
+  /// The `queued` sentinel is durable acceptance by this device, not an answer
+  /// from the host. Treating it as answered would start a window that can expire
+  /// while the reconnect replay — with its own longer timeout — is still running.
+  func testAQueuedCommandStaysOutstandingUntilTheReplayAnswers() {
+    var states = PendingSessionSettleStates()
+    states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+
+    // Queued: no `restartBackstop`. Far past the window, it must survive.
+    states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter * 5))
+    XCTAssertNotNil(states["session-1"])
+
+    let replayedAt = addUptime(now, PendingSessionSettleStates.staleAfter * 5)
+    states.markAnswered(for: "session-1", uptime: replayedAt)
+
+    states.prune(against: [session()], uptime: addUptime(replayedAt, 1))
+    XCTAssertNotNil(states["session-1"])
+
+    states.prune(against: [session()], uptime: addUptime(replayedAt, PendingSessionSettleStates.staleAfter))
+    XCTAssertNil(states["session-1"])
+  }
+
   func testASlowCommandCannotExtendAnIntentTheUserReplaced() {
     var states = PendingSessionSettleStates()
     let stale = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)

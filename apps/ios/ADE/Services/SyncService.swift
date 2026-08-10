@@ -9420,7 +9420,7 @@ final class SyncService: ObservableObject {
     // `lifecycleCall` call sites that pass no `applied` predicate.
     resultShape: SessionLifecycleResultShape? = .envelope,
     rollback: @escaping () -> Void
-  ) async throws {
+  ) async throws -> Bool {
     let scope = chatCommandScope(for: trimmed)
     let result: Any
     do {
@@ -9444,6 +9444,14 @@ final class SyncService: ObservableObject {
       rollback()
       throw sessionLifecycleNotAppliedError(action)
     }
+    // `{queued: true}` is durable acceptance by THIS device, not an answer from
+    // the host — it has not seen the command yet.
+    return !syncCommandResultWasQueued(result)
+  }
+
+  private func syncCommandResultWasQueued(_ result: Any) -> Bool {
+    guard let record = result as? [String: Any] else { return false }
+    return record["ok"] == nil && record["queued"] as? Bool == true
   }
 
   /// Settle-family command: shows the change through the local overlay, which is
@@ -9458,16 +9466,19 @@ final class SyncService: ObservableObject {
     guard let trimmed = normalizedLifecycleSessionId(sessionId) else { return }
     guard supportsRemoteAction(action) else { throw sessionLifecycleUnsupportedError(action) }
     let token = beginPendingSessionSettle(intent, for: trimmed)
-    try await sendSessionLifecycleCommand(
+    let answered = try await sendSessionLifecycleCommand(
       sessionId: trimmed,
       action: action,
       args: args,
       resultShape: resultShape,
       rollback: { [weak self] in self?.clearPendingSessionSettle(trimmed, token: token) }
     )
-    // Answered. `staleAfter` bounds the wait for the CHANGESET, and the request
-    // itself may run to a longer timeout than that — starting the countdown at
-    // send would expire a command that is still perfectly valid.
+    // Only a real answer starts the window. `staleAfter` bounds the wait for the
+    // CHANGESET, and the request itself may run to a longer timeout than that,
+    // so counting from send would expire a command that is still valid. A
+    // durably-queued command has not been answered at all — it stays
+    // outstanding until `flushPendingOperations` replays it.
+    guard answered else { return }
     pendingSessionSettleStates.restartBackstop(
       for: trimmed,
       token: token,
@@ -9511,7 +9522,7 @@ final class SyncService: ObservableObject {
       wokeReason: wokeReason
     )
 
-    try await sendSessionLifecycleCommand(
+    _ = try await sendSessionLifecycleCommand(
       sessionId: trimmed,
       action: action,
       args: args,
@@ -9530,6 +9541,18 @@ final class SyncService: ObservableObject {
         )
       }
     )
+  }
+
+  /// Session ids a replayed settle-family command applies to, so the overlay
+  /// can tell which outstanding intents that replay just answered.
+  private func queuedLifecycleSessionIds(action: String, args: [String: Any]) -> [String] {
+    guard action.hasPrefix("session.") else { return [] }
+    var ids: [String] = []
+    if let single = args["sessionId"] as? String { ids.append(single) }
+    if let many = args["sessionIds"] as? [Any] {
+      ids.append(contentsOf: many.compactMap { $0 as? String })
+    }
+    return ids.compactMap(normalizedLifecycleSessionId)
   }
 
   private func normalizedLifecycleSessionId(_ sessionId: String) -> String? {
@@ -18731,7 +18754,14 @@ final class SyncService: ObservableObject {
         // shorter than `staleAfter`, so re-stamping per attempt would let a
         // queue that never drains hold the overlay open forever — an unbounded
         // lie in place of a two-second flicker.
+        for sessionId in queuedLifecycleSessionIds(action: operation.action, args: args) {
+          pendingSessionSettleStates.markAnswered(
+            for: sessionId,
+            uptime: ProcessInfo.processInfo.systemUptime
+          )
+        }
         pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
+        schedulePendingSessionSettleBackstopSweep()
         // A drained chat creation produced a real session; drop the optimistic
         // "Pending sync" snapshot so the synced row takes over.
         if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
