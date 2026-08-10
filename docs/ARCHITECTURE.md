@@ -1247,11 +1247,94 @@ Related trust-boundary docs: [Computer-use artifact broker](./features/computer-
 ### 9.1 Strategy
 
 - ADE **shells out** to the system `git` binary (not isomorphic-git). Rationale: full feature parity, hook compatibility, native credential handling, performance.
-- All commands go through `runGit` / `runGitOrThrow` in `apps/desktop/src/main/services/git/git.ts` (timeout support, structured output parsing).
+- All commands go through `runGit` / `runGitOrThrow` in `apps/desktop/src/main/services/git/git.ts` (timeout support, structured output parsing, index-lock retry). `runGit` is also where the shared concurrency ceiling and cache invalidation live — see [Process budget](#92-process-budget-concurrency-ceiling-and-the-repo-scoped-cache).
 - Executable discovery reuses `ai/cliExecutableResolver.ts` to inspect PATH and known installation directories. On macOS, ADE prefers an independently installed Git over Apple's `/usr/bin/git` and probes the login shell before accepting `/usr/bin/git`; this keeps project opening usable when Apple's Git is blocked by an unaccepted Xcode license. If Apple's Git is the only available option, the surfaced error explains that accepting the license is a Git prerequisite, not an iOS Simulator or code-signing requirement, and points to installing Git separately as the alternative.
 - High-level ops in `gitOperationsService.ts` — wrap every mutation in `runLaneOperation()`: resolve lane, capture pre-HEAD, record operation, execute, capture post-HEAD, finalize record, fire `onHeadChanged` if needed.
 
-### 9.2 Worktree-per-lane isolation
+### 9.2 Process budget: concurrency ceiling and the repo-scoped cache
+
+Because ADE shells out, every git question is a process spawn, and ADE asks a
+lot of them at once: a lane status refresh fans out over lanes with uncapped
+`Promise.all` inside several services that do not know about each other. Two
+shared mechanisms in `services/git/git.ts` bound that — a global concurrency
+ceiling and a repo-scoped answer cache — and both sit inside `runGit`, so a
+caller gets them without opting in.
+
+**Concurrency ceiling.** `runGit` holds a single process-wide semaphore capped
+at `MAX_CONCURRENT_GIT_PROCESSES = 12`. One global cap rather than a limit per
+call site, because it is precisely the mutual ignorance of the fan-outs that
+produced the peak — concurrency scaled linearly with lane count. Spawn cost is
+10–27 ms on macOS and 35–100 ms on Windows, so queueing behind a modest cap
+costs no meaningful wall time while removing the thundering-herd tail.
+**Mutating commands bypass the queue on purpose.** They are user-initiated, few,
+and several run with multi-minute timeouts (`rebase --continue` allows 300 s),
+so making a Commit wait behind a bulk conflict assessment would be a priority
+inversion — and the brain is one gate for every project on the machine.
+`isRefAffectingGitCommand` (in `gitRepoCache.ts`) is what draws that line; it
+steps over git's own global options to find the verb, and treats read-only moods
+of writing verbs (`config --get`, `remote get-url`, `worktree list`,
+`branch --list`) as reads.
+
+**Repo-scoped cache** (`services/git/gitRepoCache.ts`). Entries are keyed by the
+repository's **common git dir**, not by worktree — that is the whole point.
+Every lane worktree of one repo resolves to the same key, so a repo-wide
+question asked once per lane collapses to one subprocess; keying per worktree
+would leave a 14-lane repo holding 14 copies of one answer and buy nothing.
+`gitCommonDirFor(cwd)` resolves the key with bare `git rev-parse
+--git-common-dir` (not `--path-format=absolute`, which needs git 2.31) and
+memoizes it for the process lifetime, since a worktree's common dir is fixed at
+creation; a failed probe is remembered for 60 s and then retried, so one
+transient timeout cannot disable the repo's cache permanently. An unresolvable
+path yields `""`, which means "do not cache" and passes straight through.
+
+Two freshness classes, because the questions differ in kind:
+
+| Class | TTL | Used for |
+|-------|-----|----------|
+| `volatile` | 1.5 s | Resolved ref SHAs — long enough to collapse the duplicates inside one refresh, short enough that a commit made outside ADE surfaces almost immediately. Stricter than the 10 s lane-list cache it feeds. |
+| `stable` | 5 min | Config-shaped answers: `origin` URL, committer identity. These change when someone edits git config, which ADE does not do on a poll loop. |
+
+Failures are cached too — rediscovering "this repo has no `origin`" costs a
+subprocess exactly like a successful lookup — but a failed result is always
+pinned on the **volatile** window regardless of its declared class, because an
+absent answer is the one most likely to be fixed out of band. Concurrent misses
+for one key share a single load, which is what actually collapses the fan-out: a
+plain TTL check would let all 14 parallel askers through before the first
+resolved.
+
+`runGitRepoCached(args, opts, { key, cacheClass })` is the read path. The key
+describes the *question*, not the caller, so two services asking the same thing
+collide deliberately: `getHeadSha` and `conflictService.readHeadSha` both use
+`rev-parse:<cwd>:<ref>`, which is how a lane's two independent HEAD reads became
+one. `gitOperationsService.getUserIdentity` (`config:user.name` /
+`config:user.email`) and `getOriginRemote` (`remote-url:origin`) sit on the
+stable class.
+
+**Invalidation lives in `runGit`, and fires on failure too.** After any
+ref-affecting verb, `runGit` drops that repository's entries — whether the
+command succeeded or not, because a rejected push may still have moved a
+remote-tracking ref and an aborted rebase leaves HEAD moved. Putting it there
+rather than at each mutation call site is what makes the cache safe to add:
+nothing has to remember, including code written later and code that shells out
+through a path nobody mapped. When the cwd's repo has not been resolved yet the
+invalidation drops *every* repository — over-invalidating costs a re-read, and
+guessing the other way serves a stale answer. Invalidation is epoch-guarded and
+clears in-flight loads as well as entries, so a read that started before a
+mutation can still answer the caller that asked for it but can neither pin its
+result nor be joined by a later caller.
+
+**Git run outside ADE does not invalidate anything.** A user committing in an
+ADE terminal, or any tool that does not route through `runGit`, leaves the cache
+untouched — the TTL is the only defense there, which is why the volatile window
+is 1.5 s rather than something more generous.
+
+Measured on a real 14-lane ADE checkout, one full lane status refresh went from
+161 git processes at 32 peak concurrency (~676 ms) to 133 at 12 (~560 ms):
+`git rev-parse main` at the project root went from 14 spawns to 1, and each
+lane's duplicated `rev-parse HEAD` went from 2 to 1. Lane data was verified
+byte-identical against a cache-off control run.
+
+### 9.3 Worktree-per-lane isolation
 
 Each non-primary lane maps to a dedicated worktree:
 
@@ -1271,14 +1354,14 @@ Worktree lifecycle: create (60s timeout), archive (DB status only, worktree rema
 
 Lane rows are not the authority on which worktrees exist — git is. Every `lanes.list` reconciles the two from a single `git worktree list`, inserting a lane for any worktree of this repository that no row claims and deleting the row for any non-primary, non-archived lane whose worktree is gone from both git and disk. There is no register or attach step. The reconcile is scoped by ownership (`git rev-parse --git-common-dir`): a project root that is itself a linked worktree sees the whole repository in that listing and therefore adopts and reaps only under its own `.ade/worktrees`. All of it runs in realpath space, because git resolves symlinks and ADE's stored paths do not. See [Lanes › Every git worktree is a lane](./features/lanes/README.md#every-git-worktree-is-a-lane).
 
-### 9.3 Stack graph
+### 9.4 Stack graph
 
 - Lanes have `parent_lane_id` (self-FK on `lanes`). Stacks are parent/child chains.
 - Stack operations: rebase propagation, base-ref resolution (`shared/laneBaseResolution.ts`).
 - `autoRebaseService.ts` + `rebaseSuggestionService.ts` — automatic rebase proposals when parent moves; user can accept/defer/dismiss.
 - `computeLaneStatus()` returns `{ dirty, ahead, behind }` on demand, no caching. Status derivation uses `git status --porcelain=v2 --branch` and `git rev-list --left-right --count`. The `--branch` header (`# branch.head`) carries the branch HEAD is actually on, so the same call that computes dirty state also yields `headBranchRef` — which is what makes HEAD-vs-`lanes.branch_ref` drift detection (`services/lanes/laneBranchDrift.ts`) cost no extra process spawn and need no timer of its own. Ignored files are still not listed (no `--ignored`), so dirty semantics are identical to the porcelain v1 form this replaced. See [Lanes › Branch drift](./features/lanes/README.md#branch-drift).
 
-### 9.4 Queue + conflict simulation
+### 9.5 Queue + conflict simulation
 
 - **GitHub stacked PRs** (`githubPrStackService.ts`) — repository-scoped stack reconciliation and membership snapshots.
 - **Conflict prediction** — `conflictService.ts` uses `runGitMergeTree()`:
@@ -1289,14 +1372,14 @@ Lane rows are not the authority on which worktrees exist — git is. Every `lane
 - Triggered on debounced lane/head changes via the job engine; periodic prediction is off by default in dev stability mode.
 - Result: risk matrix surfaced on Graph + Conflicts pages, confidence-scored proposals (`high`/`medium`/`low`) with apply/discard UI.
 
-### 9.5 Safety
+### 9.6 Safety
 
 - `ensureRelativeRepoPath()` rejects empty, null-byte, absolute, and traversal paths.
 - Force push uses `--force-with-lease`, never `--force`.
 - Branch-protection support on primary lane.
 - Destructive ops (discard, hard reset) require UI confirmation.
 
-### 9.6 Open-PR lookup for a lane branch
+### 9.7 Open-PR lookup for a lane branch
 
 `gh pr list --head <branch>` matches on branch **name only**, across every fork of the repository. A PR opened from somebody else's fork that happens to use the same branch name is returned by that query and, unfiltered, attaches itself to the lane. Filtering the result by head repository is therefore a correctness invariant, not an optimization.
 

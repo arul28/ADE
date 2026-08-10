@@ -4,10 +4,17 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { terminateProcessTree } from "../shared/processExecution";
+import { pathKey } from "../shared/pathCompare";
 import {
   resolveExecutableCandidatesFromKnownLocations,
   type ResolvedExecutable,
 } from "../ai/cliExecutableResolver";
+import {
+  cachedGitRepoValue,
+  invalidateGitRepoCache,
+  isRefAffectingGitCommand,
+  type GitRepoCacheClass,
+} from "./gitRepoCache";
 
 // Electron apps launched from Finder/Dock can have a stripped PATH that misses
 // where the user actually installed git (e.g. /opt/homebrew/bin on Apple
@@ -316,12 +323,166 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   });
 }
 
-export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
-  const first = await runGitOnce(args, opts);
-  if (!(await shouldRetryAfterIndexLock(first))) {
-    return first;
+/**
+ * Global ceiling on concurrent `git` processes.
+ *
+ * Nothing bounded this before. A lane status refresh fans out with an uncapped
+ * `Promise.all` per service, and on a 14-lane checkout that peaked at 32
+ * simultaneous git processes — linear in lane count, so 40 lanes would reach
+ * ~90. Measured spawn costs on that repo are 10-27 ms each, so serializing
+ * behind a modest cap costs no meaningful wall time while removing the
+ * thundering-herd tail. It matters much more on Windows, where process creation
+ * runs 35-100 ms.
+ *
+ * One shared cap rather than a limit per call site: the fan-outs do not know
+ * about each other, which is exactly how 32 happened.
+ */
+const MAX_CONCURRENT_GIT_PROCESSES = 12;
+let runningGitProcesses = 0;
+const gitProcessQueue: Array<() => void> = [];
+
+async function acquireGitSlot(): Promise<void> {
+  if (runningGitProcesses < MAX_CONCURRENT_GIT_PROCESSES) {
+    runningGitProcesses += 1;
+    return;
   }
-  return await runGitOnce(args, opts);
+  // The waiter is resolved by releaseGitSlot, which hands its slot over rather
+  // than freeing it — so the count stays accurate and never dips below the
+  // truth in the window between wake-up and resume. Decrementing first let a
+  // caller arriving in that window see an undercount and overshoot the cap.
+  await new Promise<void>((resolve) => { gitProcessQueue.push(resolve); });
+}
+
+function releaseGitSlot(): void {
+  const next = gitProcessQueue.shift();
+  if (next) next();
+  else runningGitProcesses -= 1;
+}
+
+export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
+  // Mutations skip the queue. The cap exists to bound read fan-out — one
+  // refresh issues ~130 reads across services that do not know about each
+  // other — and mutations are neither numerous nor interchangeable with it:
+  // they are user-initiated, and several run with multi-minute timeouts
+  // (`rebase --continue` allows 300s). Queueing a Commit or Push behind a bulk
+  // conflict assessment would be a priority inversion the old unbounded code
+  // did not have, and it is one gate for every project in a shared brain.
+  const mutating = isRefAffectingGitCommand(args);
+  if (!mutating) await acquireGitSlot();
+  let result: GitRunResult;
+  try {
+    result = await runGitOnce(args, opts);
+    if (await shouldRetryAfterIndexLock(result)) {
+      result = await runGitOnce(args, opts);
+    }
+  } finally {
+    if (!mutating) releaseGitSlot();
+  }
+  // Invalidate on failure as well as success. A rejected push can still have
+  // updated a remote-tracking ref, and an aborted rebase leaves HEAD moved — a
+  // cache that only drops on success would keep serving the pre-command answer
+  // for exactly the commands most likely to have changed it.
+  //
+  // Invalidating here rather than at each mutation call site is what makes the
+  // cache safe to add: nothing has to remember, including code written later
+  // and code that shells out through a path nobody mapped.
+  if (mutating) {
+    // `undefined` when this cwd's repo has not been resolved yet, which drops
+    // every repository. Over-invalidating costs a re-read; guessing wrong the
+    // other way serves a stale answer.
+    invalidateGitRepoCache(knownGitCommonDir(opts.cwd));
+  }
+  return result;
+}
+
+const gitCommonDirByCwd = new Map<string, string>();
+const gitCommonDirRetryAtByCwd = new Map<string, number>();
+const gitCommonDirInFlight = new Map<string, Promise<string>>();
+
+/**
+ * How long a failed common-dir probe is remembered.
+ *
+ * Neither extreme works. Memoizing a failure forever means one transient
+ * timeout silently disables this repo's cache for the process lifetime.
+ * Remembering nothing means a repo that genuinely cannot answer re-probes on
+ * every single cached read *and* misses the cache — strictly worse than not
+ * caching at all. A short window gives up on the repo briefly, then retries.
+ */
+const GIT_COMMON_DIR_RETRY_MS = 60_000;
+
+/** The memoized common git dir for `cwd`, or undefined if not resolved yet. */
+export function knownGitCommonDir(cwd: string): string | undefined {
+  return gitCommonDirByCwd.get(pathKey(cwd));
+}
+
+/**
+ * Absolute common git dir for `cwd` — the directory every lane worktree of one
+ * repository shares, and therefore the key everything repo-scoped hangs off.
+ *
+ * Memoized for the process lifetime on success: a worktree's common dir is
+ * fixed when the worktree is created. Returns `""` when the path is not a git
+ * repository, which callers treat as "do not cache".
+ *
+ * Deliberately not `--path-format=absolute`, which needs git 2.31 (2021). Bare
+ * `--git-common-dir` answers on every version and may return a path relative to
+ * `cwd`, so resolve it here.
+ */
+export async function gitCommonDirFor(cwd: string): Promise<string> {
+  const cacheKey = pathKey(cwd);
+  const memo = gitCommonDirByCwd.get(cacheKey);
+  if (memo !== undefined) return memo;
+  const retryAt = gitCommonDirRetryAtByCwd.get(cacheKey);
+  if (retryAt !== undefined && retryAt > Date.now()) return "";
+  const existing = gitCommonDirInFlight.get(cacheKey);
+  if (existing) return await existing;
+
+  const request = (async () => {
+    const res = await runGit(["rev-parse", "--git-common-dir"], {
+      cwd,
+      timeoutMs: 8_000,
+      maxOutputBytes: 8 * 1024,
+    });
+    const raw = res.exitCode === 0 ? res.stdout.trim() : "";
+    if (!raw) {
+      gitCommonDirRetryAtByCwd.set(cacheKey, Date.now() + GIT_COMMON_DIR_RETRY_MS);
+      return "";
+    }
+    const resolved = path.resolve(cwd, raw);
+    gitCommonDirByCwd.set(cacheKey, resolved);
+    gitCommonDirRetryAtByCwd.delete(cacheKey);
+    return resolved;
+  })().finally(() => {
+    if (gitCommonDirInFlight.get(cacheKey) === request) gitCommonDirInFlight.delete(cacheKey);
+  });
+  gitCommonDirInFlight.set(cacheKey, request);
+  return await request;
+}
+
+/**
+ * Run a read-only git command whose answer is the same for every worktree of
+ * the repository, serving it from the repo-scoped cache when it is warm.
+ *
+ * `key` must describe the question, not the caller — two services asking for
+ * the same ref's SHA should collide on purpose.
+ */
+export async function runGitRepoCached(
+  args: string[],
+  opts: GitRunOptions,
+  cache: { key: string; cacheClass: GitRepoCacheClass },
+): Promise<GitRunResult> {
+  const commonGitDir = await gitCommonDirFor(opts.cwd);
+  return await cachedGitRepoValue<GitRunResult>({
+    commonGitDir,
+    key: cache.key,
+    cacheClass: cache.cacheClass,
+    load: () => runGit(args, opts),
+  });
+}
+
+export function resetGitCommonDirCacheForTests(): void {
+  gitCommonDirByCwd.clear();
+  gitCommonDirRetryAtByCwd.clear();
+  gitCommonDirInFlight.clear();
 }
 
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
@@ -343,7 +504,13 @@ export function formatGitExecutionError(raw: string): string {
  * Shared across gitOperationsService, laneService, autoRebaseService, and rebaseSuggestionService.
  */
 export async function getHeadSha(worktreePath: string): Promise<string | null> {
-  const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
+  // Shares the repo cache — and the key shape — with conflictService's own HEAD
+  // read, which is how the two spawns every lane used to pay become one.
+  const res = await runGitRepoCached(
+    ["rev-parse", "HEAD"],
+    { cwd: worktreePath, timeoutMs: 8_000 },
+    { key: `rev-parse:${worktreePath}:HEAD`, cacheClass: "volatile" },
+  );
   if (res.exitCode !== 0) return null;
   const sha = res.stdout.trim();
   return sha.length ? sha : null;

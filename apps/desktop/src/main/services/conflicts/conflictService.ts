@@ -74,7 +74,14 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
-import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import {
+  formatGitExecutionError,
+  normalizeConflictType,
+  runGit,
+  runGitMergeTree,
+  runGitOrThrow,
+  runGitRepoCached,
+} from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
@@ -257,8 +264,30 @@ function extractOverlapFiles(row: ConflictPredictionRow | undefined): string[] {
   ]);
 }
 
+/**
+ * Resolve `ref` to a SHA, shared across every caller asking the same question.
+ *
+ * The batch assessment fans out over lanes with an uncapped `Promise.all`, and
+ * every lane in a project typically shares one `baseRef` — measured, that was
+ * `git rev-parse main` running 14 times at the project root inside a single
+ * refresh. The cache key carries the cwd, so a repo-wide ref collapses to one
+ * subprocess while `HEAD` stays correctly distinct per worktree, and the lane's
+ * own `HEAD` read collides with the one `rebaseSuggestionService` makes.
+ */
 async function readHeadSha(cwd: string, ref = "HEAD"): Promise<string> {
-  return (await runGitOrThrow(["rev-parse", ref], { cwd, timeoutMs: 10_000 })).trim();
+  const res = await runGitRepoCached(
+    ["rev-parse", ref],
+    { cwd, timeoutMs: 10_000 },
+    { key: `rev-parse:${cwd}:${ref}`, cacheClass: "volatile" },
+  );
+  if (res.exitCode !== 0) {
+    // Same shaping runGitOrThrow applies. Without it, an unaccepted Xcode
+    // license surfaces git's raw complaint instead of ADE's guidance.
+    throw new Error(formatGitExecutionError(
+      res.stderr.trim() || res.stdout.trim() || `git rev-parse ${ref} failed`,
+    ));
+  }
+  return res.stdout.trim();
 }
 
 async function readMergeBase(cwd: string, refA: string, refB: string): Promise<string> {

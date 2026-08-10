@@ -61,7 +61,13 @@ type ChatGitToolbarProps = {
 // ---------------------------------------------------------------------------
 
 function dirtyFileCount(changes: DiffChanges): number {
-  return changes.staged.length + changes.unstaged.length;
+  // Distinct paths, not the sum of the two lists. `git status` reports a file
+  // with both a staged and an unstaged edit as `MM`, and the parser puts it in
+  // both lists — so summing counted one dirty file as two.
+  const paths = new Set<string>();
+  for (const change of changes.staged) paths.add(change.path);
+  for (const change of changes.unstaged) paths.add(change.path);
+  return paths.size;
 }
 
 function checksIcon(status: PrSummary["checksStatus"], state: PrSummary["state"]) {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { getHeadSha, runGit, runGitOrThrow } from "./git";
+import { getHeadSha, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -1690,11 +1690,15 @@ export function createGitOperationsService({
     async getUserIdentity(args: { laneId: string }): Promise<GitUserIdentity> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
+      // The committer identity is repo-wide (or global), so every lane asks the
+      // same question. Cached on the stable class keyed by the repo's common
+      // git dir; a `git config` write invalidates it through runGit.
       const readConfig = async (key: string): Promise<string> => {
-        const result = await runGit(["config", "--get", key], {
-          cwd: lane.worktreePath,
-          timeoutMs: 5_000,
-        });
+        const result = await runGitRepoCached(
+          ["config", "--get", key],
+          { cwd: lane.worktreePath, timeoutMs: 5_000 },
+          { key: `config:${key}`, cacheClass: "stable" },
+        );
         return result.exitCode === 0 ? result.stdout.trim() : "";
       };
       const [name, email] = await Promise.all([readConfig("user.name"), readConfig("user.email")]);
@@ -1708,7 +1712,13 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(laneId);
       await assertLaneWorktreeRoot(lane);
       const [remoteRes, branchRes] = await Promise.all([
-        runGit(["remote", "get-url", "origin"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+        // Repo-wide: whether an origin exists, and its URL. Every lane of a
+        // repo shares one answer, and it only changes on `git remote`.
+        runGitRepoCached(
+          ["remote", "get-url", "origin"],
+          { cwd: lane.worktreePath, timeoutMs: 8_000 },
+          { key: "remote-url:origin", cacheClass: "stable" },
+        ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)
           : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
