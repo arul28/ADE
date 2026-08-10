@@ -250,13 +250,13 @@ and upstack bindings and returns `stack-coordinator-sync-required`; it never
 rebases and never pushes another layer, though it does push its own layer branch
 in Phase 0 and Phase 3b. Otherwise, skip needless rebases.
 
-**Bot pings by iteration.** Never ping GitHub Copilot and never treat Copilot as
-an expected review signal; quota exhaustion otherwise leaves the loop waiting
-forever. Initial PR pushes do not need a direct review ping. Subsequent
-fix-iteration re-pushes → `@codex review`. For a >250-file diff, also ping
-`@greptile` and `@coderabbit` (separate comments). Phase 1 still waits for the
-expected review signals to settle before fixing. This is the playbook's Phase 4
-rule — defer to it for exact bodies.
+**Bot pings by iteration.** Never ping GitHub Copilot and never ping `@codex` —
+neither is an expected review signal here, and Copilot quota exhaustion
+otherwise leaves the loop waiting forever. No push, initial or fix-iteration,
+gets a direct review ping. For a >250-file diff only, ping `@greptile` and
+`@coderabbit` (separate comments). Phase 1 still waits for the expected review
+signals to settle before fixing. This is the playbook's Phase 4 rule — defer to
+it for exact bodies.
 
 **Merge needs admin.** `main` is ruleset-guarded —
 `gh pr merge --squash --match-head-commit "$QUALITY_VALIDATED_SHA"` will show
@@ -328,8 +328,9 @@ self-resume signal. Either:
 - **Phase 3a Rebase / 3b Fix / 3c Merge / 3d Force-finalize** — per the playbook.
   Force-finalize runs once: ignore review comments (bookkeep their IDs), fix only
   CI, never delete/skip tests or weaken lint/tsconfig, then merge on green.
-- **Phase 4/5:** post the iteration's `@codex review` ping after a fix push,
-  update state, schedule the next wake (or stop per harness above).
+- **Phase 4/5:** post only the >250-file bot pings (Phase 4 sends no ping for an
+  ordinary push), update state, schedule the next wake (or stop per harness
+  above).
 - **Stack mode:** the same phases run, minus 3a, 3c.1–3c.5, and 3d. Phase 2
   routes remaining fix work to 3b and terminal-green to 3c.0
   (`ready-stacked`); the spent iteration budget escalates via
