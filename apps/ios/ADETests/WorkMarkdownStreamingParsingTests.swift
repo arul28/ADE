@@ -727,6 +727,31 @@ final class WorkInlineMarkdownCacheTests: XCTestCase {
     }
   }
 
+  /// A streaming tail that parses as a table renders through `WorkMarkdownTable`
+  /// rather than the paragraph path, so its cells need the same intermediate
+  /// routing — a long table would otherwise evict the completed messages the
+  /// exclusion exists to protect.
+  func testStreamingTableCellRevisionsStayOutOfTheSharedCache() {
+    let completed = "A finished message worth keeping cached."
+    _ = markdownAttributedString(completed)
+    XCTAssertTrue(workMarkdownSharedCacheHolds(completed))
+
+    // Cells arriving token by token, the way a table streams.
+    var cell = ""
+    for token in ["Build", " status", " green", " for", " every", " shard"] {
+      cell += token
+      _ = markdownAttributedString(cell, intermediate: true)
+      XCTAssertFalse(
+        workMarkdownSharedCacheHolds(cell),
+        "streaming cell \(cell.debugDescription) must not occupy the shared cache"
+      )
+    }
+
+    XCTAssertTrue(workMarkdownSharedCacheHolds(completed), "the finished message must survive")
+    _ = markdownAttributedString(cell, intermediate: false)
+    XCTAssertTrue(workMarkdownSharedCacheHolds(cell), "the settled cell is promoted like any other block")
+  }
+
   func testMemoryWarningPurgeDropsRenders() {
     let text = "Something worth caching."
     _ = markdownAttributedString(text)

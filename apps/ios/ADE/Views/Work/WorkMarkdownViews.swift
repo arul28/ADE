@@ -91,7 +91,7 @@ struct WorkMarkdownBlockView: View {
       .padding(10)
       .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     case .table(let headers, let rows):
-      WorkMarkdownTable(headers: headers, rows: rows)
+      WorkMarkdownTable(headers: headers, rows: rows, isStreamingTail: isStreamingTail)
     case .code(let language, let code):
       WorkCodeBlockView(language: language, code: code)
     case .rule:
@@ -111,13 +111,17 @@ struct WorkMarkdownBlockView: View {
 struct WorkMarkdownTable: View {
   let headers: [String]
   let rows: [[String]]
+  /// Cells of a still-growing table are throwaway revisions like any other
+  /// streaming tail; without this they land in the shared completed-message
+  /// cache and evict it, which is the eviction bug this branch fixes for prose.
+  var isStreamingTail = false
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       VStack(spacing: 0) {
         HStack(spacing: 0) {
           ForEach(headers.indices, id: \.self) { index in
-            WorkInlineMarkdownText(text: headers[index])
+            WorkInlineMarkdownText(text: headers[index], isStreamingTail: isStreamingTail)
               .font(.caption.weight(.semibold))
               .padding(10)
               .frame(minWidth: 120, alignment: .leading)
@@ -128,7 +132,7 @@ struct WorkMarkdownTable: View {
           Divider()
           HStack(spacing: 0) {
             ForEach(headers.indices, id: \.self) { index in
-              WorkInlineMarkdownText(text: index < row.count ? row[index] : "")
+              WorkInlineMarkdownText(text: index < row.count ? row[index] : "", isStreamingTail: isStreamingTail)
                 .font(.caption)
                 .padding(10)
                 .frame(minWidth: 120, alignment: .leading)
