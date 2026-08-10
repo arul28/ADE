@@ -138,9 +138,12 @@ struct SyntaxNestingBalance: Equatable {
   var insideBlockComment = false
   var insideBacktick = false
   var insideTripleQuote = false
+  /// HTML's comment rule is `(?s)<!--.*?-->`, so it spans lines exactly the way
+  /// a `/* */` block does.
+  var insideHtmlComment = false
 
   var isClear: Bool {
-    !insideBlockComment && !insideBacktick && !insideTripleQuote
+    !insideBlockComment && !insideBacktick && !insideTripleQuote && !insideHtmlComment
   }
 }
 
@@ -183,6 +186,16 @@ private func syntaxStableBoundary(in text: String, from start: String.Index) -> 
         index = text.index(index, offsetBy: 3)
         continue
       }
+    } else if balance.insideHtmlComment {
+      if syntaxMatches("-->", in: text, at: index) {
+        balance.insideHtmlComment = false
+        index = text.index(index, offsetBy: 3)
+        continue
+      }
+    } else if syntaxMatches("<!--", in: text, at: index) {
+      balance.insideHtmlComment = true
+      index = text.index(index, offsetBy: 4)
+      continue
     } else if character == "/", next < text.endIndex, text[next] == "*" {
       balance.insideBlockComment = true
       index = text.index(after: next)
@@ -198,6 +211,16 @@ private func syntaxStableBoundary(in text: String, from start: String.Index) -> 
     index = next
   }
   return boundary
+}
+
+/// Whether `marker` occurs at `index` without running past the end of `text`.
+private func syntaxMatches(_ marker: String, in text: String, at index: String.Index) -> Bool {
+  var cursor = index
+  for character in marker {
+    guard cursor < text.endIndex, text[cursor] == character else { return false }
+    cursor = text.index(after: cursor)
+  }
+  return true
 }
 
 private func syntaxIsTripleQuote(_ text: String, at index: String.Index) -> Bool {
@@ -292,9 +315,15 @@ struct SyntaxHighlighter {
     return result
   }
 
-  /// Highlights one self-contained segment. Attribute ranges are walked with a
-  /// single forward cursor — the previous implementation re-walked from
-  /// `startIndex` for every token, which is what made a long block quadratic.
+  /// Highlights one self-contained segment.
+  ///
+  /// Built by appending styled pieces in order rather than by assigning into
+  /// ranges of an existing `AttributedString`. Range assignment needs an index
+  /// per token, and deriving each one from `startIndex` is what made a long
+  /// block quadratic — while *retaining* an index across the assignment that
+  /// follows it is undefined, since attribute mutation invalidates indices.
+  /// Appending needs no `AttributedString` index at all, and the only cursor it
+  /// keeps is a `String.Index` into immutable text.
   ///
   /// Applied to a whole code block this is the non-incremental reference
   /// rendering, which is what the equivalence tests compare against.
@@ -303,37 +332,56 @@ struct SyntaxHighlighter {
     as language: FilesLanguage
   ) -> AttributedString {
     let text = String(segment)
-    var attributed = AttributedString(text)
-    attributed.font = .system(.body, design: .monospaced)
-    attributed.foregroundColor = ADEColor.textPrimary
+    guard !text.isEmpty else { return AttributedString() }
 
-    var cursorOffset = 0
-    var cursor = attributed.startIndex
+    // Rules match independently, so a `.type` inside a string or a keyword
+    // inside a comment produces overlapping ranges — including a short token
+    // fully contained in a long one. Assigning attributes in sorted order let
+    // the later token win the overlapping positions and left the rest of the
+    // earlier token intact; painting per position reproduces that precedence
+    // exactly, without needing an index into the string being built.
+    let utf16Count = text.utf16.count
+    var roles = [SyntaxTokenRole?](repeating: nil, count: utf16Count)
     for token in tokenize(text, as: language) {
-      guard let stringRange = Range(token.range, in: text) else { continue }
-      let startOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
-      let endOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
-      // Tokens arrive sorted by location, but overlapping rules can hand back a
-      // range that starts before the cursor; rewind only in that case.
-      if startOffset < cursorOffset {
-        cursor = attributed.startIndex
-        cursorOffset = 0
+      let lower = max(0, token.range.location)
+      let upper = min(utf16Count, NSMaxRange(token.range))
+      guard lower < upper else { continue }
+      for position in lower..<upper {
+        roles[position] = token.role
       }
-      guard let lowerBound = attributed.characters.index(
-        cursor,
-        offsetBy: startOffset - cursorOffset,
-        limitedBy: attributed.endIndex
-      ), let upperBound = attributed.characters.index(
-        lowerBound,
-        offsetBy: endOffset - startOffset,
-        limitedBy: attributed.endIndex
-      ) else { continue }
-      attributed[lowerBound..<upperBound].foregroundColor = token.role.tint
-      attributed[lowerBound..<upperBound].font = token.role.font
-      cursor = lowerBound
-      cursorOffset = startOffset
     }
-    return attributed
+
+    var result = AttributedString()
+    var runStart = text.startIndex
+    var runRole: SyntaxTokenRole?
+    var index = text.startIndex
+    var offset = 0
+    while index < text.endIndex {
+      // Sampled at character starts only, so a token range that splits a
+      // surrogate pair can never split a character's styling.
+      let role = offset < utf16Count ? roles[offset] : nil
+      if role != runRole {
+        appendRun(text[runStart..<index], role: runRole, to: &result)
+        runStart = index
+        runRole = role
+      }
+      offset += text[index].utf16.count
+      index = text.index(after: index)
+    }
+    appendRun(text[runStart...], role: runRole, to: &result)
+    return result
+  }
+
+  private static func appendRun(
+    _ text: Substring,
+    role: SyntaxTokenRole?,
+    to result: inout AttributedString
+  ) {
+    guard !text.isEmpty else { return }
+    var run = AttributedString(text)
+    run.font = role?.font ?? .system(.body, design: .monospaced)
+    run.foregroundColor = role?.tint ?? ADEColor.textPrimary
+    result.append(run)
   }
 
   private static func regexMatches(pattern: String, in text: String) -> [NSTextCheckingResult] {
@@ -446,7 +494,10 @@ private struct TokenRule {
   let pattern: String
 }
 
-private extension SyntaxTokenRole {
+// Not `private`: the highlighter's equivalence tests reproduce the previous
+// whole-text algorithm as their baseline, and a baseline that substitutes its
+// own colors cannot prove the two renderings agree.
+extension SyntaxTokenRole {
   var tint: Color {
     switch self {
     case .keyword:

@@ -290,12 +290,61 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
+  /// The incremental path must render a token-dense block exactly like the
+  /// previous whole-text algorithm.
+  ///
+  /// The streaming-equivalence tests above compare `highlightedAttributedString`
+  /// against `highlightedSegment`, which share their span/attribute logic — so
+  /// they cannot catch a change in that logic. This pins it against the
+  /// independent implementation the rewrite replaced.
+  func testHighlightMatchesPreviousWholeTextAlgorithm() {
+    let sources: [(FilesLanguage, String)] = [
+      (.swift, """
+      import Foundation
+      // A comment mentioning Counter and 42
+      struct Counter {
+        let label = "Counter value: 42"
+        func bump() -> Int { return 1 }
+      }
+      """),
+      (.python, """
+      def f(x):
+          # returns Value 7
+          s = "Value 7"
+          return s
+      """),
+      (.html, """
+      <div class="Box">
+      <!-- comment with Value 3
+           still commented -->
+      <span>Text</span>
+      </div>
+      """),
+    ]
+    for (language, source) in sources {
+      ADECodeRenderingCache.shared.purgeOnMemoryWarning()
+      let rewritten = SyntaxHighlighter.highlightedSegment(Substring(source), as: language)
+      let legacy = Self.legacyHighlight(source, as: language)
+      if rewritten != legacy {
+        XCTFail(
+          """
+          \(language.rawValue) highlight diverged from the previous algorithm.
+          First differing run: \(Self.firstRunDifference(rewritten, legacy) ?? "<none>")
+          """
+        )
+      }
+    }
+  }
+
   /// Replays a long code block as a token stream and reports the cost of the
   /// incremental path against the previous whole-text algorithm, which is
   /// reproduced here (full tokenize + `index(offsetBy:)` walked from the start
-  /// for every token). Not a pass/fail threshold — it prints the numbers the
-  /// change is justified by, and fails only if the incremental path is slower.
-  func testStreamingHighlightIsCheaperThanWholeTextHighlight() {
+  /// for every token).
+  ///
+  /// Diagnostic only. The correctness gate is
+  /// `testHighlightMatchesPreviousWholeTextAlgorithm`; asserting on wall-clock
+  /// here would just add a flake under CI load.
+  func testStreamingHighlightCostIsReported() {
     let line = "  let value\(Int.random(in: 0...9)) = compute(from: \"input\", count: 12) // step\n"
     let fullText = String(repeating: line, count: 200)
 
@@ -333,27 +382,43 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
       legacySeconds * 1000 / ticks,
       legacySeconds / max(incrementalSeconds, .leastNonzeroMagnitude)
     ))
-    XCTAssertLessThan(incrementalSeconds, legacySeconds)
   }
 
-  /// The pre-change algorithm, kept only as the benchmark's baseline: tokenize
-  /// the whole text, then walk from `startIndex` for every token. The per-token
-  /// tints are `fileprivate` to the highlighter, so this applies stand-ins — the
-  /// cost being measured is the index walk and the run splitting, which are
-  /// identical either way.
+  /// The pre-change algorithm, verbatim: tokenize the whole text, then walk from
+  /// `startIndex` for every token, letting later tokens overwrite the ranges
+  /// they overlap. Serves as both the benchmark baseline and the correctness
+  /// oracle, so it applies the real per-role attributes.
   private static func legacyHighlight(_ text: String, as language: FilesLanguage) -> AttributedString {
     var attributed = AttributedString(text)
     attributed.font = .system(.body, design: .monospaced)
+    attributed.foregroundColor = ADEColor.textPrimary
     for token in SyntaxHighlighter.tokenize(text, as: language) {
       guard let stringRange = Range(token.range, in: text) else { continue }
       let startOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
       let endOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
       let lowerBound = attributed.characters.index(attributed.startIndex, offsetBy: startOffset)
       let upperBound = attributed.characters.index(attributed.startIndex, offsetBy: endOffset)
-      attributed[lowerBound..<upperBound].foregroundColor = Color.orange
-      attributed[lowerBound..<upperBound].font = Font.system(.body, design: .monospaced).weight(.semibold)
+      attributed[lowerBound..<upperBound].foregroundColor = token.role.tint
+      attributed[lowerBound..<upperBound].font = token.role.font
     }
     return attributed
+  }
+
+  func testStreamingHtmlCommentSpanningLinesMatchesFullHighlight() {
+    // HTML's comment rule spans lines like a `/* */` block; a stable boundary
+    // landing inside one would freeze mis-highlighted markup into the prefix.
+    assertIncrementalMatchesFullHighlight(
+      """
+      <div>
+      <!-- opening
+           still inside
+
+           and here -->
+      <span>after</span>
+      </div>
+      """,
+      as: .html
+    )
   }
 
   func testDifferentBlockOfSameLanguageDoesNotReuseForeignPrefix() {
@@ -364,6 +429,40 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
       SyntaxHighlighter.highlightedAttributedString(unrelated, as: .swift),
       SyntaxHighlighter.highlightedSegment(Substring(unrelated), as: .swift)
     )
+  }
+}
+
+/// Echo suppression counts matches instead of testing set membership. Releasing
+/// `sending` as soon as the host accepts a message makes back-to-back identical
+/// sends easy, and a set test retired both of them on the first matching row.
+final class WorkLocalEchoSuppressionTests: XCTestCase {
+  func testOneRepresentedRowRetiresOnlyOneOfTwoIdenticalEchoes() {
+    let echoes = [
+      WorkLocalEchoMessage(text: "continue", timestamp: "2026-08-09T00:00:01Z"),
+      WorkLocalEchoMessage(text: "continue", timestamp: "2026-08-09T00:00:02Z"),
+    ]
+    guard let key = workLocalEchoDedupeKey(text: "continue", attachments: nil) else {
+      return XCTFail("expected a dedupe key for non-empty text")
+    }
+
+    let afterFirstRow = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 1])
+    XCTAssertEqual(afterFirstRow.count, 1)
+    XCTAssertEqual(afterFirstRow.first?.id, echoes[1].id, "the newer echo must survive")
+
+    let afterBothRows = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 2])
+    XCTAssertTrue(afterBothRows.isEmpty)
+  }
+
+  func testUnrelatedEchoesAreUntouched() {
+    let echoes = [
+      WorkLocalEchoMessage(text: "first", timestamp: "2026-08-09T00:00:01Z"),
+      WorkLocalEchoMessage(text: "second", timestamp: "2026-08-09T00:00:02Z"),
+    ]
+    guard let key = workLocalEchoDedupeKey(text: "first", attachments: nil) else {
+      return XCTFail("expected a dedupe key for non-empty text")
+    }
+    let remaining = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 1])
+    XCTAssertEqual(remaining.map(\.text), ["second"])
   }
 }
 

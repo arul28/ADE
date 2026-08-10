@@ -2687,27 +2687,16 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func reconcileLocalEchoMessages() {
     guard !localEchoMessages.isEmpty else { return }
-    let pendingSteerKeys = Set(
-      derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) }
+    // Counted rather than set-membership: two sends of the same text share one
+    // dedupe key, and a single matching transcript row must retire exactly one
+    // of them. `sending` now releases as soon as the host accepts a message, so
+    // back-to-back identical sends are easy to produce.
+    let next = workUnrepresentedLocalEchoMessages(
+      localEchoMessages,
+      representedKeyCounts: workRepresentedEchoKeyCounts(from: transcript)
     )
-    localEchoMessages.removeAll { echo in
-      guard let echoKey = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else {
-        return false
-      }
-      if pendingSteerKeys.contains(echoKey) {
-        return true
-      }
-      return transcript.contains { envelope in
-        guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
-          return false
-        }
-        guard workLocalEchoDedupeKey(text: text, attachments: attachments) == echoKey else { return false }
-        if deliveryState == "queued", steerId != nil {
-          return false
-        }
-        return true
-      }
-    }
+    guard next.count != localEchoMessages.count else { return }
+    localEchoMessages = next
   }
 
   @MainActor

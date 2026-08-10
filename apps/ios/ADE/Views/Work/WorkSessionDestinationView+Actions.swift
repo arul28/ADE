@@ -117,12 +117,12 @@ extension WorkSessionDestinationView {
               timestamp: echo.timestamp,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
             )
-            scheduledPostSendReconciliation(reconcileLocalEchoes: false)
+            schedulePostSendReconciliation(reconcileLocalEchoes: false)
             errorMessage = "Couldn’t send immediately. The message is still queued."
             return true
           }
           updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
-          scheduledPostSendReconciliation()
+          schedulePostSendReconciliation()
           break
         }
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
@@ -136,7 +136,7 @@ extension WorkSessionDestinationView {
         }
       case .sent:
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
-        scheduledPostSendReconciliation()
+        schedulePostSendReconciliation()
       case .dropped:
         // The steer queue is full; the host dropped the message (and emitted its
         // own transcript notice). Pull the optimistic echo so it doesn't linger
@@ -168,7 +168,7 @@ extension WorkSessionDestinationView {
   /// for the whole cascade. Chained onto the previous post-send refresh so two
   /// quick sends can't interleave two transcript loads.
   @MainActor
-  func scheduledPostSendReconciliation(reconcileLocalEchoes: Bool = true) {
+  func schedulePostSendReconciliation(reconcileLocalEchoes: Bool = true) {
     let previous = postSendRefreshTask
     postSendRefreshTask = Task { @MainActor in
       await previous?.value

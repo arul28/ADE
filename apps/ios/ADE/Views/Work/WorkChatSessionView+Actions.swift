@@ -139,33 +139,21 @@ private func workSnapshotByApplyingAssistantTextTail(
   return nextSnapshot
 }
 
-/// Mirrors the echo-suppression rules the full rebuild applies
-/// (`buildWorkTimeline`) and `reconcileLocalEchoMessages`: an echo whose text +
-/// attachments already appear as a delivered user message, or as a pending
-/// steer, must not get its own row.
-private func workTranscriptAlreadyRepresents(
-  _ echoes: ArraySlice<WorkLocalEchoMessage>,
+/// Whether every newly-appended echo would survive the suppression the full
+/// rebuild applies (`buildWorkTimeline`). If any would be hidden there, the fast
+/// path must decline so the two paths cannot disagree.
+private func workAppendedEchoesRemainVisible(
+  _ localEchoMessages: [WorkLocalEchoMessage],
+  appendedFrom index: Int,
   transcript: [WorkChatEnvelope]
 ) -> Bool {
-  let echoKeys = Set(echoes.compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) })
-  guard !echoKeys.isEmpty else { return false }
-
-  for steer in derivePendingWorkSteers(from: transcript) {
-    if let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments),
-       echoKeys.contains(key) {
-      return true
-    }
-  }
-  for envelope in transcript {
-    guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
-      continue
-    }
-    if deliveryState == "queued", steerId != nil { continue }
-    if let key = workLocalEchoDedupeKey(text: text, attachments: attachments), echoKeys.contains(key) {
-      return true
-    }
-  }
-  return false
+  let visibleIds = Set(
+    workUnrepresentedLocalEchoMessages(
+      localEchoMessages,
+      representedKeyCounts: workRepresentedEchoKeyCounts(from: transcript)
+    ).map(\.id)
+  )
+  return localEchoMessages[index...].allSatisfy { visibleIds.contains($0.id) }
 }
 
 private func workSnapshotByApplyingLocalEchoTail(
@@ -196,7 +184,11 @@ private func workSnapshotByApplyingLocalEchoTail(
   // The full rebuild hides echoes the transcript already represents
   // (`visibleLocalEchoMessages` in `buildWorkTimeline`). Fall back rather than
   // append a duplicate bubble the next rebuild would silently remove.
-  guard !workTranscriptAlreadyRepresents(appendedEchoes, transcript: transcript) else { return nil }
+  guard workAppendedEchoesRemainVisible(
+    localEchoMessages,
+    appendedFrom: cache.localEchoCount,
+    transcript: transcript
+  ) else { return nil }
 
   var timeline = snapshot.timeline
   for echo in appendedEchoes {

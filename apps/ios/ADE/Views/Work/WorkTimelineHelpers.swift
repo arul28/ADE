@@ -1493,22 +1493,25 @@ func buildWorkTimeline(
       }
     : buildWorkChatMessages(from: transcript)
 
-  let pendingSteerEchoKeys = Set(
-    derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) }
-  )
-
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
     WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
-  let transcriptUserMessageEchoKeys = Set(
-    messages
-      .filter { $0.role.lowercased() == "user" }
-      .compactMap { workLocalEchoDedupeKey(text: $0.markdown, attachments: $0.attachments) }
-  )
-  let visibleLocalEchoMessages = localEchoMessages.filter { echo in
-    guard let key = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else { return true }
-    return !transcriptUserMessageEchoKeys.contains(key) && !pendingSteerEchoKeys.contains(key)
+  // Counted, not set-membership: two identical echoes must not both vanish on
+  // one matching row. Built from `messages` rather than the transcript so the
+  // fallback-entry path (empty transcript) still suppresses correctly.
+  var representedEchoKeyCounts: [String: Int] = [:]
+  for steer in derivePendingWorkSteers(from: transcript) {
+    guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
+    representedEchoKeyCounts[key, default: 0] += 1
   }
+  for message in messages where message.role.lowercased() == "user" {
+    guard let key = workLocalEchoDedupeKey(text: message.markdown, attachments: message.attachments) else { continue }
+    representedEchoKeyCounts[key, default: 0] += 1
+  }
+  let visibleLocalEchoMessages = workUnrepresentedLocalEchoMessages(
+    localEchoMessages,
+    representedKeyCounts: representedEchoKeyCounts
+  )
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
     WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card))
@@ -2190,6 +2193,50 @@ func normalizedWorkLocalEchoText(_ text: String) -> String {
   text
     .trimmingCharacters(in: .whitespacesAndNewlines)
     .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+}
+
+/// Drops the echoes the transcript already represents, **counting** matches
+/// rather than testing set membership.
+///
+/// Sending the same text twice ("ok", "continue") produces two echoes sharing
+/// one dedupe key. A set-membership test removes both the moment a single
+/// matching row lands, so the second bubble disappears until the next refresh.
+/// Consuming one represented slot per echo keeps the second one on screen.
+func workUnrepresentedLocalEchoMessages(
+  _ echoes: [WorkLocalEchoMessage],
+  representedKeyCounts: [String: Int]
+) -> [WorkLocalEchoMessage] {
+  guard !representedKeyCounts.isEmpty else { return echoes }
+  var remaining = representedKeyCounts
+  return echoes.filter { echo in
+    guard let key = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments),
+          let available = remaining[key],
+          available > 0
+    else { return true }
+    remaining[key] = available - 1
+    return false
+  }
+}
+
+/// How many times each echo dedupe key is already represented in the transcript,
+/// counting delivered user messages and pending steers.
+func workRepresentedEchoKeyCounts(from transcript: [WorkChatEnvelope]) -> [String: Int] {
+  var counts: [String: Int] = [:]
+  for steer in derivePendingWorkSteers(from: transcript) {
+    guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
+    counts[key, default: 0] += 1
+  }
+  for envelope in transcript {
+    guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
+      continue
+    }
+    // A queued steer is already counted above; counting its transcript row too
+    // would consume two echo slots for one message.
+    if deliveryState == "queued", steerId != nil { continue }
+    guard let key = workLocalEchoDedupeKey(text: text, attachments: attachments) else { continue }
+    counts[key, default: 0] += 1
+  }
+  return counts
 }
 
 func workLocalEchoDedupeKey(text: String, attachments: [AgentChatFileRef]?) -> String? {

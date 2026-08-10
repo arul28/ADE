@@ -82,15 +82,19 @@ func workChatShouldContinueAutomaticOlderHistory(
     && (hasBufferedEntries || hasHostHistory)
 }
 
-/// Scroll geometry a prepend has to preserve: where the reader was, and how
-/// tall the content was, at the instant rows were inserted above them.
+/// Scroll state a prepend has to preserve: which row led the list, where that
+/// row sat, and where the reader was, at the instant rows were inserted above.
+///
+/// Deliberately *not* total content height. An assistant reply streaming into
+/// the tail grows the content too, and a reader scrolled back through history is
+/// exactly when that happens — restoring by total growth would add the tail's
+/// growth to the correction and overshoot.
 struct WorkChatPrependAnchor {
+  let rowId: String
+  let rowY: CGFloat
   let offsetY: CGFloat
-  let contentHeight: CGFloat
-  /// Geometry callbacks to wait for before giving up. Content height is part of
-  /// the observed value, so a stationary reader burns none of these — the budget
-  /// only exists so an abandoned prepend can't leave the anchor armed to fire on
-  /// unrelated growth later.
+  /// Layout passes to wait for before giving up, so an abandoned prepend cannot
+  /// leave the anchor armed to fire on an unrelated later change.
   var remainingAttempts: Int
 }
 
@@ -99,25 +103,36 @@ struct WorkChatPrependAnchor {
 /// keeps its existing meaning.
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
-  var contentHeight: CGFloat = 0
   var offsetY: CGFloat = 0
+  /// Position of the row currently being probed (the list's first row, or the
+  /// armed row while a prepend is in flight), in the scroll coordinate space.
+  var probeRowId: String?
+  var probeRowY: CGFloat?
   var prependAnchor: WorkChatPrependAnchor?
 }
 
-/// The slice of `ScrollGeometry` the transcript reacts to. Rounded so sub-pixel
-/// jitter doesn't wake the observer.
-struct WorkChatScrollGeometrySample: Equatable {
-  let offsetY: CGFloat
-  let contentHeight: CGFloat
+/// Number of layout passes a prepend anchor stays armed for.
+let workChatPrependAnchorAttempts = 12
 
-  init(_ geometry: ScrollGeometry) {
-    self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
-    self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
-  }
+/// Position of the single probed row, published from the row itself so a
+/// prepend's displacement can be measured without a geometry reader per row.
+///
+/// Carries the row id rather than letting the reader infer it: which row holds
+/// the probe is decided during body evaluation, and the observer reading it back
+/// runs later, so a recomputed id can describe a different row than the
+/// measurement it is paired with.
+struct WorkChatPrependProbeSample: Equatable {
+  let rowId: String
+  let y: CGFloat
 }
 
-/// Number of geometry callbacks a prepend anchor stays armed for.
-let workChatPrependAnchorAttempts = 12
+struct WorkChatPrependProbePreferenceKey: PreferenceKey {
+  static var defaultValue: WorkChatPrependProbeSample? { nil }
+
+  static func reduce(value: inout WorkChatPrependProbeSample?, nextValue: () -> WorkChatPrependProbeSample?) {
+    value = nextValue() ?? value
+  }
+}
 
 struct WorkChatSummaryRenderContext: Equatable {
   let isAvailable: Bool
@@ -675,6 +690,13 @@ struct WorkChatSessionView: View {
     timelinePresentation = nextPresentation
   }
 
+  /// The row carrying the displacement probe: normally the list's first row, and
+  /// the armed row while a prepend is in flight (it is no longer first once the
+  /// older page lands above it).
+  var prependProbeRowId: String? {
+    scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
+  }
+
   /// Records where the reader is whenever the next presentation inserts rows
   /// above the ones already on screen — whether that came from revealing locally
   /// buffered entries or from an older page landing from the host. Without this
@@ -682,32 +704,39 @@ struct WorkChatSessionView: View {
   /// user was reading slides down by the height of the inserted page.
   @MainActor
   private func armPrependAnchorIfRowsInsertedAbove(_ nextPresentation: WorkTimelinePresentation) {
-    guard nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
+    guard scrollMetrics.prependAnchor == nil,
+          nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
           let previousFirstId = timelinePresentation.visibleEntries.first?.id,
           nextPresentation.visibleEntries.first?.id != previousFirstId,
-          scrollMetrics.contentHeight > 0
+          // The probe has to already be measuring the row we are about to anchor
+          // on, or there is no "before" position to restore to.
+          scrollMetrics.probeRowId == previousFirstId,
+          let previousFirstRowY = scrollMetrics.probeRowY
     else { return }
     // Only a genuine prepend: the row that used to lead the list has to still be
     // in the list, just further down.
     guard nextPresentation.visibleEntries.contains(where: { $0.id == previousFirstId }) else { return }
 
     scrollMetrics.prependAnchor = WorkChatPrependAnchor(
+      rowId: previousFirstId,
+      rowY: previousFirstRowY,
       offsetY: scrollMetrics.offsetY,
-      contentHeight: scrollMetrics.contentHeight,
       remainingAttempts: workChatPrependAnchorAttempts
     )
   }
 
-  /// Re-applies the reader's position after a prepend lands. Content grew only
-  /// above the viewport, so the height delta *is* the distance the reader was
-  /// pushed down; adding it back to the captured offset puts the previously
-  /// first-visible row at exactly the same screen y.
+  /// Re-applies the reader's position once the prepended rows have laid out.
+  ///
+  /// The anchored row moved down by exactly the height inserted above it, and
+  /// that displacement is measured on the row itself — so a reply streaming into
+  /// the tail at the same time contributes nothing to the correction.
   @MainActor
-  private func restorePrependAnchorIfNeeded(_ sample: WorkChatScrollGeometrySample) {
+  func restorePrependAnchorIfNeeded(probed: WorkChatPrependProbeSample?) {
     guard var anchor = scrollMetrics.prependAnchor else { return }
 
-    let insertedHeight = sample.contentHeight - anchor.contentHeight
-    guard insertedHeight > 0.5 else {
+    // Only a measurement of the anchored row itself can say how far it moved.
+    let displacement = probed?.rowId == anchor.rowId ? (probed?.y ?? anchor.rowY) - anchor.rowY : 0
+    guard displacement > 0.5 else {
       anchor.remainingAttempts -= 1
       scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
       return
@@ -721,7 +750,7 @@ struct WorkChatSessionView: View {
     var transaction = Transaction()
     transaction.disablesAnimations = true
     withTransaction(transaction) {
-      scrollPosition.scrollTo(y: anchor.offsetY + insertedHeight)
+      scrollPosition.scrollTo(y: anchor.offsetY + displacement)
     }
   }
 
@@ -853,6 +882,7 @@ struct WorkChatSessionView: View {
     } else {
       let streamingMessageId = streamingAssistantMessageId
       let userBubbleWidth = maxUserBubbleWidth
+      let probeRowId = prependProbeRowId
       ForEach(visibleTimelineRenderEntries) { entry in
         timelineRenderEntryView(
           for: entry,
@@ -860,6 +890,22 @@ struct WorkChatSessionView: View {
           streamingAssistantMessageId: streamingMessageId,
           maxUserBubbleWidth: userBubbleWidth
         )
+        .background {
+          // Exactly one row carries this probe. It measures how far a prepend
+          // pushed the reader's content down, which total content height cannot
+          // do while the tail is also streaming.
+          if entry.id == probeRowId {
+            GeometryReader { geometry in
+              Color.clear.preference(
+                key: WorkChatPrependProbePreferenceKey.self,
+                value: WorkChatPrependProbeSample(
+                  rowId: entry.id,
+                  y: geometry.frame(in: .named(workChatScrollCoordinateSpace)).minY
+                )
+              )
+            }
+          }
+        }
       }
     }
   }
@@ -1154,14 +1200,13 @@ struct WorkChatSessionView: View {
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
           .scrollPosition($scrollPosition)
-          .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
-            WorkChatScrollGeometrySample(geometry)
-          } action: { _, sample in
+          .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            // Rounded so sub-pixel jitter doesn't wake the observer.
+            (geometry.contentOffset.y * 2).rounded() / 2
+          } action: { _, offsetY in
             // Recorded into a reference box, not @State: this fires per scroll
             // frame and must not invalidate the transcript.
-            scrollMetrics.offsetY = sample.offsetY
-            scrollMetrics.contentHeight = sample.contentHeight
-            restorePrependAnchorIfNeeded(sample)
+            scrollMetrics.offsetY = offsetY
           }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
@@ -1242,6 +1287,13 @@ struct WorkChatSessionView: View {
         }
         .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
           scrollViewportWidth = width
+        }
+        .onPreferenceChange(WorkChatPrependProbePreferenceKey.self) { sample in
+          // Recorded into a reference box, not @State: this fires on every
+          // layout pass and must not invalidate the transcript.
+          scrollMetrics.probeRowId = sample?.rowId
+          scrollMetrics.probeRowY = sample?.y
+          restorePrependAnchorIfNeeded(probed: sample)
         }
         .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in
           guard height > 0, abs(composerLayoutHeight - height) > 1 else { return }
