@@ -213,13 +213,13 @@ and in tests.
   every guard tried against it either read a column that turn-start never
   updates or had to be repeated at each of the settle entry points. Making
   settle stop work needs a synchronous lifecycle revision that teardown can be
-  serialized against; it is not a wrapper around the existing write. Archive is
-  the one lifecycle path that does stop processes — see
-  `laneService.archive`, where the ordering is load-bearing. The approved plan
-  for making settle stop work is
+  serialized against; it is not a wrapper around the existing write. The approved
+  plan for doing it is
   [settle-teardown-design.md](settle-teardown-design.md); its step 0
-  precondition — `settled_at` becoming host-authoritative, so no replica can
-  defeat the revision guard by CRDT merge — has landed.
+  precondition — `settled_at` becoming host-authoritative, so no replica will be
+  able to defeat the coming revision guard by CRDT merge — has landed. Archive is
+  the one lifecycle path that does stop processes — see
+  `laneService.archive`, where the ordering is load-bearing.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native

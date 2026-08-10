@@ -2099,14 +2099,9 @@ final class DatabaseService {
   /// flickering back for a round trip.
   ///
   /// The settle columns (`settled_at`, `settle_override`, `settle_source`) are
-  /// deliberately NOT writable from here. `terminal_sessions` is a CRR table
-  /// whose local writes replicate upstream, so an optimistic settle carries no
-  /// host revision and can defeat a host-side rejection by CRDT merge — the host
-  /// leaves `settled_at` null, and the phone's row settles it anyway. Settle is
-  /// host-authoritative; the phone shows a local pending state instead
-  /// (`SyncService.pendingSessionSettleStates`) and waits for the host's
-  /// changeset. See `docs/features/terminals-and-sessions/settle-teardown-design.md`
-  /// §3c-i.
+  /// deliberately NOT writable from here — they are host-authoritative and a
+  /// replicating write can defeat a host rejection by CRDT merge. See
+  /// `PendingSessionSettleStates.swift` for the replacement.
   ///
   /// Each parameter is a two-level optional so "leave alone" and "clear" are
   /// distinguishable: `nil` skips the column, `.some(nil)` sets it to NULL,

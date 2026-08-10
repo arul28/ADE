@@ -5120,6 +5120,7 @@ final class SyncService: ObservableObject {
     let scopeChanged = previousProjectId != nextProjectId || previousRootPath != nextRootPath
     if scopeChanged {
       resetCtoAttentionForProjectScopeChange()
+      resetPendingSessionSettleStates()
       cancelAllTerminalSnapshotRecovery()
       terminalSnapshotRequestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
@@ -8451,6 +8452,7 @@ final class SyncService: ObservableObject {
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
       clearPendingChatCreations()
+      resetPendingSessionSettleStates()
       resetChatEventState(clearHistory: true)
       resetTerminalSubscriptionState(clearHistory: true)
       activeHostProfile = nil
@@ -9145,23 +9147,53 @@ final class SyncService: ObservableObject {
   }
 
   func fetchSessions() async throws -> [TerminalSessionSummary] {
-    sessionsWithPendingSettleOverlay(database.fetchSessions())
+    localSessions()
   }
 
   func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {
-    guard let session = database.fetchSession(id: sessionId) else { return nil }
-    return sessionsWithPendingSettleOverlay([session]).first
+    localSession(id: sessionId)
   }
 
-  /// Retire confirmed/stale settle intents against these rows, then show the
-  /// still-pending ones. Every session read goes through here, so an intent
-  /// cannot outlive the host's answer to it.
-  private func sessionsWithPendingSettleOverlay(
-    _ sessions: [TerminalSessionSummary]
-  ) -> [TerminalSessionSummary] {
+  /// **The session read chokepoint.** Every read that feeds UI must come through
+  /// here or `localSession(id:)`, never `database.fetchSessions()` directly:
+  /// these are the only readers that see an in-flight settle, and a raw read
+  /// silently renders the row as if the user had never tapped settle. The one
+  /// exception that reads lifecycle *columns* is the pre-command snapshot in
+  /// `sendSessionSnoozeCommand`, which wants the un-overlaid row; the existence
+  /// check in the session navigation destination is unaffected because the
+  /// overlay only rewrites columns and never adds or drops rows.
+  ///
+  /// Not a pure read: it retires resolved intents and may schedule a repaint.
+  /// Safe from a render path — the bump is debounced, and the pass it triggers
+  /// re-prunes, finds nothing, and stops.
+  private func localSessions() -> [TerminalSessionSummary] {
+    let sessions = database.fetchSessions()
     guard !pendingSessionSettleStates.isEmpty else { return sessions }
     prunePendingSessionSettleStates(against: sessions)
     return pendingSessionSettleStates.apply(to: sessions)
+  }
+
+  private func localSession(id sessionId: String) -> TerminalSessionSummary? {
+    guard let session = database.fetchSession(id: sessionId) else { return nil }
+    guard !pendingSessionSettleStates.isEmpty else { return session }
+    prunePendingSessionSettleStates(against: [session])
+    return pendingSessionSettleStates.apply(to: session)
+  }
+
+  /// Retire confirmed or expired intents, and repaint if any went away. An
+  /// expiry is the one resolution with no accompanying database write, so
+  /// without this nudge it would only become visible on the next unrelated
+  /// read — which against a quiet host may be a long time.
+  private func prunePendingSessionSettleStates(against sessions: [TerminalSessionSummary]) {
+    let now = Date()
+    // Hold first, then measure: after a hold every deadline is `now`, so the
+    // backstop cannot fire against a command that is merely waiting for the
+    // connection to come back.
+    if !canSendLiveRequests() {
+      pendingSessionSettleStates.holdBackstop(now: now)
+    }
+    guard pendingSessionSettleStates.prune(against: sessions, now: now) else { return }
+    scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
   /// Best-effort hydration for a session whose local DB row may not have synced
@@ -9175,14 +9207,10 @@ final class SyncService: ObservableObject {
   /// state.
   @discardableResult
   func ensureSessionRowHydrated(sessionId: String) async -> TerminalSessionSummary? {
-    if let existing = database.fetchSession(id: sessionId) {
-      return sessionsWithPendingSettleOverlay([existing]).first
-    }
+    if let existing = localSession(id: sessionId) { return existing }
     if canSendLiveRequests() {
       try? await refreshWorkSessions()
-      if let refreshed = database.fetchSession(id: sessionId) {
-        return sessionsWithPendingSettleOverlay([refreshed]).first
-      }
+      if let refreshed = localSession(id: sessionId) { return refreshed }
     }
     // Absorb changeset lag right after an in-place project activation: the row
     // arrives via CRDT sync a beat after the switch. Bounded so a genuinely
@@ -9190,9 +9218,7 @@ final class SyncService: ObservableObject {
     for _ in 0..<6 {
       try? await Task.sleep(nanoseconds: 300_000_000)
       if Task.isCancelled { break }
-      if let row = database.fetchSession(id: sessionId) {
-        return sessionsWithPendingSettleOverlay([row]).first
-      }
+      if let row = localSession(id: sessionId) { return row }
     }
     return nil
   }
@@ -9273,14 +9299,9 @@ final class SyncService: ObservableObject {
   //
   // The two halves are handled differently, and the split is load-bearing:
   //
-  // - **Settle columns** (`settled_at`, `settle_override`, `settle_source`) are
-  //   host-authoritative and are NEVER written to the local replica. Because
-  //   `terminal_sessions` is a CRR table, such a write replicates upstream
-  //   carrying no host lifecycle revision, so it can win a CRDT merge against a
-  //   host that *rejected* the settle and file a live session as done. Instant
-  //   feedback comes from `pendingSessionSettleStates`, a local overlay applied
-  //   at read time that resolves when the host's changeset lands or the command
-  //   fails. See the settle-teardown design, §3c-i.
+  // - **Settle columns** are host-authoritative and NEVER written to the local
+  //   replica; instant feedback comes from `pendingSessionSettleStates`
+  //   (`PendingSessionSettleStates.swift`, which carries the full argument).
   // - **Snooze overlay** (`snoozed_until`, `snoozed_at`, `woke_*`) still writes
   //   optimistically with a rollback. Those columns are not guarded by a host
   //   revision and have no teardown attached, so a merge cannot defeat a host
@@ -9288,27 +9309,37 @@ final class SyncService: ObservableObject {
 
   /// In-flight settle intents, applied over session reads so a settle feels
   /// immediate without a replicating write. Never persisted.
-  private(set) var pendingSessionSettleStates = PendingSessionSettleStates()
+  private var pendingSessionSettleStates = PendingSessionSettleStates()
 
   /// Record an in-flight settle intent and nudge the projections, mirroring the
   /// re-render the optimistic DB write used to trigger through
   /// `adeDatabaseDidChange`.
-  private func beginPendingSessionSettle(_ intent: PendingSessionSettleIntent, for sessionId: String) {
-    pendingSessionSettleStates.begin(intent, for: sessionId)
+  private func beginPendingSessionSettle(
+    _ intent: PendingSessionSettleIntent,
+    for sessionId: String
+  ) -> UInt64 {
+    let token = pendingSessionSettleStates.begin(intent, for: sessionId)
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
+    return token
   }
 
-  private func clearPendingSessionSettle(_ sessionId: String) {
+  private func clearPendingSessionSettle(_ sessionId: String, token: UInt64) {
     guard pendingSessionSettleStates[sessionId] != nil else { return }
-    pendingSessionSettleStates.clear(sessionId)
+    pendingSessionSettleStates.clear(sessionId, token: token)
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
-  /// Retire intents the host's replicated rows have now confirmed (or that
-  /// outlived the staleness backstop). Called from every session read so the
-  /// overlay cannot outlive its answer.
-  private func prunePendingSessionSettleStates(against sessions: [TerminalSessionSummary]) {
-    pendingSessionSettleStates.prune(against: sessions, now: Date())
+  /// Drop every in-flight intent because the ground beneath it moved — a project
+  /// switch, or an unpair that clears the credentials. The ids it holds describe
+  /// sessions that are no longer on screen, and on unpair the host is
+  /// permanently unreachable, so `holdBackstop` would otherwise keep the overlay
+  /// painting for the rest of the app's life.
+  private func resetPendingSessionSettleStates() {
+    guard !pendingSessionSettleStates.isEmpty else { return }
+    pendingSessionSettleStates.removeAll()
+    // The project-switch caller reloads everything anyway; the unpair caller
+    // does not, so repaint here rather than relying on the caller.
+    scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
   /// Whether this host advertises the ADE-125 lifecycle actions at all. Older
@@ -9337,69 +9368,21 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  /// Host command for a lifecycle change, with an optional optimistic local
-  /// write of the SNOOZE overlay only, rolled back on failure.
+  /// Send a lifecycle host command and undo local optimism if it does not take.
   ///
-  /// The settle columns are not parameters here and must not become ones — they
-  /// are host-authoritative (see the section comment above). Settle callers pass
-  /// a `pendingSettle` intent instead, which is local-only.
+  /// The core knows nothing about WHICH optimism was applied — settle and snooze
+  /// apply very different kinds (a local overlay vs. a replicating column write)
+  /// and each caller hands in its own `rollback`.
   private func sendSessionLifecycleCommand(
-    sessionId: String,
+    sessionId trimmed: String,
     action: String,
     args: [String: Any],
     // How this action reports whether it actually changed the row; `nil` for
     // the actions that report nothing usable, mirroring the desktop
     // `lifecycleCall` call sites that pass no `applied` predicate.
     resultShape: SessionLifecycleResultShape? = .envelope,
-    pendingSettle: PendingSessionSettleIntent? = nil,
-    snoozedUntil: String?? = nil,
-    snoozedAt: String?? = nil,
-    wokeAt: String?? = nil,
-    wokeReason: String?? = nil
+    rollback: @escaping () -> Void
   ) async throws {
-    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    guard supportsRemoteAction(action) else {
-      throw sessionLifecycleUnsupportedError(action)
-    }
-
-    let previous = database.fetchSession(id: trimmed)
-    if let pendingSettle {
-      beginPendingSessionSettle(pendingSettle, for: trimmed)
-    }
-    try? database.updateSessionSnoozeOverlay(
-      sessionId: trimmed,
-      snoozedUntil: snoozedUntil,
-      snoozedAt: snoozedAt,
-      wokeAt: wokeAt,
-      wokeReason: wokeReason
-    )
-
-    // Undo the optimistic snooze write and drop the local settle intent.
-    // Restores ONLY the columns this call actually assigned: `terminal_sessions`
-    // is a CRR table whose local writes replicate upstream, so re-stamping a
-    // column we never touched would push our stale copy of a host-owned value
-    // back over whatever the machine has since written — the same hazard that
-    // keeps `snoozed_at` out of the forward write below. A half-applied
-    // lifecycle is still worse than none, so every column we DID write is
-    // restored together.
-    func rollback() {
-      if pendingSettle != nil {
-        clearPendingSessionSettle(trimmed)
-      }
-      guard let previous else { return }
-      func restored(_ requested: String??, _ value: String?) -> String?? {
-        requested == nil ? nil : .some(value)
-      }
-      try? database.updateSessionSnoozeOverlay(
-        sessionId: trimmed,
-        snoozedUntil: restored(snoozedUntil, previous.snoozedUntil),
-        snoozedAt: restored(snoozedAt, previous.snoozedAt),
-        wokeAt: restored(wokeAt, previous.wokeAt),
-        wokeReason: restored(wokeReason, previous.wokeReason)
-      )
-    }
-
     let scope = chatCommandScope(for: trimmed)
     let result: Any
     do {
@@ -9425,6 +9408,88 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Settle-family command: shows the change through the local overlay, which is
+  /// dropped if the host does not take it.
+  private func sendSessionSettleCommand(
+    sessionId: String,
+    action: String,
+    args: [String: Any],
+    resultShape: SessionLifecycleResultShape? = .envelope,
+    intent: PendingSessionSettleIntent
+  ) async throws {
+    guard let trimmed = normalizedLifecycleSessionId(sessionId) else { return }
+    guard supportsRemoteAction(action) else { throw sessionLifecycleUnsupportedError(action) }
+    let token = beginPendingSessionSettle(intent, for: trimmed)
+    try await sendSessionLifecycleCommand(
+      sessionId: trimmed,
+      action: action,
+      args: args,
+      resultShape: resultShape,
+      rollback: { [weak self] in self?.clearPendingSessionSettle(trimmed, token: token) }
+    )
+  }
+
+  /// Snooze-family command: writes the snooze overlay columns optimistically and
+  /// restores them if the host does not take it.
+  ///
+  /// The rollback restores ONLY the columns this call actually assigned.
+  /// `terminal_sessions` is a CRR table whose local writes replicate upstream, so
+  /// re-stamping a column we never touched would push our stale copy of a
+  /// host-owned value back over whatever the machine has since written — the same
+  /// hazard that keeps `snoozed_at` out of the forward write. A half-applied
+  /// lifecycle is still worse than none, so every column we DID write is restored
+  /// together.
+  private func sendSessionSnoozeCommand(
+    sessionId: String,
+    action: String,
+    args: [String: Any],
+    resultShape: SessionLifecycleResultShape? = .envelope,
+    snoozedUntil: String?? = nil,
+    snoozedAt: String?? = nil,
+    wokeAt: String?? = nil,
+    wokeReason: String?? = nil
+  ) async throws {
+    guard let trimmed = normalizedLifecycleSessionId(sessionId) else { return }
+    guard supportsRemoteAction(action) else { throw sessionLifecycleUnsupportedError(action) }
+
+    // Deliberately the RAW row, not `localSession(id:)`: this is the snapshot the
+    // rollback restores, so it must be what the database actually holds rather
+    // than what an in-flight settle overlay is painting.
+    let previous = database.fetchSession(id: trimmed)
+    try? database.updateSessionSnoozeOverlay(
+      sessionId: trimmed,
+      snoozedUntil: snoozedUntil,
+      snoozedAt: snoozedAt,
+      wokeAt: wokeAt,
+      wokeReason: wokeReason
+    )
+
+    try await sendSessionLifecycleCommand(
+      sessionId: trimmed,
+      action: action,
+      args: args,
+      resultShape: resultShape,
+      rollback: { [weak self] in
+        guard let self, let previous else { return }
+        func restored(_ requested: String??, _ value: String?) -> String?? {
+          requested == nil ? nil : .some(value)
+        }
+        try? self.database.updateSessionSnoozeOverlay(
+          sessionId: trimmed,
+          snoozedUntil: restored(snoozedUntil, previous.snoozedUntil),
+          snoozedAt: restored(snoozedAt, previous.snoozedAt),
+          wokeAt: restored(wokeAt, previous.wokeAt),
+          wokeReason: restored(wokeReason, previous.wokeReason)
+        )
+      }
+    )
+  }
+
+  private func normalizedLifecycleSessionId(_ sessionId: String) -> String? {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
   /// Declared settle. The host owns `settled_at`; this only shows the row as
   /// settled locally until the host's changeset answers.
   ///
@@ -9432,7 +9497,7 @@ final class SyncService: ObservableObject {
   /// settle" — and it must ONLY be passed for a row that genuinely has a pending
   /// prompt: the host throws "Resolve the terminal input before settling this
   /// session." when the flag arrives for a row with nothing pending, which would
-  /// roll back the optimistic write and surface an error on an ordinary settle.
+  /// drop the pending overlay and surface an error on an ordinary settle.
   ///
   /// It rides on the SAME plural action the plain settle uses. The singular
   /// `session.settleSession` also accepts the flag but is not in the mobile
@@ -9444,17 +9509,15 @@ final class SyncService: ObservableObject {
     if dismissPendingInput {
       args["dismissPendingInput"] = true
     }
-    try await sendSessionLifecycleCommand(
+    let now = Date()
+    try await sendSessionSettleCommand(
       sessionId: sessionId,
       action: "session.settleSessions",
       args: args,
       // The bulk action answers with the ids it CHANGED, so an absent id means
       // the machine settled nothing. Mirrors the desktop `settleMany`.
       resultShape: .changedIdList,
-      pendingSettle: .settle(
-        now: Date(),
-        timestamp: iso8601WithFractionalSecondsFormatter.string(from: Date())
-      )
+      intent: .settle(now: now, timestamp: iso8601WithFractionalSecondsFormatter.string(from: now))
     )
   }
 
@@ -9468,7 +9531,7 @@ final class SyncService: ObservableObject {
   /// it may not get would just be a local lie in place of the replicated one
   /// this used to be. Mirrors the web overlay's `UNSETTLE_PATCH`.
   func unsettleSession(sessionId: String) async throws {
-    try await sendSessionLifecycleCommand(
+    try await sendSessionSettleCommand(
       sessionId: sessionId,
       action: "session.unsettleSessions",
       args: ["sessionIds": [sessionId]],
@@ -9476,20 +9539,20 @@ final class SyncService: ObservableObject {
       // per-row verdict to check — so there is nothing to reject, exactly like
       // the desktop `unsettleMany`, which passes no `applied` predicate.
       resultShape: nil,
-      pendingSettle: .unsettle(now: Date())
+      intent: .unsettle(now: Date())
     )
   }
 
   /// Set (or clear, with `nil`) the tri-state settle override. `"active"` is the
   /// "keep active" pin that suppresses an explicit settle.
   func setSessionSettleOverride(sessionId: String, override: SessionSettleOverride?) async throws {
-    try await sendSessionLifecycleCommand(
+    try await sendSessionSettleCommand(
       sessionId: sessionId,
       action: "session.setSettleOverride",
       // The host reads "clear" as null; sending a JSON null through the
       // `[String: Any]` arg dictionary is not representable here.
       args: ["sessionId": sessionId, "override": override?.rawValue ?? "clear"],
-      pendingSettle: .settleOverride(override?.rawValue, now: Date())
+      intent: .settleOverride(override?.rawValue, now: Date())
     )
   }
 
@@ -9514,7 +9577,7 @@ final class SyncService: ObservableObject {
   /// `unsettleSession` leaving `settle_override` to the machine.
   func snoozeSession(sessionId: String, until deadline: Date) async throws {
     let untilIso = iso8601WithFractionalSecondsFormatter.string(from: deadline)
-    try await sendSessionLifecycleCommand(
+    try await sendSessionSnoozeCommand(
       sessionId: sessionId,
       action: "session.snoozeSession",
       args: ["sessionId": sessionId, "untilIso": untilIso],
@@ -9526,7 +9589,7 @@ final class SyncService: ObservableObject {
 
   /// Wake a snoozed session now, recording why.
   func wakeSession(sessionId: String, reason: SessionWakeReason = .manual) async throws {
-    try await sendSessionLifecycleCommand(
+    try await sendSessionSnoozeCommand(
       sessionId: sessionId,
       action: "session.wakeSession",
       args: ["sessionId": sessionId, "reason": reason.rawValue],
@@ -9539,7 +9602,7 @@ final class SyncService: ObservableObject {
 
   /// Drop the "woke" marker once the user has visited the row.
   func clearSessionWokeMarker(sessionId: String) async throws {
-    try await sendSessionLifecycleCommand(
+    try await sendSessionSnoozeCommand(
       sessionId: sessionId,
       action: "session.clearWokeMarker",
       args: ["sessionId": sessionId],
@@ -19806,7 +19869,13 @@ extension SyncService {
   /// and schedule a debounced snapshot write so widgets + live activities pick
   /// up the delta.
   func refreshActiveSessionsAndSnapshot() {
-    let sessions = database.fetchSessions()
+    // Through the chokepoint: this drops `.settled` rows below, and a plain
+    // settle the user just tapped must disappear from the widget and Live
+    // Activity immediately rather than waiting for the host's changeset. (A
+    // "Dismiss & settle" still waits: `needs_you` outranks the settled tier and
+    // the overlay does not touch the attention columns, which only the host
+    // clears.)
+    let sessions = localSessions()
     let now = Date()
 
     // `activeSessions` holds every relevant chat session — running,
@@ -20927,7 +20996,7 @@ extension SyncService {
     guard let projectId = activeProjectId else { return nil }
     let lanes = database.fetchLanes(includeArchived: false)
     let visibleLaneIds = Set(lanes.map(\.id))
-    let scopedSessions = sessionsWithPendingSettleOverlay(database.fetchSessions()).filter { session in
+    let scopedSessions = localSessions().filter { session in
       session.archivedAt == nil && visibleLaneIds.contains(session.laneId)
     }
     let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))

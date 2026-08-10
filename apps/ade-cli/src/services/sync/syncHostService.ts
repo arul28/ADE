@@ -375,12 +375,12 @@ const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
  * `sessionService` chokepoint, so its settle writes are host-decided too and
  * must keep replicating.
  */
-const MOBILE_HOST_AUTHORITATIVE_COLUMNS = new Map<string, ReadonlySet<string>>([
+const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>([
   ["terminal_sessions", new Set(["settled_at", "settle_override", "settle_source"])],
 ]);
 
-const isMobileAuthoredHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
-  MOBILE_HOST_AUTHORITATIVE_COLUMNS.get(change.table)?.has(change.cid) ?? false;
+const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
+  HOST_AUTHORITATIVE_COLUMNS_BY_TABLE.get(change.table)?.has(change.cid) ?? false;
 
 const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
   ...MOBILE_CHANGESET_EXCLUDED_TABLES,
@@ -7627,10 +7627,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // tables (e.g. sync_cluster_state) win and flip brain ownership.
         // Settle-authority guard: never let a phone's optimistic settle column
         // merge over the host's decision (older iOS builds still write them).
-        const dropMobileSettleColumns = isMobileChangesetPeer(peer);
+        // The two rules are not symmetric: the table rule applies to every
+        // peer, the column rule only to phones.
+        const isPhonePeer = isMobileChangesetPeer(peer);
         const filtered = changes.filter((change) => {
           if (isHostAuthoritativeTable(change)) return false;
-          if (dropMobileSettleColumns && isMobileAuthoredHostAuthoritativeColumn(change)) return false;
+          if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;
           return true;
         });
         try {

@@ -4,7 +4,8 @@
 to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
 and the race-matrix tests have been seen to pass.
 
-**Step 0 is implemented** — see amendment 6 in §3c-i for the host-side half.
+**Step 0 is implemented** — see "Host enforcement for pre-fix clients" in
+§3c-i for the host-side half.
 
 Settle currently writes a lifecycle column and stops nothing. A session filed as
 "done" can still own a background shell, a subagent fleet, or a Cursor cloud run
@@ -191,40 +192,44 @@ smallest honest change.
 
 ### 3c-i. Precondition: `settled_at` must become host-authoritative
 
-**Verified, and the chokepoint is currently bypassable.** This is a hard
-precondition, not a caveat.
+**Verified, and the chokepoint was bypassable. Now closed — this section is
+kept because the reasoning still governs step 1.**
 
 `terminal_sessions` is a CRR table (it is not in `LOCAL_ONLY_CRR_EXCLUDED_TABLES`
-in `kvDb.ts:775`), and iOS writes `settled_at` into its **own replica**
-optimistically before sending the remote command:
-`apps/ios/ADE/Services/Database.swift:2128` `updateSessionLifecycleLocked`
-assigns `settled_at`, called from `SyncService.swift:9286` on the settle path.
-The existing code comment there states the hazard outright — *"`terminal_sessions`
-is a CRR table whose local writes replicate upstream"* — and the call site does
-carry a rollback for a failed remote command.
+in `kvDb.ts`), and iOS *used to write* `settled_at` into its **own replica**
+optimistically before sending the remote command, through the lifecycle helper
+in `Database.swift` called from the settle path in `SyncService.swift`. The code
+comment there already stated the hazard outright — *"`terminal_sessions` is a CRR
+table whose local writes replicate upstream"* — and the call site carried a
+rollback for a failed remote command.
 
-Intent is not the problem: every iOS settle *does* route through the host's
+Intent was never the problem: every iOS settle *does* route through the host's
 `session.settle*` remote command, and so through the chokepoint
-(`syncRemoteCommandService.ts:4132` → `sessionService.settleSessions`). The
-problem is the **replica write racing the chokepoint's decision**. The phone
-cannot know the host's revision, so its optimistic `settled_at` carries no
-revision bump. If the host's guard *rejects* the settle (a turn started, §3c),
-the host leaves `settled_at` null — and the phone's optimistic row still
-replicates in and settles it anyway. The guard is defeated by a merge, not by a
-caller.
+(`syncRemoteCommandService.ts` → `sessionService.settleSessions`). The problem was
+the **replica write racing the chokepoint's decision**. The phone cannot know the
+host's revision, so its optimistic `settled_at` carried no revision bump. If the
+host's guard *rejects* the settle (a turn started, §3c), the host leaves
+`settled_at` null — and the phone's optimistic row would still replicate in and
+settle it anyway. The guard is defeated by a merge, not by a caller.
 
-**Required before the chokepoint lands:** iOS stops writing `settled_at` /
-`settle_override` / `settle_source` into its replica. The optimistic
-responsiveness those writes buy is preserved with a **local pending-UI state**
-(not a CRR write) that resolves when the host's changeset arrives or the command
-fails. The rollback path in `SyncService.swift:9286` becomes unnecessary and
-should go with it — it exists only to undo a write we will no longer make.
+**What landed.** iOS no longer writes `settled_at` / `settle_override` /
+`settle_source` into its replica: the lifecycle helper is now
+`updateSessionSnoozeOverlay` and cannot express them. The optimistic
+responsiveness those writes bought is preserved by `PendingSessionSettleStates`
+— a local, non-persisted overlay applied at the session-read chokepoint, which
+resolves when the host's changeset confirms the intent, when the command fails,
+or via a bounded staleness backstop.
+
+One correction to the plan as written: **the rollback did not go away.** It was
+predicted to become dead, but it is shared with the snooze path, which keeps its
+optimistic write. The rollback survives, scoped to the snooze columns, and the
+settle path drops its pending overlay instead.
 
 Snooze columns (`snoozed_until`, `snoozed_at`, `woke_*`) are out of scope here;
-they are written by the same helper but are not guarded by a revision and have
+they were written by the same helper but are not guarded by a revision and have
 no teardown attached.
 
-**Amendment 6 — how the host treats a pre-fix client (implemented, step 0).**
+**Host enforcement for pre-fix clients (implemented, step 0).**
 Removing the write from iOS fixes new builds and nothing else: a paired phone on
 an older build keeps writing `settled_at` into its replica, and a CRDT merge
 never reaches the caller a host-side check would guard. Waiting for clients to
@@ -246,9 +251,20 @@ between two of a user's own machines.
 No capability negotiation is involved — no wire shape changes and the client
 needs to know nothing. The visible consequence for a pre-fix phone is that its
 optimistic value is now local-only divergence rather than authoritative
-corruption, and it self-heals: `refreshWorkSessions` rewrites local rows from the
-host's `work.listSessions` payload via `replaceTerminalSessions`. Host authority
-wins, which is the whole point of the precondition.
+corruption, and it heals when the row next comes back through hydration:
+`refreshWorkSessions` rewrites local rows from the host's `work.listSessions`
+payload via `replaceTerminalSessions`. That payload is capped (`limit: 200`) and
+further filtered to sessions whose lane the phone has hydrated, so a row outside
+that window stays locally wrong until it re-enters it. Local-only, never host
+corruption.
+
+**What this filter is not.** `isMobileChangesetPeer` reads the peer's *own*
+`hello` metadata, so a peer that declares itself a desktop is not filtered. That
+is adequate for the stated threat — an older iOS build, which declares itself
+honestly — but it is a compatibility guard, not a security boundary, and it
+should not be read as one. The real closure is step 1's host-local lifecycle
+revision: a settle write conditional on a revision no replica can author cannot
+be won by a merge from any peer, however it identifies itself.
 
 ### 3c-ii. Where the revision column lives
 
@@ -352,10 +368,11 @@ three, and that is why it produced a defect every round.
 
 ## 5. Sequencing
 
-0. **Precondition (§3c-i):** make `settled_at` host-authoritative — iOS stops
-   writing the settle columns into its replica and uses a local pending-UI state
-   instead. Until this lands, a revision-guarded write is defeatable by CRR
-   merge, so the chokepoint would provide a guarantee it does not actually have.
+0. **Precondition (§3c-i) — landed.** `settled_at` is host-authoritative: iOS no
+   longer writes the settle columns into its replica and uses a local
+   pending-UI state instead, and the host drops those columns from inbound phone
+   changesets. Until this landed, a revision-guarded write was defeatable by CRR
+   merge, so the chokepoint would have provided a guarantee it did not have.
 1. Land the chokepoint + lifecycle revision (3a) **alone**, with no teardown.
    It is pure refactor with a testable invariant: no `settled_at` mutation
    outside one function, and every mutation bumps the revision. The revision

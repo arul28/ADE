@@ -6683,7 +6683,7 @@ describe("outbound changeset ack retries", () => {
     projectRoot: string,
     state: { dbVersion: number; changes: CrsqlChangeRow[] },
     logger = createDiscoveryLogger(),
-    options: { pollIntervalMs?: number; applyChanges?: (changes: CrsqlChangeRow[]) => void } = {},
+    options: { pollIntervalMs?: number } = {},
   ) {
     const base = createHostArgs(projectRoot, []);
     const exportChangesSince = vi.fn(
@@ -6709,10 +6709,7 @@ describe("outbound changeset ack retries", () => {
           getSiteId: () => "site-host-controlled",
           getDbVersion: () => state.dbVersion,
           exportChangesSince,
-          applyChanges: (changes: CrsqlChangeRow[]) => {
-            options.applyChanges?.(changes);
-            return { appliedCount: changes.length };
-          },
+          applyChanges: () => ({ appliedCount: 0 }),
           discardUnpublishedChangesForTables: () => {},
         },
       },
@@ -6723,138 +6720,6 @@ describe("outbound changeset ack retries", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     return { host, logger, exportChangesSince };
   }
-
-  /**
-   * `settled_at` is host-authoritative (settle-teardown design §3c-i). A phone
-   * on a build that predates the fix still writes it into its own CRR replica
-   * optimistically, and `terminal_sessions` replicates — so without this filter
-   * the phone's row merges upstream and settles a session the host *rejected*.
-   * The guard has to live here because a CRDT merge never reaches the caller
-   * the host-side check guards.
-   */
-  describe("settle columns are host-authoritative against a phone replica", () => {
-    function settleChange(overrides: Partial<CrsqlChangeRow> = {}): CrsqlChangeRow {
-      return {
-        table: "terminal_sessions",
-        pk: "session-1",
-        cid: "settled_at",
-        val: "2026-08-10T00:00:00.000Z",
-        col_version: 1,
-        db_version: 1,
-        site_id: "site-phone",
-        cl: 1,
-        seq: 0,
-        ...overrides,
-      };
-    }
-
-    async function sendInboundBatch(
-      peer: Awaited<ReturnType<typeof connectPeer>>,
-      changes: CrsqlChangeRow[],
-    ) {
-      peer.ws.send(encodeSyncEnvelope({
-        type: "changeset_batch",
-        requestId: "inbound-settle",
-        payload: {
-          batchId: "inbound-settle",
-          reason: "broadcast",
-          fromDbVersion: 0,
-          toDbVersion: 1,
-          changes,
-        },
-      }));
-      return waitForValue(
-        () => peer.envelopes.find((envelope) =>
-          envelope.type === "changeset_ack"
-          && (envelope.payload as SyncChangesetAckPayload).batchId === "inbound-settle"),
-        "inbound settle changeset ack",
-      );
-    }
-
-    it("drops a phone's settle columns while applying the rest of the same batch", async () => {
-      const { projectRoot, cleanup } = createTempProjectRoot();
-      const applied: CrsqlChangeRow[][] = [];
-      const state = { dbVersion: 0, changes: [] as CrsqlChangeRow[] };
-      const { host } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
-        applyChanges: (changes) => applied.push(changes),
-      });
-      let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-      try {
-        const port = await host.waitUntilListening();
-        peer = await connectPeer(port, host.getBootstrapToken(), "phone-settle");
-
-        const ack = await sendInboundBatch(peer, [
-          settleChange({ cid: "settled_at" }),
-          settleChange({ cid: "settle_override", val: "settled", seq: 1 }),
-          settleChange({ cid: "settle_source", val: "user", seq: 2 }),
-          // The snooze overlay is NOT host-authoritative — the phone owns its
-          // optimistic write there and it must keep replicating.
-          settleChange({ cid: "snoozed_until", val: "2026-08-11T00:00:00.000Z", seq: 3 }),
-          settleChange({ cid: "title", val: "renamed from phone", seq: 4 }),
-        ]);
-
-        expect((ack.payload as SyncChangesetAckPayload).ok).toBe(true);
-        expect(applied).toHaveLength(1);
-        expect(applied[0]?.map((change) => change.cid)).toEqual(["snoozed_until", "title"]);
-      } finally {
-        peer?.ws.close();
-        await host.dispose();
-        cleanup();
-      }
-    });
-
-    it("acks a batch that was entirely settle columns without applying anything", async () => {
-      const { projectRoot, cleanup } = createTempProjectRoot();
-      const applied: CrsqlChangeRow[][] = [];
-      const state = { dbVersion: 0, changes: [] as CrsqlChangeRow[] };
-      const { host } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
-        applyChanges: (changes) => applied.push(changes),
-      });
-      let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-      try {
-        const port = await host.waitUntilListening();
-        peer = await connectPeer(port, host.getBootstrapToken(), "phone-settle-only");
-
-        // A silent drop must still ack ok, or the phone re-sends the same
-        // poisoned range forever: its outbound cursor only advances on an ok.
-        const ack = await sendInboundBatch(peer, [settleChange()]);
-        expect((ack.payload as SyncChangesetAckPayload).ok).toBe(true);
-        expect((ack.payload as SyncChangesetAckPayload).appliedCount).toBe(0);
-        expect(applied).toHaveLength(0);
-      } finally {
-        peer?.ws.close();
-        await host.dispose();
-        cleanup();
-      }
-    });
-
-    it("keeps applying settle columns from a paired desktop peer", async () => {
-      const { projectRoot, cleanup } = createTempProjectRoot();
-      const applied: CrsqlChangeRow[][] = [];
-      const state = { dbVersion: 0, changes: [] as CrsqlChangeRow[] };
-      const { host } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
-        applyChanges: (changes) => applied.push(changes),
-      });
-      let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-      try {
-        const port = await host.waitUntilListening();
-        // A desktop runs the same `sessionService` chokepoint, so its settle
-        // writes are host-decided too and must keep replicating.
-        peer = await connectPeer(port, host.getBootstrapToken(), "desktop-peer", {
-          platform: "macOS",
-          deviceType: "desktop",
-        });
-
-        const ack = await sendInboundBatch(peer, [settleChange()]);
-        expect((ack.payload as SyncChangesetAckPayload).ok).toBe(true);
-        expect(applied[0]?.map((change) => change.cid)).toEqual(["settled_at"]);
-      } finally {
-        peer?.ws.close();
-        await host.dispose();
-        cleanup();
-      }
-    });
-  });
 
   it("reseeds a far-behind iOS replica once, then resumes incrementally from the acknowledged watermark", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
@@ -7981,6 +7846,14 @@ describe("inbound changeset_batch guards", () => {
     };
   }
 
+  /** One column of one `terminal_sessions` row, as a peer would author it. */
+  function makeSettleChange(cid: string, dbVersion: number, seq: number, val: string): CrsqlChangeRow {
+    const change = makePeerChange("terminal_sessions", dbVersion, seq, val);
+    change.cid = cid;
+    change.pk = "session-1";
+    return change;
+  }
+
   function createGuardHost(projectRoot: string, applyChanges: ReturnType<typeof vi.fn>) {
     const base = createHostArgs(projectRoot, []);
     return createSyncHostService({
@@ -8102,6 +7975,140 @@ describe("inbound changeset_batch guards", () => {
       expect(appliedRows).toHaveLength(1);
       expect(appliedRows.every((row) => row.table !== "sync_cluster_state")).toBe(true);
       expect(ackPayload.appliedCount).toBe(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("strips a phone's settle columns while applying the rest of the same batch", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-settler");
+
+      // `settled_at` is host-authoritative. A phone on a build that predates the
+      // fix still writes it into its own CRR replica optimistically, and
+      // `terminal_sessions` replicates — so without this filter the phone's row
+      // merges upstream and settles a session the host *rejected*. The guard has
+      // to live here because a CRDT merge never reaches the caller a host-side
+      // check would guard.
+      const requestId = "batch-settle";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: {
+          batchId: requestId,
+          fromDbVersion: 0,
+          toDbVersion: 5,
+          changes: [
+            makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z"),
+            makeSettleChange("settle_override", 2, 1, "settled"),
+            makeSettleChange("settle_source", 3, 2, "user"),
+            // The snooze overlay is NOT host-authoritative — the phone owns its
+            // optimistic write there and it must keep replicating.
+            makeSettleChange("snoozed_until", 4, 3, "2026-08-11T00:00:00.000Z"),
+            makeSettleChange("title", 5, 4, "renamed from phone"),
+          ],
+        },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      expect((ack.payload as { ok?: boolean }).ok).toBe(true);
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
+      expect(appliedRows.map((row) => row.cid)).toEqual(["snoozed_until", "title"]);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("acks a batch that was entirely settle columns without applying anything", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-settler-only");
+
+      const requestId = "batch-settle-only";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: {
+          batchId: requestId,
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z")],
+        },
+      }));
+
+      // A silent drop must still ack ok, or the phone re-sends the same range
+      // forever: its outbound cursor only advances on an ok ack.
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
+      expect(ackPayload.ok).toBe(true);
+      expect(ackPayload.appliedCount).toBe(0);
+      expect(applyChanges).not.toHaveBeenCalled();
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps applying settle columns from a paired desktop peer", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // A desktop runs the same `sessionService` chokepoint, so its settle
+      // writes are host-decided too and must keep replicating.
+      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-peer", {
+        platform: "macOS",
+        deviceType: "desktop",
+      });
+
+      const requestId = "batch-settle-desktop";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: {
+          batchId: requestId,
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z")],
+        },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
+      expect(ackPayload.ok).toBe(true);
+      expect(ackPayload.appliedCount).toBe(1);
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
+      expect(appliedRows.map((row) => row.cid)).toEqual(["settled_at"]);
     } finally {
       try {
         peer?.ws.close();
