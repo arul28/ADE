@@ -15,6 +15,17 @@ function toolResult(overrides: Partial<Extract<AgentChatEvent, { type: "tool_res
 
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
 
+/**
+ * `bytes(undefined)` is 0, so an upper-bound assertion alone passes just as
+ * happily when a field was deleted as when it was bounded. Every size claim
+ * about a field that must SURVIVE compaction goes through here.
+ */
+function expectBoundedNotDropped(value: unknown, maxBytes: number) {
+  expect(value).toBeDefined();
+  expect(bytes(value)).toBeGreaterThan(0);
+  expect(bytes(value)).toBeLessThan(maxBytes);
+}
+
 describe("chat event compaction", () => {
   /**
    * The defect this module exists to prevent: `structured` was added to
@@ -27,8 +38,8 @@ describe("chat event compaction", () => {
 
     const stored = compactChatEventForStorage(event) as Extract<AgentChatEvent, { type: "tool_result" }>;
 
-    expect(bytes(stored.structured)).toBeLessThan(bytes(huge) / 10);
-    expect(bytes(stored.structured)).toBeLessThan(32 * 1024);
+    expectBoundedNotDropped(stored.structured, Math.floor(bytes(huge) / 10));
+    expectBoundedNotDropped(stored.structured, 32 * 1024);
   });
 
   it("leaves a small structured payload untouched", () => {
@@ -157,6 +168,26 @@ describe("chat event compaction", () => {
     expect(bytes(stored.result)).toBeLessThan(40 * 1024);
   });
 
+  it("bounds a payload that cannot be serialized at all", () => {
+    // A BigInt anywhere in the payload makes JSON.stringify throw, and the
+    // fallback measured "[object Object]" — 15 bytes, under every cap — so the
+    // original unbounded object was stored and sent untouched. (A circular
+    // reference does not reach here: inline-image redaction breaks the cycle
+    // first, after which the payload measures normally.)
+    const unserializable: Record<string, unknown> = {
+      rows: Array.from({ length: 5_000 }, (_, i) => `row ${i}`),
+      cursor: BigInt(42),
+    };
+
+    const stored = compactChatEventForStorage(
+      toolResult({ result: unserializable }),
+    ) as Extract<AgentChatEvent, { type: "tool_result" }>;
+
+    expect(stored.result).not.toBe(unserializable);
+    expect(bytes(stored.result)).toBeLessThan(4 * 1024);
+    expect(JSON.stringify(stored.result)).toContain("[ADE]");
+  });
+
   it("is idempotent on the text branches too", () => {
     // These carry no wrapper to recognize; they are stable only because the
     // compacted output lands under the cap. Shrinking that headroom would
@@ -205,7 +236,7 @@ describe("chat event compaction", () => {
 
     expect(stored.resultOriginalBytes).toBe(5_000_000);
     expect(stored.resultOmittedBytes).toBe(4_900_000);
-    expect(bytes(stored.structured)).toBeLessThan(32 * 1024);
+    expectBoundedNotDropped(stored.structured, 32 * 1024);
   });
 
   it("returns the same object when there is nothing to compact", () => {

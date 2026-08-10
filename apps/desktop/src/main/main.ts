@@ -807,16 +807,17 @@ async function createWindow(args: {
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
     // correction mid-crash-storm would either free the budget early or freeze it.
     const decision = rendererRecoveryBudget.requestAttempt(details.reason, performance.now());
-    // A lost renderer is a product-level failure category, so it is reported
-    // once per occurrence with Electron's own closed reason enum and whether the
-    // retry budget still allowed a reload. The budget bounds the volume: a
-    // boot-crash loop stops trying, so it cannot emit forever.
-    if (isRecoverableRenderProcessGone(details.reason)) {
-      args.onRendererRecovery?.({
-        crash_reason: coarseRenderProcessGoneReason(details.reason),
-        recovered: decision.recover,
-      });
-    }
+    // A lost renderer is a product-level failure category, reported once per
+    // occurrence with Electron's own closed reason enum. `recovered` describes
+    // the OUTCOME, not the intent: a reload that was attempted and then failed
+    // is a window that stayed down, and reporting it as recovered would make the
+    // metric describe our try rather than the user's result. The budget bounds
+    // the volume — a boot-crash loop stops trying, so it cannot emit forever.
+    const crashReason = coarseRenderProcessGoneReason(details.reason);
+    const reportRecovery = (recovered: boolean): void => {
+      if (!isRecoverableRenderProcessGone(details.reason)) return;
+      args.onRendererRecovery?.({ crash_reason: crashReason, recovered });
+    };
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
         args.logger?.error("window.render_process_recovery_abandoned", {
@@ -825,6 +826,7 @@ async function createWindow(args: {
           attempts: decision.attempts,
           windowMs: RENDERER_RECOVERY_WINDOW_MS,
         });
+        reportRecovery(false);
       }
       return;
     }
@@ -842,14 +844,18 @@ async function createWindow(args: {
       // Load the canonical renderer URL rather than reloading whatever was last
       // committed: a crash on the load-failure fallback page would otherwise
       // just reload the error page.
-      win.loadURL(recoveryUrl).catch((error) => {
-        args.logger?.error("window.render_process_recovery_failed", {
-          windowId: win.id,
-          reason: details.reason,
-          attempt,
-          err: toErrorMessage(error),
-        });
-      });
+      win.loadURL(recoveryUrl).then(
+        () => reportRecovery(true),
+        (error) => {
+          args.logger?.error("window.render_process_recovery_failed", {
+            windowId: win.id,
+            reason: details.reason,
+            attempt,
+            err: toErrorMessage(error),
+          });
+          reportRecovery(false);
+        },
+      );
     }, RENDERER_RECOVERY_DELAY_MS);
   });
 

@@ -200,14 +200,20 @@ const isCompactedPayloadWrapper = (value: unknown): boolean => {
     && typeof candidate.omittedBytes === "number";
 };
 
-const stringifyPayloadForCompaction = (value: unknown): { text: string; structured: boolean } => {
-  if (typeof value === "string") return { text: value, structured: false };
+const stringifyPayloadForCompaction = (
+  value: unknown,
+): { text: string; structured: boolean; serializable: boolean } => {
+  if (typeof value === "string") return { text: value, structured: false, serializable: true };
   try {
     const json = JSON.stringify(value, null, 2);
-    if (typeof json === "string") return { text: json, structured: true };
-    return { text: String(value), structured: false };
+    if (typeof json === "string") return { text: json, structured: true, serializable: true };
+    return { text: String(value), structured: false, serializable: true };
   } catch {
-    return { text: String(value), structured: false };
+    // A circular reference or a BigInt anywhere in the payload lands here, and
+    // `String(value)` is "[object Object]" — 15 bytes, under every cap. Reporting
+    // that as the size let the ORIGINAL unbounded object through untouched,
+    // which is the one case the cap exists for.
+    return { text: String(value), structured: false, serializable: false };
   }
 };
 
@@ -232,6 +238,16 @@ const compactStoredUnknownPayload = (
     return null;
   }
   const serialized = stringifyPayloadForCompaction(value);
+  if (!serialized.serializable) {
+    // Unmeasurable is not "small". Substitute a bounded placeholder rather than
+    // storing and transmitting a payload no cap could see.
+    const summary = `[ADE] Large ${label} could not be measured and was left out.`;
+    return {
+      value: { summary, originalBytes: 0, omittedBytes: 0, preview: serialized.text.slice(0, 256) },
+      originalBytes: 0,
+      omittedBytes: 0,
+    };
+  }
   const compacted = compactStoredTextPayload(label, serialized.text, maxBytes);
   if (!compacted) return null;
   if (!serialized.structured) {

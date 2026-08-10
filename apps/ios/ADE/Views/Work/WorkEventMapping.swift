@@ -927,7 +927,9 @@ func nonEmpty(_ value: String) -> String? {
 /// chat history" to "to keep this chat fast" — but transcripts already on disk
 /// carry the old wording and must keep being recognized.
 func workDiffWasShortened(_ diff: String) -> Bool {
-  guard diff.contains("[ADE] Large file diff was shortened") else { return false }
+  // Anchored at the start, mirroring desktop: an unanchored search matched a
+  // real diff whose own changed lines quoted the notice.
+  guard diff.hasPrefix("[ADE] Large file diff was shortened") else { return false }
   return diff.contains("bytes were left out.")
     || diff.contains("bytes omitted from stored chat history.")
 }

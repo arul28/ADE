@@ -5379,9 +5379,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  /**
+   * Compaction serializes the payload and binary-searches it, so doing it per
+   * peer meant one live event paid that cost once for every subscriber. The
+   * result depends only on the envelope, so it is memoized against the envelope
+   * identity and computed once per event no matter how many peers receive it.
+   */
+  const compactedSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
+  function compactChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
+    const cached = compactedSyncEnvelopes.get(event);
+    if (cached) return cached;
+    const compacted = compactChatEventEnvelopeForSync(event);
+    compactedSyncEnvelopes.set(event, compacted);
+    return compacted;
+  }
+
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
-    const syncEvent = compactChatEventEnvelopeForSync(event);
+    const syncEvent = compactChatEventEnvelopeOnce(event);
     const sent = send(peer.ws, "chat_event", { ...syncEvent, seq } satisfies SyncChatEventPayload);
     if (sent) markChatEventSent(peer, event);
     return sent ? "sent" : "failed";

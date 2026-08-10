@@ -652,7 +652,11 @@ export function summarizeDiffStats(diff: string): { additions: number; deletions
   // same compaction feeds phones, so it can no longer talk about "stored chat
   // history"), but transcripts already on disk carry the old text and must keep
   // being recognized as shortened rather than counted as real diff lines.
-  const shortenedDiff = diff.includes("[ADE] Large file diff was shortened")
+  // Anchored at the start: the compactor always emits this header as the first
+  // line. An unanchored search matched a real diff whose own changed lines
+  // quoted the notice — editing this file, for instance — and reported that
+  // change as having no additions or deletions.
+  const shortenedDiff = diff.startsWith("[ADE] Large file diff was shortened")
     && (diff.includes("bytes were left out.") || diff.includes("bytes omitted from stored chat history."));
   if (shortenedDiff) {
     return { additions: 0, deletions: 0 };

@@ -3781,8 +3781,12 @@ final class SyncService: ObservableObject {
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
-  /// When the app last went to the background, used to classify the resume.
-  private var backgroundedAt: Date?
+  /// Uptime when the app last went to the background, used to classify the
+  /// resume. Deliberately monotonic (`systemUptime`), not wall clock: a device
+  /// whose clock moves backward during a long suspension would otherwise report
+  /// a short or negative gap and go on to trust a socket iOS had already
+  /// suspended — the exact failure this classifier exists to prevent.
+  private var backgroundedAtUptime: TimeInterval?
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
   private var envelopeChunkExpiryTask: Task<Void, Never>?
   private var transportProbeTask: Task<Void, Never>?
@@ -7786,15 +7790,15 @@ final class SyncService: ObservableObject {
   /// long background to `.refreshOnly` and trust a socket iOS may already have
   /// suspended. The cheap error is the safe one.
   func handleBackgroundTransition() {
-    backgroundedAt = Date()
+    backgroundedAtUptime = ProcessInfo.processInfo.systemUptime
   }
 
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
     let resumeAction = syncForegroundResumeAction(
-      backgroundGapSeconds: backgroundedAt.map { Date().timeIntervalSince($0) }
+      backgroundGapSeconds: backgroundedAtUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
     )
-    backgroundedAt = nil
+    backgroundedAtUptime = nil
     // Coming to the foreground is new information: the user is here, and the
     // network may be a different one entirely. Reset the attempt ladder even
     // from the terminal unreachable state, which otherwise costs the user a
