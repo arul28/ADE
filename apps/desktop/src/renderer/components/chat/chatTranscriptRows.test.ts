@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
+import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
@@ -3563,5 +3564,78 @@ describe("ade_card transcript rows", () => {
     const merged = rows[0]!.event;
     if (merged.type !== "ade_card") throw new Error("Expected ade_card");
     expect(merged.metrics).toEqual([{ label: "files", value: "9" }]);
+  });
+});
+
+describe("text adjacency across an older-history prepend", () => {
+  const textEvent = (text: string, index: number): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: `2026-03-17T10:00:0${index}.000Z`,
+    event: { type: "text", text, turnId: "turn-1", itemId: "msg-1" },
+  } as never);
+
+  it("re-merges a message whose deltas straddle the page boundary", () => {
+    // The row reducer merges into rows[rows.length - 1], so it is only correct
+    // over a complete, in-order event list. A byte-cut page can split one
+    // message's deltas across the seam: before the older page lands the reader
+    // sees the tail alone, after it lands both halves must become ONE row.
+    const older = [textEvent("Hello ", 1)];
+    const resident = [textEvent("world", 2)];
+
+    const before = collapseChatTranscriptEventsWithContext(resident);
+    expect(before.rows).toHaveLength(1);
+
+    const merged = prependOlderChatHistoryPage(older, resident);
+    expect(merged.map((entry) => (entry.event as { text: string }).text)).toEqual(["Hello ", "world"]);
+
+    // Incremental collapse must NOT be taken for a prepend: its fast path
+    // assumes append-only growth, and reusing the cached rows here would leave
+    // the message permanently split in two.
+    const after = collapseChatTranscriptEventsIncrementalWithContext(
+      merged,
+      resident,
+      before.rows,
+      before.context,
+    );
+    expect(after.rows).toHaveLength(1);
+    expect((after.rows[0]!.event as { text: string }).text).toBe("Hello world");
+  });
+
+  it("falls back to a full collapse whenever the leading events shift", () => {
+    // The positional-identity guard is what detects a prepend. If it ever
+    // regressed to a length comparison, a prepend would silently take the
+    // append-only path.
+    const resident = [textEvent("world", 2)];
+    const previous = collapseChatTranscriptEventsWithContext(resident);
+    const merged = prependOlderChatHistoryPage([textEvent("Hello ", 1)], resident);
+
+    expect(merged.length).toBeGreaterThan(resident.length);
+    expect(merged[resident.length - 1]).not.toBe(resident[resident.length - 1]);
+
+    const after = collapseChatTranscriptEventsIncrementalWithContext(
+      merged,
+      resident,
+      previous.rows,
+      previous.context,
+    );
+    expect(after.rows).toEqual(collapseChatTranscriptEventsWithContext(merged).rows);
+  });
+
+  it("keeps an intervening non-text event between the halves of a message", () => {
+    // Desktop only merges into the LAST row, so a tool call between two deltas
+    // of one message keeps them as separate rows in original order.
+    const events = [
+      textEvent("A", 1),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "tool_call", tool: "Bash", itemId: "tool-1", turnId: "turn-1" },
+      } as never as AgentChatEventEnvelope,
+      textEvent("B", 3),
+    ];
+    const { rows } = collapseChatTranscriptEventsWithContext(events);
+    const types = rows.map((row) => row.event.type);
+    expect(types.indexOf("text")).toBeLessThan(types.lastIndexOf("text"));
+    expect(types.filter((type) => type === "text")).toHaveLength(2);
   });
 });
