@@ -5,7 +5,7 @@
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
-| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `AI_USAGE_LOG_RETENTION_DAYS` = 90, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
+| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
 | `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
@@ -269,7 +269,7 @@ go through the lane-aware typed-confirmation path.
 
 Step 4's hooks are awaited individually, so a hook may be `async` — the two
 newest ones are, because they delete in paced batches. Each is invoked through
-method-level optional chaining (`maintenance?.pruneAiUsageLog?.bind(…)`), not
+method-level optional chaining (`maintenance?.pruneEventLogs?.bind(…)`), not
 just object-level: the handle is consumed optionally so the doctor can degrade
 against a database handle that predates a step, and `handle?.method.bind()`
 still throws when only the method is missing.
@@ -311,7 +311,6 @@ its target table exists:
   `automation_ingress_events`.
 - `pruneReviewArtifacts` — delete `review_run_artifacts` older than 30 days.
 - `prunePrSnapshots` — delete `pull_request_snapshots` not updated in 60 days.
-- `pruneAiUsageLog` (async) — delete `ai_usage_log` rows older than 90 days.
   Machine-local telemetry behind Stats and the per-feature daily budget check,
   and the largest single source of cr-sqlite metadata in a measured project
   database.
@@ -355,8 +354,12 @@ dismissed. Three things make it larger than it looks:
 3. A new CRR table must exist in every peer's schema or `unknown_sync_table`
    wedges apply — the hazard described under [CRDT model](../sync-and-multi-device/crdt-model.md).
 
-The safe half ships today: 90-day retention, and the phone already never
-receives the table (`MOBILE_CHANGESET_EXCLUDED_TABLES`).
+Retention is not a consolation prize here either. `ActivityModule` defaults to
+the **All** range and renders a "lifetime tokens" total computed from these
+rows, so ageing them out would quietly turn a lifetime figure into a
+trailing-window one — the same class of silent loss as the budget. Both wait on
+the aggregate. The phone already never receives the table
+(`MOBILE_CHANGESET_EXCLUDED_TABLES`).
 - `vacuumIfFragmented(threshold)` — when the freelist fraction exceeds the
   threshold, a one-time full `VACUUM` rebuilds the file and activates
   `auto_vacuum = INCREMENTAL`; every later sweep then reclaims the freelist in

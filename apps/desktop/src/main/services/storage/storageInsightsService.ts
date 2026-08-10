@@ -1340,7 +1340,6 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       // Method-level `?.`, not just object-level: this API is consumed optionally so
       // the doctor degrades on a handle that predates a step, and `x?.method.bind()`
       // still throws when only the method is missing.
-      await runDbStep("db.ai_usage_log", "prune", maintenance?.pruneAiUsageLog?.bind(maintenance));
       await runDbStep("db.event_logs", "prune", maintenance?.pruneEventLogs?.bind(maintenance));
       await runDbStep("db.operations_crsql", "compact", maintenance?.compactCrsqlTombstones.bind(maintenance));
       await runDbStep(

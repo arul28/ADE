@@ -86,8 +86,6 @@ export function pruneIngressEventRowsForProject(
   return removed;
 }
 
-/** AI usage rows older than this are deleted. */
-export const AI_USAGE_LOG_RETENTION_DAYS = 90;
 /** Linear/worker/pack/CTO event-log rows older than this are deleted. */
 export const EVENT_LOG_RETENTION_DAYS = 30;
 
@@ -162,14 +160,6 @@ export interface DbMaintenanceApi {
   pruneReviewArtifacts(): DbMaintenanceResult;
   /** Delete pull_request_snapshots rows not updated in 60 days. */
   prunePrSnapshots(): DbMaintenanceResult;
-  /**
-   * Delete ai_usage_log rows older than 90 days, in paced batches.
-   *
-   * The table is machine-local telemetry behind Stats and the daily budget
-   * check, and it was the largest single source of cr-sqlite metadata in a
-   * measured project database.
-   */
-  pruneAiUsageLog(): Promise<DbMaintenanceResult>;
   /**
    * Delete rows older than 30 days from the append-only event logs that had no
    * retention at all: `linear_sync_events`, `linear_workflow_run_events`,

@@ -11,7 +11,7 @@ import {
   type TableRebuildPlan,
 } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
-import { AI_USAGE_LOG_RETENTION_DAYS, EVENT_LOG_RETENTION_DAYS } from "./dbMaintenanceApi";
+import { EVENT_LOG_RETENTION_DAYS } from "./dbMaintenanceApi";
 
 const testRequire = createRequire(import.meta.url);
 const { DatabaseSync } = testRequire("node:sqlite") as {
@@ -773,33 +773,8 @@ describe("retention maintenance", () => {
     return { db, root };
   }
 
-  function insertAiUsage(db: Awaited<ReturnType<typeof openKvDb>>, id: string, timestamp: string) {
-    db.run(
-      `insert into ai_usage_log (id, timestamp, feature, provider, model, duration_ms, success)
-       values (?, ?, 'chat', 'anthropic', 'claude', 10, 1)`,
-      [id, timestamp],
-    );
-  }
-
   const daysAgo = (days: number): string =>
     new Date(Date.now() - days * 24 * 60 * 60 * 1_000).toISOString();
-
-  it("prunes ai_usage_log past the retention window and keeps the rest", async () => {
-    const { db } = await openScratchDb();
-    try {
-      insertAiUsage(db, "old", daysAgo(AI_USAGE_LOG_RETENTION_DAYS + 5));
-      insertAiUsage(db, "edge", daysAgo(AI_USAGE_LOG_RETENTION_DAYS - 1));
-      insertAiUsage(db, "fresh", daysAgo(1));
-
-      const result = await db.maintenance!.pruneAiUsageLog();
-      expect(result.itemsAffected).toBe(1);
-      expect(result.skippedReason).toBeNull();
-      expect(db.all<{ id: string }>("select id from ai_usage_log order by id").map((r) => r.id))
-        .toEqual(["edge", "fresh"]);
-    } finally {
-      db.close();
-    }
-  });
 
   it("prunes event logs on created_at and leaves fresh rows", async () => {
     const { db } = await openScratchDb();
@@ -863,14 +838,12 @@ describe("retention maintenance", () => {
   it("surfaces a prune failure instead of reporting it as unsupported", async () => {
     const { db } = await openScratchDb();
     try {
-      db.run("drop table ai_usage_log");
-      // The table is gone, so the step is genuinely unsupported and says so.
-      const missing = await db.maintenance!.pruneAiUsageLog();
-      expect(missing.skippedReason).toBe("unsupported");
-
-      // But a real SQL failure propagates rather than masquerading as that.
-      db.run("create table ai_usage_log (id text primary key)");
-      await expect(db.maintenance!.pruneAiUsageLog()).rejects.toThrow();
+      // A malformed table is a real SQL failure, not "this handle does not
+      // implement the step" — the doctor must record it as an error rather than
+      // rendering a tidy completed sweep.
+      db.run("drop table pack_events");
+      db.run("create table pack_events (id text primary key)");
+      await expect(db.maintenance!.pruneEventLogs()).rejects.toThrow();
     } finally {
       db.close();
     }

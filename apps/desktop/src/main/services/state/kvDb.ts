@@ -10,7 +10,6 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
-  AI_USAGE_LOG_RETENTION_DAYS,
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
@@ -875,8 +874,12 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   //     to local-only once aggregates are everywhere.
   //   - A new CRR table also has to exist in every peer's schema or
   //     `unknown_sync_table` wedges apply — the hazard fixed just above.
-  // Retention (90 days, below) is the part that is safe today, and the phone
-  // already never receives this table (MOBILE_CHANGESET_EXCLUDED_TABLES).
+  // Retention is not the consolation prize either: `ActivityModule` defaults to
+  // the "All" range and renders a "lifetime tokens" total from these rows, so
+  // ageing them out would quietly turn a lifetime figure into a trailing-window
+  // one. The phone already never receives this table
+  // (MOBILE_CHANGESET_EXCLUDED_TABLES); everything else here waits on the
+  // aggregate.
   "test_suites",
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
@@ -4184,19 +4187,6 @@ export async function openKvDb(
         "delete from pull_request_snapshots where updated_at < ?",
         [cutoff],
       ).changes;
-      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
-    }),
-    pruneAiUsageLog: () => runMaintenanceSafelyAsync("pruneAiUsageLog", async () => {
-      if (!rawHasTable(db, "ai_usage_log")) return unsupportedMaintenanceResult();
-      const cutoff = new Date(
-        Date.now() - AI_USAGE_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-      ).toISOString();
-      const itemsAffected = await pruneRowsInBatches({
-        table: "ai_usage_log",
-        where: "timestamp like '____-__-__%' and timestamp < ?",
-        params: [cutoff],
-        deleteRows: (sql, params) => runStatement(db, sql, params as string[]).changes,
-      });
       return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
     }),
     pruneEventLogs: () => runMaintenanceSafelyAsync("pruneEventLogs", async () => {
