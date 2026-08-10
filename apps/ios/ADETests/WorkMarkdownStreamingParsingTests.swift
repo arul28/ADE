@@ -433,6 +433,60 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
+  func testStreamingGoRawStringWithTrailingBackslashMatchesFullHighlight() {
+    // Go raw strings process no escapes, so the backslash before the closing
+    // backtick does not escape it. Treating it as an escape desynchronizes the
+    // delimiter parity and can leave a later multi-line raw string looking
+    // closed — the boundary would then split inside it.
+    assertIncrementalMatchesFullHighlight(
+      #"""
+      a := `C:\path\`
+      b := `multi
+      line`
+      c := 1
+      """#,
+      as: .go
+    )
+  }
+
+  func testStreamingHtmlAttributeStringSpanningLinesMatchesFullHighlight() {
+    // The quote rules use `[^"\\]`, which matches newlines, so an attribute
+    // value left open runs across lines for the tokenizer.
+    assertIncrementalMatchesFullHighlight(
+      """
+      <div class="a
+      b">
+      <span>text</span>
+      </div>
+      """,
+      as: .html
+    )
+  }
+
+  func testStreamingYamlQuotedValueSpanningLinesMatchesFullHighlight() {
+    assertIncrementalMatchesFullHighlight(
+      """
+      key: "first
+        continued"
+      other: 2
+      """,
+      as: .yaml
+    )
+  }
+
+  func testStreamingApostropheInCommentDoesNotSplitInsideAStringMatch() {
+    // A lone apostrophe in a comment still opens a string match for the rule
+    // that scans independently of the comment rule.
+    assertIncrementalMatchesFullHighlight(
+      """
+      // don't do this
+      const x = 'ok'
+      const y = 2
+      """,
+      as: .javascript
+    )
+  }
+
   func testStreamingHtmlCommentSpanningLinesMatchesFullHighlight() {
     // HTML's comment rule spans lines like a `/* */` block; a stable boundary
     // landing inside one would freeze mis-highlighted markup into the prefix.

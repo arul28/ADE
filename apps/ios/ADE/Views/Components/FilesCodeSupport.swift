@@ -126,106 +126,128 @@ struct SyntaxToken: Identifiable, Equatable {
   let range: NSRange
 }
 
-/// Whether a scan position sits inside a construct that can span lines. Every
-/// token rule is line-anchored except block comments and backtick / triple-quote
-/// strings, so a line boundary reached with all of these clear is a point no
-/// later text can reinterpret.
-///
-/// Ambiguity resolves toward "still inside": a false positive only stops the
-/// stable prefix from growing (slower, still correct), while a false negative
-/// would let a token straddle the split.
-struct SyntaxNestingBalance: Equatable {
-  var insideBlockComment = false
-  var insideBacktick = false
-  var insideTripleQuote = false
-  /// HTML's comment rule is `(?s)<!--.*?-->`, so it spans lines exactly the way
-  /// a `/* */` block does.
-  var insideHtmlComment = false
-
-  var isClear: Bool {
-    !insideBlockComment && !insideBacktick && !insideTripleQuote && !insideHtmlComment
-  }
-}
-
 /// The already-highlighted stable prefix of the code block currently streaming
-/// in a given language. It always ends just past a newline reached with no
-/// multi-line construct open, so a resumed scan can start from a clear state.
+/// in a given language. It always ends just past a newline that no token spans,
+/// so re-highlighting from there cannot disagree with a whole-text render.
 struct SyntaxHighlightPrefix {
   let text: String
   let attributed: AttributedString
 }
 
-/// Returns the position just past the last newline in `text[start...]` reached
-/// with no multi-line construct open (never earlier than `start`). `start` is
-/// itself such a position, so the scan begins from a clear state.
-private func syntaxStableBoundary(in text: String, from start: String.Index) -> String.Index {
-  var balance = SyntaxNestingBalance()
-  var boundary = start
+/// The delimiters whose matches can run across a newline, per language.
+///
+/// Nearly every rule here can: not only block comments and backticks, but any
+/// `"(?:[^"\\]|\\.)*"` string, because `[^"\\]` matches `\n`. Which characters
+/// those are is language-specific — `'` opens a string in Python but not in
+/// JSON, and Go's raw backticks process no escapes — so the boundary scan reads
+/// this table instead of assuming one grammar for every language.
+struct SyntaxMultilineDelimiters {
+  /// A delimiter that is its own closer (`"`, `'`, `` ` ``).
+  ///
+  /// `escapes` mirrors whether that rule's pattern consumes `\\.`. It is per
+  /// delimiter, not per language: Go's `"` strings take escapes while its raw
+  /// backtick strings do not, and getting it wrong in either direction
+  /// mis-counts the delimiter and flips parity for every following line.
+  struct Symmetric {
+    let character: Character
+    var escapes: Bool = true
+  }
+
+  var symmetric: [Symmetric] = []
+  /// Open/close pairs (`/* */`, `<!-- -->`). Neither processes escapes.
+  var pairs: [(open: String, close: String)] = []
+
+  static let none = SyntaxMultilineDelimiters()
+}
+
+/// UTF-16 offset just past the last newline at which every multi-line delimiter
+/// is balanced, or 0 when there is no such newline.
+///
+/// This asks a deliberately weaker question than "what is open here?". A state
+/// machine would have to model how the rules interact, but the tokenizer runs
+/// each rule independently over the whole text, so a `'` inside a `//` comment
+/// really does start a string match. Balance can't be fooled that way: an
+/// unbalanced delimiter anywhere since the last boundary simply refuses the
+/// split. Wrong guesses only ever cost a shorter prefix — never a wrong render.
+///
+/// The tokens themselves can't answer this either: while a block comment is
+/// still unterminated mid-stream, no token covers it yet, and a boundary placed
+/// inside it would be frozen in before the closer arrives.
+/// Scanning resumes at `startOffset`, which must itself be a confirmed boundary:
+/// everything before it is balanced by definition, so the counts start clean and
+/// the per-tick cost is the length of the new tail rather than the whole block.
+private func syntaxStableBoundaryOffset(
+  in text: String,
+  from startOffset: Int,
+  delimiters: SyntaxMultilineDelimiters
+) -> Int {
+  guard !text.isEmpty, startOffset <= text.utf16.count else { return startOffset }
+  let start = String.Index(utf16Offset: startOffset, in: text)
+
+  // Each symmetric delimiter is counted with its own escape rule, so one
+  // delimiter's escapes cannot mis-count another's.
+  var counts = [Int](repeating: 0, count: delimiters.symmetric.count)
+  var pendingEscape = [Bool](repeating: false, count: delimiters.symmetric.count)
+  var pairDepths = [Int](repeating: 0, count: delimiters.pairs.count)
+  var boundary = startOffset
+  var offset = startOffset
   var index = start
+
+  func isBalanced() -> Bool {
+    counts.allSatisfy { $0 % 2 == 0 } && pairDepths.allSatisfy { $0 == 0 }
+  }
+
   while index < text.endIndex {
     let character = text[index]
-    let next = text.index(after: index)
+    let width = character.utf16.count
 
     if character == "\n" {
-      if balance.isClear { boundary = next }
-      index = next
+      if isBalanced() {
+        boundary = offset + width
+        // Everything before here is confirmed closed, so later lines start clean.
+        for position in counts.indices { counts[position] = 0 }
+      }
+      for position in pendingEscape.indices { pendingEscape[position] = false }
+      offset += width
+      index = text.index(after: index)
       continue
     }
 
-    if balance.insideBlockComment {
-      if character == "*", next < text.endIndex, text[next] == "/" {
-        balance.insideBlockComment = false
-        index = text.index(after: next)
+    var matchedPair = false
+    for (position, pair) in delimiters.pairs.enumerated() {
+      if syntaxMatches(pair.open, in: text, at: index) {
+        pairDepths[position] += 1
+        offset += pair.open.utf16.count
+        index = text.index(index, offsetBy: pair.open.count)
+        matchedPair = true
+        break
+      }
+      if syntaxMatches(pair.close, in: text, at: index) {
+        pairDepths[position] = max(0, pairDepths[position] - 1)
+        offset += pair.close.utf16.count
+        index = text.index(index, offsetBy: pair.close.count)
+        matchedPair = true
+        break
+      }
+    }
+    if matchedPair { continue }
+
+    for (position, delimiter) in delimiters.symmetric.enumerated() {
+      if pendingEscape[position] {
+        pendingEscape[position] = false
         continue
       }
-    } else if balance.insideBacktick {
-      // The template-literal and triple-quote rules both consume `\\.`, so an
-      // escaped delimiter does not close the string for the tokenizer and must
-      // not close it here either — a boundary landing inside the literal would
-      // freeze mis-highlighted text into the immutable prefix.
-      //
-      // Applied unconditionally rather than per language: Go's raw strings have
-      // no escapes, so treating a backslash as one there can only *miss* a
-      // closing backtick, which stalls the boundary (slower, still correct).
-      // The opposite mistake in TypeScript is a wrong render.
-      if character == "\\", next < text.endIndex {
-        index = text.index(after: next)
+      if character == "\\", delimiter.escapes {
+        pendingEscape[position] = true
         continue
       }
-      if character == "`" { balance.insideBacktick = false }
-    } else if balance.insideTripleQuote {
-      if character == "\\", next < text.endIndex {
-        index = text.index(after: next)
-        continue
+      if character == delimiter.character {
+        counts[position] += 1
       }
-      if syntaxIsTripleQuote(text, at: index) {
-        balance.insideTripleQuote = false
-        index = text.index(index, offsetBy: 3)
-        continue
-      }
-    } else if balance.insideHtmlComment {
-      if syntaxMatches("-->", in: text, at: index) {
-        balance.insideHtmlComment = false
-        index = text.index(index, offsetBy: 3)
-        continue
-      }
-    } else if syntaxMatches("<!--", in: text, at: index) {
-      balance.insideHtmlComment = true
-      index = text.index(index, offsetBy: 4)
-      continue
-    } else if character == "/", next < text.endIndex, text[next] == "*" {
-      balance.insideBlockComment = true
-      index = text.index(after: next)
-      continue
-    } else if character == "`" {
-      balance.insideBacktick = true
-    } else if syntaxIsTripleQuote(text, at: index) {
-      balance.insideTripleQuote = true
-      index = text.index(index, offsetBy: 3)
-      continue
     }
 
-    index = next
+    offset += width
+    index = text.index(after: index)
   }
   return boundary
 }
@@ -240,16 +262,6 @@ private func syntaxMatches(_ marker: String, in text: String, at index: String.I
   return true
 }
 
-private func syntaxIsTripleQuote(_ text: String, at index: String.Index) -> Bool {
-  let character = text[index]
-  guard character == "\"" || character == "'" else { return false }
-  var cursor = index
-  for _ in 0..<2 {
-    cursor = text.index(after: cursor)
-    guard cursor < text.endIndex, text[cursor] == character else { return false }
-  }
-  return true
-}
 
 struct SyntaxHighlighter {
   static func tokenize(_ text: String, as language: FilesLanguage) -> [SyntaxToken] {
@@ -313,9 +325,17 @@ struct SyntaxHighlighter {
         return prefix
       }
 
-    let reusedText = reusable?.text ?? ""
-    let scanStart = text.index(text.startIndex, offsetBy: reusedText.count)
-    let boundary = syntaxStableBoundary(in: text, from: scanStart)
+    // The scan and both highlight passes start at the reused prefix, so a tick
+    // costs the length of the new tail rather than the whole block.
+    let scanOffset = reusable.map { $0.text.utf16.count } ?? 0
+    let boundaryOffset = syntaxStableBoundaryOffset(
+      in: text,
+      from: scanOffset,
+      delimiters: multilineDelimiters(for: language)
+    )
+
+    let boundary = String.Index(utf16Offset: boundaryOffset, in: text)
+    let scanStart = String.Index(utf16Offset: scanOffset, in: text)
 
     var attributed = reusable?.attributed ?? AttributedString()
     if boundary > scanStart {
@@ -350,6 +370,7 @@ struct SyntaxHighlighter {
   ) -> AttributedString {
     let text = String(segment)
     guard !text.isEmpty else { return AttributedString() }
+    let tokens = tokenize(text, as: language)
 
     // Rules match independently, so a `.type` inside a string or a keyword
     // inside a comment produces overlapping ranges — including a short token
@@ -359,7 +380,7 @@ struct SyntaxHighlighter {
     // exactly, without needing an index into the string being built.
     let utf16Count = text.utf16.count
     var roles = [SyntaxTokenRole?](repeating: nil, count: utf16Count)
-    for token in tokenize(text, as: language) {
+    for token in tokens {
       let lower = max(0, token.range.location)
       let upper = min(utf16Count, NSMaxRange(token.range))
       guard lower < upper else { continue }
@@ -406,6 +427,53 @@ struct SyntaxHighlighter {
       return []
     }
     return regex.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
+  }
+
+  /// Mirrors the newline-crossing constructs in `tokenRules(for:)`. Keep the two
+  /// in step: a delimiter missing here can let the stable prefix split inside a
+  /// construct, and an extra one only shortens the prefix.
+  static func multilineDelimiters(for language: FilesLanguage) -> SyntaxMultilineDelimiters {
+    typealias Symmetric = SyntaxMultilineDelimiters.Symmetric
+    let blockComment = [(open: "/*", close: "*/")]
+    let quote = Symmetric(character: "\"")
+    let apostrophe = Symmetric(character: "'")
+    switch language {
+    case .swift:
+      return SyntaxMultilineDelimiters(symmetric: [quote], pairs: blockComment)
+    case .typescript, .javascript:
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, apostrophe, Symmetric(character: "`")],
+        pairs: blockComment
+      )
+    case .python:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe])
+    case .rust, .java:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe], pairs: blockComment)
+    case .go:
+      // Raw strings are backtick-delimited and process no escapes, so a
+      // backslash before the closing backtick does not escape it.
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, Symmetric(character: "`", escapes: false)],
+        pairs: blockComment
+      )
+    case .html:
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, apostrophe],
+        pairs: [(open: "<!--", close: "-->")]
+      )
+    case .css:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe], pairs: blockComment)
+    case .json:
+      return SyntaxMultilineDelimiters(symmetric: [quote])
+    case .yaml:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe])
+    case .markdown:
+      // Covers both `inline` and ``` fences: a fence is three backticks, so an
+      // open fence reads as unbalanced until its closer arrives.
+      return SyntaxMultilineDelimiters(symmetric: [Symmetric(character: "`", escapes: false)])
+    case .plaintext:
+      return .none
+    }
   }
 
   private static func tokenRules(for language: FilesLanguage) -> [TokenRule] {
