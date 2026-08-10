@@ -92,7 +92,7 @@ struct WorkMarkdownBlock: Identifiable, Equatable {
 }
 
 func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
-  let key = markdown as NSString
+  let key = workStableDigest(markdown) as NSString
   if let cached = workMarkdownBlocksCache.object(forKey: key) {
     return cached.value
   }
@@ -400,6 +400,15 @@ private let workMarkdownBlocksCache: NSCache<NSString, WorkMarkdownBlocksCacheBo
   return cache
 }()
 
+/// Holds only the currently-streaming tail revisions, so they never evict
+/// completed messages from `workMarkdownCache`. A handful of entries covers the
+/// tail block plus the repeat body evaluations SwiftUI makes for the same text.
+private let workStreamingInlineMarkdownCache: NSCache<NSString, WorkMarkdownCacheBox> = {
+  let cache = NSCache<NSString, WorkMarkdownCacheBox>()
+  cache.countLimit = 8
+  return cache
+}()
+
 /// Per-message state for `parseMarkdownBlocksForStreaming`, keyed by message
 /// id. Immutable snapshot box (replaced wholesale on each delta) so concurrent
 /// readers never observe a half-updated entry. Only one message streams at a
@@ -433,10 +442,32 @@ func workStableDigest(_ string: String) -> String {
   return String(hash, radix: 16, uppercase: false)
 }
 
-func markdownAttributedString(_ text: String) -> AttributedString {
-  let key = text as NSString
+/// Renders inline Markdown, with a separate lane for the revision that is still
+/// growing.
+///
+/// `intermediate` marks the tail block of a streaming message: it is re-rendered
+/// several times a second with text that will never be looked up again. Those
+/// revisions used to land in the shared 256-entry cache, so one long turn could
+/// insert hundreds of throwaway entries and evict every completed message —
+/// scrolling back after a turn then re-parsed the whole transcript on the main
+/// thread. Intermediate revisions now live in their own tiny cache and never
+/// displace finished work; when the turn ends the same text comes back through
+/// the normal path and is promoted into the shared cache.
+func markdownAttributedString(_ text: String, intermediate: Bool = false) -> AttributedString {
+  let key = workStableDigest(text) as NSString
   if let cached = workMarkdownCache.object(forKey: key) {
     return cached.value
+  }
+  if intermediate, let cached = workStreamingInlineMarkdownCache.object(forKey: key) {
+    return cached.value
+  }
+
+  func store(_ value: AttributedString) {
+    if intermediate {
+      workStreamingInlineMarkdownCache.setObject(WorkMarkdownCacheBox(value), forKey: key)
+    } else {
+      workMarkdownCache.setObject(WorkMarkdownCacheBox(value), forKey: key)
+    }
   }
 
   // Preserve line breaks so multi-line paragraphs render correctly — the
@@ -446,7 +477,7 @@ func markdownAttributedString(_ text: String) -> AttributedString {
   )
   guard var attributed = try? AttributedString(markdown: text, options: options) else {
     let fallback = AttributedString(text)
-    workMarkdownCache.setObject(WorkMarkdownCacheBox(fallback), forKey: key)
+    store(fallback)
     return fallback
   }
 
@@ -489,6 +520,22 @@ func markdownAttributedString(_ text: String) -> AttributedString {
     }
   }
 
-  workMarkdownCache.setObject(WorkMarkdownCacheBox(attributed), forKey: key)
+  store(attributed)
   return attributed
+}
+
+/// Whether the shared inline-markdown cache is currently holding a render for
+/// `text`. Exists so the "streaming tail must not evict finished messages"
+/// behaviour is directly assertable.
+func workMarkdownSharedCacheHolds(_ text: String) -> Bool {
+  workMarkdownCache.object(forKey: workStableDigest(text) as NSString) != nil
+}
+
+/// Drops every derived-render cache. Called on `didReceiveMemoryWarning`: these
+/// hold parsed copies of the transcript, all of which can be rebuilt on demand.
+func workPurgeMarkdownRenderCaches() {
+  workMarkdownCache.removeAllObjects()
+  workMarkdownBlocksCache.removeAllObjects()
+  workStreamingMarkdownCache.removeAllObjects()
+  workStreamingInlineMarkdownCache.removeAllObjects()
 }

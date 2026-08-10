@@ -31,6 +31,25 @@ extension WorkSessionDestinationView {
     guard !text.isEmpty else { return false }
     guard canSendChatMessages else { return false }
 
+    // The echo goes up before the upload, not after it. Saving attachments is a
+    // per-image round-trip to the host; waiting for it left the tap with no
+    // visible result for seconds. Placeholder refs render the composer's own
+    // downscaled image with an uploading state, then get swapped for the real
+    // host paths before anything is sent.
+    let pendingUploadRefs = WorkPendingUploadPreviewStore.shared.register(
+      workChatInputReadyAttachments(inputAttachments)
+    )
+    let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
+    let echo = WorkLocalEchoMessage(
+      text: text,
+      timestamp: workDateFormatter.string(from: Date()),
+      deliveryState: initialDeliveryState,
+      attachments: pendingUploadRefs.isEmpty ? nil : pendingUploadRefs
+    )
+    let echoId = echo.id
+    localEchoMessages.append(echo)
+    sending = true
+
     let attachmentRefs: [AgentChatFileRef]
     do {
       attachmentRefs = try await workChatSaveInputAttachments(
@@ -39,21 +58,22 @@ extension WorkSessionDestinationView {
         chatSessionId: sessionId
       )
     } catch {
+      sending = false
+      WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
+      localEchoMessages.removeAll { $0.id == echoId }
       ADEHaptics.error()
       errorMessage = error.localizedDescription
       return false
     }
+    // Swap placeholders for host paths before the send: the echo's dedupe key
+    // (text + attachment refs) has to match the transcript row that comes back,
+    // or reconciliation would leave a duplicate bubble behind.
+    updateLocalEchoAttachments(echoId: echoId, attachments: attachmentRefs.isEmpty ? nil : attachmentRefs)
+    // Promote rather than release: the swap replaces the chip, and dropping the
+    // in-memory image here would flash the generic placeholder while the fresh
+    // chip fetched the copy we just uploaded.
+    WorkPendingUploadPreviewStore.shared.promote(pendingUploadRefs, to: attachmentRefs)
 
-    let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
-    let echo = WorkLocalEchoMessage(
-      text: text,
-      timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: initialDeliveryState,
-      attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
-    )
-    let echoId = echo.id
-    localEchoMessages.append(echo)
-    sending = true
     defer { sending = false }
     do {
       let delivery: SyncChatMessageDelivery
@@ -100,13 +120,12 @@ extension WorkSessionDestinationView {
               timestamp: echo.timestamp,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
             )
-            await refreshChatStateAfterAction(forceRemote: true)
+            schedulePostSendReconciliation(reconcileLocalEchoes: false)
             errorMessage = "Couldn’t send immediately. The message is still queued."
             return true
           }
           updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
-          await refreshChatStateAfterAction(forceRemote: true)
-          reconcileLocalEchoMessages()
+          schedulePostSendReconciliation()
           break
         }
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
@@ -120,8 +139,7 @@ extension WorkSessionDestinationView {
         }
       case .sent:
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
-        await refreshChatStateAfterAction(forceRemote: true)
-        reconcileLocalEchoMessages()
+        schedulePostSendReconciliation()
       case .dropped:
         // The steer queue is full; the host dropped the message (and emitted its
         // own transcript notice). Pull the optimistic echo so it doesn't linger
@@ -142,6 +160,27 @@ extension WorkSessionDestinationView {
       }
       errorMessage = error.localizedDescription
       return false
+    }
+  }
+
+  /// Runs the post-send refresh cascade (transcript → artifacts → summary →
+  /// session) behind the composer instead of in front of it.
+  ///
+  /// The host has already accepted the message at this point; holding `sending`
+  /// through four serial round-trips kept the spinner up and the composer gated
+  /// for the whole cascade. Chained onto the previous post-send refresh so two
+  /// quick sends can't interleave two transcript loads.
+  @MainActor
+  func schedulePostSendReconciliation(reconcileLocalEchoes: Bool = true) {
+    let previous = postSendRefreshTask
+    postSendRefreshTask = Task { @MainActor in
+      await previous?.value
+      guard !Task.isCancelled else { return }
+      await refreshChatStateAfterAction(forceRemote: true)
+      guard !Task.isCancelled else { return }
+      if reconcileLocalEchoes {
+        reconcileLocalEchoMessages()
+      }
     }
   }
 

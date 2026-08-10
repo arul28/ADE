@@ -381,7 +381,7 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
   }
 
   var body: some View {
-    WorkMarkdownBlockView(block: model.block)
+    WorkMarkdownBlockView(block: model.block, isStreamingTail: model.isStreamingTail)
       .frame(maxWidth: .infinity, alignment: .leading)
       .contextMenu {
         Button(action: onCopyMessage) {

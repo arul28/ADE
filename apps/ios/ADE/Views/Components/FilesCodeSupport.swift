@@ -126,9 +126,152 @@ struct SyntaxToken: Identifiable, Equatable {
   let range: NSRange
 }
 
+/// The already-highlighted stable prefix of the code block currently streaming
+/// in a given language. It always ends just past a newline that no token spans,
+/// so re-highlighting from there cannot disagree with a whole-text render.
+struct SyntaxHighlightPrefix {
+  let text: String
+  let attributed: AttributedString
+}
+
+/// The delimiters whose matches can run across a newline, per language.
+///
+/// Nearly every rule here can: not only block comments and backticks, but any
+/// `"(?:[^"\\]|\\.)*"` string, because `[^"\\]` matches `\n`. Which characters
+/// those are is language-specific — `'` opens a string in Python but not in
+/// JSON, and Go's raw backticks process no escapes — so the boundary scan reads
+/// this table instead of assuming one grammar for every language.
+struct SyntaxMultilineDelimiters {
+  /// A delimiter that is its own closer (`"`, `'`, `` ` ``).
+  ///
+  /// `escapes` mirrors whether that rule's pattern consumes `\\.`. It is per
+  /// delimiter, not per language: Go's `"` strings take escapes while its raw
+  /// backtick strings do not, and getting it wrong in either direction
+  /// mis-counts the delimiter and flips parity for every following line.
+  struct Symmetric {
+    let character: Character
+    var escapes: Bool = true
+  }
+
+  var symmetric: [Symmetric] = []
+  /// Open/close pairs (`/* */`, `<!-- -->`). Neither processes escapes.
+  var pairs: [(open: String, close: String)] = []
+
+  static let none = SyntaxMultilineDelimiters()
+}
+
+/// UTF-16 offset just past the last newline at which every multi-line delimiter
+/// is balanced, or 0 when there is no such newline.
+///
+/// This asks a deliberately weaker question than "what is open here?". A state
+/// machine would have to model how the rules interact, but the tokenizer runs
+/// each rule independently over the whole text, so a `'` inside a `//` comment
+/// really does start a string match. Balance can't be fooled that way: an
+/// unbalanced delimiter anywhere since the last boundary simply refuses the
+/// split. Wrong guesses only ever cost a shorter prefix — never a wrong render.
+///
+/// The tokens themselves can't answer this either: while a block comment is
+/// still unterminated mid-stream, no token covers it yet, and a boundary placed
+/// inside it would be frozen in before the closer arrives.
+/// Scanning resumes at `startOffset`, which must itself be a confirmed boundary:
+/// everything before it is balanced by definition, so the counts start clean and
+/// the per-tick cost is the length of the new tail rather than the whole block.
+private func syntaxStableBoundaryOffset(
+  in text: String,
+  from startOffset: Int,
+  delimiters: SyntaxMultilineDelimiters
+) -> Int {
+  guard !text.isEmpty, startOffset <= text.utf16.count else { return startOffset }
+  let start = String.Index(utf16Offset: startOffset, in: text)
+
+  // Each symmetric delimiter is counted with its own escape rule, so one
+  // delimiter's escapes cannot mis-count another's.
+  var counts = [Int](repeating: 0, count: delimiters.symmetric.count)
+  var pendingEscape = [Bool](repeating: false, count: delimiters.symmetric.count)
+  var pairDepths = [Int](repeating: 0, count: delimiters.pairs.count)
+  var boundary = startOffset
+  var offset = startOffset
+  var index = start
+
+  func isBalanced() -> Bool {
+    counts.allSatisfy { $0 % 2 == 0 } && pairDepths.allSatisfy { $0 == 0 }
+  }
+
+  while index < text.endIndex {
+    let character = text[index]
+    let width = character.utf16.count
+
+    if character == "\n" {
+      if isBalanced() {
+        boundary = offset + width
+        // Everything before here is confirmed closed, so later lines start clean.
+        for position in counts.indices { counts[position] = 0 }
+      }
+      for position in pendingEscape.indices { pendingEscape[position] = false }
+      offset += width
+      index = text.index(after: index)
+      continue
+    }
+
+    var matchedPair = false
+    for (position, pair) in delimiters.pairs.enumerated() {
+      if syntaxMatches(pair.open, in: text, at: index) {
+        pairDepths[position] += 1
+        offset += pair.open.utf16.count
+        index = text.index(index, offsetBy: pair.open.count)
+        matchedPair = true
+        break
+      }
+      if syntaxMatches(pair.close, in: text, at: index) {
+        pairDepths[position] = max(0, pairDepths[position] - 1)
+        offset += pair.close.utf16.count
+        index = text.index(index, offsetBy: pair.close.count)
+        matchedPair = true
+        break
+      }
+    }
+    if matchedPair { continue }
+
+    for (position, delimiter) in delimiters.symmetric.enumerated() {
+      if pendingEscape[position] {
+        pendingEscape[position] = false
+        continue
+      }
+      // Only inside an open string of *this* delimiter (odd count). Outside
+      // one a backslash escapes nothing here, and the rules agree: the string
+      // patterns have no preceding-backslash check, so a `\\'` sitting in a
+      // comment really can open a match that runs to the next apostrophe lines
+      // later. Swallowing it would mark that newline stable and freeze the
+      // span before the closer arrives.
+      if character == "\\", delimiter.escapes, counts[position] % 2 == 1 {
+        pendingEscape[position] = true
+        continue
+      }
+      if character == delimiter.character {
+        counts[position] += 1
+      }
+    }
+
+    offset += width
+    index = text.index(after: index)
+  }
+  return boundary
+}
+
+/// Whether `marker` occurs at `index` without running past the end of `text`.
+private func syntaxMatches(_ marker: String, in text: String, at index: String.Index) -> Bool {
+  var cursor = index
+  for character in marker {
+    guard cursor < text.endIndex, text[cursor] == character else { return false }
+    cursor = text.index(after: cursor)
+  }
+  return true
+}
+
+
 struct SyntaxHighlighter {
   static func tokenize(_ text: String, as language: FilesLanguage) -> [SyntaxToken] {
-    let cacheKey = "tokens|\(language.rawValue)|\(text)"
+    let cacheKey = "tokens|\(language.rawValue)|\(workStableDigest(text))"
     if let cached = ADECodeRenderingCache.shared.tokens(for: cacheKey) {
       return cached
     }
@@ -156,29 +299,138 @@ struct SyntaxHighlighter {
     return tokens
   }
 
+  /// Syntax-highlights a code block, incrementally while it is still streaming.
+  ///
+  /// A streaming block grows by a few characters per delta. Highlighting the
+  /// whole text each time is O(n) regex work *plus* O(n) attribute application
+  /// per token, which made a long block the most expensive main-thread path in
+  /// an agent reply. This mirrors what `parseMarkdownBlocksForStreaming` does
+  /// for prose: everything up to the last line boundary that is provably outside
+  /// a multi-line construct can never be re-interpreted by text arriving later,
+  /// so it is highlighted once and reused; only the growing tail is re-scanned.
   static func highlightedAttributedString(_ text: String, as language: FilesLanguage) -> AttributedString {
-    let cacheKey = "highlighted|\(language.rawValue)|\(text)"
+    let cacheKey = "highlighted|\(language.rawValue)|\(workStableDigest(text))"
     if let cached = ADECodeRenderingCache.shared.highlightedString(for: cacheKey) {
       return cached
     }
 
-    var attributed = AttributedString(text)
-    attributed.font = .system(.body, design: .monospaced)
-    attributed.foregroundColor = ADEColor.textPrimary
-
-    for token in tokenize(text, as: language) {
-      guard let stringRange = Range(token.range, in: text) else { continue }
-      let startOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
-      let endOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
-      let lowerBound = attributed.characters.index(attributed.startIndex, offsetBy: startOffset)
-      let upperBound = attributed.characters.index(attributed.startIndex, offsetBy: endOffset)
-      let attributeRange = lowerBound..<upperBound
-      attributed[attributeRange].foregroundColor = token.role.tint
-      attributed[attributeRange].font = token.role.font
-    }
-
+    let attributed = incrementallyHighlighted(text, as: language)
     ADECodeRenderingCache.shared.storeHighlightedString(attributed, for: cacheKey)
     return attributed
+  }
+
+  private static func incrementallyHighlighted(
+    _ text: String,
+    as language: FilesLanguage
+  ) -> AttributedString {
+    guard let delimiters = multilineDelimiters(for: language) else {
+      // This language has newline-crossing rules the balance scan cannot model.
+      return highlightedSegment(text[...], as: language)
+    }
+
+    let reusable = ADECodeRenderingCache.shared.highlightPrefix(for: language)
+      .flatMap { prefix -> SyntaxHighlightPrefix? in
+        // Byte-prefix check: only a block that literally grew from this prefix
+        // may reuse it. A different block of the same language starts over.
+        guard !prefix.text.isEmpty, text.hasPrefix(prefix.text) else { return nil }
+        return prefix
+      }
+
+    // The scan and both highlight passes start at the reused prefix, so a tick
+    // costs the length of the new tail rather than the whole block.
+    let scanOffset = reusable.map { $0.text.utf16.count } ?? 0
+    let boundaryOffset = syntaxStableBoundaryOffset(
+      in: text,
+      from: scanOffset,
+      delimiters: delimiters
+    )
+
+    let boundary = String.Index(utf16Offset: boundaryOffset, in: text)
+    let scanStart = String.Index(utf16Offset: scanOffset, in: text)
+
+    var attributed = reusable?.attributed ?? AttributedString()
+    if boundary > scanStart {
+      attributed.append(highlightedSegment(text[scanStart..<boundary], as: language))
+    }
+    ADECodeRenderingCache.shared.storeHighlightPrefix(
+      SyntaxHighlightPrefix(text: String(text[..<boundary]), attributed: attributed),
+      for: language
+    )
+
+    guard boundary < text.endIndex else { return attributed }
+    var result = attributed
+    result.append(highlightedSegment(text[boundary...], as: language))
+    return result
+  }
+
+  /// Highlights one self-contained segment.
+  ///
+  /// Built by appending styled pieces in order rather than by assigning into
+  /// ranges of an existing `AttributedString`. Range assignment needs an index
+  /// per token, and deriving each one from `startIndex` is what made a long
+  /// block quadratic — while *retaining* an index across the assignment that
+  /// follows it is undefined, since attribute mutation invalidates indices.
+  /// Appending needs no `AttributedString` index at all, and the only cursor it
+  /// keeps is a `String.Index` into immutable text.
+  ///
+  /// Applied to a whole code block this is the non-incremental reference
+  /// rendering, which is what the equivalence tests compare against.
+  static func highlightedSegment(
+    _ segment: Substring,
+    as language: FilesLanguage
+  ) -> AttributedString {
+    let text = String(segment)
+    guard !text.isEmpty else { return AttributedString() }
+    let tokens = tokenize(text, as: language)
+
+    // Rules match independently, so a `.type` inside a string or a keyword
+    // inside a comment produces overlapping ranges — including a short token
+    // fully contained in a long one. Assigning attributes in sorted order let
+    // the later token win the overlapping positions and left the rest of the
+    // earlier token intact; painting per position reproduces that precedence
+    // exactly, without needing an index into the string being built.
+    let utf16Count = text.utf16.count
+    var roles = [SyntaxTokenRole?](repeating: nil, count: utf16Count)
+    for token in tokens {
+      let lower = max(0, token.range.location)
+      let upper = min(utf16Count, NSMaxRange(token.range))
+      guard lower < upper else { continue }
+      for position in lower..<upper {
+        roles[position] = token.role
+      }
+    }
+
+    var result = AttributedString()
+    var runStart = text.startIndex
+    var runRole: SyntaxTokenRole?
+    var index = text.startIndex
+    var offset = 0
+    while index < text.endIndex {
+      // Sampled at character starts only, so a token range that splits a
+      // surrogate pair can never split a character's styling.
+      let role = offset < utf16Count ? roles[offset] : nil
+      if role != runRole {
+        appendRun(text[runStart..<index], role: runRole, to: &result)
+        runStart = index
+        runRole = role
+      }
+      offset += text[index].utf16.count
+      index = text.index(after: index)
+    }
+    appendRun(text[runStart...], role: runRole, to: &result)
+    return result
+  }
+
+  private static func appendRun(
+    _ text: Substring,
+    role: SyntaxTokenRole?,
+    to result: inout AttributedString
+  ) {
+    guard !text.isEmpty else { return }
+    var run = AttributedString(text)
+    run.font = role?.font ?? .system(.body, design: .monospaced)
+    run.foregroundColor = role?.tint ?? ADEColor.textPrimary
+    result.append(run)
   }
 
   private static func regexMatches(pattern: String, in text: String) -> [NSTextCheckingResult] {
@@ -186,6 +438,74 @@ struct SyntaxHighlighter {
       return []
     }
     return regex.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
+  }
+
+  /// Mirrors the newline-crossing constructs in `tokenRules(for:)`. Keep the two
+  /// in step: a delimiter missing here can let the stable prefix split inside a
+  /// construct, and an extra one only shortens the prefix.
+  /// The delimiters for a language whose newline-crossing constructs the balance
+  /// scan can model completely, or `nil` when it cannot.
+  ///
+  /// `nil` means "do not reuse a prefix for this language" — it highlights whole
+  /// text per tick, exactly as it did before incremental highlighting existed.
+  /// Some rules cross a newline without any delimiter at all: CSS matches a
+  /// selector list through `[...\s,>+~]*\s*\{`, YAML's key rule opens with
+  /// `^\s*`, and a Markdown link's `[^\]]+` spans lines. Modeling those would
+  /// mean re-implementing each regex, and a model that is *nearly* right is what
+  /// produced three separate boundary bugs here. Declaring the gap costs those
+  /// three languages the speedup and costs correctness nothing.
+  static func multilineDelimiters(for language: FilesLanguage) -> SyntaxMultilineDelimiters? {
+    typealias Symmetric = SyntaxMultilineDelimiters.Symmetric
+    let blockComment = [(open: "/*", close: "*/")]
+    let quote = Symmetric(character: "\"")
+    let apostrophe = Symmetric(character: "'")
+    switch language {
+    case .swift:
+      return SyntaxMultilineDelimiters(symmetric: [quote], pairs: blockComment)
+    case .typescript, .javascript:
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, apostrophe, Symmetric(character: "`")],
+        pairs: blockComment
+      )
+    case .python:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe])
+    case .rust, .java:
+      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe], pairs: blockComment)
+    case .go:
+      // Raw strings are backtick-delimited and process no escapes, so a
+      // backslash before the closing backtick does not escape it.
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, Symmetric(character: "`", escapes: false)],
+        pairs: blockComment
+      )
+    case .html:
+      return SyntaxMultilineDelimiters(
+        symmetric: [quote, apostrophe],
+        pairs: [(open: "<!--", close: "-->")]
+      )
+    case .plaintext:
+      return .none
+    case .css, .yaml, .markdown, .json:
+      // Each has a rule whose match depends on text the boundary cannot see:
+      // CSS's selector list runs through `[...\s,>+~]*\s*\{`, YAML's key rule
+      // opens with `^\s*`, a Markdown link's `[^\]]+` spans lines, and JSON's
+      // key rule only matches once its `(?=\s*:)` lookahead finds the colon —
+      // which may arrive after the newline. No prefix reuse for these.
+      return nil
+    }
+  }
+
+  /// Fingerprint of a language's rule patterns.
+  ///
+  /// Whether a language may reuse a stable prefix is a claim about *these
+  /// patterns*: that nothing in them can match across a newline except the
+  /// delimiters `multilineDelimiters(for:)` counts. That claim cannot be
+  /// re-derived at runtime, and every time it has been wrong the symptom was a
+  /// completed code block frozen mis-highlighted in cache. A pinned test hashes
+  /// this, so editing a rule for an opted-in language fails loudly instead of
+  /// silently invalidating the boundary.
+  static func tokenRuleFingerprint(for language: FilesLanguage) -> String {
+    workStableDigest(tokenRules(for: language).map(\.pattern).joined(separator: "\u{1F}"))
   }
 
   private static func tokenRules(for language: FilesLanguage) -> [TokenRule] {
@@ -291,7 +611,10 @@ private struct TokenRule {
   let pattern: String
 }
 
-private extension SyntaxTokenRole {
+// Not `private`: the highlighter's equivalence tests reproduce the previous
+// whole-text algorithm as their baseline, and a baseline that substitutes its
+// own colors cannot prove the two renderings agree.
+extension SyntaxTokenRole {
   var tint: Color {
     switch self {
     case .keyword:

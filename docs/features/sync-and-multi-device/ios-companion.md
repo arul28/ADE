@@ -561,6 +561,53 @@ The Work model/activity parity path is concentrated in these files:
   fallback, and the non-queueable `chat.cancelScheduledWork` wrapper used by
   Chat Info.
 
+#### Perceived latency in the chat surface
+
+Three mechanisms keep the transcript feeling native. They are easy to regress,
+because each one trades a simpler implementation for a property the eye notices.
+
+**The user's own bubble paints on the tap frame.** Every other timeline change
+goes through the 90 ms coalescing rebuild in `scheduleTimelineSnapshotRebuild`,
+which is right for host deltas arriving 6-7×/s and wrong for the one change the
+user just caused. `applyLocalEchoTailImmediatelyIfPossible` appends the echo to
+the existing snapshot synchronously and retires any in-flight rebuild
+generation, so a coalesced fold cannot overwrite the bubble it was built
+without. Image sends echo *before* the upload: the composer's downscaled
+`UIImage` renders behind an uploading state under an `ade-pending-upload://`
+placeholder ref (`WorkPendingUploadPreviewStore`), swapped for the real host
+path before the message is sent so the echo's dedupe key still matches the
+transcript row that returns. `sending` releases when the host accepts the
+message; the transcript/artifact/summary/session refresh runs behind the
+composer, chained so two quick sends cannot interleave two transcript loads.
+
+Because that makes back-to-back identical sends easy, echo suppression counts
+represented rows rather than testing set membership — two sends of "continue"
+share one dedupe key, and one matching transcript row must retire exactly one of
+them (`workUnrepresentedLocalEchoMessages`).
+
+**Prepended history does not move the reader.** Older pages insert above the
+viewport, so the `LazyVStack` grows upward while `contentOffset` stays put. The
+correction is measured on the row that led the list before the insert, via a
+single geometry probe that rides that row (`WorkChatPrependProbePreferenceKey`),
+and is applied through `ScrollPosition` in a non-animated transaction.
+Deliberately not total content height: a reply streaming into the tail grows the
+content at the same time, and a reader scrolled back through history is exactly
+when that happens, so a total-height correction would add the tail's growth and
+overshoot. Bottom-follow, the jump-to-latest pill, and the initial force-pin are
+untouched.
+
+**Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
+already split prose at a stable boundary; syntax highlighting now does the same,
+reusing an already-highlighted stable prefix split at the last line boundary
+provably outside a block comment, backtick/triple-quote string, or HTML comment.
+Attributes are applied by painting a role per UTF-16 position and appending runs
+over immutable text — never by retaining an `AttributedString` index across an
+attribute assignment, which is undefined. Streaming tail revisions render from
+their own small cache instead of the shared 256-entry inline-markdown cache, so
+one long turn cannot evict every completed message and force a main-thread
+re-parse on scrollback; the final revision is promoted. All derived render
+caches drop on `applicationDidReceiveMemoryWarning`.
+
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
 

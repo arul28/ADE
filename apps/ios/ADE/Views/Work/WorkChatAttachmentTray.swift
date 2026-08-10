@@ -24,6 +24,127 @@ private enum WorkChatRemoteImageError: Error {
   case responseTooLarge
 }
 
+/// Placeholder scheme for an image the composer has accepted but not yet saved
+/// to the host. The local echo carries these refs so the user's bubble and its
+/// thumbnails paint on the tap frame; `sendMessage` swaps them for the real host
+/// paths once the save round-trip returns, before the message is sent.
+///
+/// A ref with this prefix never reaches the wire.
+let workPendingUploadPathPrefix = "ade-pending-upload://"
+
+/// Roughly one message's worth of attachments (`workChatInputAttachmentLimit`).
+let workPendingUploadPreviewLimit = 10
+
+/// Chips render at 56-72pt, so ~256px covers 3x displays. The composer's own
+/// image is the *upload* render at up to 2400px — around 23 MB decoded, which
+/// ten of would be a quarter-gigabyte resident for thumbnails nobody sees at
+/// that size.
+private let workPendingUploadPreviewMaxPixels: CGFloat = 256
+
+func workAttachmentIsPendingUpload(_ ref: AgentChatFileRef) -> Bool {
+  ref.path.hasPrefix(workPendingUploadPathPrefix)
+}
+
+/// Holds the composer's already-downscaled `UIImage` for the images a send is
+/// carrying, first under a placeholder path and then under the real host path.
+///
+/// Keeping it past the upload is deliberate. Swapping the echo's refs replaces
+/// the chip, and a fresh chip loading the host copy asynchronously would show
+/// the generic placeholder in the gap — a visible flash of the image the phone
+/// already has in memory. Promoting the entry to the host path also means the
+/// phone never re-downloads its own upload.
+///
+/// Bounded by `workPendingUploadPreviewLimit` in insertion order, so it holds
+/// about one message's worth of attachments rather than growing with the chat.
+@MainActor
+final class WorkPendingUploadPreviewStore {
+  static let shared = WorkPendingUploadPreviewStore()
+
+  private var imagesByPath: [String: UIImage] = [:]
+  private var insertionOrder: [String] = []
+
+  private init() {}
+
+  func register(_ attachments: [WorkChatInputAttachment]) -> [AgentChatFileRef] {
+    attachments.map { attachment in
+      let ref = AgentChatFileRef(
+        path: "\(workPendingUploadPathPrefix)\(attachment.id.uuidString)",
+        type: "image"
+      )
+      if let thumbnail = attachment.image.map(workPendingUploadThumbnail) {
+        store(thumbnail, forPath: ref.path)
+      }
+      return ref
+    }
+  }
+
+  /// Drops every held thumbnail. Called on `didReceiveMemoryWarning` — these
+  /// exist only to smooth a handoff, and the host copy can always be refetched.
+  func purge() {
+    imagesByPath.removeAll()
+    insertionOrder.removeAll()
+  }
+
+  /// Re-keys each placeholder's image onto the host path the save returned.
+  /// Positional, so it only applies when the save produced a ref for every
+  /// placeholder; otherwise the placeholders are simply released, because a
+  /// mismatched pairing would attach one image's bytes to another's path.
+  func promote(_ placeholders: [AgentChatFileRef], to saved: [AgentChatFileRef]) {
+    guard placeholders.count == saved.count else {
+      release(placeholders)
+      return
+    }
+    for (placeholder, savedRef) in zip(placeholders, saved) {
+      guard workAttachmentIsPendingUpload(placeholder) else { continue }
+      let image = imagesByPath[placeholder.path]
+      removeEntry(forPath: placeholder.path)
+      guard let image, !workAttachmentIsPendingUpload(savedRef) else { continue }
+      store(image, forPath: savedRef.path)
+    }
+  }
+
+  func image(forPath path: String) -> UIImage? {
+    imagesByPath[path]
+  }
+
+  func release(_ refs: [AgentChatFileRef]) {
+    for ref in refs {
+      removeEntry(forPath: ref.path)
+    }
+  }
+
+  private func store(_ image: UIImage, forPath path: String) {
+    if imagesByPath[path] == nil {
+      insertionOrder.append(path)
+    }
+    imagesByPath[path] = image
+    while insertionOrder.count > workPendingUploadPreviewLimit {
+      let oldest = insertionOrder.removeFirst()
+      imagesByPath.removeValue(forKey: oldest)
+    }
+  }
+
+  private func removeEntry(forPath path: String) {
+    guard imagesByPath.removeValue(forKey: path) != nil else { return }
+    insertionOrder.removeAll { $0 == path }
+  }
+}
+
+/// Downscales the composer's upload-sized render to chip size. Returns the
+/// original when it is already small enough.
+@MainActor
+private func workPendingUploadThumbnail(_ image: UIImage) -> UIImage {
+  let longestSide = max(image.size.width, image.size.height)
+  guard longestSide > workPendingUploadPreviewMaxPixels, longestSide > 0 else { return image }
+  let scale = workPendingUploadPreviewMaxPixels / longestSide
+  let target = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  let format = UIGraphicsImageRendererFormat.default()
+  format.scale = 1
+  return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+    image.draw(in: CGRect(origin: .zero, size: target))
+  }
+}
+
 func workChatAttachmentIsImage(_ ref: AgentChatFileRef) -> Bool {
   let type = ref.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return type == "image" || type == "image-url"
@@ -674,6 +795,10 @@ private struct WorkChatAttachmentChip: View {
   @State private var previewImage: UIImage?
   @State private var loadFailed = false
 
+  private var isUploading: Bool {
+    workAttachmentIsPendingUpload(attachment)
+  }
+
   var body: some View {
     Group {
       if workChatAttachmentIsImage(attachment) {
@@ -703,19 +828,31 @@ private struct WorkChatAttachmentChip: View {
           .scaledToFill()
           .frame(width: size, height: size)
           .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .opacity(isUploading ? 0.55 : 1)
+          .overlay {
+            if isUploading {
+              ProgressView()
+                .controlSize(.small)
+                .tint(Color.white)
+            }
+          }
       } else {
         VStack(spacing: 4) {
           Image(systemName: loadFailed ? "photo.badge.exclamationmark" : "photo")
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.82))
-          Text(loadFailed ? "On desktop" : "Image")
+          Text(loadFailed ? "On desktop" : (isUploading ? "Sending" : "Image"))
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.72))
             .lineLimit(1)
         }
       }
     }
-    .accessibilityLabel("Image attachment \(workChatAttachmentDisplayName(attachment))")
+    .accessibilityLabel(
+      isUploading
+        ? "Image attachment, sending"
+        : "Image attachment \(workChatAttachmentDisplayName(attachment))"
+    )
   }
 
   private var fileChip: some View {
@@ -742,6 +879,20 @@ private struct WorkChatAttachmentChip: View {
   @MainActor
   private func loadPreviewIfNeeded() async {
     guard workChatAttachmentIsImage(attachment) else { return }
+    // The phone already holds this image if it is the one being sent — while it
+    // uploads under a placeholder path, and afterwards under the host path it
+    // was promoted to. Resolving locally avoids both a placeholder flash across
+    // the swap and a re-download of our own upload.
+    if let local = WorkPendingUploadPreviewStore.shared.image(forPath: attachment.path) {
+      previewImage = local
+      loadFailed = false
+      return
+    }
+    if workAttachmentIsPendingUpload(attachment) {
+      previewImage = nil
+      loadFailed = false
+      return
+    }
     let maxPixelSize = max(workChatAttachmentPreviewMinimumPixels, ceil(size * displayScale))
     if attachment.type == "image-url", let urlString = attachment.url,
        let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),

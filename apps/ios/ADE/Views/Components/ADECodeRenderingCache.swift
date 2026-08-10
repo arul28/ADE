@@ -8,6 +8,10 @@ final class ADECodeRenderingCache {
   private let attributedCache = NSCache<NSString, AttributedStringBox>()
   private let regexCache = NSCache<NSString, NSRegularExpression>()
   private let regexLock = NSLock()
+  /// Streaming state, not a cache: one in-progress code block per language.
+  /// Guarded by its own lock because highlighting is reachable from any actor.
+  private let prefixLock = NSLock()
+  private var highlightPrefixes: [FilesLanguage: SyntaxHighlightPrefix] = [:]
 
   private init() {
     tokenCache.countLimit = 64
@@ -29,6 +33,28 @@ final class ADECodeRenderingCache {
 
   func storeHighlightedString(_ attributed: AttributedString, for key: String) {
     attributedCache.setObject(AttributedStringBox(value: attributed), forKey: key as NSString)
+  }
+
+  func highlightPrefix(for language: FilesLanguage) -> SyntaxHighlightPrefix? {
+    prefixLock.lock()
+    defer { prefixLock.unlock() }
+    return highlightPrefixes[language]
+  }
+
+  func storeHighlightPrefix(_ prefix: SyntaxHighlightPrefix, for language: FilesLanguage) {
+    prefixLock.lock()
+    defer { prefixLock.unlock() }
+    highlightPrefixes[language] = prefix
+  }
+
+  /// Drops derived renders. Compiled regexes are cheap to hold and hot on every
+  /// highlight, so they stay.
+  func purgeOnMemoryWarning() {
+    tokenCache.removeAllObjects()
+    attributedCache.removeAllObjects()
+    prefixLock.lock()
+    highlightPrefixes.removeAll()
+    prefixLock.unlock()
   }
 
   func regex(for pattern: String) -> NSRegularExpression? {
