@@ -10,6 +10,7 @@ import {
   isWindowsAbsolutePath,
 } from "../../lib/pathUtils";
 import {
+  isExternalHref,
   resolveWorkspacePathFromHref,
   useChatWorkspacePathOpener,
 } from "./chatWorkspacePaths";
@@ -147,6 +148,16 @@ function ChatMarkdownAnchor({
 }): ReactNode {
   const openWorkspacePath = useChatWorkspacePathOpener();
   const workspacePath = resolveWorkspacePathFromHref(href);
+
+  // Allowing `file:` and drive schemes past the sanitizer (above) means an href
+  // that is NEITHER a resolvable workspace path NOR a real URL — `file:///tmp`,
+  // say — would otherwise reach the browser opener, which accepts `file:` and
+  // would load it in-app. Before the schema widening the sanitizer stripped
+  // those, so keep them inert rather than opening arbitrary local files from
+  // whatever text an agent echoed into chat.
+  if (!workspacePath && !isExternalHref(href ?? "")) {
+    return <span className="break-words">{children}</span>;
+  }
 
   if (workspacePath) {
     if (!openWorkspacePath) return <span className="break-words">{children}</span>;

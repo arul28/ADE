@@ -164,6 +164,25 @@ describe("readOlderHistoryBatch turn anchoring", () => {
     expect(batch?.events).toHaveLength(1);
   });
 
+  it("keeps pages already collected when a later page reports the session gone", async () => {
+    // `nextCursor: 0` latches "no older history", so discarding the pages read
+    // before that point loses them until a reload.
+    const readPage = pager({
+      300: { events: [envelope("text", 3)], startOffset: 200, hasMore: true },
+      200: { sessionFound: false },
+    });
+
+    const batch = await readOlderHistoryBatch({
+      sessionId: SESSION_ID,
+      beforeOffset: 300,
+      readPage,
+      isCurrent,
+    });
+
+    expect(batch?.events).toHaveLength(1);
+    expect(batch?.nextCursor).toBe(0);
+  });
+
   it("aborts when the request is no longer current", async () => {
     const readPage = pager({ 300: { events: [envelope("text", 1)], startOffset: 100, hasMore: true } });
     const batch = await readOlderHistoryBatch({

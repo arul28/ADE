@@ -4636,6 +4636,13 @@ describe("turn-level file-change de-clutter", () => {
     ).toBe("Editing laneService.ts");
   });
 
+  it("labels every activity the runtimes emit", () => {
+    // An unmapped activity falls through to the raw identifier, so a gap here
+    // puts `web_searching` on screen. Both were emitted and unmapped.
+    expect(resolveWorkingIndicatorLabel("web_searching", [])).toBe("Searching the web");
+    expect(resolveWorkingIndicatorLabel("spawning_agent", [])).toBe("Starting agent");
+  });
+
   it("falls back to the bare verb when the edit target is unknown", () => {
     expect(resolveWorkingIndicatorLabel("editing_file", [])).toBe("Editing");
     expect(resolveWorkingIndicatorLabel("thinking", [])).toBe("Thinking");
@@ -4759,6 +4766,23 @@ describe("transcript tool-activity identity stability", () => {
     const stabilized = stabilizeTranscriptToolActivity(first, second);
     expect(stabilized.byDoneRowKey.get("done-1")).toBe(first.byDoneRowKey.get("done-1"));
     expect(stabilized.fileEntriesByDoneRowKey.get("done-1")).toBe(first.fileEntriesByDoneRowKey.get("done-1"));
+  });
+
+  it("does not discard fresh file entries when only they changed", () => {
+    // byDoneRowKey drops file_change entries, so a turn whose FILE changes moved
+    // while its tool entries did not looks identical through that map alone —
+    // guarding on it only would throw away the fresh fileEntriesByDoneRowKey.
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("a") as never);
+    const changedFileEntries = new Map(second.fileEntriesByDoneRowKey);
+    changedFileEntries.set("done-1", [{ ...settledEntry, id: "entry-2" } as never]);
+    const mutated = { ...second, fileEntriesByDoneRowKey: changedFileEntries };
+
+    const stabilized = stabilizeTranscriptToolActivity(first, mutated);
+    expect(stabilized).not.toBe(first);
+    expect(stabilized.fileEntriesByDoneRowKey.get("done-1")).toBe(
+      changedFileEntries.get("done-1"),
+    );
   });
 
   it("returns the previous object outright when nothing changed", () => {

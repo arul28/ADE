@@ -106,6 +106,21 @@ describe("chat markdown file paths", () => {
     expect(anchor?.getAttribute("href")).toBeFalsy();
   });
 
+  it("keeps a file: href that is not a workspace path inert", () => {
+    // Widening the sanitizer to allow `file:` means an href that resolves to
+    // neither a workspace path nor a real URL would otherwise reach the browser
+    // opener, which accepts file: and loads it in-app.
+    render(
+      <ChatWorkspacePathProvider value={contextValue(vi.fn())}>
+        <ChatMarkdown>{"[report](file:///tmp)"}</ChatMarkdown>
+      </ChatWorkspacePathProvider>,
+    );
+
+    fireEvent.click(screen.getByText("report"));
+    expect(openUrlInAdeBrowser).not.toHaveBeenCalled();
+    expect(screen.getByText("report").closest("a")).toBeNull();
+  });
+
   it("still routes real URLs to the browser", () => {
     render(
       <ChatWorkspacePathProvider value={contextValue(vi.fn())}>
