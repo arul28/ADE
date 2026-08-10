@@ -46,7 +46,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testSettleIntentShowsTheRowSettledBeforeTheHostAnswers() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // A declared settle clears ANY override host-side — including a keep-active
     // pin, so it cannot silently veto the settle — and the overlay does too.
@@ -57,7 +57,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testUnsettleLeavesAKeepActivePinAlone() {
     var states = PendingSessionSettleStates()
-    states.begin(.unsettle(now: now), for: "session-1")
+    states.begin(.unsettle(now: now), for: "session-1", baseline: nil)
 
     // The host PRESERVES an `"active"` pin through an unsettle, so the overlay
     // must not claim it was cleared.
@@ -72,7 +72,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
   /// overlay can predict it exactly.
   func testUnsettleClearsASettledPinBecauseTheHostWill() {
     var states = PendingSessionSettleStates()
-    states.begin(.unsettle(now: now), for: "session-1")
+    states.begin(.unsettle(now: now), for: "session-1", baseline: nil)
 
     let overlaid = states.apply(to: session(settleOverride: "settled"))
     XCTAssertNil(overlaid.settleOverride)
@@ -87,7 +87,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testSettleResolvesOnlyOnceTheHostAlsoClearedTheOverride() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // `sessionService.settleMany` / `settleSession` both set
     // `settle_override = null` unconditionally, so that a keep-active pin cannot
@@ -102,7 +102,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testIntentResolvesOnTheHostsOwnTimestampNotOurs() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // The host writes its own clock. Matching on the exact string would never
     // resolve, so presence is what the settle intent predicts.
@@ -113,7 +113,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testIntentSurvivesUntilTheHostRowActuallyChanges() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     states.prune(against: [session(settledAt: nil)], now: now)
 
@@ -123,7 +123,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testUnsettleIntentResolvesWhenTheRowGoesBackToNull() {
     var states = PendingSessionSettleStates()
-    states.begin(.unsettle(now: now), for: "session-1")
+    states.begin(.unsettle(now: now), for: "session-1", baseline: nil)
 
     states.prune(against: [session(settledAt: "2026-08-10T09:00:00.000Z")], now: now)
     XCTAssertNotNil(states["session-1"])
@@ -134,7 +134,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testOverrideIntentComparesTheExactValueWeAskedFor() {
     var states = PendingSessionSettleStates()
-    states.begin(.settleOverride("active", now: now), for: "session-1")
+    states.begin(.settleOverride("active", now: now), for: "session-1", baseline: nil)
 
     // `settle_override` is a value we own, unlike the settle timestamp — a
     // different non-null value is the host disagreeing, not confirming.
@@ -147,7 +147,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testClearingAnOverrideResolvesOnNull() {
     var states = PendingSessionSettleStates()
-    states.begin(.settleOverride(nil, now: now), for: "session-1")
+    states.begin(.settleOverride(nil, now: now), for: "session-1", baseline: nil)
 
     XCTAssertNil(states.apply(to: session(settleOverride: "active")).settleOverride)
 
@@ -157,7 +157,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testAFailedCommandDropsTheIntentSoTheRowSnapsBack() {
     var states = PendingSessionSettleStates()
-    let token = states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    let token = states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     states.clear("session-1", token: token)
 
@@ -169,8 +169,8 @@ final class PendingSessionSettleStatesTests: XCTestCase {
   /// the user is now waiting on.
   func testAStaleFailureCannotRetireANewerIntent() {
     var states = PendingSessionSettleStates()
-    let stale = states.begin(.settleOverride("active", now: now), for: "session-1")
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    let stale = states.begin(.settleOverride("active", now: now), for: "session-1", baseline: nil)
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     states.clear("session-1", token: stale)
 
@@ -179,7 +179,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testAnIntentWhoseChangesetNeverArrivesExpires() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     let justBefore = now.addingTimeInterval(PendingSessionSettleStates.staleAfter - 1)
     states.prune(against: [session(settledAt: nil)], now: justBefore)
@@ -195,7 +195,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
   /// command is still on its way, then settle it again when the queue drains.
   func testAQueuedSettleDoesNotExpireWhileTheHostIsUnreachable() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     var clock = now
     for _ in 0..<10 {
@@ -210,7 +210,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testTheBackstopResumesOnceTheHostIsReachableAgain() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // Offline for well past the budget, then reachable: the clock restarts from
     // the moment we could have been answered, not from the tap.
@@ -226,7 +226,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testPruneReportsOnlyRealResolutionsSoRepaintCannotLoop() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // Re-stamping the offline deadline is not a resolution; reporting it as one
     // would repaint on every read forever.
@@ -238,15 +238,53 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testTheNewestCommandWins() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
-    states.begin(.unsettle(now: now), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.begin(.unsettle(now: now), for: "session-1", baseline: nil)
 
     XCTAssertNil(states.apply(to: session(settledAt: "2026-08-10T09:00:00.000Z")).settledAt)
   }
 
+  /// Two lifecycle commands can overlap: the settle overlay makes the row read
+  /// as settled, so the menu offers Unsettle, and the user can tap it before the
+  /// settle has landed. The newer intent's target value is exactly what the
+  /// stale row still holds, so confirming on value equality alone would retire
+  /// it immediately — and the first command's changeset would then paint the row
+  /// settled while the user's later unsettle was still in flight.
+  func testAReplacementIntentSurvivesUntilTheRowActuallyMoves() {
+    var states = PendingSessionSettleStates()
+    let unsettled = session()
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: unsettled)
+    states.begin(.unsettle(now: now), for: "session-1", baseline: unsettled)
+
+    // The row has not moved yet — `settled_at` is still nil, which is also what
+    // the unsettle wants. It must NOT count as confirmation.
+    states.prune(against: [unsettled], now: now)
+    XCTAssertNotNil(states["session-1"])
+
+    // The first command lands. Still not our intent, so the overlay holds and
+    // keeps showing the row as the user last asked for it.
+    let settledByFirstCommand = session(settledAt: "2026-08-10T12:00:00.417Z")
+    states.prune(against: [settledByFirstCommand], now: now)
+    XCTAssertNotNil(states["session-1"])
+    XCTAssertNil(states.apply(to: settledByFirstCommand).settledAt)
+
+    // The unsettle lands: the row has now moved AND matches.
+    states.prune(against: [unsettled], now: now)
+    XCTAssertNil(states["session-1"])
+  }
+
+  func testAnUnknownBaselineFallsBackToValueEquality() {
+    var states = PendingSessionSettleStates()
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+
+    states.prune(against: [session(settledAt: "2026-08-10T12:00:00.417Z")], now: now)
+
+    XCTAssertNil(states["session-1"], "with no baseline the value match is all we have")
+  }
+
   func testRemoveAllForgetsEverythingInFlight() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     states.removeAll()
 
@@ -256,7 +294,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testASessionMissingFromAScopedReadKeepsItsIntent() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     // A partial or differently-scoped read is not the host disagreeing.
     states.prune(against: [session(id: "session-2", settledAt: nil)], now: now)
@@ -266,7 +304,7 @@ final class PendingSessionSettleStatesTests: XCTestCase {
 
   func testOverlayOnlyTouchesTheSessionItWasBegunFor() {
     var states = PendingSessionSettleStates()
-    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1")
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
 
     let others = states.apply(to: [session(id: "session-1"), session(id: "session-2")])
 

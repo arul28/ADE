@@ -29,6 +29,21 @@ struct PendingSessionSettleIntent: Equatable {
   /// Identifies this specific command, so a slow one's failure cannot retire an
   /// intent the user has since replaced. Assigned by `begin`.
   fileprivate var token: UInt64 = 0
+  /// The row as it stood when the command was sent, and whether it has moved
+  /// since. Matching the intent is not enough on its own: two commands can
+  /// overlap (settle, then unsettle before the settle lands), and the newer
+  /// one's target value can be exactly what the stale row still holds. Without
+  /// a baseline it would confirm against the state it was issued *from* and
+  /// retire immediately, letting the first command's changeset paint the row
+  /// while the user's later intent is still in flight. `nil` means the row was
+  /// unknown at begin, in which case value equality alone has to do.
+  fileprivate var baseline: Baseline?
+  fileprivate var sawRowChange = false
+
+  struct Baseline: Equatable {
+    var settledAt: String?
+    var settleOverride: String?
+  }
 
   static func settle(now: Date, timestamp: String) -> PendingSessionSettleIntent {
     PendingSessionSettleIntent(kind: .settle(timestamp: timestamp), startedAt: now)
@@ -90,6 +105,13 @@ struct PendingSessionSettleIntent: Equatable {
     }
   }
 
+  fileprivate func currentBaseline(of session: TerminalSessionSummary) -> Baseline {
+    Baseline(
+      settledAt: PendingSessionSettleIntent.normalized(session.settledAt),
+      settleOverride: PendingSessionSettleIntent.normalized(session.settleOverride)
+    )
+  }
+
   fileprivate static func normalized(_ value: String?) -> String? {
     guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
     return trimmed
@@ -120,10 +142,15 @@ struct PendingSessionSettleStates: Equatable {
   /// Replaces any intent already in flight for the session: the newest command
   /// is the one the user is waiting on. Returns the token that identifies it.
   @discardableResult
-  mutating func begin(_ intent: PendingSessionSettleIntent, for sessionId: String) -> UInt64 {
+  mutating func begin(
+    _ intent: PendingSessionSettleIntent,
+    for sessionId: String,
+    baseline: TerminalSessionSummary?
+  ) -> UInt64 {
     nextToken &+= 1
     var stamped = intent
     stamped.token = nextToken
+    stamped.baseline = baseline.map { stamped.currentBaseline(of: $0) }
     intents[sessionId] = stamped
     return nextToken
   }
@@ -178,7 +205,15 @@ struct PendingSessionSettleStates: Equatable {
     guard !intents.isEmpty else { return false }
     let before = intents.count
     for session in sessions {
-      guard let intent = intents[session.id], intent.isSatisfied(by: session) else { continue }
+      guard var intent = intents[session.id] else { continue }
+      if let baseline = intent.baseline, !intent.sawRowChange {
+        if intent.currentBaseline(of: session) != baseline {
+          intent.sawRowChange = true
+          intents[session.id] = intent
+        }
+      }
+      let movedSinceCommand = intent.baseline == nil || intent.sawRowChange
+      guard movedSinceCommand, intent.isSatisfied(by: session) else { continue }
       intents.removeValue(forKey: session.id)
     }
     intents = intents.filter { now.timeIntervalSince($0.value.startedAt) < PendingSessionSettleStates.staleAfter }

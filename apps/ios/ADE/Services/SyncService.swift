@@ -9318,7 +9318,13 @@ final class SyncService: ObservableObject {
     _ intent: PendingSessionSettleIntent,
     for sessionId: String
   ) -> UInt64 {
-    let token = pendingSessionSettleStates.begin(intent, for: sessionId)
+    // The RAW row is the baseline: what the host had before this command. A
+    // cheap PK lookup, once per settle command, not on any read path.
+    let token = pendingSessionSettleStates.begin(
+      intent,
+      for: sessionId,
+      baseline: database.fetchSession(id: sessionId)
+    )
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
     return token
   }
