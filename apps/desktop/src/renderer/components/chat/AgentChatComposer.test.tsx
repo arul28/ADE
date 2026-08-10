@@ -701,6 +701,26 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("foo.ts")).toBeTruthy();
   });
 
+  it("does not reopen the file menu after a confirmed token and trailing prose", () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      attachments: [{ path: "src/foo.ts", type: "file" }],
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/foo.ts about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull();
+    expect(onSearchAttachments).not.toHaveBeenCalled();
+  });
+
   it("keeps trailing prose when selecting a shorthand file match", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
     const props = buildComposerProps({
@@ -740,6 +760,28 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/my folder about this"));
     expect(await screen.findByText("my folder")).toBeTruthy();
+  });
+
+  it("preserves trailing prose when selecting an extensionless path prefix", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/my folder", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const draft = "ask @src/my review this";
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/my review this"));
+    fireEvent.click(await screen.findByText("my folder"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @src/my folder review this");
   });
 
   it("keeps spaced chat mentions searchable and displays the chat title in the chip", async () => {

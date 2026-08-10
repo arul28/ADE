@@ -270,6 +270,19 @@ describe("chat mention ranking", () => {
     expect(ranked.map((r) => r.id)).toEqual(["short"]);
   });
 
+  it("prefers the longest title prefix before recency", () => {
+    const ranked = rankChatMentionSuggestions(
+      [
+        { id: "short", title: "Foo", lastActivityAt: 900 },
+        { id: "long", title: "Foo Bar", lastActivityAt: 1 },
+      ],
+      "Foo Bar please",
+      10,
+    );
+
+    expect(ranked.map((r) => r.id)).toEqual(["long", "short"]);
+  });
+
   it("does not keep a subtitle-only prefix when prose follows it", () => {
     const ranked = rankChatMentionSuggestions(
       [{ id: "subtitle", title: "Unrelated", subtitle: "Primary · codex", lastActivityAt: 10 }],

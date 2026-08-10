@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composerFileSearchQuery,
   composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -133,6 +134,26 @@ describe("replaceComposerTriggerSpan", () => {
 
     expect(selected.query).toBe("my folder ");
     expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe("ask @src/my folder about this");
+  });
+
+  it("preserves prose after an extensionless path-prefix match", () => {
+    const text = "ask @src/my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my folder");
+
+    expect(selected.query).toBe("src/my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe(
+      "ask @src/my folder review this",
+    );
+  });
+
+  it("recognizes a confirmed @ token as a terminated trigger", () => {
+    const text = "ask @src/foo.ts about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const confirm = { isFile: (body: string) => body === "src/foo.ts" };
+
+    expect(composerTriggerHasConfirmedPrefix(text, trigger, confirm)).toBe(true);
+    expect(composerTriggerHasConfirmedPrefix("ask @src/foo.ts", detectComposerTrigger("ask @src/foo.ts", 15)!, confirm)).toBe(false);
   });
 
   it("replaces exactly the trigger span mid-sentence", () => {

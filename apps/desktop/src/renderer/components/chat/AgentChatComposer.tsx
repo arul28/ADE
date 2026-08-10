@@ -42,6 +42,7 @@ import type {
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import {
   composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -2689,6 +2690,13 @@ export function AgentChatComposer({
       setCommandMenuTrigger(null);
       return;
     }
+    if (composerTriggerHasConfirmedPrefix(node.value, trigger, {
+      isFile: (body) => attachedPaths.has(body),
+      isMention: isChatMentionTokenBody,
+    })) {
+      setCommandMenuTrigger(null);
+      return;
+    }
     if (!openIfNew) {
       setCommandMenuTrigger((current) => {
         if (!current) return current;
@@ -2701,7 +2709,7 @@ export function AgentChatComposer({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, []);
+  }, [attachedPaths]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;

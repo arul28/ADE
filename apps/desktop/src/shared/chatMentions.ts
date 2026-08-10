@@ -244,21 +244,29 @@ export function carryChatMentionBlocks(source: string, target: string): string {
  * `null` means "no match, drop the row". Mirrors the tiering the ⌘K palette
  * uses: exact > prefix > substring > subsequence.
  */
+type ChatMentionMatch = {
+  score: number;
+  /** Length of a confirmed title prefix, used to prefer the longest label. */
+  titlePrefixLength: number;
+};
+
 function scoreChatMentionMatch(
   haystack: string,
   loweredQuery: string,
   allowTrailingProse = false,
-): number | null {
-  if (!loweredQuery.length) return 0;
+): ChatMentionMatch | null {
+  if (!loweredQuery.length) return { score: 0, titlePrefixLength: 0 };
   const target = haystack.toLowerCase();
-  if (target === loweredQuery) return 0;
+  if (target === loweredQuery) return { score: 0, titlePrefixLength: 0 };
   // Once a title is an exact prefix, keep it visible while the user continues
   // ordinary prose after the mention. This is intentionally title-only: a
   // subtitle prefix is not a confirmed label, so it must not widen the
   // replacement span and consume the prose that follows it.
-  if (allowTrailingProse && loweredQuery.startsWith(`${target} `)) return 1;
-  if (target.startsWith(loweredQuery)) return 1;
-  if (target.includes(loweredQuery)) return 2;
+  if (allowTrailingProse && loweredQuery.startsWith(`${target} `)) {
+    return { score: 1, titlePrefixLength: target.length };
+  }
+  if (target.startsWith(loweredQuery)) return { score: 1, titlePrefixLength: 0 };
+  if (target.includes(loweredQuery)) return { score: 2, titlePrefixLength: 0 };
   // Subsequence fallback: every query char appears in order.
   let cursor = 0;
   for (const char of loweredQuery) {
@@ -266,7 +274,7 @@ function scoreChatMentionMatch(
     if (found < 0) return null;
     cursor = found + 1;
   }
-  return 3;
+  return { score: 3, titlePrefixLength: 0 };
 }
 
 /**
@@ -278,10 +286,10 @@ export function rankChatMentionSuggestions<
   T extends { id: string; title: string; subtitle?: string; lastActivityAt?: number | null },
 >(candidates: T[], query: string, limit: number): T[] {
   const trimmed = query.trim().toLowerCase();
-  const scored: Array<{ item: T; score: number }> = [];
+  const scored: Array<{ item: T; score: number; titlePrefixLength: number }> = [];
   for (const item of candidates) {
     if (!trimmed.length) {
-      scored.push({ item, score: 0 });
+      scored.push({ item, score: 0, titlePrefixLength: 0 });
       continue;
     }
     const titleScore = scoreChatMentionMatch(item.title, trimmed, true);
@@ -289,12 +297,17 @@ export function rankChatMentionSuggestions<
       ? scoreChatMentionMatch(item.subtitle, trimmed)
       : null;
     // A subtitle hit is always weaker than any title hit.
-    const score = titleScore ?? (subtitleScore === null ? null : subtitleScore + 4);
-    if (score === null) continue;
-    scored.push({ item, score });
+    const match = titleScore ?? (subtitleScore === null
+      ? null
+      : { score: subtitleScore.score + 4, titlePrefixLength: 0 });
+    if (match === null) continue;
+    scored.push({ item, score: match.score, titlePrefixLength: match.titlePrefixLength });
   }
   scored.sort((a, b) => {
     if (a.score !== b.score) return a.score - b.score;
+    if (a.titlePrefixLength !== b.titlePrefixLength) {
+      return b.titlePrefixLength - a.titlePrefixLength;
+    }
     const aAt = a.item.lastActivityAt ?? 0;
     const bAt = b.item.lastActivityAt ?? 0;
     if (aAt !== bAt) return bAt - aAt;

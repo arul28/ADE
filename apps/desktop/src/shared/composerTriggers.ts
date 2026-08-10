@@ -58,6 +58,17 @@ function composerPathBasename(pathValue: string): string {
   return separator >= 0 ? pathValue.slice(separator + 1) : pathValue;
 }
 
+function composerPathPrefixForSelection(query: string, selectedLabel: string): string {
+  if (!/[\\/]/.test(selectedLabel)) return "";
+  const words = query.trim().split(/[ \t]+/).filter(Boolean);
+  for (let wordCount = words.length - 1; wordCount > 0; wordCount -= 1) {
+    const prefix = words.slice(0, wordCount).join(" ");
+    if (!/[\\/]/.test(prefix)) continue;
+    if (selectedLabel.toLowerCase().startsWith(prefix.toLowerCase())) return prefix;
+  }
+  return "";
+}
+
 /**
  * Narrow an @ trigger to the selected item's leading label when the user has
  * continued typing prose after it. The menu can keep a prefix suggestion
@@ -85,6 +96,12 @@ export function composerTriggerForSelection(
   if (searchableQuery !== trigger.query && selectedLabel.toLowerCase().endsWith(searchableQuery.toLowerCase())) {
     addCandidateLabel(searchableQuery);
   }
+  // Extensionless path searches accept the longest space-delimited prefix that
+  // exists in the index, so the selected canonical path may continue beyond
+  // what the user typed before adding prose (for example, `src/my review`
+  // selecting `src/my folder`). Preserve that accepted prefix as the splice
+  // boundary without applying this heuristic to ordinary chat titles.
+  addCandidateLabel(composerPathPrefixForSelection(trigger.query, selectedLabel));
 
   for (const candidateLabel of candidateLabels) {
     const matchedPrefix = trigger.query.slice(0, candidateLabel.length);
@@ -161,6 +178,28 @@ export function findConfirmedComposerTokens(
     if (kind) tokens.push({ start, end: start + 1 + body.length, kind });
   }
   return tokens;
+}
+
+/**
+ * True when an @ trigger begins with an already-confirmed file or mention
+ * token and the user has typed a separator after it. Confirmed tokens are
+ * complete attachments/pointers, not new searches, so the menu must stay
+ * closed while the user continues ordinary prose after them.
+ */
+export function composerTriggerHasConfirmedPrefix(
+  text: string,
+  trigger: Pick<ComposerTrigger, "type" | "start" | "query">,
+  confirm: {
+    isFile: (body: string) => boolean;
+    isMention?: (body: string) => boolean;
+  },
+): boolean {
+  if (trigger.type !== "at") return false;
+  const end = Math.min(text.length, trigger.start + 1 + trigger.query.length);
+  const query = text.slice(trigger.start + 1, end);
+  const match = /^(\S+)[ \t]/.exec(query);
+  if (!match) return false;
+  return confirm.isFile(match[1]!) || confirm.isMention?.(match[1]!) === true;
 }
 
 /** True when the trigger token is the only content in the draft. */
