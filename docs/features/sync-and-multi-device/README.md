@@ -416,11 +416,18 @@ running sync authority).
 │     project_catalog/project_switch/project actions,              │
 │     command / command_ack / command_result,                      │
 │     envelope_chunk                                               │
-│   - negotiated deflate+base64 above 512 B; no offer keeps the    │
-│     exact legacy encoder (gzip at 4 KB, or web JSON)             │
+│   - negotiated deflate above 512 B; no offer keeps the exact     │
+│     legacy encoder (gzip at 4 KB, or web JSON)                   │
+│   - compressed payloads ride a binary frame ("ADE1" magic, u32   │
+│     header length, header JSON, raw bytes) for peers declaring   │
+│     "binaryEnvelopes"; everyone else keeps base64-in-JSON        │
+│   - permessage-deflate on both listeners; when a peer negotiates │
+│     it the application codec is skipped (stacking measures worse │
+│     than either layer alone)                                     │
 │   - decode capped at 25 MB; reassembly capped and expires at 30 s│
 │   - encoded envelopes >720 KB sliced bidirectionally after the   │
-│     host confirms the peer's "chunkedEnvelopes" capability       │
+│     host confirms the peer's "chunkedEnvelopes" capability;      │
+│     binary peers slice into binary chunks (no base64 re-tax)     │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -1073,6 +1080,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `tool_result.structured` and `tool_result.toolResultMeta` from the wire
   entirely because no client decodes them — see
   [chat → Persisted transcript](../chat/transcript-and-turns.md#persisted-transcript)),
+  replay delta folding (`foldChatEventEnvelopesForReplay` in
+  `apps/desktop/src/shared/chatReplayFold.ts`, applied to the full
+  `chat_subscribe` snapshot for peers declaring `foldedReplay`: consecutive
+  streaming `text`/`reasoning` deltas of one message collapse into a single
+  event. Only provably-clean appends fold — desktop `mergeStreamingText` and
+  iOS `mergeWorkStreamingText` already disagree on overlapping or repeated
+  deltas, so folding those would pick a winner and change what one client
+  renders. A folded run sits at its first delta's position and carries the last
+  delta's sequence, and delivery bookkeeping marks the pre-fold envelopes so the
+  transcript pump cannot re-send a collapsed delta. The replay-buffer resume
+  path is deliberately not folded: its per-event `seq` monotonicity drives the
+  client's `seq <= lastSeq` drop rule),
   the mobile changeset diet
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: tables the phone
   never reads from a changeset — `attempt_transcripts`, `operations`,
@@ -1275,6 +1294,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
 - `syncProtocol.ts` — canonical Node envelope codec and protocol boundary.
+- `syncBinaryFrame.ts` — binary envelope container ("ADE1" magic, u32 header
+  length, header JSON, raw compressed body) plus the magic sniff that keeps a
+  text frame delivered as binary data on the text path.
   It retains the legacy gzip threshold
   (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`) for peers that
   omit compression negotiation, and supports negotiated zlib-wrapped
