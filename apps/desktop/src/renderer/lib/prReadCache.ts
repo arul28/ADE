@@ -70,7 +70,17 @@ export function listPrsCoalesced(options?: {
 }
 
 export function getGitHubSnapshotCoalesced(
-  args: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number } = {},
+  args: {
+    force?: boolean;
+    includeExternalClosed?: boolean;
+    historyPageLimit?: number;
+    /**
+     * Set by timers, polling reactions, and visibility effects — anything that
+     * is not a person asking. A forced snapshot from a person may retry GitHub
+     * while it is rate-limiting us; an automatic one must not.
+     */
+    automaticRefresh?: boolean;
+  } = {},
   options?: { projectRoot?: string | null },
 ): Promise<GitHubPrSnapshot> {
   return coalesceInFlight(
@@ -78,6 +88,7 @@ export function getGitHubSnapshotCoalesced(
     JSON.stringify({
       projectRoot: projectKey(options?.projectRoot),
       force: args.force === true,
+      automaticRefresh: args.automaticRefresh === true,
       includeExternalClosed: args.includeExternalClosed === true,
       historyPageLimit: args.historyPageLimit ?? null,
     }),

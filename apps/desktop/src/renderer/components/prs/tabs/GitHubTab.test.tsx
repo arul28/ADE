@@ -421,6 +421,70 @@ describe("GitHubTab snapshot lifecycle", () => {
   });
 
 
+  // The renderer half of the GitHub rate-limit fix. `prs-updated` fires on every
+  // poll tick; the freshness guard is what keeps that from becoming a forced
+  // snapshot each time. Stamping only on success meant a failing GitHub bought
+  // zero quiet here — the guard never tripped and ADE asked faster than healthy.
+  it("stops re-fetching after a failed snapshot load until the freshness window passes", async () => {
+    const context = {
+      prs: [],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: false,
+    };
+    mockUsePrs.mockReturnValue(context);
+    const getSnapshot = window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>;
+    getSnapshot.mockRejectedValue(new Error("GitHub API rate limit reached"));
+
+    let emitPrEvent: ((event: { type: string }) => void) | null = null;
+    (window.ade.prs.onEvent as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: { type: string }) => void) => {
+        emitPrEvent = cb;
+        return () => {};
+      },
+    );
+
+    render(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getSnapshot).toHaveBeenCalled();
+    });
+    const afterFailedLoad = getSnapshot.mock.calls.length;
+
+    for (let i = 0; i < 3; i += 1) {
+      act(() => { emitPrEvent?.({ type: "prs-updated" }); });
+    }
+    await waitFor(() => {
+      expect(getSnapshot.mock.calls.length).toBe(afterFailedLoad);
+    });
+
+    // Past the window, a poll tick is allowed to try again.
+    const nowSpy = vi.spyOn(Date, "now")
+      .mockReturnValue(Date.now() + GITHUB_TAB_SNAPSHOT_FRESH_MS + 1_000);
+    try {
+      act(() => { emitPrEvent?.({ type: "prs-updated" }); });
+      await waitFor(() => {
+        expect(getSnapshot.mock.calls.length).toBeGreaterThan(afterFailedLoad);
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it("does not force-refresh the GitHub snapshot when linked PRs hydrate after mount", async () => {
     const emptyContext = {
       prs: [],

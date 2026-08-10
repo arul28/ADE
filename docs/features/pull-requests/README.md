@@ -157,8 +157,10 @@ Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `computeStatus` is also the single derivation of `checksStatus` / `checksReason` / `checksMissingRequired`: it normalizes check runs and legacy combined statuses, resolves required contexts through `requiredChecks.ts`, and calls `rollupChecks` — the webhook path re-enters here rather than trusting the delivered payload. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. `reconcileOnFocus({ force? })` is the catch-up safety net for the pollerless brain (in-memory 90 s throttle + single-flight, bounded merged-heal, 30-min `state:"all"` closed-sweep) and `syncLanePr(laneId)` is the manual per-badge sync; both heal merged/unmapped lane PRs and emit a `pr-reconcile` event. See [Keeping PR status fresh](#keeping-pr-status-fresh). |
-| `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. It takes an `automaticRefresh` opt-out alongside `force` and shares one failure ladder (`githubReadBackoff.ts`) across the snapshot and the per-branch lookups — see [GitHub read failure ladder](#github-read-failure-ladder). On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `computeStatus` is also the single derivation of `checksStatus` / `checksReason` / `checksMissingRequired`: it normalizes check runs and legacy combined statuses, resolves required contexts through `requiredChecks.ts`, and calls `rollupChecks` — the webhook path re-enters here rather than trusting the delivered payload. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. `reconcileOnFocus({ force? })` is the catch-up safety net for the pollerless brain (in-memory 90 s throttle + single-flight, bounded merged-heal, 30-min `state:"all"` closed-sweep) and `syncLanePr(laneId)` is the manual per-badge sync; both heal merged/unmapped lane PRs and emit a `pr-reconcile` event. See [Keeping PR status fresh](#keeping-pr-status-fresh). |
+| `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, integration proposal behavior, and the GitHub failure-ladder / never-pushed-branch behavior of the snapshot path. |
+| `githubReadBackoff.ts` | The keyed failure ladder shared by every GitHub read `prService` makes: the whole-repo snapshot under `snapshot:<owner>/<repo>` and each targeted lane-branch lookup under `branch:<owner>/<repo>#<branch>`. `githubReadFailureBackoffMs(attempts, successTtlMs)` is a 20 s → 40 s → 80 s … ladder capped at 15 minutes and then **floored at the success TTL**, so a failed read always buys at least as much quiet as a successful one. `createGithubReadBackoff()` holds the per-key entries (`isBackedOff`, `lastError` to replay, `record` to arm/climb, `clear` for one key or all), expires them lazily against `Date.now()`, and sweeps expired keys on every write so a long-lived process does not accumulate one entry per branch it ever failed on. `markGithubRequestError` / `isGithubRequestError` tag the error so only GitHub arms the ladder — a snapshot rebuild also reads lanes and SQLite, and a local hiccup must not silence GitHub reads for minutes. See [GitHub read failure ladder](#github-read-failure-ladder). |
+| `githubReadBackoff.test.ts` | Ladder math (floor, doubling, cap), lazy expiry and restart-at-rung-1, sweep-on-write, and the error tagging predicate. |
 | `requiredChecks.ts` | Three-tier resolver for a base branch's required status-check contexts, cached per `(repo, base branch)` behind a 5-minute TTL. Tier 1 is `/repos/{owner}/{repo}/rules/branches/{branch}` (repository rulesets) — read access is enough, so it answers for every credential source ADE supports. Tier 2 is `/branches/{branch}/protection` (classic protection), admin-only and therefore a 403 for most contributors, but the only source for repos that never migrated to rulesets. Tier 3 is `mergeStateStatus === "blocked"`, already fetched for the merge box: it cannot name contexts and conflates missing checks with review-required and out-of-date branches, so it is corroboration only — enough to strengthen a not-run finding, never enough to contradict a genuine pass. When all three come up empty the result is `null` contexts meaning **unknown**, never "none required". See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
 | `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` stamps `detached_at` + the frozen lane identity and provenance when a lane is deleted, lifts `commit_count` / `changed_files` off the snapshot, nulls the bulky snapshot JSON columns, drops lane-scoped group membership, and removes live PR↔chat routing edges. `detachPullRequestRowsByIds` remains an explicit cleanup helper for callers that truly need to detach selected rows; ordinary branch switching retains previous-branch PRs as live lane history. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for genuinely destructive paths. See [Multi-PR lane ownership](#multi-pr-lane-ownership-and-chat-edges) and [Detached PR rows](#detached-pr-rows). |
@@ -258,7 +260,7 @@ Renderer PR helpers outside the PRs tab (the Work-surface badge/pill path):
 |------|---------------|
 | `apps/desktop/src/renderer/lib/lanePrBadge.ts` | Lane-PR presentation and navigation contract. `selectPrimaryLanePr` picks the row a lane badges with, `lanePrStateLabel` / `lanePrStateColor` render its state, `lanePrDeepLinkPath` builds the in-app `/prs?tab=normal&prId=…` target, and `openLanePr(pr, { foreign, navigate, localPath? })` is the single answer to "where does this PR open" for every Work surface. A foreign PR goes to GitHub because a PR id resolves only on the machine that owns it; the local branch takes `localPath` when a caller (the chat Git toolbar) wants the richer route that also selects the lane. |
 | `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` | The lane→PR map every Work surface reads. Builds the bound machine's map from a coalesced `prs.listAll` + GitHub snapshot refreshed by `prs-updated`, then folds in each union machine's `prs` slice. Exports the three namespaced key builders (`laneBoundMachineKey`, `lanePrCompositeKey`, `laneAnyMachineKey`) and their accessors `boundMachineLanePrs`, `lanePrsForMachine`, and `laneHasAnyPr` — see [Which machine answers a PR read](#which-machine-answers-a-pr-read). |
-| `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. |
+| `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. `getGitHubSnapshotCoalesced` also keys on `automaticRefresh`, so a timer-driven snapshot and a user's Refresh never collapse onto one in-flight request — they mean different things to the service. |
 | `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx` | The compact PR chip itself. Presentation only — its host supplies `onOpen`, which is always `openLanePr`. |
 | `apps/desktop/src/renderer/lib/prChatScope.ts` | Pure chat-specific PR scoping. Explicit `pull_request_chat_sessions` edges win; rows with no edge use the lane fallback for legacy data, while a chat with no edge never displays another chat's explicitly linked PR. |
 
@@ -441,7 +443,7 @@ See [Which machine answers a PR read](#which-machine-answers-a-pr-read).
 - `ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` — cached/forced `PrAiSummary` per `(prId, headSha)`
 - `ade.prs.rebaseResolutionStart`
 - `ade.prs.retargetBase` — re-point an individual PR's base branch
-- `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items.
+- `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items. Args are `{ force?, includeExternalClosed?, historyPageLimit?, automaticRefresh? }`. `force` means "do not serve me the cache"; `automaticRefresh: true` additionally says "this force came from a timer, not a person", which keeps the call inside the [GitHub read failure ladder](#github-read-failure-ladder). The same three fields flow through all three transports that reach the service — in-process IPC (`registerIpc.ts`), the runtime action registry, and the sync remote command service (`prs.getGitHubSnapshot`) — so a remote-bound window behaves like a local one.
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 - `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` — read and create GitHub repo autolink references (the `key_prefix` + `url_template` rules that turn issue identifiers like `ADE-123` into GitHub-rendered hyperlinks). Used by the Linear setup flow so a project's Linear identifiers become clickable in PR bodies. `createRepoAutolink` requires `urlTemplate` to contain `<num>` and busts the autolinks ETag cache after a successful POST.
 
@@ -473,13 +475,24 @@ Cross-repo PRs involving the viewer are not fetched or displayed.
 
 Caching layers:
 
-1. **Runtime cache** — GitHub snapshot is cached for a short TTL
-   inside `prService` on the active runtime for remote-bound windows
-   and in the local in-process PR service for local-bound windows.
-   Repeated in-flight snapshot requests are deduplicated. The snapshot
-   fetches repository PRs only, then does at most 12 targeted same-repo
-   head-branch lookups for active lane branches that were absent from
-   the repo-wide page window.
+1. **Runtime cache** — GitHub snapshot is cached inside `prService` on
+   the active runtime for remote-bound windows and in the local
+   in-process PR service for local-bound windows. The freshness window
+   is `GITHUB_SNAPSHOT_TTL_MS` (120 s) for the open list and
+   `GITHUB_CLOSED_SNAPSHOT_TTL_MS` (600 s) for a snapshot that also
+   carries closed/merged history. Repeated in-flight snapshot requests
+   are deduplicated. The snapshot fetches repository PRs only, then does
+   at most 12 targeted same-repo head-branch lookups for active lane
+   branches that were absent from the repo-wide page window. Those 12
+   slots are filtered before they are spent: branches inside the failure
+   ladder drop out first, then — on the open-list path only — branches
+   with no remote-tracking ref, because a branch that was never pushed
+   cannot have a PR. The history path deliberately skips that filter:
+   merging deletes the head branch, so the merged PRs that path exists to
+   recover have no remote-tracking ref left to match.
+   A failed snapshot fetch is negatively cached, so a throttled GitHub
+   buys at least as much quiet as a healthy one — see
+   [GitHub read failure ladder](#github-read-failure-ladder).
 2. **Renderer cache** — `PrsContext` holds the last snapshot so
    revisiting the tab renders immediately. Selected PR detail panes
    hydrate from `listSnapshots({ prId })` before live status, check,
@@ -487,9 +500,13 @@ Caching layers:
    Each live piece applies as soon as it resolves; a slow comments or
    action-runs request does not block status/checks/files from
    rendering.
-3. **Manual sync** — a "Refresh" action forces a fresh pull. Explicit
-   multi-PR refreshes run with bounded parallelism instead of refreshing
-   each PR serially.
+3. **Manual sync** — a "Refresh" action forces a fresh pull and is the
+   one caller allowed past the failure ladder, so a user can always
+   retry a rate-limited GitHub. Every automatic refresh — the GitHub
+   tab's hot-refresh timer, the `prs-updated` reaction, the Lanes tab's
+   PR tags, reconcile-on-focus, and the poller's discovery sweep — sends
+   `automaticRefresh: true` and respects it. Explicit multi-PR refreshes
+   run with bounded parallelism instead of refreshing each PR serially.
 
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
@@ -507,6 +524,53 @@ PR rows in `tabs/GitHubTab.tsx` render the linked lane's color through
 app store via `useLaneColorById` / a `Map<laneId, color>`); the rest of the
 row text inherits the lane color so a glance correlates a PR with its lane
 across GitHub and Workflows views.
+
+### GitHub read failure ladder
+
+ADE caches successful GitHub reads, so a success buys a known window of quiet.
+A failure has to buy at least as much, or the app asks *faster* while degraded
+than while healthy: every caller a warm cache would have served locally turns
+back into a live request the moment GitHub starts refusing. `githubReadBackoff.ts`
+is the shared ladder that closes that gap, and `prService` keeps exactly one
+instance for both GitHub read shapes — the whole-repo snapshot
+(`snapshot:<owner>/<repo>`) and each targeted lane-branch lookup
+(`branch:<owner>/<repo>#<branch>`).
+
+How it behaves:
+
+- **Cooldown.** A failure arms `20 s → 40 s → 80 s …`, capped at 15 minutes and
+  floored at the success TTL. With the 120 s snapshot TTL the first rungs are all
+  120 s and the doubling only becomes visible once the ladder climbs past it.
+  The snapshot always floors on the *open-list* TTL even when the history variant
+  failed, because both share one key — flooring on the 10-minute history window
+  would let one History click during a blip suppress the cheap open-list refresh
+  for ten minutes.
+- **Who arms it.** Only errors tagged by `markGithubRequestError`, which is
+  applied at the single paginated GitHub fetch helper. A snapshot rebuild also
+  reads lanes and SQLite; an untagged local failure must not silence GitHub or
+  get replayed to the UI as an API error.
+- **What a backed-off read does.** If nothing local can answer, the recorded
+  error is replayed instead of spending the call. Callers that *can* be served
+  stale cache or a local projection still are — they just do not kick the
+  background revalidation, since nothing republishes the cache timestamp on a
+  failed fetch and a stale snapshot would otherwise re-arm the fetch on every
+  read for as long as GitHub stays down. Stack reconciliation is gated the same
+  way, because it is a GitHub call of its own that runs before the replay guard.
+- **What clears it.** Any successful read clears its key — even one whose
+  snapshot arrives too late to publish, because GitHub answering is the fact that
+  matters. Dropping GitHub auth clears every key and bumps an auth generation, so
+  a request that was in flight across the change cannot arm the ladder with a
+  dead token's error and cannot hide lane PR badges for minutes after a
+  successful reconnect. Swapping one working token for another does not reach
+  that path; pressing Refresh is the escape hatch.
+- **Who is exempt.** A user-initiated `force` (no `automaticRefresh`) skips the
+  ladder entirely.
+
+The renderer holds the matching half of the invariant: `GitHubTab` stamps its
+last-load timestamp on failure as well as success, because the `prs-updated`
+effect gates on that ref — leaving it stale meant a failing GitHub bought no
+quiet in the renderer either, and every poll tick re-fired a forced snapshot plus
+a hot-refresh timer.
 
 ### Terminal-state precedence
 
@@ -970,7 +1034,9 @@ remaining, leaving that reserve for explicit user actions, and resumes
 automatically after reset. A low search bucket does not pause PR polling.
 
 When `prService` reports zero tracked PRs, the tick can force a full
-repo-snapshot discovery (`discoverLanePullRequests`). Because that is
+repo-snapshot discovery (`discoverLanePullRequests`, which forces past the
+snapshot cache but marks itself an automatic refresh so it cannot reopen the tap
+on a GitHub that is already refusing). Because that is
 far heavier than a tracked-PR delta poll, it is throttled to at most once every
 30 minutes with a healthy relay or 10 minutes without one for projects that
 have no PRs yet (new users, non-PR projects). User-driven surfaces still
@@ -1024,7 +1090,9 @@ PR state stays current through complementary layers:
    `prService.reconcileOnFocus()` runs on project open
    (`prs.reconcile_on_open`) and on warm-reuse / deep-link focus. It is composed
    from existing TTL-cached, single-flighted primitives in three phases — an open
-   sweep + auto-map (`getGithubSnapshot({ force: true })`), a bounded merged-heal
+   sweep + auto-map (`getGithubSnapshot({ force: true, automaticRefresh: true })`,
+   forced past the cache but still inside the
+   [failure ladder](#github-read-failure-ladder)), a bounded merged-heal
    that refreshes the stalest active rows (`RECONCILE_MERGED_HEAL_MAX = 25`), and
    a slower `state:"all"` closed-sweep (every 30 min) that backfills a
    merged-but-never-mapped PR onto its lane. Its guards are all **in-memory on the
@@ -1041,7 +1109,9 @@ PR state stays current through complementary layers:
 4. **Manual sync (per-badge ⟳)** — `prService.syncLanePr(laneId)`, wired to the
    ⟳ affordance next to the PR chip in `ChatGitToolbar`. It resolves the lane's
    current PR and refreshes it (or pulls `state:"all"` to map a merged-but-unmapped
-   PR on the lane branch), then re-reads the linked-PR pill. Post-auth auto-heal
+   PR on the lane branch), then re-reads the linked-PR pill. It is a direct user
+   action, so it is allowed past the
+   [failure ladder](#github-read-failure-ladder). Post-auth auto-heal
    fires `reconcileNow` so badges light up right after authorizing GitHub.
 
 Both `reconcileOnFocus` and `syncLanePr` emit a `pr-reconcile` `PrEventPayload`
@@ -1524,6 +1594,20 @@ markdown layout cost for offscreen or folded content.
   reconciliation or normal notifications. Never reset a hot PR's start time
   from a refresh result, or active CI can consume the shared GitHub quota
   indefinitely.
+- **A failure TTL must never be shorter than the success TTL.** Every GitHub
+  read cooldown in `githubReadBackoff.ts` is floored at the window a success
+  would have bought. Lower it — or floor a shared key on the longer of two TTLs
+  — and a degraded GitHub is polled *harder* than a healthy one, because every
+  caller the cache was absorbing turns back into a live request. The floor is the
+  fix, not the doubling.
+- **A lookup that falls back to cached data must not report success upstream.**
+  A failed per-branch PR lookup returns `null`, not `[]`, so the snapshot can
+  never fold "we could not ask" into a confirmed-empty result and drop a lane's
+  badge. The renderer keeps the same rule: `refreshLaneGithubPrTags` returns
+  `false` when it served the previous snapshot, which is what drives the retry,
+  and `GitHubTab`'s error path returns the cached snapshot while still recording
+  the failure. Returning the stale value as a success is how a transient GitHub
+  error becomes a permanently wrong UI.
 - **A non-null `lane_id` does not mean the lane exists.** Detached rows keep a
   dangling `lane_id` on purpose (see [Detached PR rows](#detached-pr-rows)).
   Any new lane-scoped query over `pull_requests` must add

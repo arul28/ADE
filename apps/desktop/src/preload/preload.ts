@@ -9007,6 +9007,7 @@ contextBridge.exposeInMainWorld("ade", {
       force?: boolean;
       includeExternalClosed?: boolean;
       historyPageLimit?: number;
+      automaticRefresh?: boolean;
     }): Promise<GitHubPrSnapshot> =>
       callPrReadRuntimeActionOr(
         null,

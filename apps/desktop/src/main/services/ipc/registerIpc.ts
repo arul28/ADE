@@ -9872,10 +9872,11 @@ export function registerIpc({
     return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
   });
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number }): Promise<GitHubPrSnapshot> => {
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number; automaticRefresh?: boolean }): Promise<GitHubPrSnapshot> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.getGithubSnapshot({
       force: arg?.force === true,
+      automaticRefresh: arg?.automaticRefresh === true,
       includeExternalClosed: arg?.includeExternalClosed === true,
       historyPageLimit: typeof arg?.historyPageLimit === "number" ? arg.historyPageLimit : undefined,
     });
