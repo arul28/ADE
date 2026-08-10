@@ -43,6 +43,22 @@ import type { AgentChatEventEnvelope } from "./types";
  *
  * Every other event type passes through untouched — an unrecognized type is
  * never folded on a guess.
+ *
+ * ## Invariant: a folded run must never overlap a byte-paged range
+ *
+ * Event identity is content-derived — `agentChatEventIdentityKey`
+ * (shared/chatHistoryMerge.ts) is `timestamp#type#JSON.stringify(event)` —
+ * so a folded run and the individual deltas it replaces have completely
+ * different identities and will NOT dedupe against each other. If a reader ever
+ * received both, it would render the same text twice with no path to detect it.
+ *
+ * That is safe today only because the two spans are disjoint: the
+ * `chat_subscribe` snapshot covers `[tailStartOffset, EOF)` and byte-paged
+ * history covers strictly below `tailStartOffset`. This module is therefore
+ * called from exactly one place — the snapshot path in `syncHostService` — and
+ * must stay that way. Never fold anything below `tailStartOffset`, and never
+ * let a folded snapshot overlap a byte-paged range. (Contract agreed with the
+ * lane that owns page-cut placement and renderer paging.)
  */
 
 /** Event types this module knows how to fold, and how. */
