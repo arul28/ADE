@@ -2015,12 +2015,26 @@ export function AgentChatComposer({
       const displayText = token.kind === "mention"
         ? mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
         : tokenText;
+      const isLabeledMention = token.kind === "mention" && displayText !== tokenText;
       segments.push(
         <span
           key={`chip-${index}-${token.start}`}
           className="rounded-[4px] bg-violet-500/14 text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"
         >
-          {displayText}
+          {isLabeledMention ? (
+            // Keep the textarea's canonical token as an invisible layout slot.
+            // The visible title is positioned inside that slot so a longer or
+            // shorter label cannot move the caret or following prose out of
+            // alignment with the real textarea value.
+            <span className="relative inline-block align-baseline" title={displayText}>
+              <span className="invisible whitespace-pre" data-composer-mention-layout>
+                {tokenText}
+              </span>
+              <span className="absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap" data-composer-mention-display>
+                {displayText}
+              </span>
+            </span>
+          ) : displayText}
         </span>,
       );
       pos = token.end;

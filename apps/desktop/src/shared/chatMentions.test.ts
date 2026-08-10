@@ -270,6 +270,16 @@ describe("chat mention ranking", () => {
     expect(ranked.map((r) => r.id)).toEqual(["short"]);
   });
 
+  it("does not keep a subtitle-only prefix when prose follows it", () => {
+    const ranked = rankChatMentionSuggestions(
+      [{ id: "subtitle", title: "Unrelated", subtitle: "Primary · codex", lastActivityAt: 10 }],
+      "Primary · codex please review",
+      10,
+    );
+
+    expect(ranked).toEqual([]);
+  });
+
   it("honors the per-kind cap and is stable for equal rows", () => {
     const ties = [
       { id: "z", title: "same", lastActivityAt: 5 },

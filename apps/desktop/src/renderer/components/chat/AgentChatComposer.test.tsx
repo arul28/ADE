@@ -711,7 +711,8 @@ describe("AgentChatComposer", () => {
     const chip = await screen.findByText("a b c");
     expect(chip.textContent).toBe("a b c");
     expect(chip.closest("[aria-hidden]")).not.toBeNull();
-    expect(view.container.querySelector("[aria-hidden]")?.textContent).not.toContain("@chat:chat-1");
+    expect(view.container.querySelector("[data-composer-mention-layout]")?.textContent).toBe("@chat:chat-1");
+    expect(view.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
   });
 
   it("does not consume prose after a matching spaced chat mention", async () => {

@@ -247,14 +247,16 @@ export function carryChatMentionBlocks(source: string, target: string): string {
 function scoreChatMentionMatch(
   haystack: string,
   loweredQuery: string,
+  allowTrailingProse = false,
 ): number | null {
   if (!loweredQuery.length) return 0;
   const target = haystack.toLowerCase();
   if (target === loweredQuery) return 0;
   // Once a title is an exact prefix, keep it visible while the user continues
-  // ordinary prose after the mention. Exact longer titles still win above this
-  // fallback, so a real multi-word title is selected before a shorter prefix.
-  if (loweredQuery.startsWith(`${target} `)) return 1;
+  // ordinary prose after the mention. This is intentionally title-only: a
+  // subtitle prefix is not a confirmed label, so it must not widen the
+  // replacement span and consume the prose that follows it.
+  if (allowTrailingProse && loweredQuery.startsWith(`${target} `)) return 1;
   if (target.startsWith(loweredQuery)) return 1;
   if (target.includes(loweredQuery)) return 2;
   // Subsequence fallback: every query char appears in order.
@@ -282,7 +284,7 @@ export function rankChatMentionSuggestions<
       scored.push({ item, score: 0 });
       continue;
     }
-    const titleScore = scoreChatMentionMatch(item.title, trimmed);
+    const titleScore = scoreChatMentionMatch(item.title, trimmed, true);
     const subtitleScore = item.subtitle
       ? scoreChatMentionMatch(item.subtitle, trimmed)
       : null;
