@@ -2167,9 +2167,11 @@ const NO_BACKGROUND_WORK: SessionBackgroundWork = Object.freeze({
  *     ADE's process tree entirely,
  *   • long-lived processes started inside a user-owned terminal pane, which are
  *     the user's to manage and deliberately out of scope,
- *   • opencode / droid / pi background work — those runtimes report no
- *     background-task or subagent level to track. They contribute zero here
- *     rather than a guess.
+ *   • opencode / droid / pi work — those harnesses expose no background-task,
+ *     subagent, or remote-run level to track at all, so they contribute zero
+ *     here. That is a checked fact per harness, not a default: the switch below
+ *     is exhaustive over `ChatRuntime["kind"]`, so a newly landed harness fails
+ *     to compile until someone decides which column it belongs in.
  */
 function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWork {
   if (!runtime) return NO_BACKGROUND_WORK;
@@ -2197,8 +2199,29 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       // turn ends — the clearest case of work outliving its turn ADE has.
       return summarizeBackgroundWork(new Array(runtime.cloudRuns.size).fill(null));
     }
-    default:
+    // ── Harnesses with no background-work surface ───────────────────────────
+    //
+    // Listed individually rather than swept up by a `default`, so the
+    // exhaustiveness check below turns "a new harness landed" into a compile
+    // error instead of a silent zero. Pi (#1054/#1055) is the case that proved
+    // the point: its runtime carries only turn-scoped state — activeTurnId,
+    // busy, pendingSteers, activeCompactionId, lease — with no subagent,
+    // background-task, or remote-run tracking of any kind, and it is absent
+    // from `SUBAGENT_CAPABILITIES` so `resolveSubagentCapability` already
+    // degrades it to the no-op descriptor. Zero here is a verified fact about
+    // Pi, not an unexamined default.
+    case "opencode":
+    case "droid":
+    case "pi":
       return NO_BACKGROUND_WORK;
+    default: {
+      // A new harness must state whether it owns work that outlives a turn.
+      // Getting this wrong in the silent direction is the exact bug this whole
+      // module exists to fix, so the decision is compulsory.
+      const exhaustive: never = runtime;
+      void exhaustive;
+      return NO_BACKGROUND_WORK;
+    }
   }
 }
 

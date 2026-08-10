@@ -1595,7 +1595,7 @@ describe("runtime session actions", () => {
   // session. This bulk action never has, and used to drop the key silently — so
   // the same argument meant "dismiss the prompt" over sync and nothing at all
   // here. Settling while quietly ignoring half the request is the failure mode.
-  it("refuses a bulk settle that asks to dismiss pending input", () => {
+  it("refuses a bulk settle that asks to dismiss pending input", async () => {
     const settleSessions = vi.fn(() => ["session-1"]);
     const runtime = {
       sessionService: {
@@ -1608,15 +1608,21 @@ describe("runtime session actions", () => {
       settleSessions: (args: unknown) => unknown;
     } & Record<string, unknown>;
 
+    // SYNCHRONOUS throw, even though the success path is now async: settle grew
+    // a teardown step, and marking the whole action `async` would have quietly
+    // turned this guard into a rejected promise that a non-awaiting caller
+    // drops on the floor.
     expect(() => sessionService.settleSessions({
       sessionIds: ["session-1"],
       dismissPendingInput: true,
     })).toThrow(/does not dismiss pending input/);
     expect(settleSessions).not.toHaveBeenCalled();
 
-    // Without the flag the bulk path is untouched.
-    expect(sessionService.settleSessions({ sessionIds: ["session-1", "session-2"] }))
-      .toEqual(["session-1"]);
+    // Without the flag the bulk path is untouched — but it is awaited now,
+    // because the session's monitors and background shells have to be stopped
+    // before the settle is written.
+    await expect(sessionService.settleSessions({ sessionIds: ["session-1", "session-2"] }))
+      .resolves.toEqual(["session-1"]);
     expect(settleSessions).toHaveBeenCalledWith(["session-1", "session-2"]);
   });
 

@@ -2148,7 +2148,14 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     // Bulk settle/unsettle for renderer surfaces on remote-bound projects
     // (mirrors deleteSession's generic trust posture).
-    settleSessions: async (args?: unknown) => {
+    //
+    // Deliberately NOT an `async` function: argument validation below must keep
+    // throwing SYNCHRONOUSLY, the way it did before settle grew a teardown
+    // step. Marking the whole action `async` silently converts every one of
+    // those guards into a rejected promise, which changes the contract for any
+    // caller that does not await — so only the success path is async, returned
+    // as an explicit promise from a sync body.
+    settleSessions: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSessions");
       const sessionIds = Array.isArray(record.sessionIds)
         ? record.sessionIds.filter((id): id is string => typeof id === "string")
@@ -2170,15 +2177,17 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
           "session.settleSessions does not dismiss pending input; use session.settleSession for a single session.",
         );
       }
-      await stopSettledSessionMachinery(
-        {
-          sessionService,
-          agentChatService: runtime.agentChatService,
-          logger: runtime.logger,
-        },
-        sessionIds,
-      );
-      return sessionService.settleSessions(sessionIds);
+      return (async () => {
+        await stopSettledSessionMachinery(
+          {
+            sessionService,
+            agentChatService: runtime.agentChatService,
+            logger: runtime.logger,
+          },
+          sessionIds,
+        );
+        return sessionService.settleSessions(sessionIds);
+      })();
     },
     unsettleSessions: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.unsettleSessions");
