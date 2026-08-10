@@ -121,6 +121,7 @@ import { BackgroundJobLine, SubagentResultCard, SubagentSpawnCard, SubagentStopp
 import { AdeCard } from "./AdeCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
+import { promptHistoryEventKey } from "./chatPromptHistory";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
@@ -5230,6 +5231,7 @@ function AgentChatMessageListMain({
   onReturnToLatest,
   mosaic,
   scrollToRowKeyRequest,
+  scrollToPromptHistoryRequest,
   proofArtifacts = [],
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
@@ -5280,6 +5282,8 @@ function AgentChatMessageListMain({
   mosaic?: MosaicRenderContext;
   /** Imperative jump request used by the while-you-were-away wake digest. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
+  /** Imperative jump request emitted when composer history selects a prompt. */
+  scrollToPromptHistoryRequest?: { eventKey: string; requestId: number } | null;
   /** Intentional proof linked to this chat, rendered at the transcript tail. */
   proofArtifacts?: ComputerUseArtifactView[];
   /** Local Electron can stream larger artifacts through its range protocol. */
@@ -5294,6 +5298,7 @@ function AgentChatMessageListMain({
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
+  const lastHandledPromptHistoryRequestIdRef = useRef<number | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   // Carries the CollapseTranscriptContext alongside events/rows so appended
@@ -5330,11 +5335,9 @@ function AgentChatMessageListMain({
     restoredScrollMemory?.wasPinnedToBottom === false ? (restoredScrollMemory.lastSeenRowKey ?? null) : null,
   );
   // Measured geometry the minimap rail needs. Kept as two pieces of state so a
-  // width-only change (pane resize) and a height-only change don't invalidate
-  // each other. `top` is viewport-space: it is what converts the floating PR
-  // pane's published bottom edge into the rail's own coordinate frame.
-  const [listRootBoxPx, setListRootBoxPx] = useState<{ width: number; height: number; top: number }>(
-    { width: 0, height: 0, top: 0 },
+  // width-only change and a height-only change don't invalidate each other.
+  const [listRootBoxPx, setListRootBoxPx] = useState<{ width: number; height: number }>(
+    { width: 0, height: 0 },
   );
   const [columnWidthPx, setColumnWidthPx] = useState(0);
   // Track the single pending rAF handle for scroll-to-bottom writes so we
@@ -5787,12 +5790,10 @@ function AgentChatMessageListMain({
     const rect = el.getBoundingClientRect();
     const width = Math.max(el.clientWidth, rect.width);
     const height = Math.max(el.clientHeight, rect.height);
-    const top = rect.top;
     setListRootBoxPx((current) => (
       movedByAPixel(current.width, width)
         || movedByAPixel(current.height, height)
-        || movedByAPixel(current.top, top)
-        ? { width, height, top }
+        ? { width, height }
         : current
     ));
   }, []);
@@ -6011,6 +6012,17 @@ function AgentChatMessageListMain({
     lastHandledScrollToRowRequestIdRef.current = scrollToRowKeyRequest.requestId;
     scrollToRowKey(scrollToRowKeyRequest.key);
   }, [scrollToRowKey, scrollToRowKeyRequest]);
+
+  useEffect(() => {
+    if (!scrollToPromptHistoryRequest?.eventKey) return;
+    if (lastHandledPromptHistoryRequestIdRef.current === scrollToPromptHistoryRequest.requestId) return;
+    lastHandledPromptHistoryRequestIdRef.current = scrollToPromptHistoryRequest.requestId;
+    const rowIndex = groupedRows.findIndex((row) => (
+      row.event.type === "user_message"
+      && promptHistoryEventKey({ timestamp: row.timestamp, event: row.event }) === scrollToPromptHistoryRequest.eventKey
+    ));
+    if (rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
+  }, [groupedRows, scrollToPromptHistoryRequest, scrollToRowIndexNearTop]);
 
   const scheduleAnchoredRowCorrection = useCallback((rowKey: string) => {
     if (anchorCorrectionRafRef.current !== null) {
@@ -6440,6 +6452,17 @@ function AgentChatMessageListMain({
     [groupedRows],
   );
 
+  const promptHistoryFocusIndex = useMemo(() => {
+    if (!scrollToPromptHistoryRequest?.eventKey) return null;
+    const rowIndex = groupedRows.findIndex((row) => (
+      row.event.type === "user_message"
+      && promptHistoryEventKey({ timestamp: row.timestamp, event: row.event }) === scrollToPromptHistoryRequest.eventKey
+    ));
+    if (rowIndex < 0) return null;
+    const minimapIndex = minimapSourceEntries.findIndex((entry) => entry.rowIndex === rowIndex);
+    return minimapIndex >= 0 ? minimapIndex : null;
+  }, [groupedRows, minimapSourceEntries, scrollToPromptHistoryRequest]);
+
   const rowStartOffsetsForMinimap = useMemo(() => {
     void measurementTick;
     return computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
@@ -6693,9 +6716,8 @@ function AgentChatMessageListMain({
       {/* Direct child of the list root on purpose: the rail's `left-0` and all of
           its gutter maths assume the offset parent is the element whose width is
           `listWidthPx`. An intermediate max-width wrapper would silently shift
-          the rail into the message column. The PR pane's edge is NOT passed —
-          the rail reads it from context (see chatPrPaneInset.ts) and subtracts
-          the list-root top measured here to land in its own frame. */}
+          the rail into the message column. Floating panes stay independent of
+          this fixed transcript anchor. */}
       <ChatUserMinimap
         entries={minimapSourceEntries}
         activeIndex={activeFullUserOrdinal}
@@ -6707,8 +6729,9 @@ function AgentChatMessageListMain({
         onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={listRootBoxPx.width}
         listHeightPx={listRootBoxPx.height}
-        listTopViewportPx={listRootBoxPx.top}
         columnWidthPx={columnWidthPx}
+        keyboardFocusIndex={promptHistoryFocusIndex}
+        keyboardFocusRequestId={scrollToPromptHistoryRequest?.requestId ?? null}
       />
       <div
         ref={scrollRef}

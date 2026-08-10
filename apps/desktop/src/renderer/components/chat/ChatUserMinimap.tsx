@@ -1,7 +1,6 @@
-import { useCallback, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
-import { useChatPrPaneInset } from "./chatPrPaneInset";
 import {
   CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH,
   CHAT_USER_MINIMAP_HIT_STRIP_LEFT_PX,
@@ -11,7 +10,6 @@ import {
   resolveMinimapIndexFromPointer,
   resolveMinimapPreviewTranslateY,
   resolveMinimapRailHeightStyle,
-  resolveMinimapRailTopInset,
   resolveMinimapTopPercent,
   type ChatUserMinimapSourceEntry,
   type ChatUserMinimapTurnOutcome,
@@ -36,13 +34,12 @@ type ChatUserMinimapProps = {
   listWidthPx: number;
   /** Measured height of the message-list root. */
   listHeightPx: number;
-  /**
-   * Measured viewport-space top edge of the message-list root — the rail's own
-   * origin, and the frame the PR pane's published bottom edge converts into.
-   */
-  listTopViewportPx: number;
   /** Measured width of the centered content wrapper. */
   columnWidthPx: number;
+  /** Brief keyboard-navigation preview for a prompt selected from the composer. */
+  keyboardFocusIndex?: number | null;
+  /** Changes for every keyboard-navigation request, including repeated entries. */
+  keyboardFocusRequestId?: number | null;
 };
 
 /** Lens widths by distance from the hovered tick; index 3+ is "everything else". */
@@ -105,13 +102,27 @@ export function ChatUserMinimap({
   onRetryOlderHistory,
   listWidthPx,
   listHeightPx,
-  listTopViewportPx,
   columnWidthPx,
+  keyboardFocusIndex = null,
+  keyboardFocusRequestId = null,
 }: ChatUserMinimapProps) {
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
-  // Read from context, never a prop: see `chatPrPaneInset.ts` for why.
-  const prPaneBottomViewportPx = useChatPrPaneInset();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [keyboardPreview, setKeyboardPreview] = useState<{ index: number; requestId: number } | null>(null);
+
+  useEffect(() => {
+    if (keyboardFocusIndex === null || keyboardFocusRequestId === null) {
+      setKeyboardPreview(null);
+      return;
+    }
+    setKeyboardPreview({ index: keyboardFocusIndex, requestId: keyboardFocusRequestId });
+    const timer = window.setTimeout(() => {
+      setKeyboardPreview((current) => (
+        current?.requestId === keyboardFocusRequestId ? null : current
+      ));
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [keyboardFocusIndex, keyboardFocusRequestId]);
 
   const itemCount = entries.length;
 
@@ -153,16 +164,17 @@ export function ChatUserMinimap({
 
   const hitStripWidth = resolveMinimapHitStripWidth(listWidthPx, columnWidthPx);
   const hasPersistentGutter = minimapHasPersistentGutter(listWidthPx, columnWidthPx);
-  // Both edges are viewport-space, so the difference is the rail's own frame —
-  // no constant stands in for the chrome between the two boxes' origins.
-  const topInset = resolveMinimapRailTopInset(prPaneBottomViewportPx, listTopViewportPx);
-  // The rail centres in the band left BELOW the floating PR pane, not in the
-  // full list height.
-  const availablePx = listHeightPx - topInset;
+  // Keep the rail anchored to the message-list root. Floating panes are
+  // intentionally independent overlays and must not move the history markers.
+  const availablePx = listHeightPx;
 
   const resolvedHoverIndex = hoverIndex !== null && hoverIndex < itemCount ? hoverIndex : null;
-  const hoverEntry = resolvedHoverIndex === null ? null : (entries[resolvedHoverIndex] ?? null);
-  const hoverOutcomeLabel = turnOutcomeLabel(hoverEntry?.turnOutcome ?? null);
+  const resolvedKeyboardIndex = keyboardPreview?.index !== undefined && keyboardPreview.index < itemCount
+    ? keyboardPreview.index
+    : null;
+  const resolvedPreviewIndex = resolvedHoverIndex ?? resolvedKeyboardIndex;
+  const previewEntry = resolvedPreviewIndex === null ? null : (entries[resolvedPreviewIndex] ?? null);
+  const previewOutcomeLabel = turnOutcomeLabel(previewEntry?.turnOutcome ?? null);
 
   // Keep a durable continuation marker when the resident tail has fewer than
   // two user turns. Otherwise the whole rail disappears at the transcript
@@ -175,8 +187,8 @@ export function ChatUserMinimap({
     return null;
   }
 
-  const ariaLabel = `Jump to message: ${hoverEntry?.preview ?? "User message"}${
-    hoverOutcomeLabel ? ` (${hoverOutcomeLabel})` : ""
+  const ariaLabel = `Jump to message: ${previewEntry?.preview ?? "User message"}${
+    previewOutcomeLabel ? ` (${previewOutcomeLabel})` : ""
   }`;
   const continuationLabel = olderHistoryError
     ? "Retry loading earlier message markers"
@@ -188,14 +200,14 @@ export function ChatUserMinimap({
     <div
       className={cn(
         "pointer-events-none absolute left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
-        hasPersistentGutter
+        hasPersistentGutter || resolvedKeyboardIndex !== null
           ? "opacity-100"
           : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
       )}
       role="region"
       aria-label="User message minimap"
       data-testid="chat-user-minimap"
-      style={{ top: topInset, bottom: 0 }}
+      style={{ top: 0, bottom: 0 }}
     >
       <div className="flex h-full w-full select-none items-center">
         {hasOlderHistory ? (
@@ -235,7 +247,7 @@ export function ChatUserMinimap({
             // the hit-strip width maths subtracts, never by a parallel `ml-3`.
             marginLeft: CHAT_USER_MINIMAP_HIT_STRIP_LEFT_PX,
             height: resolveMinimapRailHeightStyle(itemCount, availablePx),
-            width: hoverEntry ? CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : hitStripWidth,
+            width: previewEntry ? CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : hitStripWidth,
           }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleClear}
@@ -256,14 +268,12 @@ export function ChatUserMinimap({
           onKeyDown={(event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            jumpToIndex(resolvedHoverIndex);
+            jumpToIndex(resolvedPreviewIndex);
           }}
         >
-          {/* Guide hairline the ticks sit on. */}
-          <span aria-hidden="true" className="absolute left-0 top-0 h-full w-px bg-white/[0.08]" />
           {entries.map((entry, index) => {
             const lensDistance =
-              resolvedHoverIndex === null ? null : Math.abs(index - resolvedHoverIndex);
+              resolvedPreviewIndex === null ? null : Math.abs(index - resolvedPreviewIndex);
             const outcome = entry.turnOutcome;
             return (
               <span
@@ -276,13 +286,17 @@ export function ChatUserMinimap({
                   // Thickness, not just colour, marks a turn that needs attention.
                   isAttentionOutcome(outcome) ? "h-1" : "h-0.5",
                   lensWidthClass(lensDistance),
-                  tickToneClass(outcome, index === activeIndex, lensDistance === 0),
+                  tickToneClass(
+                    outcome,
+                    index === activeIndex || index === resolvedKeyboardIndex,
+                    lensDistance === 0,
+                  ),
                 )}
                 style={{ top: `${resolveMinimapTopPercent(index, itemCount)}%` }}
               />
             );
           })}
-          {hoverEntry ? (
+          {previewEntry ? (
             <span
               data-minimap-preview
               className="pointer-events-auto absolute left-8 w-[min(20rem,60vw)] cursor-text select-text"
@@ -291,28 +305,28 @@ export function ChatUserMinimap({
               // last, so the translate anchors the card's top edge at the first
               // tick and its bottom edge at the last, centering only in between.
               style={{
-                top: `${resolveMinimapTopPercent(resolvedHoverIndex ?? 0, itemCount)}%`,
-                transform: `translateY(${resolveMinimapPreviewTranslateY(resolvedHoverIndex ?? 0, itemCount)})`,
+                top: `${resolveMinimapTopPercent(resolvedPreviewIndex ?? 0, itemCount)}%`,
+                transform: `translateY(${resolveMinimapPreviewTranslateY(resolvedPreviewIndex ?? 0, itemCount)})`,
               }}
               // Moving inside the card must not re-derive the index from Y, or
               // the card would chase the pointer and reselect messages.
               onMouseMove={(event) => event.stopPropagation()}
             >
               <span className="block rounded-xl border border-white/[0.08] bg-[color:rgb(12,12,16)]/95 p-3 text-left font-sans shadow-xl shadow-black/25 backdrop-blur-md">
-                {hoverOutcomeLabel ? (
+                {previewOutcomeLabel ? (
                   <span
                     className={cn(
                       "mb-1 block text-[10px] font-semibold uppercase tracking-wide",
-                      hoverEntry.turnOutcome === "failed" ? "text-red-400/90" : "text-amber-400/90",
+                      previewEntry.turnOutcome === "failed" ? "text-red-400/90" : "text-amber-400/90",
                     )}
                   >
-                    {hoverOutcomeLabel}
+                    {previewOutcomeLabel}
                   </span>
                 ) : null}
                 <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[12px] font-medium leading-5 text-fg/90">
-                  {hoverEntry.preview}
+                  {previewEntry.preview}
                 </span>
-                {hoverEntry.assistantPreview ? (
+                {previewEntry.assistantPreview ? (
                   <span
                     className="mt-1 block max-h-[3.75rem] overflow-hidden text-[12px] leading-5 text-fg/55"
                     style={{
@@ -321,7 +335,7 @@ export function ChatUserMinimap({
                       WebkitLineClamp: 3,
                     }}
                   >
-                    {hoverEntry.assistantPreview}
+                    {previewEntry.assistantPreview}
                   </span>
                 ) : null}
               </span>

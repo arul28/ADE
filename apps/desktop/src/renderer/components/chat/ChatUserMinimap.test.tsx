@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useAppStore } from "../../state/appStore";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import type { ChatUserMinimapSourceEntry } from "./chatUserMinimap.logic";
@@ -34,6 +34,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   useAppStore.setState({ chatUserMinimapEnabled: originalMinimapEnabled });
 });
 
@@ -46,7 +47,6 @@ describe("ChatUserMinimap", () => {
         onJumpToRow={vi.fn()}
         listWidthPx={960}
         listHeightPx={600}
-        listTopViewportPx={0}
         columnWidthPx={720}
       />,
     );
@@ -65,6 +65,81 @@ describe("ChatUserMinimap", () => {
     expect(hoveredTick?.className).toContain("w-6");
   });
 
+  it("does not draw a guide line between the history ticks", () => {
+    render(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={null}
+        onJumpToRow={vi.fn()}
+        listWidthPx={960}
+        listHeightPx={600}
+        columnWidthPx={720}
+      />,
+    );
+
+    const rail = screen.getByRole("button", { name: "Jump to message: User message" });
+    expect(rail.children).toHaveLength(2);
+    expect([...rail.children].every((child) => child.hasAttribute("data-minimap-tick"))).toBe(true);
+  });
+
+  it("briefly previews and highlights a keyboard-selected tick", () => {
+    vi.useFakeTimers();
+    render(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        listWidthPx={960}
+        listHeightPx={600}
+        columnWidthPx={720}
+        keyboardFocusIndex={1}
+        keyboardFocusRequestId={7}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-user-minimap").querySelector("[data-minimap-preview]")?.textContent)
+      .toContain("Second checkpoint");
+    expect(screen.getAllByTestId("chat-user-minimap")[0]?.querySelectorAll("[data-minimap-tick]")[1]?.className)
+      .toContain("bg-[var(--chat-accent)]");
+
+    act(() => vi.advanceTimersByTime(901));
+
+    expect(document.querySelector("[data-minimap-preview]")).toBeNull();
+  });
+
+  it("clears the keyboard preview when history navigation is reset", () => {
+    const view = render(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        listWidthPx={960}
+        listHeightPx={600}
+        columnWidthPx={720}
+        keyboardFocusIndex={1}
+        keyboardFocusRequestId={7}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-user-minimap").querySelector("[data-minimap-preview]"))
+      .not.toBeNull();
+
+    view.rerender(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        listWidthPx={960}
+        listHeightPx={600}
+        columnWidthPx={720}
+        keyboardFocusIndex={null}
+        keyboardFocusRequestId={null}
+      />,
+    );
+
+    expect(document.querySelector("[data-minimap-preview]")).toBeNull();
+  });
+
   it("keeps the paging marker visible and stateful before the loaded cutoff", () => {
     const onLoadOlderHistory = vi.fn();
     const view = render(
@@ -76,7 +151,6 @@ describe("ChatUserMinimap", () => {
         onLoadOlderHistory={onLoadOlderHistory}
         listWidthPx={960}
         listHeightPx={600}
-        listTopViewportPx={0}
         columnWidthPx={720}
       />,
     );
@@ -97,7 +171,6 @@ describe("ChatUserMinimap", () => {
         onLoadOlderHistory={vi.fn()}
         listWidthPx={960}
         listHeightPx={600}
-        listTopViewportPx={0}
         columnWidthPx={720}
       />,
     );
@@ -122,7 +195,6 @@ describe("ChatUserMinimap", () => {
         onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={960}
         listHeightPx={600}
-        listTopViewportPx={0}
         columnWidthPx={720}
       />,
     );
@@ -144,7 +216,6 @@ describe("ChatUserMinimap", () => {
         onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={960}
         listHeightPx={600}
-        listTopViewportPx={0}
         columnWidthPx={720}
       />,
     );

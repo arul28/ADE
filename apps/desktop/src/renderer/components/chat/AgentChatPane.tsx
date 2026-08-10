@@ -110,6 +110,7 @@ import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
+import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -189,7 +190,6 @@ import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawer
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { ChatPrPane } from "./ChatPrPane";
-import { ChatPrPaneInsetContext, usePrPaneInsetObserver } from "./chatPrPaneInset";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import {
   patchChatCompanionUiState,
@@ -950,30 +950,22 @@ function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
 }
 
 /**
- * 3-quadrant reserve. The chat reserves horizontal space for whichever floating
- * side panes are open (when there is room), so the centered transcript + composer
- * re-center in the remaining area rather than leaving an empty gutter opposite an
- * open pane. On a narrow surface it stops reserving so the chat keeps full width
- * (the pane then overlays). Right is preferred over left when space is tight.
+ * The right chat-actions pane may reserve space when it would otherwise cover the
+ * centered transcript. The PR pane is deliberately excluded: it is a true left
+ * overlay, so opening it must not move the transcript or its minimap rail.
  */
 const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
-const PANE_RESERVE_LEFT_PX = 276; // 16.5rem pane + 12px gutter
 const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
 // The centered chat column's width. NOT a constant any more: it is the JS half
 // of the `--chat-content-width` token (chatAppearance.ts), so this maths and the
 // CSS that lays the column out can never disagree.
 /**
- * Reserve gutter space for the floating panes — but ONLY when they'd otherwise
- * overlap the centered chat column. When the window is wide enough that a pane
- * fits in the chat's natural side margin, reserve nothing so the chat does NOT
- * shift (the pane just overlays the empty margin). When the window is too narrow
- * for the pane to fit beside the column, reserve the pane's width so the chat
- * shifts over instead of being covered. Right is preferred over left when tight.
+ * Reserve right gutter space only when the chat-actions pane would otherwise
+ * overlap the centered chat column. The left PR pane always overlays.
  */
 const ZERO_PANE_RESERVE = { left: "0px", right: "0px" } as const;
 function computePaneReserve(
   width: number,
-  leftOpen: boolean,
   rightOpen: boolean,
 ): { left: string; right: string } {
   if (width <= 0) return { left: "0px", right: "0px" };
@@ -987,15 +979,7 @@ function computePaneReserve(
   ) {
     right = PANE_RESERVE_RIGHT_PX;
   }
-  let left = 0;
-  if (
-    leftOpen
-    && naturalSideMargin < PANE_RESERVE_LEFT_PX
-    && width - right - PANE_RESERVE_LEFT_PX >= CHAT_MIN_WIDTH_PX
-  ) {
-    left = PANE_RESERVE_LEFT_PX;
-  }
-  return { left: `${left}px`, right: `${right}px` };
+  return { left: "0px", right: `${right}px` };
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -3768,9 +3752,6 @@ export function AgentChatPane({
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
       : null;
-  // Measured height of the floating PR pane card, published to the minimap rail
-  // through ChatPrPaneInsetContext so it can re-centre in the band left below.
-  const prPaneInset = usePrPaneInsetObserver();
   const composerDraftStorageKeyValues = useMemo(() => {
     const primary = composerDraftStorageKeys({
       projectRoot,
@@ -4272,6 +4253,22 @@ export function AgentChatPane({
     dismissed: boolean;
   } | null>(null);
   const [wakeJumpRequest, setWakeJumpRequest] = useState<{ key: string; requestId: number } | null>(null);
+  const promptHistoryJumpSequenceRef = useRef(0);
+  const [promptHistoryJumpRequest, setPromptHistoryJumpRequest] = useState<{
+    eventKey: string;
+    requestId: number;
+  } | null>(null);
+  const handlePromptHistoryNavigate = useCallback((entry: AgentChatPromptHistoryEntry | null) => {
+    if (!entry) {
+      setPromptHistoryJumpRequest(null);
+      return;
+    }
+    promptHistoryJumpSequenceRef.current += 1;
+    setPromptHistoryJumpRequest({
+      eventKey: entry.eventKey,
+      requestId: promptHistoryJumpSequenceRef.current,
+    });
+  }, []);
   useEffect(() => {
     if (!selectedSessionId) {
       setWakeAwayWindow(null);
@@ -4429,18 +4426,13 @@ export function AgentChatPane({
   // orchestrator run that has surfaced mission events — non-AGI chats stay null
   // and the Missions tab never appears.
   const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
-  // Last message the user actually sent in this chat — fed to the composer so
-  // ArrowUp on line 1 recalls it (terminal-style).
-  const lastSentUserMessage = useMemo(() => {
-    for (let i = selectedEvents.length - 1; i >= 0; i -= 1) {
-      const event = selectedEvents[i]?.event;
-      if (event?.type === "user_message") {
-        const text = userMessageVisibleText(event).trim();
-        if (text) return text;
-      }
-    }
-    return null;
-  }, [selectedEvents]);
+  // Keep keyboard recall scoped to the transcript currently selected in Work.
+  // The sidebar contains other sessions, but none of those prompts belong in
+  // this composer's history.
+  const promptHistory = useMemo<AgentChatPromptHistoryEntry[]>(
+    () => collectAgentChatPromptHistory(selectedEventsForDisplay),
+    [selectedEventsForDisplay],
+  );
   const [killingWorkerIds, setKillingWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
   const killDroidWorker = useCallback(
     (workerSessionId: string) => {
@@ -12025,7 +12017,8 @@ export function AgentChatPane({
             usageViewModel={selectedUsageViewModel}
             compactionPulse={contextCompactionPulse}
             draft={draft}
-            lastSentUserMessage={lastSentUserMessage}
+            promptHistory={promptHistory}
+            onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
@@ -12667,9 +12660,9 @@ export function AgentChatPane({
   const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
   const prFloating = prPaneOpen && Boolean(laneId) && supportsSplit;
-  // The chat reserves gutter space and shifts over to make room for each open
-  // floating pane (no overlap); the panes themselves fade in/out (opacity) — the
-  // two are independent.
+  // Only the right chat-actions pane may reserve gutter space. The PR pane stays
+  // a fixed overlay so the transcript and minimap never shift when it opens;
+  // its z-30 card wins any intentional overlap.
   //
   // Gate the reserve on the surface that actually renders those panes. Both the
   // PR pane and the chat-actions pane live in the `selectedSessionId` branch
@@ -12679,7 +12672,7 @@ export function AgentChatPane({
   // the hero composer sideways to clear a pane that is not on screen.
   const sessionSurfaceMounted = Boolean(selectedSessionId);
   const paneReserve = sessionSurfaceMounted
-    ? computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating)
+    ? computePaneReserve(chatAreaWidth, chatActionsFloating)
     : ZERO_PANE_RESERVE;
   // When a pane doesn't force the chat to shift (reserve 0), center it within its
   // side margin so all three zones (left pane / chat / right pane) read as
@@ -12744,17 +12737,14 @@ export function AgentChatPane({
   const renderFloatingLeftPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-left-pane"
-      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      className="absolute top-3 z-30 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
       style={{ left: `${leftPaneOffsetPx}px` }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={SIDE_PANE_FADE}
     >
-      {/* The ref goes on the CARD, not the motion.div: the card is what the
-          rail has to clear, and the motion.div's opacity animation would
-          otherwise be the thing being observed. */}
-      <div ref={prPaneInset.ref} className={FLOATING_PANE_CARD_CLASS}>
+      <div className={FLOATING_PANE_CARD_CLASS}>
         {content}
       </div>
     </motion.div>
@@ -12891,17 +12881,6 @@ export function AgentChatPane({
                   transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
-                  {/* The chat surface — message list and the floating left PR
-                      pane are siblings here, so the measured pane height
-                      reaches the minimap rail by context, not by a prop through
-                      the memoized transcript.
-
-                      Gate the value on the OPEN FLAG, not on the pane element:
-                      AnimatePresence keeps the card mounted through its exit
-                      fade, so observing the element alone would hold the rail
-                      inset for a whole animation after the user already closed
-                      the pane. */}
-                  <ChatPrPaneInsetContext.Provider value={prFloating && laneId ? prPaneInset.bottomViewportPx : null}>
                   {/* Chat column. `data-chat-sync-pending` is the seam for the
                       catch-up affordance: the transcript below is real but may
                       be behind because the bound runtime could not be reached
@@ -13084,6 +13063,7 @@ export function AgentChatPane({
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         mosaic={subagentView ? undefined : mosaicContext}
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                        scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteProject}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
@@ -13135,7 +13115,6 @@ export function AgentChatPane({
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                   {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
                   {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
-                  </ChatPrPaneInsetContext.Provider>
                 </motion.div>
               ) : (
                 <motion.div

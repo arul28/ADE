@@ -36,6 +36,10 @@ const LOCAL_RUNTIME_PROJECT_UNAVAILABLE_MESSAGE =
 
 export type ComposerPromptStashHandle = {
   activate: () => void;
+  /** Save without clearing the active draft; used by keyboard history recall. */
+  activatePreservingDraft: () => Promise<PromptStashEntry | null>;
+  /** Consume the auto-saved entry when keyboard history restores its draft. */
+  consume: (entry: PromptStashEntry) => Promise<boolean>;
   handleMenuKeyDown: (event: {
     key: string;
     metaKey: boolean;
@@ -411,21 +415,21 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     };
   }, [active, menuOpen, refresh]);
 
-  const save = useCallback(async () => {
-    if (disabled || operationInFlightRef.current) return;
+  const save = useCallback(async (preserveDraft = false): Promise<PromptStashEntry | null> => {
+    if (disabled || operationInFlightRef.current) return null;
     const operationBinding = composerMachineBinding;
     const savedText = latestDraftRef.current;
     const savedComposerAttachments = [...latestAttachmentsRef.current];
     const savedAttachments = savedComposerAttachments.filter(isStashableAttachment);
     if (savedAttachments.length > MAX_PROMPT_STASH_ATTACHMENTS) {
       setError(`You can stash up to ${MAX_PROMPT_STASH_ATTACHMENTS} images at a time.`);
-      return;
+      return null;
     }
     if (!savedText.trim() && savedAttachments.length === 0) {
-      if (!entries.length) return;
+      if (!entries.length) return null;
       setMenuOpen(true);
       await refresh(operationBinding);
-      return;
+      return null;
     }
 
     operationInFlightRef.current = true;
@@ -505,15 +509,17 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         && latestAttachmentsRef.current.every((current, index) => (
           Boolean(savedComposerAttachments[index] && sameAttachment(current, savedComposerAttachments[index]!))
         ));
-      if (composerUnchanged) {
+      if (composerUnchanged && !preserveDraft) {
         onDraftChange("");
         for (const savedAttachment of savedAttachments) {
           onRemoveAttachment(savedAttachment.path);
         }
       }
+      return created;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not stash this prompt.");
       setMenuOpen(true);
+      return null;
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
@@ -571,16 +577,22 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     }
   }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh]);
 
-  const remove = useCallback(async (entry: PromptStashEntry) => {
-    if (operationInFlightRef.current) return;
+  const remove = useCallback(async (entry: PromptStashEntry): Promise<boolean> => {
+    if (operationInFlightRef.current) return false;
     const operationBinding = entriesOwnerBinding;
+    const operationBindingKey = operationBinding?.key ?? null;
     operationInFlightRef.current = true;
     refreshSequenceRef.current += 1;
     setBusy(true);
     setError(null);
     try {
-      await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
-      const operationBindingKey = operationBinding?.key ?? null;
+      const deleted = await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
+      if (!deleted) {
+        if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
+          await refresh(operationBinding);
+        }
+        return false;
+      }
       setStashSnapshot((current) => (
         (current.ownerBinding?.key ?? null) === operationBindingKey
           ? {
@@ -590,13 +602,15 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
           : current
       ));
       setHighlightedId((current) => current === entry.id ? null : current);
+      return true;
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Could not delete this prompt.");
+      return false;
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [entriesOwnerBinding]);
+  }, [entriesOwnerBinding, refresh]);
 
   const handleMenuKeyDown = useCallback((event: {
     key: string;
@@ -632,8 +646,10 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     activate: () => {
       void save();
     },
+    activatePreservingDraft: () => save(true),
+    consume: remove,
     handleMenuKeyDown,
-  }), [handleMenuKeyDown, save]);
+  }), [handleMenuKeyDown, remove, save]);
 
   return (
     <div ref={rootRef} className={cn("relative shrink-0", renderButton ? "w-7" : "w-0")}>
