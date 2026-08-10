@@ -14627,6 +14627,26 @@ export function createAgentChatService(args: {
       if (stopState && !emittedByProvider) {
         stopState.emitted = true;
       }
+      // A stop we ATTEMPTED and could not confirm leaves the task live.
+      //
+      // Emitting a terminal row drops the task from `liveBackgroundTaskIds`,
+      // which is what `runtimeBackgroundWork` derives the row's user-visible
+      // liveness from — so an unconfirmed stop would make the session go quiet
+      // over a shell that is still running, which is the exact lie this whole
+      // feature exists to remove. Self-correcting: the SDK's next authoritative
+      // `background_tasks_changed` level drains it if it really did end.
+      //
+      // Only applies to a failed STOP. A turn-end close (`status: "completed"`)
+      // attempts nothing, so it still settles the row as before.
+      const stopAttemptFailed = canStopProviderTask && terminalStatus === "failed";
+      if (stopAttemptFailed) {
+        logger.warn("agent_chat.claude_background_stop_unconfirmed", {
+          sessionId: managed.session.id,
+          taskId,
+          summary: terminalSummary,
+        });
+        return;
+      }
       if (!emittedByProvider) {
         emitClaudeBackgroundTaskUpdate(managed, runtime, {
           taskId,

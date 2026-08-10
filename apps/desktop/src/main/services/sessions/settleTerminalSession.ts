@@ -72,6 +72,14 @@ export async function settleTerminalSession(args: {
     if (!dismissed) return false;
   }
 
+  // Teardown awaits provider stop calls that can take seconds, and a user can
+  // start a new turn inside that window. `clearTurnStartMarkers` would clear a
+  // settle marker that does not exist yet, and this write would then file the
+  // freshly-active session as settled. Snapshot the activity stamp first and
+  // refuse to settle over work that arrived while we were stopping things —
+  // real activity outranks a settle request that predates it.
+  const activityBeforeTeardown = args.sessionService.get(args.sessionId)?.lastActivityAt ?? null;
+
   await stopSettledSessionMachinery(
     {
       sessionService: args.sessionService,
@@ -80,6 +88,17 @@ export async function settleTerminalSession(args: {
     },
     [args.sessionId],
   );
+
+  const after = args.sessionService.get(args.sessionId);
+  if (!after) return false;
+  if ((after.lastActivityAt ?? null) !== activityBeforeTeardown) {
+    args.logger?.warn("session_teardown.settle_skipped_new_activity", {
+      sessionId: args.sessionId,
+    });
+    // The row exists and the request was honoured; it simply woke, so it is not
+    // settled. Reporting false here would surface a spurious "not found".
+    return true;
+  }
 
   return args.sessionService.settleSession(
     args.sessionId,

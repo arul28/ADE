@@ -117,7 +117,7 @@ describe("settleTerminalSession", () => {
       }),
     });
     const sessionService = {
-      get: (id: string) => (id === "chat-1" ? { id, toolType: "claude-chat" } : null),
+      get: (id: string) => (id === "chat-1" ? { id, toolType: "claude-chat", lastActivityAt: "t0" } : null),
       settleSession: vi.fn(() => {
         order.push("settle");
         return true;
@@ -222,5 +222,53 @@ describe("deleteTerminalSessionWithRuntimeCleanup", () => {
       sessionService,
       ptyService,
     })).toThrow("Use the chat delete flow instead.");
+  });
+});
+
+describe("settleTerminalSession activity guard", () => {
+  it("refuses to settle over a turn that started while teardown was awaiting", () => {
+    // Provider stop calls take seconds. A user sending a message inside that
+    // window clears a settle marker that does not exist yet, and the write
+    // would then file the freshly-active session as settled.
+    let activity = "t0";
+    const settleSession = vi.fn(() => true);
+    const sessionService = {
+      get: (id: string) => (id === "chat-1" ? { id, toolType: "claude-chat", lastActivityAt: activity } : null),
+      settleSession,
+    };
+    const agentChatService = {
+      stopBackgroundWork: vi.fn(async () => {
+        activity = "t1"; // the user starts a turn mid-teardown
+        return { skippedActiveTurn: false };
+      }),
+    };
+
+    return settleTerminalSession({
+      sessionId: "chat-1",
+      sessionService: sessionService as never,
+      agentChatService: agentChatService as never,
+    }).then((settled) => {
+      // Reported as handled — the row exists and the request was honoured — but
+      // deliberately NOT settled. Returning false would surface a spurious
+      // "session not found" to the caller.
+      expect(settled).toBe(true);
+      expect(settleSession).not.toHaveBeenCalled();
+    });
+  });
+
+  it("settles normally when nothing happened during teardown", () => {
+    const settleSession = vi.fn(() => true);
+    const sessionService = {
+      get: () => ({ id: "chat-1", toolType: "claude-chat", lastActivityAt: "t0" }),
+      settleSession,
+    };
+    return settleTerminalSession({
+      sessionId: "chat-1",
+      sessionService: sessionService as never,
+      agentChatService: { stopBackgroundWork: vi.fn(async () => ({ skippedActiveTurn: false })) } as never,
+    }).then((settled) => {
+      expect(settled).toBe(true);
+      expect(settleSession).toHaveBeenCalledTimes(1);
+    });
   });
 });
