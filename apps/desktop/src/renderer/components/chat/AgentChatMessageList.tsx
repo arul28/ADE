@@ -4354,6 +4354,63 @@ function dedupeWorkLogEntriesById(entries: ChatWorkLogEntry[]): ChatWorkLogEntry
   return Array.from(byId.values());
 }
 
+function sameEntryList(left: readonly ChatWorkLogEntry[], right: readonly ChatWorkLogEntry[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function stabilizeEntryMap(
+  previous: Map<string, ChatWorkLogEntry[]>,
+  next: Map<string, ChatWorkLogEntry[]>,
+): Map<string, ChatWorkLogEntry[]> {
+  for (const [key, entries] of next) {
+    const before = previous.get(key);
+    if (before && sameEntryList(before, entries)) next.set(key, before);
+  }
+  return next;
+}
+
+/**
+ * Reuse the previous arrays wherever a turn's entries did not actually change.
+ *
+ * `deriveTranscriptToolActivity` re-runs on every transcript change — including
+ * each streaming delta — and builds fresh arrays for EVERY completed turn. Those
+ * arrays are props on the done rows, so a new identity per tick defeated
+ * `React.memo` on every turn in the thread: a 50-turn thread re-rendered 50 rows
+ * per delta, and a 200-event prepend re-rendered all of them. The entries
+ * themselves come from the cached collapse pipeline, so identity comparison is
+ * enough to tell "unchanged" from "changed".
+ */
+export function stabilizeTranscriptToolActivity(
+  previous: TranscriptToolActivity,
+  next: TranscriptToolActivity,
+): TranscriptToolActivity {
+  const byDoneRowKey = stabilizeEntryMap(previous.byDoneRowKey, next.byDoneRowKey);
+  const fileEntriesByDoneRowKey = stabilizeEntryMap(
+    previous.fileEntriesByDoneRowKey,
+    next.fileEntriesByDoneRowKey,
+  );
+  const activeEntries = sameEntryList(previous.activeEntries, next.activeEntries)
+    ? previous.activeEntries
+    : next.activeEntries;
+  const activeFileEntries = sameEntryList(previous.activeFileEntries, next.activeFileEntries)
+    ? previous.activeFileEntries
+    : next.activeFileEntries;
+  if (
+    activeEntries === previous.activeEntries
+    && activeFileEntries === previous.activeFileEntries
+    && byDoneRowKey.size === previous.byDoneRowKey.size
+    && [...byDoneRowKey].every(([key, entries]) => previous.byDoneRowKey.get(key) === entries)
+  ) {
+    return previous;
+  }
+  return { byDoneRowKey, activeEntries, fileEntriesByDoneRowKey, activeFileEntries };
+}
+
 export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]): TranscriptToolActivity {
   const entriesByTurnId = new Map<string, ChatWorkLogEntry[]>();
   const byDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
@@ -4784,6 +4841,27 @@ const TOUCH_SCROLL_DEADBAND_PX = 2;
  * up requests the next older transcript page (when one exists).
  */
 const LOAD_OLDER_THRESHOLD_PX = 300;
+/**
+ * How far ahead of the top the next older page starts loading, in viewport
+ * heights.
+ *
+ * Firing only within `LOAD_OLDER_THRESHOLD_PX` of the top means the reader
+ * always arrives before the data: they hit the top, then wait on a round trip
+ * plus a git/db read. Starting two screens out gives the fetch the time it takes
+ * to scroll those two screens, so in normal reading the content is already
+ * there and the top spinner never appears. The near-top path stays as the
+ * fallback for a fast fling or a programmatic jump.
+ *
+ * This is not unbounded prefetching: `onLoadOlderHistory` is a no-op while a
+ * page is in flight, so at most one page is ever outstanding.
+ */
+const PREFETCH_OLDER_VIEWPORT_HEIGHTS = 2;
+
+/** Distance from the top at which the next older page starts loading. */
+export function resolveOlderHistoryPrefetchTriggerPx(viewportHeightPx: number): number {
+  if (!Number.isFinite(viewportHeightPx) || viewportHeightPx <= 0) return LOAD_OLDER_THRESHOLD_PX;
+  return Math.max(LOAD_OLDER_THRESHOLD_PX, viewportHeightPx * PREFETCH_OLDER_VIEWPORT_HEIGHTS);
+}
 
 /* ── Per-chat scroll memory ────────────────────────────────────────────────
  * The owning pane force-remounts this list with `key={selectedSessionId}`, so
@@ -5318,7 +5396,9 @@ function AgentChatMessageListMain({
   }, [onLoadOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError]);
 
   const maybeRequestOlderHistory = useCallback((scrollTopNow: number) => {
-    if (scrollTopNow > LOAD_OLDER_THRESHOLD_PX) return;
+    // Two viewport-heights of runway, falling back to the near-top threshold
+    // before the pane has been measured. See PREFETCH_OLDER_VIEWPORT_HEIGHTS.
+    if (scrollTopNow > resolveOlderHistoryPrefetchTriggerPx(scrollRef.current?.clientHeight ?? 0)) return;
     if (
       !hasOlderHistoryRef.current
       || loadingOlderHistoryRef.current
@@ -5337,7 +5417,9 @@ function AgentChatMessageListMain({
       }
     }, {
       root,
-      rootMargin: `${LOAD_OLDER_THRESHOLD_PX}px 0px 0px`,
+      // Same runway as the scroll-handler path, so whichever notices first
+      // starts the fetch at the same distance from the top.
+      rootMargin: `${resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)}px 0px 0px`,
       threshold: 0,
     });
     observer.observe(sentinel);
@@ -5399,10 +5481,14 @@ function AgentChatMessageListMain({
     () => groupChatTranscriptRows(rows).filter((row) => !isAutomaticContextUsageEvent(row.event)),
     [rows],
   );
-  const transcriptToolActivity = useMemo(
-    () => deriveTranscriptToolActivity(allGroupedRows),
-    [allGroupedRows],
-  );
+  const previousToolActivityRef = useRef<TranscriptToolActivity | null>(null);
+  const transcriptToolActivity = useMemo(() => {
+    const next = deriveTranscriptToolActivity(allGroupedRows);
+    const previous = previousToolActivityRef.current;
+    const stabilized = previous ? stabilizeTranscriptToolActivity(previous, next) : next;
+    previousToolActivityRef.current = stabilized;
+    return stabilized;
+  }, [allGroupedRows]);
   const groupedRows = useMemo(
     // `work_log_group` rows no longer render anything in the timeline: tool
     // calls are shown by the working indicator / done divider, and file changes

@@ -73,8 +73,10 @@ import {
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
   resolveAnchoredChatRowIndex,
+  resolveOlderHistoryPrefetchTriggerPx,
   resolveWorkingIndicatorLabel,
   shouldAbsorbProgrammaticScrollEvent,
+  stabilizeTranscriptToolActivity,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
 import { looksLikeWireframe } from "./questionOptionPreview";
@@ -4663,5 +4665,97 @@ describe("turn-level file-change de-clutter", () => {
     const summaries = rendered.container.textContent?.match(/files? changed/g) ?? [];
     expect(summaries).toHaveLength(1);
     expect(rendered.container.textContent).toContain("2 files changed");
+  });
+});
+
+describe("older-history prefetch runway", () => {
+  it("starts the fetch two viewport-heights before the top", () => {
+    // The reader used to arrive at the top BEFORE the request went out, so a
+    // page load was always a visible stall.
+    expect(resolveOlderHistoryPrefetchTriggerPx(800)).toBe(1600);
+  });
+
+  it("never shrinks below the near-top fallback", () => {
+    // Short panes and pre-measurement (clientHeight 0 in jsdom / first paint)
+    // keep the original near-top trigger rather than disabling paging.
+    expect(resolveOlderHistoryPrefetchTriggerPx(0)).toBe(300);
+    expect(resolveOlderHistoryPrefetchTriggerPx(100)).toBe(300);
+    expect(resolveOlderHistoryPrefetchTriggerPx(Number.NaN)).toBe(300);
+  });
+
+  it("requests an older page while still two screens from the top", async () => {
+    const onLoadOlderHistory = vi.fn();
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "text", text: "hello", turnId: "turn-1" },
+        },
+      ] as never,
+      { hasOlderHistory: true, onLoadOlderHistory },
+    );
+
+    const pane = rendered.container.querySelector(".ade-chat-timeline-pane");
+    expect(pane).not.toBeNull();
+    Object.defineProperty(pane!, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(pane!, "scrollHeight", { value: 20_000, configurable: true });
+    onLoadOlderHistory.mockClear();
+
+    // 900px from the top: outside the old 300px trigger, inside the new runway.
+    Object.defineProperty(pane!, "scrollTop", { value: 900, configurable: true, writable: true });
+    fireEvent.scroll(pane!);
+
+    await waitFor(() => expect(onLoadOlderHistory).toHaveBeenCalled());
+  });
+});
+
+describe("transcript tool-activity identity stability", () => {
+  const buildRows = (tail: string) => groupConsecutiveWorkLogRows([
+    {
+      key: "work-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: {
+        type: "work_log_entry",
+        entry: {
+          id: "entry-1",
+          createdAt: "2026-03-17T10:00:00.000Z",
+          label: "Edit",
+          tone: "tool",
+          status: "success",
+          entryKind: "file_change",
+          turnId: "turn-1",
+          changedFiles: [{ path: "/root/a.ts", kind: "modify", additions: 1, deletions: 0, diff: "" }],
+        },
+      },
+    },
+    {
+      key: "done-1",
+      timestamp: "2026-03-17T10:00:01.000Z",
+      event: { type: "done", turnId: "turn-1", status: "completed" },
+    },
+    {
+      key: `text-${tail}`,
+      timestamp: "2026-03-17T10:00:02.000Z",
+      event: { type: "text", text: tail, turnId: "turn-2" },
+    },
+  ] as never);
+
+  it("reuses a settled turn's arrays when a later delta arrives", () => {
+    // Without this, every streaming tick hands each done row brand-new arrays
+    // and React.memo misses on every completed turn in the thread.
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("ab") as never);
+    expect(second.byDoneRowKey.get("done-1")).not.toBe(first.byDoneRowKey.get("done-1"));
+
+    const stabilized = stabilizeTranscriptToolActivity(first, second);
+    expect(stabilized.byDoneRowKey.get("done-1")).toBe(first.byDoneRowKey.get("done-1"));
+    expect(stabilized.fileEntriesByDoneRowKey.get("done-1")).toBe(first.fileEntriesByDoneRowKey.get("done-1"));
+  });
+
+  it("returns the previous object outright when nothing changed", () => {
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("a") as never);
+    expect(stabilizeTranscriptToolActivity(first, second)).toBe(first);
   });
 });
