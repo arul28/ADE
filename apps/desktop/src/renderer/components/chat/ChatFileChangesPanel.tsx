@@ -30,6 +30,13 @@ function basename(filePath: string): string {
   return normalized.split("/").pop() ?? normalized;
 }
 
+/** Lane-relative directory for `filePath`, or `null` when it sits at the root. */
+function dirname(filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  return lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
+}
+
 function statusIcon(status: TurnDiffFile["status"]) {
   switch (status) {
     case "A":
@@ -270,8 +277,16 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
               onClick={() => void handleSelectFile(file.path)}
             >
               {statusIcon(file.status)}
-              <span className="min-w-0 flex-1 truncate text-[12px] text-fg/60" title={file.path}>
-                {basename(file.path)}
+              {/* Lane-relative path, not the bare basename: a turn usually
+                  touches several same-named files (index.ts, README.md) and the
+                  directory is the only thing that tells them apart. The
+                  directory truncates first so the filename always survives; the
+                  full path stays in the tooltip. */}
+              <span className="flex min-w-0 flex-1 items-baseline gap-0" title={file.path}>
+                {dirname(file.path) ? (
+                  <span className="min-w-0 shrink truncate text-[12px] text-fg/35">{dirname(file.path)}/</span>
+                ) : null}
+                <span className="shrink-0 text-[12px] text-fg/60">{basename(file.path)}</span>
               </span>
               <div className="flex shrink-0 items-center gap-1.5 max-sm:hidden">
                 {file.additions > 0 && <span className="text-[11px] text-emerald-400/70">+{file.additions}</span>}

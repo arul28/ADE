@@ -64,6 +64,7 @@ import {
   AgentChatMessageList,
   calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  deriveTranscriptToolActivity,
   deriveTurnModelState,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
@@ -72,6 +73,7 @@ import {
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
   resolveAnchoredChatRowIndex,
+  resolveWorkingIndicatorLabel,
   shouldAbsorbProgrammaticScrollEvent,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
@@ -4574,5 +4576,92 @@ describe("chat transcript content width", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("turn-level file-change de-clutter", () => {
+  const writeEntry = (id: string, filePath: string, additions: number, deletions: number) => ({
+    id,
+    createdAt: "2026-03-17T10:00:00.000Z",
+    label: "Edit",
+    tone: "tool" as const,
+    status: "success" as const,
+    entryKind: "file_change" as const,
+    turnId: "turn-1",
+    changedFiles: [{ path: filePath, kind: "modify" as const, additions, deletions, diff: "" }],
+  });
+
+  it("does not double a turn's diffstat when a work-log group carries a turnId", () => {
+    // `deriveTranscriptToolActivity` concatenates its by-turn-id accumulator
+    // with the pending segment, and a group with a turnId lands in BOTH. The
+    // files-changed summary reads these raw entries, so without an id-dedupe
+    // every +/- count renders at exactly 2x.
+    const rows = groupConsecutiveWorkLogRows([
+      {
+        key: "work-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "work_log_entry",
+          entry: writeEntry("entry-1", "/root/apps/desktop/src/a.ts", 3, 1),
+        },
+      },
+      {
+        key: "done-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ] as never);
+
+    const activity = deriveTranscriptToolActivity(rows as never);
+    const fileEntries = activity.fileEntriesByDoneRowKey.get("done-1") ?? [];
+    expect(fileEntries).toHaveLength(1);
+    const additions = fileEntries.flatMap((entry) => entry.changedFiles ?? [])
+      .reduce((sum, file) => sum + file.additions, 0);
+    expect(additions).toBe(3);
+  });
+
+  it("names the file being written in the working indicator", () => {
+    expect(
+      resolveWorkingIndicatorLabel("editing_file", [
+        writeEntry("entry-1", "/root/apps/desktop/src/main/services/lanes/laneService.ts", 1, 0) as never,
+      ]),
+    ).toBe("Editing laneService.ts");
+  });
+
+  it("falls back to the bare verb when the edit target is unknown", () => {
+    expect(resolveWorkingIndicatorLabel("editing_file", [])).toBe("Editing");
+    expect(resolveWorkingIndicatorLabel("thinking", [])).toBe("Thinking");
+    expect(resolveWorkingIndicatorLabel(null, [])).toBeNull();
+  });
+
+  it("keeps per-burst file panels out of the timeline", () => {
+    // One turn, two edit bursts split by prose: the thread must show ONE
+    // files-changed summary (at the turn's end), not one per burst.
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "file_change", kind: "modify", path: "/root/apps/a.ts", additions: 1, deletions: 0, diff: "", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Now the second file.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "file_change", kind: "modify", path: "/root/apps/b.ts", additions: 2, deletions: 0, diff: "", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ] as never);
+
+    const summaries = rendered.container.textContent?.match(/files? changed/g) ?? [];
+    expect(summaries).toHaveLength(1);
+    expect(rendered.container.textContent).toContain("2 files changed");
   });
 });

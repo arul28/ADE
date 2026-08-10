@@ -297,7 +297,7 @@ function fileExtBadge(path: string): string {
   return ext.length > 4 ? "FILE" : ext;
 }
 
-type AggregatedFile = {
+export type AggregatedFile = {
   path: string;
   kind: ChatWorkLogFileChange["kind"];
   additions: number;
@@ -306,7 +306,7 @@ type AggregatedFile = {
   status: EntryStatus;
 };
 
-function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[] {
+export function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[] {
   const map = new Map<string, AggregatedFile>();
   for (const entry of entries) {
     if (entry.entryKind === "file_change" && entry.changedFiles?.length) {
@@ -791,6 +791,133 @@ function FilesChangedPanel({
   );
 }
 
+/**
+ * Turn-level "Files changed" — ONE collapsed row at the end of a turn.
+ *
+ * The per-burst `FilesChangedPanel` is off in the timeline (see
+ * `ChatWorkLogBlock`'s `showFileChanges`): a turn whose tool runs are broken up
+ * by prose renders one `work_log_group` per run, so the per-burst panel stacked
+ * six times through a single reply. This aggregates the whole turn's entries,
+ * deduped by path with a net diffstat, and starts collapsed.
+ *
+ * It is the harness-independent fallback: it reads only `ChatWorkLogEntry`
+ * file/tool events, so it works for every runtime (claude/codex/cursor/droid/
+ * opencode/pi) whether or not the turn produced a git checkpoint. When a turn
+ * DID move HEAD, the checkpoint-backed `turn_diff_summary` event renders
+ * instead — that one can offer real diffs and a SHA-scoped revert.
+ *
+ * `formatDisplayPath` maps the absolute worktree path the tool reported to a
+ * lane-relative one; the full path stays in the row's tooltip.
+ */
+export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChangedSummary({
+  entries,
+  onUndo,
+  onOpenPath,
+  formatDisplayPath,
+}: {
+  entries: ChatWorkLogEntry[];
+  onUndo?: () => void;
+  onOpenPath?: (path: string) => void;
+  formatDisplayPath?: (path: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  const files = useMemo(
+    () => aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)),
+    [entries],
+  );
+  if (files.length === 0) return null;
+
+  const additions = files.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  const Caret = open ? CaretDown : CaretRight;
+
+  return (
+    <div className="min-w-0 max-w-full space-y-1.5 overflow-hidden">
+      <div className="flex min-w-0 max-w-full items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+        >
+          <Caret size={10} weight="bold" className="text-fg/35" />
+          <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
+            {files.length} file{files.length === 1 ? "" : "s"} changed
+          </span>
+          {additions > 0 ? (
+            <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-emerald-400/80">
+              +{additions}
+            </span>
+          ) : null}
+          {deletions > 0 ? (
+            <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-red-400/80">
+              −{deletions}
+            </span>
+          ) : null}
+        </button>
+        {onUndo ? (
+          <button
+            type="button"
+            onClick={onUndo}
+            className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40 transition-colors hover:text-fg/65"
+          >
+            Undo
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="min-w-0 max-w-full space-y-0.5 overflow-hidden pl-[18px]">
+          {files.map((file) => {
+            const display = formatDisplayPath ? formatDisplayPath(file.path) : file.path;
+            return (
+              <div
+                key={file.path}
+                className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1"
+              >
+                <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                  {fileExtBadge(file.path)}
+                </span>
+                {onOpenPath ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPath(file.path)}
+                    title={file.path}
+                    className="min-w-0 flex-1 truncate text-left font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65 underline decoration-transparent underline-offset-2 transition-colors hover:text-accent hover:decoration-accent/50"
+                  >
+                    {display}
+                  </button>
+                ) : (
+                  <span
+                    title={file.path}
+                    className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65"
+                  >
+                    {display}
+                  </span>
+                )}
+                {file.kind !== "modify" ? (
+                  <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40">
+                    {formatFileAction(file.kind)}
+                  </span>
+                ) : null}
+                {file.additions > 0 ? (
+                  <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-emerald-400/80">
+                    +{file.additions}
+                  </span>
+                ) : null}
+                {file.deletions > 0 ? (
+                  <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-red-400/80">
+                    −{file.deletions}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 function LocalhostServersStrip({
   entries,
   sessionId,
@@ -902,6 +1029,7 @@ export function ChatWorkLogBlock({
   sessionId,
   animate: _animate = true,
   showToolCalls = true,
+  showFileChanges = true,
 }: {
   entries: ChatWorkLogEntry[];
   summary?: ChatWorkLogGroupEvent["summary"];
@@ -913,6 +1041,14 @@ export function ChatWorkLogBlock({
   sessionId?: string | null;
   animate?: boolean;
   showToolCalls?: boolean;
+  /**
+   * Per-burst "N files changed" panel. The chat timeline turns this OFF: a long
+   * turn produces one `work_log_group` per uninterrupted run of tool entries, so
+   * leaving it on stacks six near-identical panels through a single reply. The
+   * turn-level `ChatTurnFilesChangedSummary` (rendered once, at the turn's end
+   * divider, deduped across the whole turn) is the canonical surface instead.
+   */
+  showFileChanges?: boolean;
 }) {
   const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
     const readOnly: ChatWorkLogEntry[] = [];
@@ -930,7 +1066,7 @@ export function ChatWorkLogBlock({
   );
 
   const hasReadOnly = showToolCalls && readOnlyEntries.length > 0;
-  const hasCodeChange = aggregatedFiles.length > 0;
+  const hasCodeChange = showFileChanges && aggregatedFiles.length > 0;
   if (!hasReadOnly && !hasCodeChange) return null;
 
   return (

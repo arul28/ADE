@@ -77,8 +77,7 @@ import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
-  ChatWorkLogBlock,
-  chatWorkLogHasFileChanges,
+  ChatTurnFilesChangedSummary,
   dedupeChatToolActivityEntries,
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -154,6 +153,7 @@ function path_isAbsoluteLike(value: string): boolean {
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
+const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -1921,6 +1921,40 @@ const ACTIVITY_LABELS: Record<string, string> = {
   reading: "Reading",
   tool_calling: "Calling tool"
 };
+
+/**
+ * The live label for the working indicator.
+ *
+ * `activity` events carry the TOOL name as their detail, not the file, so an
+ * edit burst used to read as a bare "Working". Naming the file being written
+ * turns a long silent stretch into something a reader can follow, so when the
+ * activity is an edit we pull the target off the most recent unfinished write
+ * entry in the same turn ("Editing laneService.ts"). Presentational only —
+ * canonical phase/attention semantics are owned elsewhere.
+ */
+export function resolveWorkingIndicatorLabel(
+  activity: string | null,
+  activeEntries: readonly ChatWorkLogEntry[],
+): string | null {
+  if (!activity) return null;
+  const label = ACTIVITY_LABELS[activity] ?? activity;
+  if (activity !== "editing_file") return label;
+
+  for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
+    const entry = activeEntries[index]!;
+    if (entry.entryKind === "file_change") {
+      const path = entry.changedFiles?.[entry.changedFiles.length - 1]?.path;
+      if (path?.trim().length) return `${label} ${basenamePathLabel(path)}`;
+      continue;
+    }
+    if (entry.entryKind !== "tool" || !entry.toolName) continue;
+    const meta = getToolMeta(entry.toolName);
+    if (meta.category !== "write" || !meta.getTarget) continue;
+    const target = meta.getTarget(readRecord(entry.args) ?? {});
+    if (target?.trim().length) return `${label} ${basenamePathLabel(target)}`;
+  }
+  return label;
+}
 
 function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
   return (
@@ -4298,11 +4332,27 @@ function DoneTurnDivider({
   onInsertDraft,
   onRevealChatTerminal,
   sessionId,
+  onUndoChanges,
+  onOpenWorkspacePath,
+  turnFileEntries,
+  formatWorkspaceDisplayPath,
+  hasCheckpointDiffSummary,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
   timestamp: string;
   durationMs: number | null;
   toolEntries: ChatWorkLogEntry[];
+  onUndoChanges?: () => void;
+  onOpenWorkspacePath?: (path: string) => void;
+  /** Raw (un-deduped) code-change entries for this turn. */
+  turnFileEntries?: ChatWorkLogEntry[];
+  formatWorkspaceDisplayPath?: (path: string) => string;
+  /**
+   * True when this turn moved HEAD and therefore already rendered a
+   * checkpoint-backed `turn_diff_summary` row (real diffs + SHA-scoped revert).
+   * The entry-derived fallback stays out of the way in that case.
+   */
+  hasCheckpointDiffSummary?: boolean;
   proofArtifacts?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
@@ -4410,6 +4460,16 @@ function DoneTurnDivider({
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {hasCheckpointDiffSummary ? null : (
+        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
+          <ChatTurnFilesChangedSummary
+            entries={turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES}
+            onUndo={onUndoChanges}
+            onOpenPath={onOpenWorkspacePath}
+            formatDisplayPath={formatWorkspaceDisplayPath}
+          />
+        </div>
+      )}
       {turnProof.length > 0 && proofOpen ? (
         <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
           <ChatProofFilmstrip
@@ -4427,11 +4487,36 @@ function DoneTurnDivider({
 type TranscriptToolActivity = {
   byDoneRowKey: Map<string, ChatWorkLogEntry[]>;
   activeEntries: ChatWorkLogEntry[];
+  /**
+   * Same turn grouping as `byDoneRowKey`, but WITHOUT the tool-activity dedupe —
+   * that pass drops `file_change` entries on purpose (they had their own
+   * transcript panel), which is exactly what the turn's files-changed summary
+   * needs to read. Aggregation dedupes by path itself.
+   */
+  fileEntriesByDoneRowKey: Map<string, ChatWorkLogEntry[]>;
+  activeFileEntries: ChatWorkLogEntry[];
 };
+
+/**
+ * Dedupe by entry id, KEEPING `file_change` entries.
+ *
+ * `deriveTranscriptToolActivity` builds a turn's entries by concatenating the
+ * by-turn-id accumulator with the pending segment, and a group carrying a
+ * turnId lands in both — so the raw list holds every entry twice.
+ * `dedupeChatToolActivityEntries` happens to absorb that for the tool panel,
+ * but it also drops file changes, which the files-changed summary needs. Undo
+ * this doubling here or every diffstat renders at 2x.
+ */
+function dedupeWorkLogEntriesById(entries: ChatWorkLogEntry[]): ChatWorkLogEntry[] {
+  const byId = new Map<string, ChatWorkLogEntry>();
+  for (const entry of entries) byId.set(entry.id, entry);
+  return Array.from(byId.values());
+}
 
 export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]): TranscriptToolActivity {
   const entriesByTurnId = new Map<string, ChatWorkLogEntry[]>();
   const byDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
+  const fileEntriesByDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
   let pendingSegment: Array<{ entries: ChatWorkLogEntry[]; turnId: string | null }> = [];
 
   for (const row of rows) {
@@ -4458,6 +4543,7 @@ export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]):
       ? [...(entriesByTurnId.get(doneTurnId) ?? []), ...segmentEntries]
       : segmentEntries;
     byDoneRowKey.set(row.key, dedupeChatToolActivityEntries(turnEntries));
+    fileEntriesByDoneRowKey.set(row.key, dedupeWorkLogEntriesById(turnEntries));
     pendingSegment = [];
   }
 
@@ -4471,6 +4557,8 @@ export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]):
   return {
     byDoneRowKey,
     activeEntries: dedupeChatToolActivityEntries(activeEntries),
+    fileEntriesByDoneRowKey,
+    activeFileEntries: dedupeWorkLogEntriesById(activeEntries),
   };
 }
 
@@ -4580,10 +4668,14 @@ type EventRowProps = {
   turnActive?: boolean;
   sessionTurnActive?: boolean;
   sessionEnded?: boolean;
-  isLatestWorkLog?: boolean;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
+  turnFileEntries?: ChatWorkLogEntry[];
+  /** Maps an absolute worktree path to a lane-relative one for display. */
+  formatWorkspaceDisplayPath?: (path: string) => string;
+  /** This turn already rendered a checkpoint-backed `turn_diff_summary` row. */
+  hasCheckpointDiffSummary?: boolean;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
@@ -4633,10 +4725,12 @@ const EventRow = React.memo(function EventRow({
   turnActive,
   sessionTurnActive,
   sessionEnded,
-  isLatestWorkLog,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   onReviewChanges,
+  turnFileEntries,
+  formatWorkspaceDisplayPath,
+  hasCheckpointDiffSummary,
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
@@ -4661,9 +4755,6 @@ const EventRow = React.memo(function EventRow({
   resolveProofThumbnailSrc,
   onOpenProofDrawer,
 }: EventRowProps) {
-  const workLogAnimate = Boolean(turnActive)
-    && !sessionEnded
-    && Boolean(isLatestWorkLog);
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   return (
     <div
@@ -4698,24 +4789,8 @@ const EventRow = React.memo(function EventRow({
           <span className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
-      {envelope.event.type === "work_log_group"
-        ? (
-          <div className="w-fit min-w-0 max-w-[var(--chat-content-width,52rem)] overflow-hidden">
-            <ChatWorkLogBlock
-              entries={envelope.event.entries}
-              summary={envelope.event.summary}
-              onNavigateSuggestion={onNavigateSuggestion}
-              onUndoChanges={onReviewChanges}
-              onInsertDraft={onInsertDraft}
-              onRevealChatTerminal={onRevealChatTerminal}
-              sessionId={sessionId}
-              animate={workLogAnimate}
-              showToolCalls={false}
-            />
-          </div>
-        )
-        : envelope.event.type === "activity_bundle"
-          ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
+      {envelope.event.type === "activity_bundle"
+        ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
             onCodexRecovery,
@@ -4765,6 +4840,11 @@ const EventRow = React.memo(function EventRow({
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
+          onUndoChanges={onReviewChanges}
+          turnFileEntries={turnFileEntries}
+          onOpenWorkspacePath={onOpenWorkspacePath}
+          formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
+          hasCheckpointDiffSummary={hasCheckpointDiffSummary}
         />
       ) : null}
       {inlineProof?.length ? (
@@ -5484,10 +5564,13 @@ function AgentChatMessageListMain({
     [allGroupedRows],
   );
   const groupedRows = useMemo(
+    // `work_log_group` rows no longer render anything in the timeline: tool
+    // calls are shown by the working indicator / done divider, and file changes
+    // are summarized ONCE per turn at the done divider instead of once per
+    // burst. Dropping the rows outright (rather than rendering an empty block)
+    // keeps them from consuming a `--chat-row-gap` on each side.
     () => mergeAdjacentActivityBundleRows(
-      allGroupedRows.filter((row) => (
-        row.event.type !== "work_log_group" || chatWorkLogHasFileChanges(row.event.entries)
-      )),
+      allGroupedRows.filter((row) => row.event.type !== "work_log_group"),
     ),
     [allGroupedRows],
   );
@@ -5593,6 +5676,24 @@ function AgentChatMessageListMain({
     navigate("/files", { state });
     onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
+
+  /**
+   * Display form for a path a tool reported. Agents emit absolute worktree
+   * paths, which are unreadable in a narrow chat column and identical across
+   * every row; the lane-relative tail is the part that carries information.
+   * Resolution reuses the same workspace matching as `openWorkspacePath`
+   * (longest matching root, this chat's lane preferred) so it is correct for
+   * Windows drive/UNC roots too. Non-worktree paths pass through untouched, and
+   * callers keep the absolute path for the tooltip.
+   */
+  const formatWorkspaceDisplayPath = useCallback((path: string): string => {
+    const target = resolveFilesNavigationTarget({
+      path,
+      workspaces: filesWorkspaces,
+      fallbackLaneId: currentLaneId,
+    });
+    return target?.openFilePath ?? path;
+  }, [filesWorkspaces, currentLaneId]);
 
   const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
     navigate(suggestion.href);
@@ -6439,13 +6540,6 @@ function AgentChatMessageListMain({
     [groupedRows, rowHeight, timelineRowGapPx],
   );
 
-  const latestWorkLogIndex = useMemo(() => {
-    for (let i = groupedRows.length - 1; i >= 0; i -= 1) {
-      if (groupedRows[i]?.event.type === "work_log_group") return i;
-    }
-    return -1;
-  }, [groupedRows]);
-
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
@@ -6459,6 +6553,9 @@ function AgentChatMessageListMain({
     const turnToolEntries = envelope.event.type === "done"
       ? (transcriptToolActivity.byDoneRowKey.get(envelope.key) ?? [])
       : undefined;
+    const turnFileEntries = envelope.event.type === "done"
+      ? (transcriptToolActivity.fileEntriesByDoneRowKey.get(envelope.key) ?? [])
+      : undefined;
     const turnProof = envelope.event.type === "done"
       ? turnProofByRowKey.get(envelope.key)
       : undefined;
@@ -6466,7 +6563,13 @@ function AgentChatMessageListMain({
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
-    const isLatestWorkLog = index === latestWorkLogIndex;
+
+    // A turn that moved HEAD emits its own checkpoint-backed `turn_diff_summary`
+    // row; the done divider's entry-derived fallback stands down for it so the
+    // turn never shows two "files changed" summaries.
+    const hasCheckpointDiffSummary = envelope.event.type === "done"
+      && Boolean(currentTurn)
+      && (turnDiffSummaries ?? []).some((summary) => summary.turnId === currentTurn);
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
@@ -6504,10 +6607,12 @@ function AgentChatMessageListMain({
           turnActive={rowTurnActive}
           sessionTurnActive={sessionTurnActive}
           sessionEnded={sessionEnded}
-          isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
+          turnFileEntries={turnFileEntries}
+          formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
+          hasCheckpointDiffSummary={hasCheckpointDiffSummary}
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           onRewindFiles={onRewindFiles}
@@ -6559,10 +6664,12 @@ function AgentChatMessageListMain({
         turnActive={rowTurnActive}
         sessionTurnActive={sessionTurnActive}
         sessionEnded={sessionEnded}
-        isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
+        turnFileEntries={turnFileEntries}
+        formatWorkspaceDisplayPath={formatWorkspaceDisplayPath}
+        hasCheckpointDiffSummary={hasCheckpointDiffSummary}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
         onRewindFiles={onRewindFiles}
@@ -6584,7 +6691,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -6611,7 +6718,10 @@ function AgentChatMessageListMain({
         activity={
           activeApiRetry
             ? `retrying (attempt ${activeApiRetry.attempt}/${activeApiRetry.maxRetries} · waiting ${Math.max(0, Math.round(activeApiRetry.retryDelayMs / 1000))}s)`
-            : latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null
+            : resolveWorkingIndicatorLabel(
+              latestActivity?.activity ?? null,
+              transcriptToolActivity.activeFileEntries,
+            )
         }
         startedAt={activeTurnStartedAt}
         toolEntries={transcriptToolActivity.activeEntries}
