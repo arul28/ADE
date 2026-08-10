@@ -1267,12 +1267,18 @@ Renderer surfaces:
   `ade.agentChat.delete`. Fixed-position menus measure and clamp to the renderer
   viewport.
 - `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
+  `apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx`,
   `apps/desktop/src/renderer/lib/lanePrBadge.ts`,
   `LaneActionsSubmenu.tsx`, and
   `apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx` — the shared
   compact PR state badge, its selection/presentation/navigation helpers, the
   singleton session row's lane submenu, and the pointer-safe/keyboard-accessible
-  submenu primitive. The badge is presentation-only; where it opens is decided
+  submenu primitive. Multi-PR badges choose the newest open/draft PR (or newest
+  terminal activity) for the collapsed chip and render their detail list in a
+  viewport-clamped portal, so session-card overflow cannot hide it; the list
+  remains scrollable and keyboard reachable (ArrowDown opens it, Escape closes it and restores
+  focus). The badge
+  is presentation-only; where it opens is decided
   once by `openLanePr`, which sends a PR on the machine you are bound to into
   the PRs tab and a foreign one to GitHub, since a PR id resolves only on the
   machine that owns it. `LaneActionsSubmenu` renders the same

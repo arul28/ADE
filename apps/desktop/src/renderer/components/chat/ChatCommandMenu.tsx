@@ -20,7 +20,7 @@ import {
   Terminal as TerminalIcon,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
-import type { ComposerTrigger } from "../../../shared/composerTriggers";
+import { composerFileSearchQuery, type ComposerTrigger } from "../../../shared/composerTriggers";
 import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND } from "../../../shared/chatMentions";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
@@ -294,12 +294,13 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     // ---- @ sources: files + entity mentions, each independently debounced ----
     const atQuery = triggerType === "at" ? triggerQuery.trim() : "";
+    const fileQuery = triggerType === "at" ? composerFileSearchQuery(triggerQuery) : "";
     const atActive = triggerType === "at";
 
     // `triggerType` is null while the menu is closed, which drops both caches.
     const { results: fileResults, loading: fileLoading } = useDebouncedSuggestions<FileResult>(
       atActive,
-      atQuery,
+      fileQuery,
       onFileSearch,
       MAX_FILE_RESULTS,
       triggerType,

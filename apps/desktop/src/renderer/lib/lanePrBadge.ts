@@ -5,8 +5,9 @@ import { COLORS } from "../components/lanes/laneDesignTokens";
 
 /**
  * Rank used to choose the one PR that represents a lane in a dense list:
- * an open PR is the most actionable, then a draft, then a merged/closed one.
- * Lower rank wins.
+ * an open PR is the most actionable, then a draft, then terminal history.
+ * Merged and closed PRs share the terminal rank so their activity timestamps
+ * decide which history is most useful. Lower rank wins.
  */
 export function primaryPrStateRank(state: PrState): number {
   switch (state) {
@@ -17,18 +18,25 @@ export function primaryPrStateRank(state: PrState): number {
     case "merged":
       return 2;
     default:
-      return 3; // closed
+      return 2; // closed
   }
 }
 
-type PrimaryPrComparable = Pick<PrSummary, "state" | "updatedAt" | "githubPrNumber">;
+type PrimaryPrComparable = {
+  state: PrSummary["state"];
+  updatedAt?: string | null;
+  githubPrNumber: number;
+};
 
 function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): number {
   const byRank = primaryPrStateRank(a.state) - primaryPrStateRank(b.state);
   if (byRank !== 0) return byRank;
-  const aUpdated = Date.parse(a.updatedAt);
-  const bUpdated = Date.parse(b.updatedAt);
-  if (Number.isFinite(aUpdated) && Number.isFinite(bUpdated) && aUpdated !== bUpdated) {
+  const aUpdated = Date.parse(a.updatedAt ?? "");
+  const bUpdated = Date.parse(b.updatedAt ?? "");
+  const aHasUpdated = Number.isFinite(aUpdated);
+  const bHasUpdated = Number.isFinite(bUpdated);
+  if (aHasUpdated !== bHasUpdated) return aHasUpdated ? -1 : 1;
+  if (aHasUpdated && aUpdated !== bUpdated) {
     return bUpdated - aUpdated;
   }
   return b.githubPrNumber - a.githubPrNumber;
@@ -36,11 +44,11 @@ function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): numbe
 
 /**
  * Pick the single PR that best represents a set of PRs: prefer open over draft
- * over merged/closed; among equals the most recently updated (then highest
+ * over terminal history; among equals the most recently updated (then highest
  * number) wins. Returns null for an empty list. Pure — the caller pre-filters
  * to a lane's PRs.
  */
-export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: T[]): T | null {
+export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: readonly T[]): T | null {
   let best: T | null = null;
   for (const pr of prs) {
     if (best === null || comparePrimaryPr(pr, best) < 0) best = pr;
@@ -49,9 +57,10 @@ export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: T[]): T | null
 }
 
 /**
- * Choose the lane badge's attention target. A failing or blocked historical PR
- * must be able to win over a healthy current PR so the collapsed chip never
- * hides the lane's most actionable problem.
+ * Choose the PR represented by a lane badge. The collapsed card should point
+ * to the newest open work first; when no work is open, the latest draft or
+ * terminal PR activity is the useful fallback. Attention remains an aggregate
+ * signal on the badge, but it must not replace the user's current PR context.
  */
 export function selectPrimaryLanePr(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
@@ -64,17 +73,7 @@ export function selectPrimaryLanePr(
   const candidates = lanePrs.length > 0
     ? lanePrs
     : prs.filter((pr) => pr.laneId === lane.id && !pr.detached);
-  let best: PrSummary | null = null;
-  for (const pr of candidates) {
-    if (!best || compareLanePrimaryPr(pr, best) < 0) best = pr;
-  }
-  return best;
-}
-
-function compareLanePrimaryPr(a: PrSummary, b: PrSummary): number {
-  const byAttention = lanePrAttentionRank(b) - lanePrAttentionRank(a);
-  if (byAttention !== 0) return byAttention;
-  return comparePrimaryPr(a, b);
+  return pickPrimaryPr(candidates);
 }
 
 export function lanePrsForLane(

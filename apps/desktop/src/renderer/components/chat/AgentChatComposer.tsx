@@ -41,6 +41,8 @@ import type {
 } from "../../../shared/types/orchestration";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import {
+  composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -50,6 +52,7 @@ import {
 import {
   formatChatMentionToken,
   isChatMentionTokenBody,
+  parseChatMentions,
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
@@ -1508,6 +1511,8 @@ export function AgentChatComposer({
   onReasoningEffortChange,
   onFastModeChange,
   onDraftChange,
+  mentionLabels,
+  onMentionLabelChange,
   onClearDraft,
   onSubmit,
   onSubmitBlocked,
@@ -1662,6 +1667,9 @@ export function AgentChatComposer({
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
+  /** Persisted display labels keyed by their canonical mention token. */
+  mentionLabels?: Record<string, string>;
+  onMentionLabelChange?: (token: string, title: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
   onSubmitBlocked?: (message: string) => void;
@@ -1853,6 +1861,15 @@ export function AgentChatComposer({
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
+  // Plain textarea chips are painted by an overlay, while the serialized
+  // draft intentionally stores only the opaque mention pointer. Keep the
+  // selected row's title separately so the visible chip stays user-facing.
+  // This is a presentation cache only; send-time parsing still uses the
+  // canonical @chat:<id> token in `draft`.
+  const mentionLabelsRef = useRef<Map<string, string>>(new Map(Object.entries(mentionLabels ?? {})));
+  useLayoutEffect(() => {
+    mentionLabelsRef.current = new Map(Object.entries(mentionLabels ?? {}));
+  }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
@@ -2004,12 +2021,30 @@ export function AgentChatComposer({
     let pos = 0;
     plainComposerTokens.forEach((token, index) => {
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
+      const tokenText = draft.slice(token.start, token.end);
+      const displayText = token.kind === "mention"
+        ? mentionLabels?.[tokenText]?.trim() || mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
+        : tokenText;
+      const isLabeledMention = token.kind === "mention" && displayText !== tokenText;
       segments.push(
         <span
           key={`chip-${index}-${token.start}`}
           className="rounded-[4px] bg-violet-500/14 text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"
         >
-          {draft.slice(token.start, token.end)}
+          {isLabeledMention ? (
+            // Keep the textarea's canonical token as an invisible layout slot.
+            // The visible title is positioned inside that slot so a longer or
+            // shorter label cannot move the caret or following prose out of
+            // alignment with the real textarea value.
+            <span className="relative inline-block align-baseline" title={displayText}>
+              <span className="invisible whitespace-pre" data-composer-mention-layout>
+                {tokenText}
+              </span>
+              <span className="absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap" data-composer-mention-display>
+                {displayText}
+              </span>
+            </span>
+          ) : displayText}
         </span>,
       );
       pos = token.end;
@@ -2019,7 +2054,7 @@ export function AgentChatComposer({
     // measurable so the overlay height matches the textarea's scrollHeight.
     segments.push("​");
     return segments;
-  }, [draft, plainComposerTokens]);
+  }, [draft, mentionLabels, plainComposerTokens]);
 
   // Pre-warm the lane's quick-open file index as soon as the composer is
   // bound to a session so the first "@" query is served from a warm index.
@@ -2655,6 +2690,13 @@ export function AgentChatComposer({
       setCommandMenuTrigger(null);
       return;
     }
+    if (composerTriggerHasConfirmedPrefix(node.value, trigger, {
+      isFile: (body) => attachedPaths.has(body),
+      isMention: isChatMentionTokenBody,
+    })) {
+      setCommandMenuTrigger(null);
+      return;
+    }
     if (!openIfNew) {
       setCommandMenuTrigger((current) => {
         if (!current) return current;
@@ -2667,7 +2709,7 @@ export function AgentChatComposer({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, []);
+  }, [attachedPaths]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -2707,13 +2749,68 @@ export function AgentChatComposer({
     return chip;
   }, []);
 
+  const hydrateMentionChipsInEditor = useCallback((): boolean => {
+    const editor = richEditorRef.current;
+    const labels = mentionLabelsRef.current;
+    if (!editor) return false;
+
+    let changed = false;
+    editor.querySelectorAll<HTMLElement>("[data-composer-chip='mention']").forEach((chip) => {
+      const token = chip.dataset.composerChipText;
+      if (!token) return;
+      const label = labels.get(token)?.trim() || token;
+      const labelNode = chip.firstElementChild;
+      if (labelNode && labelNode.textContent !== label) {
+        labelNode.textContent = label;
+        changed = true;
+      }
+      const title = label === token ? token : `${label} — ${token}`;
+      if (chip.title !== title) {
+        chip.title = title;
+        changed = true;
+      }
+    });
+
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes: Text[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      nodes.push(current as Text);
+      current = walker.nextNode();
+    }
+    for (const node of nodes) {
+      const text = node.textContent ?? "";
+      const mentions = parseChatMentions(text).filter((mention) => labels.has(mention.token));
+      if (!mentions.length) continue;
+      const fragment = document.createDocumentFragment();
+      let offset = 0;
+      for (const mention of mentions) {
+        if (mention.start > offset) fragment.append(document.createTextNode(text.slice(offset, mention.start)));
+        fragment.append(createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)));
+        offset = mention.end;
+      }
+      if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+      node.replaceWith(fragment);
+      changed = true;
+    }
+    return changed;
+  }, [createComposerTokenChipNode]);
+
   // Finds the in-progress /command or @file token that ends at the caret in
   // the rich contenteditable. Works on the DOM text run around the caret
   // instead of serialized-draft offsets: serialization collapses whitespace
   // and flattens chips, so serialized indices cannot be mapped back onto DOM
   // positions. Chips, <br>, and block edges terminate the run and act as
   // word boundaries.
-  const getRichTriggerContext = useCallback((): { trigger: ComposerTrigger; range: Range } | null => {
+  const getRichTriggerContext = useCallback((queryOverride?: string): { trigger: ComposerTrigger; range: Range } | null => {
     const editor = richEditorRef.current;
     if (!editor) return null;
     const selection = window.getSelection();
@@ -2741,8 +2838,11 @@ export function AgentChatComposer({
       walker = walker.previousSibling;
     }
 
-    const trigger = detectComposerTrigger(runText, runText.length);
-    if (!trigger) return null;
+    const detectedTrigger = detectComposerTrigger(runText, runText.length);
+    if (!detectedTrigger) return null;
+    const trigger = queryOverride == null
+      ? detectedTrigger
+      : { ...detectedTrigger, query: queryOverride };
 
     let remaining = trigger.start;
     let startNode: Text = caretNode;
@@ -2757,9 +2857,22 @@ export function AgentChatComposer({
       remaining -= length;
     }
 
+    let endRemaining = trigger.start + 1 + trigger.query.length;
+    let endNode: Text = caretNode;
+    let endOffset = caretOffset;
+    for (const node of runNodes) {
+      const length = node === caretNode ? caretOffset : (node.textContent ?? "").length;
+      if (endRemaining <= length) {
+        endNode = node;
+        endOffset = endRemaining;
+        break;
+      }
+      endRemaining -= length;
+    }
+
     const range = document.createRange();
     range.setStart(startNode, startOffset);
-    range.setEnd(caretNode, caretOffset);
+    range.setEnd(endNode, endOffset);
     return { trigger, range };
   }, []);
 
@@ -2768,7 +2881,7 @@ export function AgentChatComposer({
   // no trigger span can be located (caller falls back to caret insertion).
   const replaceRichTriggerWith = useCallback((insertion:
     | { text: string }
-    | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string }
+    | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string; triggerLabel?: string }
   ): boolean => {
     const editor = richEditorRef.current;
     if (!editor) return false;
@@ -2779,7 +2892,18 @@ export function AgentChatComposer({
       selection?.removeAllRanges();
       selection?.addRange(saved);
     }
-    const context = getRichTriggerContext();
+    const detectedContext = getRichTriggerContext();
+    if (!detectedContext) return false;
+    const trigger = "triggerLabel" in insertion
+      ? composerTriggerForSelection(
+        detectedContext.trigger,
+        insertion.triggerLabel ?? "",
+        insertion.chipKind === "file" ? "file" : "mention",
+      )
+      : detectedContext.trigger;
+    const context = trigger.query === detectedContext.trigger.query
+      ? detectedContext
+      : getRichTriggerContext(trigger.query);
     if (!context) return false;
     selection?.removeAllRanges();
     selection?.addRange(context.range);
@@ -3011,6 +3135,8 @@ export function AgentChatComposer({
       }
     }
 
+    hydrateMentionChipsInEditor();
+
     const isFocusedInsideEditor = document.activeElement === editor;
     const insertChipFragment = (chip: HTMLElement) => {
       const before = document.createTextNode(" ");
@@ -3088,7 +3214,7 @@ export function AgentChatComposer({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // ── Chip selection highlight ─────────────────────────────────────────────
   // The native selection is not painted over contentEditable="false" chips, so
@@ -3873,11 +3999,16 @@ export function AgentChatComposer({
       }
       // Replace exactly the @query trigger span with the confirmed token.
       if (useRichComposer) {
-        if (!replaceRichTriggerWith({ chipKind: "file", chipText: `@${item.path}` })) {
+        if (!replaceRichTriggerWith({
+          chipKind: "file",
+          chipText: `@${item.path}`,
+          triggerLabel: item.path,
+        })) {
           insertTextIntoRichEditor(`@${item.path} `);
         }
       } else {
-        const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `@${item.path} `);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.path, "file");
+        const next = replaceComposerTriggerSpan(draft, trigger, `@${item.path} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
@@ -3886,16 +4017,20 @@ export function AgentChatComposer({
       // A mention is a pointer, not an attachment: nothing is resolved or read
       // now. The token is expanded into an <ade-mention> block at send time.
       const token = formatChatMentionToken(item.mention.kind, item.mention.id);
+      mentionLabelsRef.current.set(token, item.mention.title);
+      onMentionLabelChange?.(token, item.mention.title);
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "mention",
           chipText: token,
           chipLabel: item.mention.title,
+          triggerLabel: item.mention.title,
         })) {
           insertTextIntoRichEditor(`${token} `);
         }
       } else {
-        const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `${token} `);
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.mention.title, "mention");
+        const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
@@ -3921,7 +4056,7 @@ export function AgentChatComposer({
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;

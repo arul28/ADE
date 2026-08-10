@@ -682,6 +682,222 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
+  it("keeps an exact file match available after trailing prose", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/foo.ts about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/foo.ts"));
+    expect(await screen.findByText("foo.ts")).toBeTruthy();
+  });
+
+  it("does not reopen the file menu after a confirmed token and trailing prose", () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      attachments: [{ path: "src/foo.ts", type: "file" }],
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/foo.ts about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull();
+    expect(onSearchAttachments).not.toHaveBeenCalled();
+  });
+
+  it("keeps trailing prose when selecting a shorthand file match", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const draft = "ask @foo.ts about this";
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("foo.ts"));
+    fireEvent.click(await screen.findByText("foo.ts"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @src/foo.ts about this");
+  });
+
+  it("keeps an extensionless spaced file path intact before trailing prose", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/my folder", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+
+    const draft = "ask @src/my folder about this";
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/my folder about this"));
+    expect(await screen.findByText("my folder")).toBeTruthy();
+  });
+
+  it("preserves trailing prose when selecting an extensionless path prefix", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/my folder", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const draft = "ask @src/my review this";
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("src/my review this"));
+    fireEvent.click(await screen.findByText("my folder"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @src/my folder review this");
+  });
+
+  it("keeps spaced chat mentions searchable and displays the chat title in the chip", async () => {
+    const onSearchMentions = vi.fn().mockResolvedValue([{
+      kind: "chat" as const,
+      id: "chat-1",
+      title: "a b c",
+      subtitle: "Primary · codex",
+    }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      onSearchMentions,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+
+    fireEvent.change(textbox, {
+      target: { value: "@a b c", selectionStart: 6 },
+    });
+    view.rerender(<AgentChatComposer {...props} draft="@a b c" />);
+
+    await waitFor(() => expect(onSearchMentions).toHaveBeenCalledWith("a b c"));
+    fireEvent.click(await screen.findByText("a b c"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("@chat:chat-1 ");
+    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " />);
+
+    const chip = await screen.findByText("a b c");
+    expect(chip.textContent).toBe("a b c");
+    expect(chip.closest("[aria-hidden]")).not.toBeNull();
+    expect(view.container.querySelector("[data-composer-mention-layout]")?.textContent).toBe("@chat:chat-1");
+    expect(view.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+  });
+
+  it("restores persisted mention titles after a plain composer remount", () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+    });
+    const first = render(<AgentChatComposer {...props} />);
+    expect(first.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+
+    first.unmount();
+    const second = render(<AgentChatComposer {...props} />);
+    expect(second.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+  });
+
+  it("restores persisted mention titles after a rich composer remount", () => {
+    const iosContext = {
+      kind: "ios_element" as const,
+      id: "ios-1",
+      componentId: "PrimaryButton",
+      sourceFile: null,
+      sourceLine: null,
+      frame: null,
+      metadata: { label: "Primary" },
+      selectedAt: "2026-05-07T00:00:00.000Z",
+    };
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+      iosElementContextItems: [iosContext],
+    });
+    const first = render(<AgentChatComposer {...props} />);
+    expect(first.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+
+    first.unmount();
+    const second = render(<AgentChatComposer {...props} />);
+    expect(second.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+  });
+
+  it("falls back to the canonical mention token when a persisted rich mention label is cleared", () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "@chat:chat-1 ",
+      mentionLabels: { "@chat:chat-1": "a b c" },
+      iosElementContextItems: [makeIosContextItem("ios-1")],
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const chip = () => view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
+
+    expect(chip()?.textContent).toBe("a b c");
+    view.rerender(<AgentChatComposer {...props} mentionLabels={{}} />);
+
+    expect(chip()?.textContent).toBe("@chat:chat-1");
+    expect(chip()?.title).toBe("@chat:chat-1");
+  });
+
+  it("does not consume prose after a matching spaced chat mention", async () => {
+    const onSearchMentions = vi.fn().mockResolvedValue([{
+      kind: "chat" as const,
+      id: "chat-1",
+      title: "a b c",
+    }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      onSearchMentions,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+    const draft = "ask @a b c about this";
+
+    fireEvent.change(textbox, {
+      target: { value: draft, selectionStart: draft.length },
+    });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    fireEvent.click(await screen.findByText("a b c"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @chat:chat-1 about this");
+  });
+
   it("uses lane attachment search for at-command suggestions before a session exists", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "docs/README.md", type: "file" }]);
 

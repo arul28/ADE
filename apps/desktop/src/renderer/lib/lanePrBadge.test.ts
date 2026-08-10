@@ -9,17 +9,17 @@ import {
   selectPrimaryLanePr,
 } from "./lanePrBadge";
 
-type TestPr = { id: string; state: PrState; updatedAt: string; githubPrNumber: number };
+type TestPr = { id: string; state: PrState; updatedAt?: string | null; githubPrNumber: number };
 
-function pr(id: string, state: PrState, updatedAt: string, githubPrNumber: number): TestPr {
+function pr(id: string, state: PrState, updatedAt: string | null | undefined, githubPrNumber: number): TestPr {
   return { id, state, updatedAt, githubPrNumber };
 }
 
 describe("primaryPrStateRank", () => {
-  it("ranks open < draft < merged < closed", () => {
+  it("ranks open < draft < terminal history", () => {
     expect(primaryPrStateRank("open")).toBeLessThan(primaryPrStateRank("draft"));
     expect(primaryPrStateRank("draft")).toBeLessThan(primaryPrStateRank("merged"));
-    expect(primaryPrStateRank("merged")).toBeLessThan(primaryPrStateRank("closed"));
+    expect(primaryPrStateRank("merged")).toBe(primaryPrStateRank("closed"));
   });
 });
 
@@ -68,6 +68,22 @@ describe("pickPrimaryPr", () => {
       ],
       expected: "merged",
     },
+    {
+      name: "newer closed activity beats older merged history",
+      prs: [
+        pr("old-merged", "merged", "2026-07-01T00:00:00Z", 20),
+        pr("new-closed", "closed", "2026-07-04T00:00:00Z", 1),
+      ],
+      expected: "new-closed",
+    },
+    {
+      name: "valid activity beats a missing timestamp",
+      prs: [
+        pr("missing", "open", null, 99),
+        pr("known", "open", "2026-07-03T00:00:00Z", 1),
+      ],
+      expected: "known",
+    },
   ];
 
   for (const { name, prs, expected } of cases) {
@@ -100,7 +116,7 @@ describe("selectPrimaryLanePr", () => {
     updatedAt: "2026-07-02T00:00:00.000Z",
   };
 
-  it("lets an actionable failing historical PR win over a healthy current PR", () => {
+  it("keeps the newest open PR on the collapsed lane badge", () => {
     const healthyCurrent = {
       ...base,
       id: "current",
@@ -110,6 +126,7 @@ describe("selectPrimaryLanePr", () => {
       headBranch: "current",
       checksStatus: "passing" as const,
       reviewStatus: "approved" as const,
+      updatedAt: "2026-07-02T00:00:00.000Z",
     };
     const failingPrevious = {
       ...base,
@@ -120,9 +137,37 @@ describe("selectPrimaryLanePr", () => {
       headBranch: "old-branch",
       checksStatus: "failing" as const,
       reviewStatus: "approved" as const,
+      updatedAt: "2026-07-03T00:00:00.000Z",
     };
 
     expect(selectPrimaryLanePr(lane, [healthyCurrent, failingPrevious])?.id).toBe("previous");
+  });
+
+  it("uses the latest activity when multiple terminal PRs remain", () => {
+    const olderMerged = {
+      ...base,
+      id: "older-merged",
+      githubPrNumber: 8,
+      title: "Older merged",
+      state: "merged" as const,
+      headBranch: "older",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    };
+    const newerMerged = {
+      ...base,
+      id: "newer-merged",
+      githubPrNumber: 7,
+      title: "Newer merged",
+      state: "merged" as const,
+      headBranch: "newer",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+      updatedAt: "2026-07-04T00:00:00.000Z",
+    };
+
+    expect(selectPrimaryLanePr(lane, [olderMerged, newerMerged])?.id).toBe("newer-merged");
   });
 });
 

@@ -539,6 +539,106 @@ describe("fileService", () => {
     }
   });
 
+  it("matches an extensionless path with spaces before trailing prose", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-spaced-path-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "my folder"), "extensionless path\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "src/my folder about this",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(quickOpen.map((item) => item.path)).toContain("src/my folder");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
+  it("matches a root-level spaced extensionless file before trailing prose", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-root-spaced-prose-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "my file"), "extensionless root file\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "my file review this",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(quickOpen.map((item) => item.path)).toContain("my file");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
+  it("matches a nested extensionless basename before trailing prose", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-nested-basename-prose-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "docs", "README"), "nested extensionless file\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "README review this",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(quickOpen.map((item) => item.path)).toContain("docs/README");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
+  it("keeps composer prefix fallback out of generic quickOpen", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generic-prefix-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "package.json"), "{}\n", "utf8");
+
+      const generic = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "package manager",
+        includeIgnored: true,
+      });
+      const composer = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "package manager",
+        includeIgnored: true,
+        allowComposerPrefixFallback: true,
+      });
+
+      expect(generic.map((item) => item.path)).not.toContain("package.json");
+      expect(composer.map((item) => item.path)).toContain("package.json");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("warms the quick open index for subsequent lookups", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-search-"));
     const { execSync } = await import("node:child_process");

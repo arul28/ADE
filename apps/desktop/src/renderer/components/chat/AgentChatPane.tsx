@@ -68,6 +68,7 @@ import {
   normalizeChatContextAttachments,
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import { isChatMentionTokenBody } from "../../../shared/chatMentions";
 import type {
   OrchestrationAnnotationEventDetail,
   OrchestrationContextItem,
@@ -1447,6 +1448,7 @@ type LastLaunchConfig = {
 type ComposerDraftStorageSnapshot = {
   version: 1;
   text: string;
+  mentionLabels: Record<string, string>;
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
@@ -2707,6 +2709,20 @@ function mergeComposerItemsById<T extends { id: string }>(current: T[], incoming
   return [...merged.values()];
 }
 
+function normalizeComposerMentionLabels(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const labels: Record<string, string> = {};
+  for (const [token, rawLabel] of Object.entries(value)) {
+    if (!token.startsWith("@") || !isChatMentionTokenBody(token.slice(1))) continue;
+    if (typeof rawLabel !== "string") continue;
+    const label = rawLabel.trim();
+    if (!label || token.length > 300 || label.length > 500) continue;
+    labels[token] = label;
+    if (Object.keys(labels).length >= 64) break;
+  }
+  return labels;
+}
+
 function normalizeStoredComposerDraft(
   value: unknown,
   defaults: NativeControlState,
@@ -2717,6 +2733,7 @@ function normalizeStoredComposerDraft(
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
+    mentionLabels: normalizeComposerMentionLabels(value.mentionLabels),
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode: modelSupportsFastMode(desc) && readStoredFastMode(value),
@@ -3592,6 +3609,7 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const composerDraftWriteTimerRef = useRef<number | null>(null);
   const pendingComposerDraftWriteRef = useRef<{
@@ -4121,6 +4139,13 @@ export function AgentChatPane({
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  const updateComposerMentionLabel = useCallback((token: string, title: string) => {
+    const label = title.trim();
+    if (!label) return;
+    setMentionLabels((current) => current[token] === label
+      ? current
+      : { ...current, [token]: label });
+  }, []);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
@@ -7632,7 +7657,8 @@ export function AgentChatPane({
     const hits = await window.ade.files.quickOpen({
       workspaceId: laneId,
       query: trimmed,
-      limit: 60
+      limit: 60,
+      allowComposerPrefixFallback: true,
     }, pin);
     return hits.map((hit) => ({
       path: hit.path,
@@ -8180,6 +8206,7 @@ export function AgentChatPane({
         writeComposerDraftSnapshot(storageKey, saved);
       }
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
+      setMentionLabels(saved.mentionLabels);
       setDraft(saved.text);
       draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
       setAttachments(saved.attachments);
@@ -8204,6 +8231,7 @@ export function AgentChatPane({
       return;
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
+    setMentionLabels({});
     setDraft(savedText);
     draftAttachmentOwnerBindingRef.current = null;
     setAttachments([]);
@@ -8232,6 +8260,7 @@ export function AgentChatPane({
     const snapshot: ComposerDraftStorageSnapshot = {
       version: 1,
       text: draft,
+      mentionLabels,
       modelId,
       reasoningEffort,
       fastMode,
@@ -8278,6 +8307,7 @@ export function AgentChatPane({
     executionMode,
     iosElementContextItems,
     modelId,
+    mentionLabels,
     reasoningEffort,
   ]);
 
@@ -12198,6 +12228,8 @@ export function AgentChatPane({
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}
             onDraftChange={updateComposerDraft}
+            mentionLabels={mentionLabels}
+            onMentionLabelChange={updateComposerMentionLabel}
             onClearDraft={() => updateComposerDraft("")}
             onSubmit={() => {
               void submit();
@@ -12245,6 +12277,7 @@ export function AgentChatPane({
               const draftSnapshot: ComposerDraftStorageSnapshot = {
                 version: 1,
                 text: draft,
+                mentionLabels,
                 modelId,
                 reasoningEffort,
                 fastMode,

@@ -246,6 +246,8 @@ export type FilesQuickOpenArgs = {
   query: string;
   limit?: number;
   includeIgnored?: boolean;
+  /** Allow the composer-only path-prefix match for trailing prose. */
+  allowComposerPrefixFallback?: boolean;
 };
 
 export type FilesQuickOpenItem = {

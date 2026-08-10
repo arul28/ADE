@@ -257,6 +257,42 @@ describe("chat mention ranking", () => {
     expect(ranked.map((r) => r.id)).toEqual(["exact", "prefix", "sub"]);
   });
 
+  it("keeps a title match when prose follows the mention", () => {
+    const ranked = rankChatMentionSuggestions(
+      [
+        { id: "short", title: "a b c", lastActivityAt: 10 },
+        { id: "other", title: "unrelated", lastActivityAt: 100 },
+      ],
+      "a b c about this",
+      10,
+    );
+
+    expect(ranked.map((r) => r.id)).toEqual(["short"]);
+  });
+
+  it("prefers the longest title prefix before recency", () => {
+    const ranked = rankChatMentionSuggestions(
+      [
+        { id: "short", title: "Foo", lastActivityAt: 900 },
+        { id: "long", title: "Foo Bar", lastActivityAt: 1 },
+      ],
+      "Foo Bar please",
+      10,
+    );
+
+    expect(ranked.map((r) => r.id)).toEqual(["long", "short"]);
+  });
+
+  it("does not keep a subtitle-only prefix when prose follows it", () => {
+    const ranked = rankChatMentionSuggestions(
+      [{ id: "subtitle", title: "Unrelated", subtitle: "Primary · codex", lastActivityAt: 10 }],
+      "Primary · codex please review",
+      10,
+    );
+
+    expect(ranked).toEqual([]);
+  });
+
   it("honors the per-kind cap and is stable for equal rows", () => {
     const ties = [
       { id: "z", title: "same", lastActivityAt: 5 },

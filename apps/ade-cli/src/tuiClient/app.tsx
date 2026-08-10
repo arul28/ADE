@@ -15,12 +15,16 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  composerFileSearchQuery,
+  composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
 } from "../../../desktop/src/shared/composerTriggers";
+import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -2512,6 +2516,33 @@ export const MENTION_MAX_ROWS = 10;
 export const MENTION_FILE_ROWS = 5;
 const STARTUP_RECONNECT_DELAY_MS = 3_000;
 
+function matchesMentionTarget(target: string, query: string): boolean {
+  return target.includes(query) || query.startsWith(`${target} `);
+}
+
+/**
+ * Prefer the longest label that is a confirmed prefix of the query. This lets
+ * `@Foo Bar please` select `Foo Bar` before a shorter `Foo` lane while keeping
+ * the existing source order for unrelated or equally long matches.
+ */
+export function rankMentionSuggestions(
+  suggestions: MentionSuggestion[],
+  query: string,
+): MentionSuggestion[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return suggestions;
+
+  return suggestions
+    .map((suggestion, index) => {
+      const label = suggestion.label.trim().toLowerCase();
+      const isConfirmedPrefix = label.length > 0
+        && (normalizedQuery === label || normalizedQuery.startsWith(`${label} `));
+      return { suggestion, index, prefixLength: isConfirmedPrefix ? label.length : 0 };
+    })
+    .sort((left, right) => right.prefixLength - left.prefixLength || left.index - right.index)
+    .map(({ suggestion }) => suggestion);
+}
+
 type MentionRemoteCacheEntry = {
   filesByQuery: Map<string, Array<{ path: string }>>;
   commits: Array<Record<string, unknown>> | null;
@@ -4964,9 +4995,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setSelectedDrawerChatAction(action);
     applyDrawerChatSelection({ session: session ?? null, action });
   }, [applyDrawerChatSelection, openDrawerSessions, selectActiveLaneId]);
-  const activeComposerTrigger = useMemo(() => (
-    activePane === "chat" ? detectComposerTrigger(prompt, promptCursor) : null
-  ), [activePane, prompt, promptCursor]);
+  const activeComposerTrigger = useMemo(() => {
+    if (activePane !== "chat") return null;
+    const trigger = detectComposerTrigger(prompt, promptCursor);
+    if (!trigger) return null;
+    const confirmedFile = (body: string) => selectedMentions.some(
+      (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
+    );
+    const confirmedMention = (body: string) => isChatMentionTokenBody(body)
+      || selectedMentions.some(
+        (mention) => mention.kind !== "file" && mention.insertText === `@${body}`,
+      );
+    return composerTriggerHasConfirmedPrefix(prompt, trigger, {
+      isFile: confirmedFile,
+      isMention: confirmedMention,
+    }) ? null : trigger;
+  }, [activePane, prompt, promptCursor, selectedMentions]);
   const activeMentionRange = useMemo(() => (
     activeComposerTrigger?.type === "at"
       ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }
@@ -7339,7 +7383,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     let cancelled = false;
-    const query = range.query.toLowerCase();
+    const query = range.query.trim().toLowerCase();
+    const fileQuery = composerFileSearchQuery(range.query).toLowerCase();
+    const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {
+      if (!query) return true;
+      const label = suggestion.label.toLowerCase();
+      return (
+        matchesMentionTarget(label, query)
+        || suggestion.insertText.toLowerCase().includes(query)
+        || Boolean(suggestion.detail?.toLowerCase().includes(query))
+      );
+    };
     const localSuggestions = (): MentionSuggestion[] => [
       ...lanes.map((lane) => ({
         kind: "lane" as const,
@@ -7353,30 +7407,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         insertText: `@chat:${session.sessionId}`,
         detail: session.laneId,
       })),
-    ].filter((suggestion) => (
-      !query
-      || suggestion.label.toLowerCase().includes(query)
-      || suggestion.insertText.toLowerCase().includes(query)
-      || suggestion.detail?.toLowerCase().includes(query)
-    ));
+    ].filter(matchesMentionQuery);
     const attachedSuggestions = (): MentionSuggestion[] => selectedMentions
       .filter((suggestion) => suggestion.attachment && suggestion.filePath)
-      .filter((suggestion) => (
-        !query
-        || suggestion.label.toLowerCase().includes(query)
-        || suggestion.insertText.toLowerCase().includes(query)
-        || suggestion.detail?.toLowerCase().includes(query)
-      ));
+      .filter(matchesMentionQuery);
 
     const publishSuggestions = (remote: MentionSuggestion[] = []) => {
       if (cancelled) return;
       const local = localSuggestions();
       // On a bare `@` every lane and chat matches, so without a reservation the
-      // row cap would drop the whole browse list of files. Only browse mode
-      // trims locals; typed queries keep their existing ordering untouched.
+      // row cap would drop the whole browse list of files. Typed queries keep
+      // all local candidates long enough for prefix ranking to choose the most
+      // specific target before the row cap is applied.
       const fileRows = query ? 0 : Math.min(remote.filter((s) => s.kind === "file").length, MENTION_FILE_ROWS);
       const localBudget = Math.max(0, MENTION_MAX_ROWS - fileRows);
-      const next = [...local.slice(0, localBudget), ...remote, ...attachedSuggestions()].slice(0, MENTION_MAX_ROWS);
+      const localCandidates = query ? local : local.slice(0, localBudget);
+      const next = rankMentionSuggestions(
+        [...localCandidates, ...remote, ...attachedSuggestions()],
+        query,
+      ).slice(0, MENTION_MAX_ROWS);
       setMentionSuggestions(next);
       setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
     };
@@ -7390,16 +7439,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // (shallowest paths first) instead of returning nothing, matching the
         // desktop composer's `@` behavior. The cache keys on the query string,
         // so "" caches like any typed query.
-        const filesPromise = cache.filesByQuery.get(query)
-          ? Promise.resolve(cache.filesByQuery.get(query)!)
+        const filesPromise = cache.filesByQuery.get(fileQuery)
+          ? Promise.resolve(cache.filesByQuery.get(fileQuery)!)
           : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
             workspaceId: laneId,
-            query,
+            query: fileQuery,
             limit: MENTION_FILE_ROWS,
+            allowComposerPrefixFallback: true,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];
-              cache.filesByQuery.set(query, safeFiles);
+              cache.filesByQuery.set(fileQuery, safeFiles);
               return safeFiles;
             })
             .catch(() => []);
@@ -7436,7 +7486,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           .filter((commit) => {
             const subject = String(commit.subject ?? commit.message ?? "");
             const sha = String(commit.shortSha ?? commit.sha ?? "");
-            return !query || subject.toLowerCase().includes(query) || sha.toLowerCase().includes(query);
+            return !query || matchesMentionTarget(subject.toLowerCase(), query) || sha.toLowerCase().includes(query);
           })
           .slice(0, 5)
           .map((commit) => {
@@ -7452,7 +7502,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           .filter((pr) => {
             const title = String(pr.title ?? "");
             const number = String(pr.number ?? pr.prNumber ?? "");
-            return !query || title.toLowerCase().includes(query) || number.includes(query);
+            const loweredTitle = title.toLowerCase();
+            return !query || matchesMentionTarget(loweredTitle, query) || number.includes(query);
           })
           .slice(0, 5)
           .map((pr) => {
@@ -12331,8 +12382,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addNotice, chatRowBudget, lanes, models, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
-    const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
-    if (trigger?.type !== "at") return;
+    const detectedTrigger = detectComposerTrigger(prompt, promptCursorRef.current);
+    if (detectedTrigger?.type !== "at") return;
+    const trigger = composerTriggerForSelection(
+      detectedTrigger,
+      suggestion.kind === "file" ? suggestion.filePath ?? suggestion.label : suggestion.label,
+      suggestion.kind === "file" ? "file" : "mention",
+    );
     const next = replaceComposerTriggerSpan(prompt, trigger, `${suggestion.insertText} `);
     setPromptValue(next.text, next.caret);
     setSelectedMentions((prev) => {

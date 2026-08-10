@@ -4,7 +4,8 @@ import SwiftUI
 @testable import ADE
 
 /// Pure-logic coverage for the cursor-relative trigger detector that mirrors the
-/// shared desktop/TUI regexes (`(?:^|\s)/([^\s/]*)$` and `(?:^|\s)@([^\s@]*)$`).
+/// shared desktop/TUI regexes (`(?:^|\s)/([^\s/]*)$` and
+/// `(?:^|[ \t\r\n])@([^@\r\n]*)$`).
 /// Locks in the boundary rules that keep paths, fractions, and emails from
 /// opening the suggestion strip, plus the closest-to-cursor tie-break.
 final class WorkComposerTriggerDetectorTests: XCTestCase {
@@ -62,6 +63,219 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     let match = detect("@a/b/c")
     XCTAssertEqual(match?.kind, .at)
     XCTAssertEqual(match?.query, "a/b/c")
+  }
+
+  func testAtSupportsMultiWordQueries() {
+    let match = detect("@a b c")
+    XCTAssertEqual(match?.kind, .at)
+    XCTAssertEqual(match?.query, "a b c")
+    XCTAssertEqual(match?.range, NSRange(location: 0, length: 6))
+  }
+
+  func testAtDoesNotCrossNewlinesOrAnotherAtSign() {
+    XCTAssertNil(detect("@a\nb"))
+    XCTAssertNil(detect("@a@b"))
+  }
+
+  func testAtSelectionRangePreservesTrailingProse() {
+    let text = "ask @src/foo.swift about this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/foo.swift",
+      kind: .at,
+      title: "foo.swift",
+      subtitle: "src",
+      insertText: "@src/foo.swift"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "src/foo.swift ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@src/foo.swift " as NSString).length)
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterShorthandFileQuery() {
+    let text = "ask @foo.swift about this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/foo.swift",
+      kind: .at,
+      title: "foo.swift",
+      subtitle: "src",
+      insertText: "@src/foo.swift"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "foo.swift ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@foo.swift " as NSString).length)
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterExtensionlessPathPrefix() {
+    let text = "ask @src/my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/my folder",
+      kind: .at,
+      title: "my folder",
+      subtitle: "src",
+      insertText: "@src/my folder"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "src/my ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@src/my " as NSString).length)
+    )
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @src/my folder review this"
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterRootLevelSpacedFilePrefix() {
+    let text = "ask @my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:my file",
+      kind: .at,
+      title: "my file",
+      subtitle: nil,
+      insertText: "@my file"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "my ")
+    XCTAssertEqual(
+      narrowed.range,
+      NSRange(location: 4, length: ("@my " as NSString).length)
+    )
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @my file review this"
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterIntermediatePathComponent() {
+    let text = "ask @my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:src/my/file",
+      kind: .at,
+      title: "file",
+      subtitle: "src/my",
+      insertText: "@src/my/file"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "my ")
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @src/my/file review this"
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterNestedBasenamePrefix() {
+    let text = "ask @my review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:docs/my file",
+      kind: .at,
+      title: "my file",
+      subtitle: "docs",
+      insertText: "@docs/my file"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "my ")
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @docs/my file review this"
+    )
+  }
+
+  func testAtSelectionRangePreservesTrailingProseAfterSubstringPathComponent() {
+    let text = "ask @ead review this"
+    let match = try! XCTUnwrap(detect(text))
+    let suggestion = WorkComposerSuggestion(
+      id: "file:docs/README",
+      kind: .at,
+      title: "README",
+      subtitle: "docs",
+      insertText: "@docs/README"
+    )
+
+    let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    XCTAssertEqual(narrowed.query, "ead ")
+    XCTAssertEqual(
+      (text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " "),
+      "ask @docs/README review this"
+    )
+  }
+
+  func testConfirmedFileChipTerminatesBeforeTrailingProse() {
+    let text = "ask @src/foo.swift about this" as NSString
+    let match = try! XCTUnwrap(detect(text as String))
+    let chipRange = NSRange(location: 4, length: ("@src/foo.swift" as NSString).length)
+
+    XCTAssertTrue(
+      WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+        match,
+        in: text,
+        chipRanges: [chipRange]
+      )
+    )
+    XCTAssertFalse(
+      WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+        try! XCTUnwrap(detect("ask @src/foo.swift")),
+        in: "ask @src/foo.swift" as NSString,
+        chipRanges: [chipRange]
+      )
+    )
+  }
+
+  func testFileSearchQueryPreservesPathBeforeTrailingProse() {
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/foo.ts about this"),
+      "src/foo.ts"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/my file.ts about this"),
+      "src/my file.ts"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "src/my folder about this"),
+      "src/my folder about this"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.fileSearchQuery(for: "a b c"),
+      "a b c"
+    )
+  }
+
+  func testComposerQuickOpenRequestEnablesPrefixFallbackWithoutChangingGenericSearch() {
+    let generic = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src/my folder review this",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: false
+    )
+    XCTAssertNil(generic["allowComposerPrefixFallback"])
+
+    let composer = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src/my folder review this",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: true
+    )
+    XCTAssertEqual(composer["allowComposerPrefixFallback"] as? Bool, true)
   }
 
   func testEmailDoesNotTrigger() {

@@ -1336,7 +1336,7 @@ export type SyncFileRequest =
   | { action: "deletePath"; args: { workspaceId: string; path: string } }
   | { action: "watchChanges"; args: { workspaceId: string; includeIgnored?: boolean } }
   | { action: "stopWatching"; args: { workspaceId: string; includeIgnored?: boolean } }
-  | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
+  | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean; allowComposerPrefixFallback?: boolean } }
   | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
   | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };
 

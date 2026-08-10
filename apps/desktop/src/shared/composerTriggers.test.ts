@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  composerFileSearchQuery,
+  composerTriggerForSelection,
+  composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
@@ -51,6 +54,26 @@ describe("detectComposerTrigger", () => {
     expect(detectComposerTrigger(text, text.length)).toEqual({ type: "at", query: "src/foo.ts", start: 4 });
   });
 
+  it("keeps an at trigger open across spaces for multi-word chat names", () => {
+    expect(detectComposerTrigger("@a b c", 6)).toEqual({ type: "at", query: "a b c", start: 0 });
+    // A trailing space is still part of the in-progress query. The menu trims
+    // it for searching, so cached suggestions remain visible while the next
+    // word is being typed.
+    expect(detectComposerTrigger("@a ", 3)).toEqual({ type: "at", query: "a ", start: 0 });
+  });
+
+  it("narrows path-like file queries before trailing prose", () => {
+    expect(composerFileSearchQuery("src/foo.ts about this")).toBe("src/foo.ts");
+    expect(composerFileSearchQuery("src/my file.ts about this")).toBe("src/my file.ts");
+    expect(composerFileSearchQuery("src/my folder about this")).toBe("src/my folder about this");
+    expect(composerFileSearchQuery("a b c")).toBe("a b c");
+  });
+
+  it("does not let an at query cross a newline or another at sign", () => {
+    expect(detectComposerTrigger("@a\nb", 4)).toBeNull();
+    expect(detectComposerTrigger("@a@b", 4)).toBeNull();
+  });
+
   it("does not trigger on emails", () => {
     const text = "mail user@doma";
     expect(detectComposerTrigger(text, text.length)).toBeNull();
@@ -78,6 +101,118 @@ describe("detectComposerTrigger", () => {
 });
 
 describe("replaceComposerTriggerSpan", () => {
+  it("keeps prose after a selected mention prefix", () => {
+    const trigger = detectComposerTrigger("ask @a b c about this", 20)!;
+    const selected = composerTriggerForSelection(trigger, "a b c");
+
+    expect(selected.query).toBe("a b c ");
+    expect(replaceComposerTriggerSpan("ask @a b c about this", selected, "@chat:chat-1 ")).toEqual({
+      text: "ask @chat:chat-1 about this",
+      caret: 17,
+    });
+  });
+
+  it("does not shorten a partial or non-prefix selection", () => {
+    const trigger = detectComposerTrigger("@abc", 4)!;
+    expect(composerTriggerForSelection(trigger, "a b c")).toEqual(trigger);
+    expect(composerTriggerForSelection(trigger, "other")).toEqual(trigger);
+  });
+
+  it("narrows shorthand file labels without consuming trailing prose", () => {
+    const text = "ask @foo.ts about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/foo.ts", "file");
+
+    expect(selected.query).toBe("foo.ts ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/foo.ts ").text).toBe("ask @src/foo.ts about this");
+  });
+
+  it("narrows a spaced extensionless basename without consuming trailing prose", () => {
+    const text = "ask @my folder about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my folder", "file");
+
+    expect(selected.query).toBe("my folder ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe("ask @src/my folder about this");
+  });
+
+  it("preserves prose after an extensionless path-prefix match", () => {
+    const text = "ask @src/my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my folder", "file");
+
+    expect(selected.query).toBe("src/my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my folder ").text).toBe(
+      "ask @src/my folder review this",
+    );
+  });
+
+  it("narrows a root-level spaced file prefix without consuming trailing prose", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "my file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@my file ").text).toBe(
+      "ask @my file review this",
+    );
+    expect(composerTriggerForSelection(trigger, "my file", "mention")).toEqual(trigger);
+  });
+
+  it("preserves prose after an intermediate path-component match", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "src/my/file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@src/my/file ").text).toBe(
+      "ask @src/my/file review this",
+    );
+  });
+
+  it("preserves prose after a nested basename prefix match", () => {
+    const text = "ask @my review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "docs/my file", "file");
+
+    expect(selected.query).toBe("my ");
+    expect(replaceComposerTriggerSpan(text, selected, "@docs/my file ").text).toBe(
+      "ask @docs/my file review this",
+    );
+  });
+
+  it("preserves prose after a substring path-component match", () => {
+    const text = "ask @ead review this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, "docs/README", "file");
+
+    expect(selected.query).toBe("ead ");
+    expect(replaceComposerTriggerSpan(text, selected, "@docs/README ").text).toBe(
+      "ask @docs/README review this",
+    );
+  });
+
+  it("recognizes a confirmed @ token as a terminated trigger", () => {
+    const text = "ask @src/foo.ts about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const confirm = { isFile: (body: string) => body === "src/foo.ts" };
+
+    expect(composerTriggerHasConfirmedPrefix(text, trigger, confirm)).toBe(true);
+    expect(composerTriggerHasConfirmedPrefix("ask @src/foo.ts", detectComposerTrigger("ask @src/foo.ts", 15)!, confirm)).toBe(false);
+  });
+
+  it("recognizes a confirmed file token with spaces as terminated", () => {
+    const text = "ask @src/my folder about this";
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const confirm = { isFile: (body: string) => body === "src/my folder" };
+
+    expect(composerTriggerHasConfirmedPrefix(text, trigger, confirm)).toBe(true);
+    expect(findConfirmedComposerTokens(text, {
+      ...confirm,
+      isCommand: () => false,
+    })).toEqual([{ start: 4, end: 18, kind: "file" }]);
+  });
+
   it("replaces exactly the trigger span mid-sentence", () => {
     const text = "fix @src/f then run /te tomorrow";
     const trigger = { start: 20, query: "te" };
@@ -125,6 +260,15 @@ describe("findConfirmedComposerTokens", () => {
   it("requires a word boundary before the trigger char", () => {
     expect(findConfirmedComposerTokens("path/@src/foo.ts", confirm)).toEqual([]);
     expect(findConfirmedComposerTokens("a/test", confirm)).toEqual([]);
+  });
+
+  it("finds confirmed files whose names contain an at sign", () => {
+    const token = "@assets/icon@2x.png";
+    const text = `fix ${token} then continue`;
+    expect(findConfirmedComposerTokens(text, {
+      isFile: (body: string) => body === "assets/icon@2x.png",
+      isCommand: () => false,
+    })).toEqual([{ start: 4, end: 4 + token.length, kind: "file" }]);
   });
 });
 

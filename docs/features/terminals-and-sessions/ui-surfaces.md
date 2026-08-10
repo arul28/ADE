@@ -278,7 +278,12 @@ The full card is one full-bleed row with three lines:
    and stays untruncated. A card whose lane lives on this machine deep-links to
    the PR in ADE; a card on another machine badges from that machine's own PR
    rows and opens the PR on GitHub, because the PRs tab can only resolve a PR
-   id on the machine the project tab is bound to. While the owning lane is
+   id on the machine the project tab is bound to. When a lane has multiple PRs,
+   the badge represents the newest open/draft PR, or the newest terminal
+   activity when no PR is active, and its `+N` list is rendered in a
+   viewport-clamped portal so the session card cannot clip the details. The portal remains
+   keyboard reachable (ArrowDown opens it, Escape closes it and restores focus) and its own
+   list can scroll without dismissing. While the owning lane is
    mid background AI naming, every visible lane-label position (singleton row,
    hover detail, or grouped header) uses the shared animated `Naming lane…`
    placeholder; the persisted deterministic fallback stays hidden unless

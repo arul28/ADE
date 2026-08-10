@@ -73,7 +73,8 @@ vi.mock("node:fs", async () => {
   };
 });
 
-import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, rankMentionSuggestions, shouldHydrateRefreshHistory } from "../app";
+import type { MentionSuggestion } from "../types";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousReactActEnvironment: boolean | undefined;
@@ -266,6 +267,17 @@ describe("AdeCodeApp polling", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("ranks longer confirmed mention prefixes before shorter matches", () => {
+    const suggestions: MentionSuggestion[] = [
+      { kind: "lane", label: "Foo", insertText: "@lane:foo", detail: "foo" },
+      { kind: "commit", label: "Foo Bar", insertText: "@commit:abc1234", detail: "abc1234" },
+      { kind: "pr", label: "Foo Bar", insertText: "@pr:42", detail: "#42" },
+    ];
+
+    expect(rankMentionSuggestions(suggestions, "foo bar please").map((suggestion) => suggestion.insertText))
+      .toEqual(["@commit:abc1234", "@pr:42", "@lane:foo"]);
   });
 
   it("polls summary refreshes without hydrating chat history", async () => {
@@ -559,6 +571,104 @@ describe("AdeCodeApp polling", () => {
     expect(calls.filter(([domain, action]) => domain === "git" && action === "listRecentCommits")).toHaveLength(1);
     expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(1);
 
+    await unmountApp(instance);
+  });
+
+  it("closes a confirmed spaced-file mention while typing trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "file" && action === "quickOpen") return [{ path: "src/my folder" }];
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@src/my");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) => domain === "file" && action === "quickOpen"))
+      .toHaveLength(1);
+
+    await act(async () => {
+      instance.stdin.write("\t");
+      await flushAsyncEffects();
+      instance.stdin.write(" review this");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) => domain === "file" && action === "quickOpen"))
+      .toHaveLength(1);
+    await unmountApp(instance);
+  });
+
+  it("closes a commit mention trigger after trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "git" && action === "listRecentCommits") {
+        return [{ shortSha: "abc1234", subject: "Fix parser" }];
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+    mocks.listLanes.mockResolvedValue([lane({ name: "Fix" })]);
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@Fix parser please inspect");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("\t");
+    });
+    await flushInkFrame();
+
+    expect(stripAnsi(instance.frames.join("\n"))).toContain("@commit:abc1234 please inspect");
+    expect(stripAnsi(instance.lastFrame() ?? "")).not.toContain("References ·");
+    await unmountApp(instance);
+  });
+
+  it("closes a PR mention trigger after trailing prose", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "pr" && action === "listAll") {
+        return [{ id: "42", number: 42, title: "Fix parser" }];
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      instance.stdin.write("@Fix parser please inspect");
+    });
+    await flushInkFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("\t");
+    });
+    await flushInkFrame();
+
+    expect(stripAnsi(instance.frames.join("\n"))).toContain("@pr:42 please inspect");
+    expect(stripAnsi(instance.lastFrame() ?? "")).not.toContain("References ·");
     await unmountApp(instance);
   });
 });

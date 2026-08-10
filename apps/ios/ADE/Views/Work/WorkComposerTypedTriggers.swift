@@ -152,14 +152,19 @@ struct WorkComposerTriggerMatch: Equatable {
 }
 
 /// Pure, cursor-relative trigger detection shared by the composer text view.
+/// Applied to the substring before the cursor. When both match (rare), the one
+/// whose trigger char sits closest to the cursor wins.
 /// Mirrors the desktop/TUI regexes exactly:
 ///   slash — `(?:^|\s)/([^\s/]*)$`
-///   at    — `(?:^|\s)@([^\s@]*)$`
-/// applied to the substring before the cursor. When both match (rare), the one
-/// whose trigger char sits closest to the cursor wins.
+///   at    — `(?:^|[ \t\r\n])@([^@\r\n]*)$`
+/// The `@` query may contain spaces for multi-word entity names, but it stops
+/// at a newline or another `@`.
 enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
-  private static let atRegex = try! NSRegularExpression(pattern: "(?:^|\\s)@([^\\s@]*)$")
+  private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
+  private static let fileQueryRegex = try! NSRegularExpression(
+    pattern: "^(.+?\\.[A-Za-z0-9_-]+)(?:[ \\t]+.*)?$"
+  )
 
   static func detect(in text: NSString, cursor: Int) -> WorkComposerTriggerMatch? {
     guard cursor >= 0, cursor <= text.length else { return nil }
@@ -191,6 +196,126 @@ enum WorkComposerTriggerDetector {
     default:
       return nil
     }
+  }
+
+  /// Keep path-like file labels searchable when the user continues ordinary
+  /// prose, while leaving multiword chat-name queries untouched.
+  static func fileSearchQuery(for query: String) -> String {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    let nsQuery = trimmed as NSString
+    let range = NSRange(location: 0, length: nsQuery.length)
+    guard let match = fileQueryRegex.firstMatch(in: trimmed, range: range) else { return trimmed }
+    let labelRange = match.range(at: 1)
+    guard labelRange.location != NSNotFound else { return trimmed }
+    return nsQuery.substring(with: labelRange)
+  }
+
+  /// Keep extensionless path prefixes separate from prose when the selected
+  /// file's canonical path continues past the words typed before that prose.
+  static func pathPrefixForSelection(query: String, selectedLabel: String) -> String {
+    let words = query.split(whereSeparator: { $0 == " " || $0 == "\t" })
+    guard words.count > 1 else { return "" }
+    let pathComponents = selectedLabel
+      .split(whereSeparator: { $0 == "/" || $0 == "\\" })
+      .map(String.init)
+
+    for wordCount in stride(from: words.count - 1, through: 1, by: -1) {
+      let prefix = words.prefix(wordCount).joined(separator: " ")
+      let matchesPath: Bool
+      if prefix.contains("/") || prefix.contains("\\") {
+        matchesPath = selectedLabel.lowercased().contains(prefix.lowercased())
+      } else {
+        matchesPath = pathComponents.contains { $0.lowercased().contains(prefix.lowercased()) }
+      }
+      if matchesPath { return prefix }
+    }
+    return ""
+  }
+
+  /// A committed @ chip is complete once the following character is whitespace.
+  /// The live detector still accepts spaces for multiword queries, so the chip
+  /// range must explicitly terminate that otherwise ambiguous trigger.
+  static func hasConfirmedChipPrefix(
+    _ match: WorkComposerTriggerMatch,
+    in text: NSString,
+    chipRanges: [NSRange]
+  ) -> Bool {
+    guard match.kind == .at else { return false }
+    let matchEnd = NSMaxRange(match.range)
+    for chipRange in chipRanges {
+      guard chipRange.location == match.range.location,
+            chipRange.location >= 0,
+            NSMaxRange(chipRange) <= matchEnd,
+            NSMaxRange(chipRange) < text.length,
+            text.character(at: chipRange.location) == 0x40 else { continue }
+      let following = text.character(at: NSMaxRange(chipRange))
+      if following == 0x20 || following == 0x09 || following == 0x0A || following == 0x0D {
+        return true
+      }
+    }
+    return false
+  }
+
+  /// Keep prose typed after a selected @ item outside the replacement range.
+  /// The trigger detector intentionally accepts spaces for multi-word names;
+  /// this second pass uses the selected row's label to distinguish that name
+  /// from a trailing sentence.
+  static func matchForSelection(
+    _ match: WorkComposerTriggerMatch,
+    suggestion: WorkComposerSuggestion
+  ) -> WorkComposerTriggerMatch {
+    guard match.kind == .at else { return match }
+    let rawLabel = suggestion.insertText.hasPrefix("@")
+      ? String(suggestion.insertText.dropFirst())
+      : suggestion.title
+    let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !label.isEmpty else { return match }
+
+    var candidateLabels = [label]
+    if let basename = label.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last {
+      let basenameString = String(basename)
+      if !candidateLabels.contains(where: { $0.lowercased() == basenameString.lowercased() }) {
+        candidateLabels.append(basenameString)
+      }
+    }
+    let searchableQuery = fileSearchQuery(for: match.query)
+    if searchableQuery != match.query,
+       label.lowercased().hasSuffix(searchableQuery.lowercased()),
+       !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
+      candidateLabels.append(searchableQuery)
+    }
+    let pathPrefix = pathPrefixForSelection(query: match.query, selectedLabel: label)
+    if !pathPrefix.isEmpty,
+       !candidateLabels.contains(where: { $0.lowercased() == pathPrefix.lowercased() }) {
+      candidateLabels.append(pathPrefix)
+    }
+
+    let query = match.query as NSString
+    for candidateLabel in candidateLabels {
+      let labelLength = (candidateLabel as NSString).length
+      guard query.length >= labelLength else { continue }
+      let prefix = query.substring(to: labelLength)
+      guard prefix.lowercased() == candidateLabel.lowercased() else { continue }
+
+      let remainder = query.substring(from: labelLength) as NSString
+      guard remainder.length == 0 || remainder.character(at: 0) == 0x20 || remainder.character(at: 0) == 0x09 else {
+        continue
+      }
+      var separatorLength = 0
+      while separatorLength < remainder.length {
+        let character = remainder.character(at: separatorLength)
+        guard character == 0x20 || character == 0x09 else { break }
+        separatorLength += 1
+      }
+      let consumedQuery = query.substring(to: labelLength + separatorLength)
+      return WorkComposerTriggerMatch(
+        kind: match.kind,
+        query: consumedQuery,
+        range: NSRange(location: match.range.location, length: 1 + (consumedQuery as NSString).length)
+      )
+    }
+    return match
   }
 }
 
@@ -292,7 +417,7 @@ final class WorkComposerSuggestionController: ObservableObject {
         if let match = activeMatch, match.kind == .at {
           // An @ trigger typed against the previous lane re-fetches against
           // the new one instead of keeping the superseded results.
-          scheduleFileFetch(query: match.query)
+          scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
         } else if isLoading {
           isLoading = false
         }
@@ -360,13 +485,14 @@ final class WorkComposerSuggestionController: ObservableObject {
       isLoading = false
       suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
     case .at:
-      scheduleFileFetch(query: match.query)
+      scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
     }
   }
 
   func commit(_ suggestion: WorkComposerSuggestion) {
     guard let match = activeMatch else { return }
-    onCommit?(suggestion, match.range)
+    let commitMatch = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    onCommit?(suggestion, commitMatch.range)
     clear()
   }
 
@@ -416,7 +542,8 @@ final class WorkComposerSuggestionController: ObservableObject {
           workspaceId: workspaceId,
           query: query,
           limit: 20,
-          includeIgnored: true
+          includeIgnored: true,
+          allowComposerPrefixFallback: true
         )
         guard !Task.isCancelled, self.laneGeneration == generation else { return }
         let mapped = items.map { item -> WorkComposerSuggestion in
@@ -1180,8 +1307,15 @@ struct WorkComposerTextView: UIViewRepresentable {
         in: textView.text as NSString,
         cursor: selection.location
       )
-      applyPromptInputTraits(protectingTrigger: match != nil)
-      parent.controller.update(match: match)
+      let resolvedMatch = match.flatMap { candidate in
+        WorkComposerTriggerDetector.hasConfirmedChipPrefix(
+          candidate,
+          in: textView.text as NSString,
+          chipRanges: chips.map { $0.range }
+        ) ? nil : candidate
+      }
+      applyPromptInputTraits(protectingTrigger: resolvedMatch != nil)
+      parent.controller.update(match: resolvedMatch)
     }
 
     func commit(_ suggestion: WorkComposerSuggestion, replacing range: NSRange) {
