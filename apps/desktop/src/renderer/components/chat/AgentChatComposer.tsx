@@ -1900,6 +1900,7 @@ export function AgentChatComposer({
   // retarget the command menu; detection re-runs once on compositionend.
   const imeComposingRef = useRef(false);
   const promptHistoryIndexRef = useRef<number | null>(null);
+  const promptHistorySelectedKeyRef = useRef<string | null>(null);
   const promptHistoryStashRef = useRef<Promise<PromptStashEntry | null> | null>(null);
   const promptHistoryDraftBeforeRef = useRef<string | null>(null);
   const promptHistoryAppliedDraftRef = useRef<string | null>(null);
@@ -1928,7 +1929,16 @@ export function AgentChatComposer({
     const wasNavigating = promptHistoryIndexRef.current !== null;
     cancelPromptHistorySequence();
     promptHistoryIndexRef.current = null;
-    if (wasNavigating) promptHistoryStashRef.current = null;
+    promptHistorySelectedKeyRef.current = null;
+    if (wasNavigating) {
+      const pendingStash = promptHistoryStashRef.current;
+      promptHistoryStashRef.current = null;
+      if (pendingStash) {
+        void pendingStash.then((entry) => {
+          if (entry) void promptStashRef.current?.consume(entry);
+        });
+      }
+    }
     promptHistoryDraftBeforeRef.current = null;
     promptHistoryAppliedDraftRef.current = null;
     if (wasNavigating) onPromptHistoryNavigate?.(null);
@@ -1965,6 +1975,17 @@ export function AgentChatComposer({
       clearPromptHistory();
     }
   }, [clearPromptHistory, draft]);
+
+  useLayoutEffect(() => {
+    const selectedKey = promptHistorySelectedKeyRef.current;
+    if (promptHistoryIndexRef.current === null || selectedKey === null) return;
+    const nextIndex = promptHistory.findIndex((entry) => entry.eventKey === selectedKey);
+    if (nextIndex < 0) {
+      clearPromptHistory();
+      return;
+    }
+    promptHistoryIndexRef.current = nextIndex;
+  }, [clearPromptHistory, promptHistory]);
 
   const useRichComposer = smartLinkEditorEnabled
     || iosElementContextItems.length > 0
@@ -3832,6 +3853,7 @@ export function AgentChatComposer({
       promptHistoryDraftBeforeRef.current = currentText;
     }
     promptHistoryIndexRef.current = index;
+    promptHistorySelectedKeyRef.current = entry.eventKey;
     promptHistoryAppliedDraftRef.current = entry.text;
     armPromptHistorySequence(direction);
     if (useRichComposer) {
@@ -3858,6 +3880,7 @@ export function AgentChatComposer({
     promptHistoryStashRef.current = null;
     const text = promptHistoryDraftBeforeRef.current ?? "";
     promptHistoryIndexRef.current = null;
+    promptHistorySelectedKeyRef.current = null;
     promptHistoryDraftBeforeRef.current = null;
     promptHistoryAppliedDraftRef.current = null;
     if (useRichComposer) {

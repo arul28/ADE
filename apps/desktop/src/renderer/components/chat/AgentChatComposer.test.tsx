@@ -1180,6 +1180,42 @@ describe("AgentChatComposer", () => {
     expect(onPromptHistoryNavigate).toHaveBeenLastCalledWith(null);
   });
 
+  it("keeps the selected prompt anchored when older history is prepended", () => {
+    const onDraftChange = vi.fn();
+    const initialHistory = [
+      { text: "Older prompt", eventKey: "prompt-1" },
+      { text: "Latest prompt", eventKey: "prompt-2" },
+    ] as const;
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      onDraftChange,
+      promptHistory: initialHistory,
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("Latest prompt");
+
+    view.rerender(
+      <AgentChatComposer
+        {...props}
+        draft="Latest prompt"
+        promptHistory={[
+          { text: "Newly loaded oldest prompt", eventKey: "prompt-0" },
+          ...initialHistory,
+        ]}
+      />,
+    );
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    expect(onDraftChange).toHaveBeenLastCalledWith("Older prompt");
+  });
+
   it("keeps multiline caret motion after an interrupted history sequence", () => {
     const onDraftChange = vi.fn();
     const promptHistory = [
@@ -1316,6 +1352,55 @@ describe("AgentChatComposer", () => {
       modelId: "openai/gpt-5.4",
     }, null));
     expect(onDraftChange).toHaveBeenCalledWith("Latest prompt");
+  });
+
+  it("consumes an auto-stash that finishes after history navigation is interrupted", async () => {
+    let resolveCreate: ((entry: {
+      id: string;
+      text: string;
+      provider: string;
+      modelId: string;
+      createdAt: string;
+    }) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const remove = vi.fn().mockResolvedValue(true);
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create,
+          delete: remove,
+        },
+      },
+    };
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+
+    view.rerender(<AgentChatComposer {...props} draft="newer draft" />);
+    resolveCreate?.({
+      id: "stash-auto-interrupted-1",
+      text: "unfinished draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-08-10T12:00:00.000Z",
+    });
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      { id: "stash-auto-interrupted-1" },
+      null,
+    ));
   });
 
   it("consumes the auto-stash when history restores the original draft", async () => {
