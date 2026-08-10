@@ -13,7 +13,11 @@ import {
   MAX_ENVELOPE_CHUNK_ID_BYTES,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
   normalizeChannelId,
+  parseSyncBinaryChunkHeader,
   parseSyncEnvelope,
+  parseSyncEnvelopeFrame,
+  syncFrameByteLength,
+  type SyncWireFrame,
   parseSyncEnvelopeChunkPayload,
   PEER_BACKPRESSURE_BYTES,
   RPC_DATA_CHUNK_BYTES,
@@ -37,20 +41,25 @@ function pseudoRandomBytes(length: number, seed = 0x9e3779b9): Buffer {
   return bytes;
 }
 
-function reassemble(frames: string[], options: { shuffle?: boolean } = {}): unknown {
+function reassemble(frames: SyncWireFrame[], options: { shuffle?: boolean } = {}): unknown {
   const assembler = createSyncEnvelopeChunkAssembler();
   const order = options.shuffle ? [...frames].reverse() : frames;
-  let reassembled: string | null = null;
+  let reassembled: SyncWireFrame | null = null;
   for (const frame of order) {
-    const envelope = parseSyncEnvelope(frame);
+    const envelope = parseSyncEnvelopeFrame(frame);
     expect(envelope.type).toBe("envelope_chunk");
+    if (envelope.binaryChunk) {
+      const result = assembler.addBinary(envelope.binaryChunk, envelope.binaryChunk.body);
+      if (result != null) reassembled = result;
+      continue;
+    }
     const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
     expect(chunk).not.toBeNull();
     const result = assembler.add(chunk!);
     if (result != null) reassembled = result;
   }
   expect(reassembled).not.toBeNull();
-  return parseSyncEnvelope(reassembled!);
+  return parseSyncEnvelopeFrame(reassembled!);
 }
 
 describe("paired runtime wire framing", () => {
@@ -84,7 +93,7 @@ describe("encodeSyncEnvelopeFrames", () => {
       maxFrameBytes: DEFAULT_SYNC_MAX_FRAME_BYTES,
     });
     expect(frames).toHaveLength(1);
-    expect(parseSyncEnvelope(frames[0]).type).toBe("chat_event");
+    expect(parseSyncEnvelopeFrame(frames[0]).type).toBe("chat_event");
   });
 
   it("returns a single frame when no budget is set, regardless of size", () => {
@@ -107,7 +116,7 @@ describe("encodeSyncEnvelopeFrames", () => {
     });
     expect(frames.length).toBeGreaterThan(1);
     for (const frame of frames) {
-      expect(Buffer.byteLength(frame, "utf8")).toBeLessThanOrEqual(DEFAULT_SYNC_MAX_FRAME_BYTES);
+      expect(syncFrameByteLength(frame)).toBeLessThanOrEqual(DEFAULT_SYNC_MAX_FRAME_BYTES);
     }
     const envelope = reassemble(frames) as { type: string; requestId: string | null; payload: { data?: string } };
     expect(envelope.type).toBe("file_response");

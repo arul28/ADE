@@ -1588,6 +1588,66 @@ struct SyncPreprocessedEnvelope {
   let type: String
   let requestId: String?
   let payload: Any
+  /// Raw slice of a binary `envelope_chunk`. Binary chunks carry their part as
+  /// the frame body rather than a base64 string in `payload`, so the chunk
+  /// branch reads it from here instead.
+  var binaryChunk: (chunkId: String, index: Int, total: Int, part: Data)?
+
+  init(type: String, requestId: String?, payload: Any) {
+    self.type = type
+    self.requestId = requestId
+    self.payload = payload
+    self.binaryChunk = nil
+  }
+
+  init(binaryChunk: (chunkId: String, index: Int, total: Int, part: Data), requestId: String?) {
+    self.type = "envelope_chunk"
+    self.requestId = requestId
+    self.payload = NSNull()
+    self.binaryChunk = binaryChunk
+  }
+}
+
+/// Binary envelope container — the Swift half of `syncBinaryFrame.ts`.
+///
+///   [0..4)     magic "ADE1"
+///   [4..8)     uint32 big-endian header length
+///   [8..8+h)   header JSON (utf8) — the envelope minus `payload`
+///   [8+h..)    payload bytes (compressed, codec named by the header)
+///
+/// A compressed envelope used to arrive as base64 inside JSON text, re-inflating
+/// the compressed bytes by a third. The host sends this container only to peers
+/// that declared the `binaryEnvelopes` capability, so an older build keeps the
+/// base64 wire byte for byte.
+enum SyncBinaryFrame {
+  static let magic = Data("ADE1".utf8)
+  static let maxHeaderBytes = 64 * 1024
+  private static let bodyOffset = 8
+
+  static func isBinaryFrame(_ data: Data) -> Bool {
+    data.count >= bodyOffset && data.prefix(magic.count) == magic
+  }
+
+  /// Returns nil for anything that is not a well-formed container, so a caller
+  /// can fall back to the text path instead of failing the connection.
+  static func decode(_ data: Data) -> (header: [String: Any], body: Data)? {
+    guard isBinaryFrame(data) else { return nil }
+    let lengthStart = data.startIndex + magic.count
+    var headerBytes: UInt32 = 0
+    for offset in 0..<4 {
+      headerBytes = (headerBytes << 8) | UInt32(data[lengthStart + offset])
+    }
+    guard headerBytes <= UInt32(maxHeaderBytes) else { return nil }
+    let headerStart = data.startIndex + bodyOffset
+    let bodyStart = headerStart + Int(headerBytes)
+    guard bodyStart <= data.endIndex else { return nil }
+    guard let header = try? JSONSerialization.jsonObject(
+      with: data[headerStart..<bodyStart]
+    ) as? [String: Any] else {
+      return nil
+    }
+    return (header, data[bodyStart..<data.endIndex])
+  }
 }
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
@@ -1656,6 +1716,30 @@ func syncProtocolVersionIsSupported(
   version >= minSupportedVersion && version <= currentVersion
 }
 
+/// Inflate and size-check a compressed envelope body. Shared by the base64 text
+/// path and the binary container so the two can never disagree about the caps.
+func syncInflateEnvelopeBody(
+  _ compressed: Data,
+  codec: String,
+  declaredBytes: Int?,
+  maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> Any {
+  let inflated: Data
+  if codec == "deflate" {
+    inflated = try inflateZlib(compressed, maxOutputBytes: maxUncompressedBytes)
+  } else {
+    inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
+  }
+  if let declaredBytes, declaredBytes != inflated.count {
+    throw NSError(
+      domain: "ADE",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Decoded sync envelope size does not match declared uncompressedBytes."]
+    )
+  }
+  return try JSONSerialization.jsonObject(with: inflated, options: [])
+}
+
 func syncDecodeEnvelopePayload(
   _ envelope: [String: Any],
   maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
@@ -1687,20 +1771,12 @@ func syncDecodeEnvelopePayload(
     } else {
       declaredBytes = nil
     }
-    let inflated: Data
-    if compression == "deflate" {
-      inflated = try inflateZlib(compressed, maxOutputBytes: maxUncompressedBytes)
-    } else {
-      inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
-    }
-    if let declaredBytes, declaredBytes != inflated.count {
-      throw NSError(
-        domain: "ADE",
-        code: 10,
-        userInfo: [NSLocalizedDescriptionKey: "Decoded sync envelope size does not match declared uncompressedBytes."]
-      )
-    }
-    return try JSONSerialization.jsonObject(with: inflated, options: [])
+    return try syncInflateEnvelopeBody(
+      compressed,
+      codec: compression,
+      declaredBytes: declaredBytes,
+      maxUncompressedBytes: maxUncompressedBytes
+    )
   case "none":
     if let payloadEncoding = envelope["payloadEncoding"] as? String,
        payloadEncoding != "json" {
@@ -1748,6 +1824,95 @@ func syncPreprocessIncoming(
     maxUncompressedBytes: maxUncompressedBytes
   )
   return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
+}
+
+/// Preprocess a frame that arrived as binary data. Only frames carrying the
+/// `ADE1` magic take the binary path; anything else is decoded as utf8 text,
+/// which is what every frame did before binary envelopes existed and what some
+/// transports still do for text frames.
+func syncPreprocessIncomingData(
+  _ data: Data,
+  maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> SyncPreprocessedEnvelope? {
+  guard SyncBinaryFrame.isBinaryFrame(data) else {
+    return try syncPreprocessIncoming(String(decoding: data, as: UTF8.self), maxUncompressedBytes: maxUncompressedBytes)
+  }
+  guard let decoded = SyncBinaryFrame.decode(data) else {
+    throw NSError(
+      domain: "ADE",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid binary sync envelope frame."]
+    )
+  }
+  let header = decoded.header
+  guard let version = syncProtocolVersionNumber(header["version"]) else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid sync protocol version."]
+    )
+  }
+  if !syncProtocolVersionIsSupported(version) {
+    throw SyncProtocolVersionMismatchError(
+      receivedVersion: version,
+      currentVersion: syncProtocolVersion,
+      minSupportedVersion: syncProtocolMinSupported,
+      updateTarget: version < syncProtocolMinSupported ? "host" : "client"
+    )
+  }
+  let requestId = header["requestId"] as? String
+
+  // An uncompressed binary frame is a chunk slice: its body is the raw part.
+  if (header["compression"] as? String ?? "none") == "none" {
+    guard let chunkId = header["chunkId"] as? String,
+          let index = syncProtocolVersionNumber(header["index"]),
+          let total = syncProtocolVersionNumber(header["total"]) else {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Uncompressed binary sync envelopes must be envelope chunks."]
+      )
+    }
+    return SyncPreprocessedEnvelope(
+      binaryChunk: (chunkId: chunkId, index: index, total: total, part: decoded.body),
+      requestId: requestId
+    )
+  }
+
+  let compression = header["compression"] as? String ?? "none"
+  guard compression == "deflate" || compression == "gzip" else {
+    throw NSError(
+      domain: "ADE",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported sync envelope compression: \(compression)"]
+    )
+  }
+  let declaredBytes: Int?
+  if let rawDeclaredBytes = header["uncompressedBytes"] {
+    guard let parsed = syncProtocolVersionNumber(rawDeclaredBytes),
+          parsed >= 0,
+          parsed <= maxUncompressedBytes else {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid compressed sync envelope size."]
+      )
+    }
+    declaredBytes = parsed
+  } else {
+    declaredBytes = nil
+  }
+  let payload = try syncInflateEnvelopeBody(
+    decoded.body,
+    codec: compression,
+    declaredBytes: declaredBytes,
+    maxUncompressedBytes: maxUncompressedBytes
+  )
+  return SyncPreprocessedEnvelope(
+    type: header["type"] as? String ?? "",
+    requestId: requestId,
+    payload: payload
+  )
 }
 
 func syncEncodeEnvelopeText(
@@ -2012,20 +2177,64 @@ struct SyncEnvelopeChunkAssembler {
     part: String,
     now: TimeInterval = ProcessInfo.processInfo.systemUptime
   ) -> String? {
-    guard total > 0,
-          index >= 0,
-          index < total,
-          total <= maxTotalParts,
-          !chunkId.isEmpty,
-          chunkId.utf8.count <= maxSyncEnvelopeChunkIdBytes else {
-      return nil
-    }
     let encodedBytes = part.utf8.count
     let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
     guard decodedUpperBound <= maxEnvelopeBytes,
           let decodedPart = Data(base64Encoded: part) else {
       buffers.removeValue(forKey: chunkId)
       arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    guard let assembled = ingest(
+      chunkId: chunkId,
+      index: index,
+      total: total,
+      decodedPart: decodedPart,
+      encodedBytes: encodedBytes,
+      now: now
+    ) else { return nil }
+    return String(data: assembled, encoding: .utf8)
+  }
+
+  /// Binary chunks carry their slice as the frame body, so they reassemble into
+  /// the binary envelope itself — `Data`, never text: utf8-decoding those bytes
+  /// would corrupt them.
+  mutating func addBinary(
+    chunkId: String,
+    index: Int,
+    total: Int,
+    part: Data,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> Data? {
+    guard part.count <= maxEnvelopeBytes else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    return ingest(
+      chunkId: chunkId,
+      index: index,
+      total: total,
+      decodedPart: part,
+      encodedBytes: part.count,
+      now: now
+    )
+  }
+
+  private mutating func ingest(
+    chunkId: String,
+    index: Int,
+    total: Int,
+    decodedPart: Data,
+    encodedBytes: Int,
+    now: TimeInterval
+  ) -> Data? {
+    guard total > 0,
+          index >= 0,
+          index < total,
+          total <= maxTotalParts,
+          !chunkId.isEmpty,
+          chunkId.utf8.count <= maxSyncEnvelopeChunkIdBytes else {
       return nil
     }
     if buffers[chunkId] == nil {
@@ -2073,7 +2282,7 @@ struct SyncEnvelopeChunkAssembler {
       guard let part = buffer.parts[partIndex] else { return nil }
       data.append(part.data)
     }
-    return String(data: data, encoding: .utf8)
+    return data
   }
 
   mutating func reset() {
@@ -15289,7 +15498,7 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1"],
+      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes"],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -16744,24 +16953,35 @@ final class SyncService: ObservableObject {
       while self.socket === task {
         do {
           let message = try await task.receive()
+          // A compressed envelope arrives as a binary frame; everything else is
+          // text. Binary frames never carry relay control JSON, so the control
+          // sniff (and the utf8 decode it needs) is skipped for them.
+          var binaryFrame: Data?
           let text: String
           switch message {
           case .string(let value):
             text = value
           case .data(let data):
-            text = String(decoding: data, as: UTF8.self)
+            if SyncBinaryFrame.isBinaryFrame(data) {
+              binaryFrame = data
+              text = ""
+            } else {
+              text = String(decoding: data, as: UTF8.self)
+            }
           @unknown default:
             text = ""
           }
-          if self.handleRelayTransportControlFrame(text, task: task) {
+          if binaryFrame == nil, self.handleRelayTransportControlFrame(text, task: task) {
             continue
           }
           do {
             // CPU-heavy decode (envelope JSON, gunzip, payload JSON) runs off
             // the main actor; ordering is preserved because each frame is
             // awaited in sequence. The main actor only mutates state.
+            let frame = binaryFrame
             let preprocessed = try await Task.detached(priority: .userInitiated) {
-              try syncPreprocessIncoming(text)
+              if let frame { return try syncPreprocessIncomingData(frame) }
+              return try syncPreprocessIncoming(text)
             }.value
             // The detached decode is a suspension point: the socket can be
             // torn down (and a new connection brought up) while it runs. A
@@ -16848,23 +17068,35 @@ final class SyncService: ObservableObject {
 
     switch type {
     case "envelope_chunk":
-      guard let dict = payload as? [String: Any],
-            let chunkId = dict["chunkId"] as? String,
-            let index = dict["index"] as? Int,
-            let total = dict["total"] as? Int,
-            let part = dict["part"] as? String else { return }
-      let reassembled = envelopeChunkAssembler.add(
-        chunkId: chunkId,
-        index: index,
-        total: total,
-        part: part
-      )
+      // Binary chunks reassemble into binary envelope bytes; text chunks into
+      // envelope JSON. Both reuse one assembler and one nested-decode path.
+      let reassembled: Data?
+      if let binaryChunk = pre.binaryChunk {
+        reassembled = envelopeChunkAssembler.addBinary(
+          chunkId: binaryChunk.chunkId,
+          index: binaryChunk.index,
+          total: binaryChunk.total,
+          part: binaryChunk.part
+        )
+      } else {
+        guard let dict = payload as? [String: Any],
+              let chunkId = dict["chunkId"] as? String,
+              let index = dict["index"] as? Int,
+              let total = dict["total"] as? Int,
+              let part = dict["part"] as? String else { return }
+        reassembled = envelopeChunkAssembler.add(
+          chunkId: chunkId,
+          index: index,
+          total: total,
+          part: part
+        ).map { Data($0.utf8) }
+      }
       scheduleEnvelopeChunkExpiry()
       if let reassembled {
         // The reassembled envelope can be tens of megabytes — decode it off
         // the main actor like any first-class frame.
         let nested = try await Task.detached(priority: .userInitiated) {
-          try syncPreprocessIncoming(reassembled)
+          try syncPreprocessIncomingData(reassembled)
         }.value
         guard isCurrentConnectionGeneration(generation) else { return }
         if let nested {
