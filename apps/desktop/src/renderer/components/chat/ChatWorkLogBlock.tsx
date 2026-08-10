@@ -16,6 +16,7 @@ import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -356,10 +357,6 @@ function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[
     }
   }
   return [...map.values()];
-}
-
-export function chatWorkLogHasFileChanges(entries: ChatWorkLogEntry[]): boolean {
-  return aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)).length > 0;
 }
 
 export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): ChatWorkLogEntry[] {
@@ -791,6 +788,165 @@ function FilesChangedPanel({
   );
 }
 
+/**
+ * Turn-level "Files changed" — ONE collapsed row at the end of a turn.
+ *
+ * The timeline drops `work_log_group` rows wholesale, so this is the only
+ * per-turn files summary in the thread. It replaced a per-burst panel that
+ * rendered once per uninterrupted run of tool entries — a turn whose runs were
+ * broken up by prose stacked six near-identical panels through one reply. This
+ * aggregates the whole turn's entries, deduped by path with a net diffstat, and
+ * starts collapsed.
+ *
+ * It is the harness-independent fallback: it reads only `ChatWorkLogEntry`
+ * file/tool events, so it works for every runtime (claude/codex/cursor/droid/
+ * opencode/pi) whether or not the turn produced a git checkpoint. When a turn
+ * DID move HEAD, the checkpoint-backed `turn_diff_summary` event renders
+ * instead — that one can offer real diffs and a SHA-scoped revert.
+ *
+ * Paths render lane-relative (the absolute path the tool reported stays in the
+ * row's tooltip) and open in the Files tab, both via the chat's workspace-path
+ * context.
+ */
+export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChangedSummary({
+  entries,
+  onReviewInFiles,
+}: {
+  entries: ChatWorkLogEntry[];
+  onReviewInFiles?: () => void;
+}) {
+  // Opening and display-formatting are two halves of the same hook, so both ride
+  // the chat's workspace-path context rather than being threaded as props.
+  const workspacePaths = useChatWorkspacePaths();
+  const onOpenPath = workspacePaths?.openWorkspacePath;
+  const formatDisplayPath = workspacePaths?.formatWorkspaceDisplayPath;
+  const ensureWorkspacesLoaded = workspacePaths?.ensureWorkspacesLoaded;
+  const [open, setOpen] = useState(false);
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+  const files = useMemo(
+    () => aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)),
+    [entries],
+  );
+  if (files.length === 0) return null;
+
+  const additions = files.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  const Caret = open ? CaretDown : CaretRight;
+
+  return (
+    <div className="mt-2 w-full min-w-0 max-w-[var(--chat-content-width,52rem)] space-y-1.5 overflow-hidden">
+      <div className="flex min-w-0 max-w-full items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            // Paths are only rendered once expanded, so this is the moment the
+            // lane-relative form is needed — and the cheapest point to warm the
+            // workspace roots without an IPC call on every chat mount.
+            if (!open) ensureWorkspacesLoaded?.();
+            setOpen((value) => !value);
+          }}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+        >
+          <Caret size={10} weight="bold" className="text-fg/35" />
+          <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
+            {files.length} file{files.length === 1 ? "" : "s"} changed
+          </span>
+          {additions > 0 ? (
+            <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-emerald-400/80">
+              +{additions}
+            </span>
+          ) : null}
+          {deletions > 0 ? (
+            <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-red-400/80">
+              −{deletions}
+            </span>
+          ) : null}
+        </button>
+        {onReviewInFiles ? (
+          <button
+            type="button"
+            onClick={onReviewInFiles}
+            className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40 transition-colors hover:text-fg/65"
+          >
+            Review in Files
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="min-w-0 max-w-full space-y-0.5 overflow-hidden pl-[18px]">
+          {files.map((file) => {
+            const display = formatDisplayPath ? formatDisplayPath(file.path) : file.path;
+            const hasDiff = file.diff.trim().length > 0;
+            const expanded = expandedFiles[file.path] ?? false;
+            return (
+              <div key={file.path}>
+              <div
+                className={cn(
+                  "group/file relative flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1",
+                  hasDiff && "hover:bg-white/[0.025]",
+                )}
+              >
+                {/* The diff payload rides on the work-log entry, so it is the
+                    only in-thread way to see what changed on a turn that never
+                    moved HEAD (no checkpoint, hence no `turn_diff_summary`).
+                    The toggle covers the whole row — a 28x14 badge is below the
+                    minimum pointer target — and the path button sits above it. */}
+                {hasDiff ? (
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-label={`${expanded ? "Hide" : "Show"} diff for ${display}`}
+                    onClick={() => setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))}
+                    className="absolute inset-0 rounded-[6px]"
+                  />
+                ) : null}
+                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                  {fileExtBadge(file.path)}
+                </span>
+                {onOpenPath ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPath(file.path)}
+                    title={file.path}
+                    className="relative min-w-0 flex-1 truncate text-left font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65 underline decoration-transparent underline-offset-2 transition-colors hover:text-accent hover:decoration-accent/50"
+                  >
+                    {display}
+                  </button>
+                ) : (
+                  <span
+                    title={file.path}
+                    className="pointer-events-none min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65"
+                  >
+                    {display}
+                  </span>
+                )}
+                {file.kind !== "modify" ? (
+                  <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40">
+                    {formatFileAction(file.kind)}
+                  </span>
+                ) : null}
+                {file.additions > 0 ? (
+                  <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-emerald-400/80">
+                    +{file.additions}
+                  </span>
+                ) : null}
+                {file.deletions > 0 ? (
+                  <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-red-400/80">
+                    −{file.deletions}
+                  </span>
+                ) : null}
+              </div>
+              {expanded && hasDiff ? <DiffBody diff={file.diff} /> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 function LocalhostServersStrip({
   entries,
   sessionId,
@@ -901,7 +1057,6 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal,
   sessionId,
   animate: _animate = true,
-  showToolCalls = true,
 }: {
   entries: ChatWorkLogEntry[];
   summary?: ChatWorkLogGroupEvent["summary"];
@@ -912,7 +1067,6 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
   animate?: boolean;
-  showToolCalls?: boolean;
 }) {
   const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
     const readOnly: ChatWorkLogEntry[] = [];
@@ -929,20 +1083,18 @@ export function ChatWorkLogBlock({
     [codeChangeEntries],
   );
 
-  const hasReadOnly = showToolCalls && readOnlyEntries.length > 0;
+  const hasReadOnly = readOnlyEntries.length > 0;
   const hasCodeChange = aggregatedFiles.length > 0;
   if (!hasReadOnly && !hasCodeChange) return null;
 
   return (
     <div className={cn("min-w-0 max-w-full space-y-3 overflow-hidden", className)}>
-      {showToolCalls ? (
-        <LocalhostServersStrip
-          entries={entries}
-          sessionId={sessionId}
-          onInsertDraft={onInsertDraft}
-          onRevealChatTerminal={onRevealChatTerminal}
-        />
-      ) : null}
+      <LocalhostServersStrip
+        entries={entries}
+        sessionId={sessionId}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+      />
       {hasReadOnly ? (
         <ToolCallsPanel
           entries={readOnlyEntries}

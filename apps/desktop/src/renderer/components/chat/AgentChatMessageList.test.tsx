@@ -64,6 +64,7 @@ import {
   AgentChatMessageList,
   calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  deriveTranscriptToolActivity,
   deriveTurnModelState,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
@@ -72,7 +73,10 @@ import {
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
   resolveAnchoredChatRowIndex,
+  resolveOlderHistoryPrefetchTriggerPx,
+  resolveWorkingIndicatorLabel,
   shouldAbsorbProgrammaticScrollEvent,
+  stabilizeTranscriptToolActivity,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
 import { looksLikeWireframe } from "./questionOptionPreview";
@@ -81,6 +85,7 @@ import {
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { ChatPrPaneInsetContext } from "./chatPrPaneInset";
+import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -331,6 +336,9 @@ const originalAde = globalThis.window.ade;
 
 beforeEach(() => {
   resetTranscriptCollapseCacheForTests();
+  // Workspace roots are cached per module so several chat surfaces share one
+  // IPC read; clear it so each test starts from its own listWorkspaces mock.
+  resetFilesWorkspaceCacheForTests();
   globalThis.window.ade = {
     ...(originalAde ?? {}),
     files: {
@@ -3773,8 +3781,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("−1").length).toBeGreaterThanOrEqual(1);
 
-    // Undo affordance lives on the FilesChangedPanel header and routes to /files.
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    // The turn summary's action opens the Files tab for the lane — it is NOT a
+    // revert (reverting is checkpoint-scoped and lives on the turn_diff_summary
+    // panel), so it is labelled for what it does.
+    fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
   });
 
@@ -4075,7 +4085,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
     expect(rendered.container.textContent).toMatch(/1 file changed/);
 
-    fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe(
       "/files::{\"laneId\":\"lane-123\"}",
     );
@@ -4574,5 +4584,210 @@ describe("chat transcript content width", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("turn-level file-change de-clutter", () => {
+  const writeEntry = (id: string, filePath: string, additions: number, deletions: number) => ({
+    id,
+    createdAt: "2026-03-17T10:00:00.000Z",
+    label: "Edit",
+    tone: "tool" as const,
+    status: "success" as const,
+    entryKind: "file_change" as const,
+    turnId: "turn-1",
+    changedFiles: [{ path: filePath, kind: "modify" as const, additions, deletions, diff: "" }],
+  });
+
+  it("does not double a turn's diffstat when a work-log group carries a turnId", () => {
+    // `deriveTranscriptToolActivity` concatenates its by-turn-id accumulator
+    // with the pending segment, and a group with a turnId lands in BOTH. The
+    // files-changed summary reads these raw entries, so without an id-dedupe
+    // every +/- count renders at exactly 2x.
+    const rows = groupConsecutiveWorkLogRows([
+      {
+        key: "work-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "work_log_entry",
+          entry: writeEntry("entry-1", "/root/apps/desktop/src/a.ts", 3, 1),
+        },
+      },
+      {
+        key: "done-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ] as never);
+
+    const activity = deriveTranscriptToolActivity(rows as never);
+    const fileEntries = activity.fileEntriesByDoneRowKey.get("done-1") ?? [];
+    expect(fileEntries).toHaveLength(1);
+    const additions = fileEntries.flatMap((entry) => entry.changedFiles ?? [])
+      .reduce((sum, file) => sum + file.additions, 0);
+    expect(additions).toBe(3);
+  });
+
+  it("names the file being written in the working indicator", () => {
+    expect(
+      resolveWorkingIndicatorLabel("editing_file", [
+        writeEntry("entry-1", "/root/apps/desktop/src/main/services/lanes/laneService.ts", 1, 0) as never,
+      ]),
+    ).toBe("Editing laneService.ts");
+  });
+
+  it("labels every activity the runtimes emit", () => {
+    // An unmapped activity falls through to the raw identifier, so a gap here
+    // puts `web_searching` on screen. Both were emitted and unmapped.
+    expect(resolveWorkingIndicatorLabel("web_searching", [])).toBe("Searching the web");
+    expect(resolveWorkingIndicatorLabel("spawning_agent", [])).toBe("Starting agent");
+  });
+
+  it("falls back to the bare verb when the edit target is unknown", () => {
+    expect(resolveWorkingIndicatorLabel("editing_file", [])).toBe("Editing");
+    expect(resolveWorkingIndicatorLabel("thinking", [])).toBe("Thinking");
+    expect(resolveWorkingIndicatorLabel(null, [])).toBeNull();
+  });
+
+  it("keeps per-burst file panels out of the timeline", () => {
+    // One turn, two edit bursts split by prose: the thread must show ONE
+    // files-changed summary (at the turn's end), not one per burst.
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "file_change", kind: "modify", path: "/root/apps/a.ts", additions: 1, deletions: 0, diff: "", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Now the second file.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "file_change", kind: "modify", path: "/root/apps/b.ts", additions: 2, deletions: 0, diff: "", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ] as never);
+
+    const summaries = rendered.container.textContent?.match(/files? changed/g) ?? [];
+    expect(summaries).toHaveLength(1);
+    expect(rendered.container.textContent).toContain("2 files changed");
+  });
+});
+
+describe("older-history prefetch runway", () => {
+  it("starts the fetch two viewport-heights before the top", () => {
+    // The reader used to arrive at the top BEFORE the request went out, so a
+    // page load was always a visible stall.
+    expect(resolveOlderHistoryPrefetchTriggerPx(800)).toBe(1600);
+  });
+
+  it("never shrinks below the near-top fallback", () => {
+    // Short panes and pre-measurement (clientHeight 0 in jsdom / first paint)
+    // keep the original near-top trigger rather than disabling paging.
+    expect(resolveOlderHistoryPrefetchTriggerPx(0)).toBe(300);
+    expect(resolveOlderHistoryPrefetchTriggerPx(100)).toBe(300);
+    expect(resolveOlderHistoryPrefetchTriggerPx(Number.NaN)).toBe(300);
+  });
+
+  it("requests an older page while still two screens from the top", async () => {
+    const onLoadOlderHistory = vi.fn();
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "text", text: "hello", turnId: "turn-1" },
+        },
+      ] as never,
+      { hasOlderHistory: true, onLoadOlderHistory },
+    );
+
+    const pane = rendered.container.querySelector(".ade-chat-timeline-pane");
+    expect(pane).not.toBeNull();
+    Object.defineProperty(pane!, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(pane!, "scrollHeight", { value: 20_000, configurable: true });
+    onLoadOlderHistory.mockClear();
+
+    // 900px from the top: outside the old 300px trigger, inside the new runway.
+    Object.defineProperty(pane!, "scrollTop", { value: 900, configurable: true, writable: true });
+    fireEvent.scroll(pane!);
+
+    await waitFor(() => expect(onLoadOlderHistory).toHaveBeenCalled());
+  });
+});
+
+describe("transcript tool-activity identity stability", () => {
+  // ONE entry object reused across builds — that is what production does: the
+  // entries come from the cached collapse pipeline, so a settled turn hands back
+  // the same objects on every rebuild. Fresh objects per call would model a
+  // transcript that never reuses anything and defeat the check under test.
+  const settledEntry = {
+    id: "entry-1",
+    createdAt: "2026-03-17T10:00:00.000Z",
+    label: "Edit",
+    tone: "tool",
+    status: "success",
+    entryKind: "file_change",
+    turnId: "turn-1",
+    changedFiles: [{ path: "/root/a.ts", kind: "modify", additions: 1, deletions: 0, diff: "" }],
+  };
+  const buildRows = (tail: string) => groupConsecutiveWorkLogRows([
+    {
+      key: "work-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: { type: "work_log_entry", entry: settledEntry },
+    },
+    {
+      key: "done-1",
+      timestamp: "2026-03-17T10:00:01.000Z",
+      event: { type: "done", turnId: "turn-1", status: "completed" },
+    },
+    {
+      key: `text-${tail}`,
+      timestamp: "2026-03-17T10:00:02.000Z",
+      event: { type: "text", text: tail, turnId: "turn-2" },
+    },
+  ] as never);
+
+  it("reuses a settled turn's arrays when a later delta arrives", () => {
+    // Without this, every streaming tick hands each done row brand-new arrays
+    // and React.memo misses on every completed turn in the thread.
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("ab") as never);
+    expect(second.byDoneRowKey.get("done-1")).not.toBe(first.byDoneRowKey.get("done-1"));
+
+    const stabilized = stabilizeTranscriptToolActivity(first, second);
+    expect(stabilized.byDoneRowKey.get("done-1")).toBe(first.byDoneRowKey.get("done-1"));
+    expect(stabilized.fileEntriesByDoneRowKey.get("done-1")).toBe(first.fileEntriesByDoneRowKey.get("done-1"));
+  });
+
+  it("does not discard fresh file entries when only they changed", () => {
+    // byDoneRowKey drops file_change entries, so a turn whose FILE changes moved
+    // while its tool entries did not looks identical through that map alone —
+    // guarding on it only would throw away the fresh fileEntriesByDoneRowKey.
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("a") as never);
+    const changedFileEntries = new Map(second.fileEntriesByDoneRowKey);
+    changedFileEntries.set("done-1", [{ ...settledEntry, id: "entry-2" } as never]);
+    const mutated = { ...second, fileEntriesByDoneRowKey: changedFileEntries };
+
+    const stabilized = stabilizeTranscriptToolActivity(first, mutated);
+    expect(stabilized).not.toBe(first);
+    expect(stabilized.fileEntriesByDoneRowKey.get("done-1")).toBe(
+      changedFileEntries.get("done-1"),
+    );
+  });
+
+  it("returns the previous object outright when nothing changed", () => {
+    const first = deriveTranscriptToolActivity(buildRows("a") as never);
+    const second = deriveTranscriptToolActivity(buildRows("a") as never);
+    expect(stabilizeTranscriptToolActivity(first, second)).toBe(first);
   });
 });

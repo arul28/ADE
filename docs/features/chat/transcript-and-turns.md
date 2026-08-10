@@ -337,8 +337,13 @@ implements a two-layer transform:
    command, hook, and web-search groups no longer occupy permanent transcript
    rows. During a live turn they are available from the expandable working
    status; after `done` they move to the existing turn-finished / `Ran for`
-   status. File-change summaries remain chronological transcript rows, and
-   assistant narration is unchanged. Desktop and hosted web share this
+   status. On desktop the `work_log_group` envelopes are filtered out of the
+   rendered timeline entirely rather than rendered empty, so they do not
+   consume row gaps. File changes are reported **once per turn**, at that
+   turn's done divider, instead of once per uninterrupted burst of tool
+   entries — a turn whose bursts were broken up by prose used to stack six
+   near-identical panels through one reply. Assistant narration is unchanged.
+   Desktop and hosted web share this
    presentation in `AgentChatMessageList`; iOS opens the activity in a sheet so
    the working row stays readable at narrow widths; ADE Code expands the same
    activity from its working or turn-finished row. This is capability
@@ -357,8 +362,10 @@ command/output/args/result/label/detail mention a `localhost`,
 `127.0.0.1`, `0.0.0.0`, or `[::1]` URL. The extractor (also exported as
 `extractLocalhostUrlsFromText`) trims trailing punctuation, normalises
 the host to `localhost` for the canonical `href`, and dedupes by
-`href`. Downstream `ChatWorkLogBlock` consumes `entry.localUrls` to
-render the localhost-strip chips that route into the in-app browser.
+`href`. Downstream `ChatWorkLogBlock` (specifically the
+`ChatToolActivityDetails` view reachable from the working indicator and the
+done divider) consumes `entry.localUrls` to render the localhost-strip chips
+that route into the in-app browser.
 
 ## Text merging
 
@@ -384,7 +391,16 @@ When a turn completes on a lane and the service can compute a diff
 between the before and after SHAs, the service emits
 `turn_diff_summary` with per-file add/delete counts. The
 `ChatTurnDiffPanel` component renders the summary inline; individual
-file diffs are fetched lazily via `ade.agentChat.getTurnFileDiff`.
+file diffs are fetched lazily via `ade.agentChat.getTurnFileDiff`. This is
+the only summary that can offer real git diffs and a SHA-scoped revert.
+
+A turn that changed files without moving HEAD emits no such event — no lane,
+a runtime with no git integration, or edits that never reached a checkpoint.
+Those turns fall back to `ChatTurnFilesChangedSummary`, derived purely from
+work-log entries and therefore available for every runtime (see
+[composer-and-ui.md](composer-and-ui.md#file-changes-panel)). Exactly one of
+the two renders per turn: the desktop message list suppresses the fallback for
+any done row whose turn id appears in the session's `turn_diff_summary` set.
 
 ## Turn recap
 
@@ -543,9 +559,20 @@ Desktop, personal chat, and ADE Code request 256 KiB pages. Desktop and
 personal-chat selected views keep at most 60,000 events / 32 MiB resident; a
 background personal-chat view keeps 1,000 events / 2 MiB. Page responses are
 committed only while the selected session, bound runtime, request generation,
-and requested cursor still match. Empty-but-progressing pages may continue for
-up to eight cursor hops, preventing sparse transcript regions from looking
-exhausted without allowing an unbounded paging loop. An overlapping snapshot
+and requested cursor still match.
+
+One user-visible "load earlier" is one *batch*, not one page. `readOlderHistoryBatch`
+keeps pulling pages until the accumulated span contains a `user_message`,
+because pages are cut by bytes: a single page of a long streamed reply can be
+hundreds of superseded `text` delta rows that fold to one rendered line, so a
+page-per-trigger design reads as "load earlier did nothing". The same loop also
+continues through empty-but-progressing pages, so sparse transcript regions do
+not look exhausted. Two bounds keep it terminating: `maxPages` (default 8,
+shared by both behaviours) and `maxAnchorEvents` (default 400, for a turn that
+legitimately spans many pages). Hitting either is not an error — the reader has
+real content and the next scroll continues. Pages already collected in a batch
+are returned even if a later read reports `sessionFound === false`, which would
+otherwise latch "no older history" and drop them until a reload. An overlapping snapshot
 may preserve an exhausted cursor only when its oldest retained event survived
 the merge; a replacement snapshot or cap eviction re-arms paging.
 

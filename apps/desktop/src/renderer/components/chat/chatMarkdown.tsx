@@ -1,14 +1,47 @@
 import { type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
+import {
+  isWindowsAbsolutePath,
+} from "../../lib/pathUtils";
+import {
+  isExternalHref,
+  resolveWorkspacePathFromHref,
+  useChatWorkspacePathOpener,
+} from "./chatWorkspacePaths";
+
+/**
+ * A Windows absolute path (`C:\repo\x.ts`) is indistinguishable from a URL
+ * scheme to the sanitizer, which sees `C:`. Allow the single-letter "schemes"
+ * so drive paths survive to `ChatMarkdownAnchor`, which decides what they
+ * actually are. Both cases are listed because the sanitizer compares protocols
+ * case-sensitively. A single letter cannot collide with a real dangerous scheme
+ * (`javascript:`, `data:`, `vbscript:` all stay blocked — covered by a test).
+ */
+const WINDOWS_DRIVE_LETTER_SCHEMES = Array.from({ length: 26 }, (_unused, index) => [
+  String.fromCharCode(97 + index),
+  String.fromCharCode(65 + index),
+]).flat();
 
 export const SAFE_PREVIEW_SCHEMA = {
   ...defaultSchema,
+  // `rehypeSanitize` runs BEFORE `urlTransform`, and the default href allowlist
+  // is http/https/irc/ircs/mailto/xmpp — so a `file:` href, and a Windows
+  // `C:\repo\x.ts` (whose "scheme" parses as `c:`), had their href stripped
+  // before anything could linkify them. That made absolute paths dead on
+  // Windows while the same path worked on macOS/Linux, which arrive as `/…`
+  // and are kept as relative. Allowing these two is safe here because
+  // `ChatMarkdownAnchor` never renders a live href for a resolved workspace
+  // path — it renders a button that routes through the Files tab.
+  protocols: {
+    ...defaultSchema.protocols,
+    href: [...(defaultSchema.protocols?.href ?? []), "file", ...WINDOWS_DRIVE_LETTER_SCHEMES],
+  },
   tagNames: [
     "p",
     "ul",
@@ -36,6 +69,23 @@ export const SAFE_PREVIEW_SCHEMA = {
     "a",
   ],
 };
+
+export function chatMarkdownUrlTransform(value: string): string {
+  // The markdown pipeline percent-encodes link destinations, so a Windows path
+  // reaches here as `C:%5Crepo%5Cx.ts`. Test the decoded form or the drive
+  // check misses and `defaultUrlTransform` blanks the href for an unknown `C:`
+  // scheme — the exact dead-click this transform exists to prevent.
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    // Partially-encoded href — fall back to the raw value.
+  }
+  if (/^file:/i.test(value) || isWindowsAbsolutePath(value) || isWindowsAbsolutePath(decoded)) {
+    return value;
+  }
+  return defaultUrlTransform(value);
+}
 
 type Tone = "sky" | "amber" | "neutral";
 
@@ -75,6 +125,71 @@ function toneAccents(tone: Tone) {
     hr: "border-sky-300/15",
     link: "text-sky-300/90 underline underline-offset-2 transition-colors hover:text-sky-200",
   };
+}
+
+/**
+ * A markdown link, routed by what it actually points at.
+ *
+ * A file path is NOT a URL: handing `laneService.ts` to the browser opener gets
+ * it normalized to `https://laneService.ts` and navigates ADE's built-in browser
+ * to a garbage host, and a multi-segment `apps/foo.ts` dead-clicks instead. So
+ * workspace paths go to the Files tab via the chat's opener, and when no chat
+ * surface is hosting this markdown (Settings preview, PR body) they render as
+ * inert text — never as a guessed URL.
+ */
+function ChatMarkdownAnchor({
+  href,
+  className,
+  children,
+}: {
+  href: string | undefined;
+  className: string;
+  children: ReactNode;
+}): ReactNode {
+  const openWorkspacePath = useChatWorkspacePathOpener();
+  const workspacePath = resolveWorkspacePathFromHref(href);
+
+  // Allowing `file:` and drive schemes past the sanitizer (above) means an href
+  // that is NEITHER a resolvable workspace path NOR a real URL — `file:///tmp`,
+  // say — would otherwise reach the browser opener, which accepts `file:` and
+  // would load it in-app. Before the schema widening the sanitizer stripped
+  // those, so keep them inert rather than opening arbitrary local files from
+  // whatever text an agent echoed into chat.
+  if (!workspacePath && !isExternalHref(href ?? "")) {
+    return <span className="break-words">{children}</span>;
+  }
+
+  if (workspacePath) {
+    if (!openWorkspacePath) return <span className="break-words">{children}</span>;
+    return (
+      <button
+        type="button"
+        title={workspacePath.path}
+        className={cn(className, "cursor-pointer break-words text-left")}
+        onClick={(event) => {
+          event.preventDefault();
+          openWorkspacePath(workspacePath);
+        }}
+      >
+        {children}
+      </button>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      onClick={(event) => {
+        event.preventDefault();
+        openUrlInAdeBrowser(href);
+      }}
+    >
+      {children}
+    </a>
+  );
 }
 
 export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overrides = {}): Components {
@@ -151,20 +266,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ),
     strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
     em: ({ children }) => <em className="italic">{children}</em>,
-    a: ({ children, href }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={accent.link}
-        onClick={(event) => {
-          event.preventDefault();
-          openUrlInAdeBrowser(href);
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ children, href }) => <ChatMarkdownAnchor href={href} className={accent.link}>{children}</ChatMarkdownAnchor>,
     table: ({ children }) => (
       <div className="mb-3 max-w-full overflow-x-auto last:mb-0">
         <table className="w-full min-w-0 border-collapse text-left">{children}</table>
@@ -201,6 +303,9 @@ export function ChatMarkdown({ children, tone = "sky", componentOverrides }: Cha
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
+      // Keep `file:` and Windows drive hrefs intact — the default transform
+      // drops them, which would hide exactly the paths we want to linkify.
+      urlTransform={chatMarkdownUrlTransform}
       components={buildChatMarkdownComponents(tone, componentOverrides)}
     >
       {children}
