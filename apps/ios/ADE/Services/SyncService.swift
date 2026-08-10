@@ -9460,7 +9460,10 @@ final class SyncService: ObservableObject {
           record["ok"] == nil,
           record["queued"] as? Bool == true
     else { return nil }
-    return (record["commandId"] as? String).flatMap(normalizedLifecycleSessionId)
+    guard let id = (record["commandId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !id.isEmpty
+    else { return nil }
+    return id
   }
 
   /// Settle-family command: shows the change through the local overlay, which is
@@ -18899,7 +18902,9 @@ final class SyncService: ObservableObject {
           if stillLive, isSyncRequestTimeoutError(error) {
             verifyTransportAliveAfterSilence(error as NSError, trigger: "request_timeout")
           }
-          return ["queued": true]
+          // Carry the queue entry's id so a caller holding optimistic state can
+          // bind it to this exact operation and resolve it on the replay.
+          return ["queued": true, "commandId": commandId]
         }
         throw error
       }
@@ -18910,15 +18915,17 @@ final class SyncService: ObservableObject {
     guard policy.queueable == true else {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action requires a live connection to the machine."])
     }
+    let queuedCommandId = makeRequestId()
     try enqueueOperation(
       kind: "command",
       action: action,
       args: args,
+      id: queuedCommandId,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       fallbackToActiveProjectScope: fallbackToActiveProjectScope
     )
-    return ["queued": true]
+    return ["queued": true, "commandId": queuedCommandId]
   }
 
   /// True when this device is paired to a machine (active or last-saved
