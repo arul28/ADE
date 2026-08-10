@@ -237,7 +237,13 @@ private func syntaxStableBoundaryOffset(
         pendingEscape[position] = false
         continue
       }
-      if character == "\\", delimiter.escapes {
+      // Only inside an open string of *this* delimiter (odd count). Outside
+      // one a backslash escapes nothing here, and the rules agree: the string
+      // patterns have no preceding-backslash check, so a `\\'` sitting in a
+      // comment really can open a match that runs to the next apostrophe lines
+      // later. Swallowing it would mark that newline stable and freeze the
+      // span before the closer arrives.
+      if character == "\\", delimiter.escapes, counts[position] % 2 == 1 {
         pendingEscape[position] = true
         continue
       }

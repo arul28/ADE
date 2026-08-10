@@ -499,6 +499,21 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
+  func testEscapedQuoteOutsideAStringStillOpensOne() {
+    // `\'` in a comment is not an escape — nothing is open for it to escape.
+    // The string rule has no preceding-backslash check either, so it opens a
+    // match there that runs to the apostrophe two lines later; treating the
+    // backslash as an escape would swallow it and mark the newline stable.
+    assertIncrementalMatchesFullHighlight(
+      #"""
+      // path\' here
+      // it's fine
+      const x = 1
+      """#,
+      as: .javascript
+    )
+  }
+
   func testStreamingHtmlCommentSpanningLinesMatchesFullHighlight() {
     // HTML's comment rule spans lines like a `/* */` block; a stable boundary
     // landing inside one would freeze mis-highlighted markup into the prefix.
