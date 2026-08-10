@@ -327,6 +327,36 @@ its target table exists:
   correctness guard for that prize — the metadata that actually grows is the
   live clock rows behind unbounded logs, which is what the two prunes above
   target.
+
+#### Why `ai_usage_log` is not local-only
+
+It is the largest single block of CRR metadata in a measured project database
+— 0.93 MB of clock/pks for 0.27 MB of data, about 2.8 MB off the file after a
+vacuum — and it looks like an obvious sibling of `usage_events`, which *is* in
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`. It stays a CRR anyway, deliberately.
+
+`ai.budgets.<feature>.dailyLimit` is enforced by counting rows in this table
+for today. Because the table replicates, that cap is **account-wide across a
+user's machines**. Making it local-only silently turns it into a per-machine
+cap — an N-times looser cost control.
+
+Serving the cap from a slim synced aggregate was scoped and deferred, not
+dismissed. Three things make it larger than it looks:
+
+1. The aggregate must be keyed `(day, feature, site)` and summed at read.
+   A shared `(day, feature)` counter cannot work — cr-sqlite is
+   last-writer-wins per column, so one machine's upsert discards another's
+   count, reintroducing the same under-count by a different route.
+2. It cannot ship in one release. Once raw rows stop replicating, a machine on
+   the new build sees nothing from a peer still on the old one, so it
+   under-counts and overruns the cap during precisely the window a rollout
+   guarantees. Safe sequencing is two releases: ship the aggregate while
+   `ai_usage_log` still replicates, then flip to local-only.
+3. A new CRR table must exist in every peer's schema or `unknown_sync_table`
+   wedges apply — the hazard described under [CRDT model](../sync-and-multi-device/crdt-model.md).
+
+The safe half ships today: 90-day retention, and the phone already never
+receives the table (`MOBILE_CHANGESET_EXCLUDED_TABLES`).
 - `vacuumIfFragmented(threshold)` — when the freelist fraction exceeds the
   threshold, a one-time full `VACUUM` rebuilds the file and activates
   `auto_vacuum = INCREMENTAL`; every later sweep then reclaims the freelist in

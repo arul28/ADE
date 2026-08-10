@@ -1343,6 +1343,16 @@ export function createAiIntegrationService(args: {
     return daily;
   };
 
+  /**
+   * Successful requests for `feature` so far today.
+   *
+   * This reads `ai_usage_log` directly, and that table replicates, so the count
+   * spans every machine on the account — `dailyLimit` is an account-wide cap,
+   * not a per-machine one. Anything that stops the table replicating (making it
+   * local-only, filtering it out of a peer's changesets) turns the cap into a
+   * per-machine one and multiplies the user's ceiling by their machine count.
+   * See the note beside `ai_usage_log` in kvDb's LOCAL_ONLY_CRR_EXCLUDED_TABLES.
+   */
   const countDailyUsage = (feature: AiFeatureKey): number => {
     const row = db.get<{ count: number }>(
       `

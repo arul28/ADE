@@ -847,6 +847,36 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
   "usage_events",
+  // NOT here on purpose: `ai_usage_log`, whose CRR metadata is the largest
+  // single block in a measured project database (0.93 MB of clock/pks for
+  // 0.27 MB of data — 2.8 MB off the file after vacuum). It looks like an
+  // obvious sibling of `usage_events` above, and it is not.
+  //
+  // `ai.budgets.<feature>.dailyLimit` is enforced by counting rows:
+  // `select count(*) from ai_usage_log where feature = ? and success = 1`
+  // over today. Because the table replicates, that count is account-wide
+  // across a user's machines. Un-CRR it and the limit silently becomes
+  // per-machine — an N-times looser cost control, which is the opposite of a
+  // saving.
+  //
+  // Serving the limit from a slim synced aggregate instead was scoped and
+  // rejected as too large for one change, not as a bad idea:
+  //   - The aggregate has to be keyed (day, feature, site) and SUMMED at read.
+  //     A shared (day, feature) counter cannot work: cr-sqlite is
+  //     last-writer-wins per column, so one machine's upsert would discard the
+  //     other's count — silently under-counting, i.e. the same loosening by a
+  //     different route.
+  //   - It cannot be rolled out in one release. The moment raw rows stop
+  //     replicating, a machine on the new build sees nothing at all from a peer
+  //     still on the old build (inbound local-only changes are dropped just
+  //     above in applyChanges), so it under-counts and overruns the account cap
+  //     during exactly the window a rollout guarantees. Safe sequencing is two
+  //     releases: ship the aggregate while `ai_usage_log` still syncs, then flip
+  //     to local-only once aggregates are everywhere.
+  //   - A new CRR table also has to exist in every peer's schema or
+  //     `unknown_sync_table` wedges apply — the hazard fixed just above.
+  // Retention (90 days, below) is the part that is safe today, and the phone
+  // already never receives this table (MOBILE_CHANGESET_EXCLUDED_TABLES).
   "test_suites",
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
