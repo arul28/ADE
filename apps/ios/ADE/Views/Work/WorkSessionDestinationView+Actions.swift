@@ -69,7 +69,10 @@ extension WorkSessionDestinationView {
     // (text + attachment refs) has to match the transcript row that comes back,
     // or reconciliation would leave a duplicate bubble behind.
     updateLocalEchoAttachments(echoId: echoId, attachments: attachmentRefs.isEmpty ? nil : attachmentRefs)
-    WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
+    // Promote rather than release: the swap replaces the chip, and dropping the
+    // in-memory image here would flash the generic placeholder while the fresh
+    // chip fetched the copy we just uploaded.
+    WorkPendingUploadPreviewStore.shared.promote(pendingUploadRefs, to: attachmentRefs)
 
     defer { sending = false }
     do {

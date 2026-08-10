@@ -404,6 +404,35 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     return attributed
   }
 
+  func testStreamingEscapedBacktickKeepsTemplateLiteralOpen() {
+    // The template-literal rule consumes `\\.`, so an escaped backtick does not
+    // end the string. A boundary landing on the newline after it would freeze
+    // the rest of the literal into the prefix as mis-highlighted code.
+    assertIncrementalMatchesFullHighlight(
+      #"""
+      const q = `a \` b
+      still inside
+      ` + `second`
+      const n = 42
+      """#,
+      as: .typescript
+    )
+  }
+
+  func testStreamingEscapedQuoteInsideTripleQuotedStringStaysOpen() {
+    assertIncrementalMatchesFullHighlight(
+      #"""
+      def f():
+          s = """doc \" line
+
+          more
+          """
+          return s
+      """#,
+      as: .python
+    )
+  }
+
   func testStreamingHtmlCommentSpanningLinesMatchesFullHighlight() {
     // HTML's comment rule spans lines like a `/* */` block; a stable boundary
     // landing inside one would freeze mis-highlighted markup into the prefix.
@@ -429,6 +458,58 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
       SyntaxHighlighter.highlightedAttributedString(unrelated, as: .swift),
       SyntaxHighlighter.highlightedSegment(Substring(unrelated), as: .swift)
     )
+  }
+}
+
+/// The composer's downscaled image has to survive the placeholder → host-path
+/// swap, or the fresh chip flashes the generic placeholder while it re-fetches
+/// the image the phone just uploaded.
+@MainActor
+final class WorkPendingUploadPreviewStoreTests: XCTestCase {
+  private func makeAttachment() -> WorkChatInputAttachment {
+    WorkChatInputAttachment(
+      image: UIImage(systemName: "photo") ?? UIImage(),
+      uploadData: Data([0x01]),
+      filename: "shot.jpg",
+      state: .ready
+    )
+  }
+
+  func testPromotedImageResolvesUnderTheHostPath() {
+    let store = WorkPendingUploadPreviewStore.shared
+    let placeholders = store.register([makeAttachment()])
+    XCTAssertEqual(placeholders.count, 1)
+    XCTAssertNotNil(store.image(forPath: placeholders[0].path))
+
+    let saved = [AgentChatFileRef(path: "/project/.ade/attachments/shot.jpg", type: "image")]
+    store.promote(placeholders, to: saved)
+
+    XCTAssertNotNil(store.image(forPath: saved[0].path), "no image means the chip flashes a placeholder")
+    XCTAssertNil(store.image(forPath: placeholders[0].path), "the placeholder key must not linger")
+    store.release(saved)
+  }
+
+  func testMismatchedSaveCountReleasesRatherThanMispairing() {
+    let store = WorkPendingUploadPreviewStore.shared
+    let placeholders = store.register([makeAttachment(), makeAttachment()])
+    // One attachment failed to produce a ref: pairing positionally would attach
+    // the first image's bytes to a path it does not belong to.
+    store.promote(placeholders, to: [AgentChatFileRef(path: "/project/.ade/attachments/only.jpg", type: "image")])
+
+    XCTAssertNil(store.image(forPath: "/project/.ade/attachments/only.jpg"))
+    XCTAssertTrue(placeholders.allSatisfy { store.image(forPath: $0.path) == nil })
+  }
+
+  func testStoreIsBoundedToRoughlyOneMessageOfAttachments() {
+    let store = WorkPendingUploadPreviewStore.shared
+    let refs = store.register((0..<(workPendingUploadPreviewLimit + 4)).map { _ in makeAttachment() })
+    let retained = refs.filter { store.image(forPath: $0.path) != nil }
+    XCTAssertEqual(retained.count, workPendingUploadPreviewLimit)
+    XCTAssertTrue(
+      retained.allSatisfy { refs.suffix(workPendingUploadPreviewLimit).contains($0) },
+      "the newest entries are the ones worth keeping"
+    )
+    store.release(refs)
   }
 }
 

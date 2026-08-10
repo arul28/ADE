@@ -179,8 +179,25 @@ private func syntaxStableBoundary(in text: String, from start: String.Index) -> 
         continue
       }
     } else if balance.insideBacktick {
+      // The template-literal and triple-quote rules both consume `\\.`, so an
+      // escaped delimiter does not close the string for the tokenizer and must
+      // not close it here either — a boundary landing inside the literal would
+      // freeze mis-highlighted text into the immutable prefix.
+      //
+      // Applied unconditionally rather than per language: Go's raw strings have
+      // no escapes, so treating a backslash as one there can only *miss* a
+      // closing backtick, which stalls the boundary (slower, still correct).
+      // The opposite mistake in TypeScript is a wrong render.
+      if character == "\\", next < text.endIndex {
+        index = text.index(after: next)
+        continue
+      }
       if character == "`" { balance.insideBacktick = false }
     } else if balance.insideTripleQuote {
+      if character == "\\", next < text.endIndex {
+        index = text.index(after: next)
+        continue
+      }
       if syntaxIsTripleQuote(text, at: index) {
         balance.insideTripleQuote = false
         index = text.index(index, offsetBy: 3)
