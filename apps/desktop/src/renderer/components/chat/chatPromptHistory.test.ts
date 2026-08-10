@@ -68,4 +68,37 @@ describe("chat prompt history", () => {
     expect(promptHistoryEventKey({ timestamp: original.timestamp, event: originalEvent }))
       .toBe(promptHistoryEventKey({ timestamp: original.timestamp, event: decorated }));
   });
+
+  it("uses the stable identity precedence for prompt jumps", () => {
+    const timestamp = "2026-08-10T10:00:00.000Z";
+    type UserMessageFields = Partial<Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>>;
+    const cases: Array<{ name: string; event: UserMessageFields; expected: string }> = [
+      {
+        name: "message id",
+        event: { messageId: "message-1", steerId: "steer-1", turnId: "turn-1" },
+        expected: `${timestamp}#user_message#message:message-1`,
+      },
+      {
+        name: "steer id",
+        event: { steerId: "steer-1", turnId: "turn-1" },
+        expected: `${timestamp}#user_message#steer:steer-1`,
+      },
+      {
+        name: "turn id and text",
+        event: { turnId: "turn-1" },
+        expected: `${timestamp}#user_message#turn:turn-1#Fallback text`,
+      },
+      {
+        name: "canonical text",
+        event: {},
+        expected: `${timestamp}#user_message#text:Fallback text`,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const envelope = userMessage("selected", timestamp, "Fallback text", testCase.event);
+      if (envelope.event.type !== "user_message") throw new Error(`${testCase.name} must be a user message`);
+      expect(promptHistoryEventKey({ timestamp, event: envelope.event })).toBe(testCase.expected);
+    }
+  });
 });

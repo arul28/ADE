@@ -1955,13 +1955,14 @@ export function AgentChatComposer({
     const cancelIfActive = () => {
       if (promptHistorySequenceActiveRef.current) cancelPromptHistorySequence();
     };
-    window.addEventListener("pointerdown", cancelIfActive, true);
-    window.addEventListener("wheel", cancelIfActive, true);
-    window.addEventListener("touchstart", cancelIfActive, true);
+    const listenerOptions = { capture: true, passive: true } as const;
+    window.addEventListener("pointerdown", cancelIfActive, listenerOptions);
+    window.addEventListener("wheel", cancelIfActive, listenerOptions);
+    window.addEventListener("touchstart", cancelIfActive, listenerOptions);
     return () => {
-      window.removeEventListener("pointerdown", cancelIfActive, true);
-      window.removeEventListener("wheel", cancelIfActive, true);
-      window.removeEventListener("touchstart", cancelIfActive, true);
+      window.removeEventListener("pointerdown", cancelIfActive, listenerOptions);
+      window.removeEventListener("wheel", cancelIfActive, listenerOptions);
+      window.removeEventListener("touchstart", cancelIfActive, listenerOptions);
     };
   }, [cancelPromptHistorySequence]);
 
@@ -3934,7 +3935,7 @@ export function AgentChatComposer({
     const cursorOffset = target instanceof HTMLTextAreaElement
       ? target.selectionStart ?? currentText.length
       : getRichCursorTextOffset();
-    const atFirstLine = currentText.lastIndexOf("\n", Math.max(0, cursorOffset - 1)) < 0;
+    const atFirstLine = cursorOffset <= 0 || currentText.lastIndexOf("\n", cursorOffset - 1) < 0;
     const atLastLine = currentText.indexOf("\n", cursorOffset) < 0;
     if (
       promptHistorySequenceActiveRef.current
@@ -3952,7 +3953,7 @@ export function AgentChatComposer({
       // Up from a new draft is the history gesture. Preserve the draft in the
       // existing per-chat stash flow before replacing it with the latest sent
       // prompt. Down from a new draft remains native textarea behavior.
-      if (event.key !== "ArrowUp") return false;
+      if (event.key !== "ArrowUp" || !atFirstLine) return false;
       const latestIndex = promptHistory.length - 1;
       const entry = promptHistory[latestIndex];
       if (!entry) return false;

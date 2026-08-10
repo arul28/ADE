@@ -128,6 +128,17 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
+function installPromptStashBridge(promptStashes: Record<string, unknown>) {
+  const previousAde = (window as any).ade ?? {};
+  (window as any).ade = {
+    ...previousAde,
+    agentChat: {
+      ...(previousAde.agentChat ?? {}),
+      promptStashes,
+    },
+  };
+}
+
 const CAPTION_FREE_PERMISSION_CASES: Array<{
   provider: string;
   triggerName: string;
@@ -343,15 +354,11 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-07-28T12:00:00.000Z",
     };
     const create = vi.fn().mockResolvedValue(created);
-    (window as any).ade = {
-      agentChat: {
-        promptStashes: {
-          list: vi.fn().mockResolvedValue([]),
-          create,
-          delete: vi.fn().mockResolvedValue(true),
-        },
-      },
-    };
+    installPromptStashBridge({
+      list: vi.fn().mockResolvedValue([]),
+      create,
+      delete: vi.fn().mockResolvedValue(true),
+    });
     const props = renderComposer();
 
     expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
@@ -1250,6 +1257,24 @@ describe("AgentChatComposer", () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[0].text);
   });
 
+  it("keeps native caret motion on a multiline new draft", () => {
+    const onDraftChange = vi.fn();
+    const props = buildComposerProps({
+      draft: "line one\nline two",
+      onDraftChange,
+      promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
+      turnActive: false,
+    });
+    render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
   it("treats a direction change as an interruption of the rapid sequence", () => {
     const onDraftChange = vi.fn();
     const promptHistory = [
@@ -1323,15 +1348,11 @@ describe("AgentChatComposer", () => {
       modelId: "openai/gpt-5.4",
       createdAt: "2026-08-10T12:00:00.000Z",
     });
-    (window as any).ade = {
-      agentChat: {
-        promptStashes: {
-          list: vi.fn().mockResolvedValue([]),
-          create,
-          delete: vi.fn().mockResolvedValue(true),
-        },
-      },
-    };
+    installPromptStashBridge({
+      list: vi.fn().mockResolvedValue([]),
+      create,
+      delete: vi.fn().mockResolvedValue(true),
+    });
     const onDraftChange = vi.fn();
     const props = buildComposerProps({
       draft: "unfinished draft",
@@ -1366,15 +1387,11 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    (window as any).ade = {
-      agentChat: {
-        promptStashes: {
-          list: vi.fn().mockResolvedValue([]),
-          create,
-          delete: remove,
-        },
-      },
-    };
+    installPromptStashBridge({
+      list: vi.fn().mockResolvedValue([]),
+      create,
+      delete: remove,
+    });
     const props = buildComposerProps({
       draft: "unfinished draft",
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
@@ -1415,15 +1432,11 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    (window as any).ade = {
-      agentChat: {
-        promptStashes: {
-          list: vi.fn().mockResolvedValue([]),
-          create,
-          delete: remove,
-        },
-      },
-    };
+    installPromptStashBridge({
+      list: vi.fn().mockResolvedValue([]),
+      create,
+      delete: remove,
+    });
     const props = buildComposerProps({
       draft: "unfinished draft",
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
@@ -1461,15 +1474,11 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-08-10T12:00:00.000Z",
     });
     const remove = vi.fn().mockResolvedValue(true);
-    (window as any).ade = {
-      agentChat: {
-        promptStashes: {
-          list: vi.fn().mockResolvedValue([]),
-          create,
-          delete: remove,
-        },
-      },
-    };
+    installPromptStashBridge({
+      list: vi.fn().mockResolvedValue([]),
+      create,
+      delete: remove,
+    });
     const props = buildComposerProps({
       draft: "unfinished draft",
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
