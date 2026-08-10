@@ -19,7 +19,7 @@ import type { createSessionService } from "./sessionService";
 type Row = { id: string; toolType: string };
 
 function deps(rows: Row[], overrides: Record<string, unknown> = {}) {
-  const stopBackgroundWork = vi.fn(async () => ({ stopped: 2, skippedActiveTurn: false }));
+  const stopBackgroundWork = vi.fn(async () => ({ skippedActiveTurn: false }));
   return {
     sessionService: {
       get: (id: string) => rows.find((row) => row.id === id) ?? null,
@@ -43,7 +43,6 @@ describe("stopSettledSessionMachinery", () => {
     expect(d.stopBackgroundWork).toHaveBeenCalledWith({ sessionId: "chat-1" });
     expect(result).toMatchObject({
       sessionIds: ["chat-1"],
-      stoppedBackgroundWork: 2,
       skippedActiveTurns: 0,
     });
   });
@@ -68,11 +67,10 @@ describe("stopSettledSessionMachinery", () => {
 
   it("reports a session skipped because its foreground turn is still streaming", async () => {
     const d = deps([{ id: "chat-1", toolType: "claude-chat" }], {
-      stopBackgroundWork: vi.fn(async () => ({ stopped: 0, skippedActiveTurn: true })),
+      stopBackgroundWork: vi.fn(async () => ({ skippedActiveTurn: true })),
     });
     const result = await stopSettledSessionMachinery(d, ["chat-1"]);
     expect(result.skippedActiveTurns).toBe(1);
-    expect(result.stoppedBackgroundWork).toBe(0);
   });
 
   it("never lets a provider failure block the settle", async () => {
@@ -83,7 +81,7 @@ describe("stopSettledSessionMachinery", () => {
     });
     await expect(stopSettledSessionMachinery(d, ["chat-1"])).resolves.toMatchObject({
       sessionIds: ["chat-1"],
-      stoppedBackgroundWork: 0,
+      skippedActiveTurns: 0,
     });
     expect(d.logger.warn).toHaveBeenCalled();
   });
@@ -104,7 +102,6 @@ describe("stopSettledSessionMachinery", () => {
       ["chat-1"],
     );
     expect(result.sessionIds).toEqual(["chat-1"]);
-    expect(result.stoppedBackgroundWork).toBe(0);
   });
 });
 
@@ -116,7 +113,7 @@ describe("settleTerminalSession", () => {
     const d = deps([{ id: "chat-1", toolType: "claude-chat" }], {
       stopBackgroundWork: vi.fn(async () => {
         order.push("stop");
-        return { stopped: 1, skippedActiveTurn: false };
+        return { skippedActiveTurn: false };
       }),
     });
     const sessionService = {

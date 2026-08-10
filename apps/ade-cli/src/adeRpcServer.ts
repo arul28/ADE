@@ -2953,6 +2953,11 @@ async function runCtoOperatorBridgeTool(
       : null)
     ?? fallbackModelId;
   const tools = createCtoOperatorTools({
+    // Without this the CTO settle tool reached this construction with a null
+    // chat service and filed rows without stopping their background work — the
+    // desktop socket-backed RPC path silently skipping the teardown the
+    // in-process path runs.
+    agentChatService: { stopBackgroundWork: agentChatService.stopBackgroundWork },
     currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
     defaultModelId,

@@ -925,7 +925,7 @@ describe("prMergeAutoSettlementService", () => {
     });
     const stopBackgroundWork = vi.fn(async () => {
       order.push("stop");
-      return { stopped: 1, skippedActiveTurn: false };
+      return { skippedActiveTurn: false };
     });
     const rows = [{ id: "chat-live", toolType: "claude-chat", archivedAt: null, settledAt: null }];
     const service = createPrMergeAutoSettlementService({

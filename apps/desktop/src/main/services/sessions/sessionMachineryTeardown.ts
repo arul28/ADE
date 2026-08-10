@@ -66,15 +66,15 @@ export type SessionMachineryTeardownDeps = {
 export type SessionMachineryTeardownResult = {
   /** Sessions whose machinery this pass touched. */
   sessionIds: string[];
-  /** Live background jobs stopped across those sessions. */
-  stoppedBackgroundWork: number;
-  /** Sessions skipped because a foreground turn was still streaming. */
+  /**
+   * Sessions whose foreground turn was still streaming. Their detached
+   * background work is still stopped; only the turn's own subagents are spared.
+   */
   skippedActiveTurns: number;
 };
 
 const EMPTY_RESULT: SessionMachineryTeardownResult = {
   sessionIds: [],
-  stoppedBackgroundWork: 0,
   skippedActiveTurns: 0,
 };
 
@@ -95,8 +95,7 @@ export async function stopSettledSessionMachinery(
 
   const result: SessionMachineryTeardownResult = {
     sessionIds: [],
-    stoppedBackgroundWork: 0,
-      skippedActiveTurns: 0,
+        skippedActiveTurns: 0,
   };
 
   for (const sessionId of unique) {
@@ -111,7 +110,6 @@ export async function stopSettledSessionMachinery(
     if (!service) continue;
     try {
       const stop = await service.stopBackgroundWork({ sessionId });
-      result.stoppedBackgroundWork += stop.stopped;
       if (stop.skippedActiveTurn) result.skippedActiveTurns += 1;
     } catch (error) {
       deps.logger?.warn("session_teardown.stop_background_work_failed", {

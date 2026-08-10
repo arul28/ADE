@@ -39321,34 +39321,45 @@ export function createAgentChatService(args: {
    *   • Children stop before parents. Stopping only the parent leaves the fleet
    *     running and untracked, which is how a "stopped" agent keeps spending.
    *
-   * Returns how much live work actually STOPPED — the drop in the session's
-   * live-work count across the call, not what it found. A runtime with no stop
-   * control reports 0 rather than claiming a teardown it never performed.
+   * Deliberately returns no count. An earlier version reported "how much was
+   * stopped" and could not keep the number honest: `closeOpenClaudeBackgroundTasks`
+   * (reached through `stopActiveClaudeSubagents`) closes a shell it failed to
+   * stop, which silently inflated any before/after measurement. The number had
+   * no consumer, so it is gone rather than approximated.
    */
   const stopBackgroundWork = async (
     { sessionId }: { sessionId: string },
-  ): Promise<{ stopped: number; skippedActiveTurn: boolean }> => {
+  ): Promise<{ skippedActiveTurn: boolean }> => {
     const managed = managedSessions.get(sessionId.trim());
-    if (!managed || managed.closed || managed.deleted) return { stopped: 0, skippedActiveTurn: false };
+    if (!managed || managed.closed || managed.deleted) return { skippedActiveTurn: false };
     const runtime = managed.runtime;
-    if (!runtime) return { stopped: 0, skippedActiveTurn: false };
+    if (!runtime) return { skippedActiveTurn: false };
 
+    // A live turn's own subagents are work the user can see happening, so they
+    // are never killed here. Its BACKGROUND work is different: the agent already
+    // detached it, it outlives the turn by construction, and an explicit settle
+    // is the user saying they are done with it. Skipping everything while a turn
+    // ran meant a settle during a turn tore down nothing at all, and the row
+    // then went quiet over shells that were still running.
     const turnActive = managed.session.status === "active" || Boolean(runtime.activeTurnId);
-    if (turnActive) return { stopped: 0, skippedActiveTurn: true };
-    const before = totalBackgroundWork(runtimeBackgroundWork(runtime));
-    if (before === 0) return { stopped: 0, skippedActiveTurn: false };
+    if (totalBackgroundWork(runtimeBackgroundWork(runtime)) === 0) {
+      return { skippedActiveTurn: turnActive };
+    }
 
     try {
       switch (runtime.kind) {
         case "claude": {
           // Children first: this drains workflow agents, then subagents, then
-          // the background shells each of them owns.
-          await stopActiveClaudeSubagents(
-            managed,
-            runtime,
-            runtime.activeTurnId ?? undefined,
-            "Stopped when the session was settled",
-          );
+          // the background shells each of them owns. Skipped mid-turn — those
+          // subagents belong to the turn the user is watching.
+          if (!turnActive) {
+            await stopActiveClaudeSubagents(
+              managed,
+              runtime,
+              runtime.activeTurnId ?? undefined,
+              "Stopped when the session was settled",
+            );
+          }
           // Anything still on the authoritative level had no `activeSubagents`
           // entry to be reached through — a plain backgrounded shell, usually.
           // Those are exactly the ones that survived the old teardown.
@@ -39389,6 +39400,9 @@ export function createAgentChatService(args: {
           break;
         }
         case "cursor": {
+          // A cloud run is the turn's own execution, not detached background
+          // work, so a live turn keeps it.
+          if (turnActive) break;
           const agentId = managed.session.cursorCloudAgentId;
           if (!agentId) break;
           for (const runId of [...runtime.cloudRuns.keys()]) {
@@ -39415,13 +39429,7 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    // Measured as the DROP in live work rather than what was found, so a
-    // runtime with no stop control (Codex) or a cursor session with no cloud
-    // agent id reports 0 instead of claiming a teardown it never performed.
-    // Under-reporting is the safe direction: a caller may never be told more
-    // was stopped than actually was.
-    const after = totalBackgroundWork(runtimeBackgroundWork(runtime));
-    return { stopped: Math.max(0, before - after), skippedActiveTurn: false };
+    return { skippedActiveTurn: turnActive };
   };
 
 
