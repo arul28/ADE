@@ -9465,6 +9465,15 @@ final class SyncService: ObservableObject {
       resultShape: resultShape,
       rollback: { [weak self] in self?.clearPendingSessionSettle(trimmed, token: token) }
     )
+    // Answered. `staleAfter` bounds the wait for the CHANGESET, and the request
+    // itself may run to a longer timeout than that — starting the countdown at
+    // send would expire a command that is still perfectly valid.
+    pendingSessionSettleStates.restartBackstop(
+      for: trimmed,
+      token: token,
+      uptime: ProcessInfo.processInfo.systemUptime
+    )
+    schedulePendingSessionSettleBackstopSweep()
   }
 
   /// Snooze-family command: writes the snooze overlay columns optimistically and

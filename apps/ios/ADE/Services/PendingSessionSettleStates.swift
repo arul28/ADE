@@ -207,6 +207,18 @@ struct PendingSessionSettleStates: Equatable {
     intents.removeValue(forKey: sessionId)
   }
 
+  /// Restart one intent's window because its command has just been answered.
+  ///
+  /// `staleAfter` bounds the wait for the CHANGESET, not the round trip: the
+  /// request itself may legitimately run to its own (longer) timeout, and
+  /// expiring at 20s while the command is still valid would snap the row back
+  /// and then flip it again when the host succeeded. Token-scoped so a slow
+  /// command cannot extend an intent the user has since replaced.
+  mutating func restartBackstop(for sessionId: String, token: UInt64, uptime: TimeInterval) {
+    guard intents[sessionId]?.token == token else { return }
+    intents[sessionId]?.startedAtUptime = uptime
+  }
+
   /// Forget everything in flight — used when the ground the overlay refers to
   /// moves, e.g. a project or host switch, where the session ids it holds no
   /// longer describe what is on screen.

@@ -327,6 +327,34 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertEqual(states.apply(to: pinned).settleOverride, "active")
   }
 
+  /// The request may legitimately run longer than `staleAfter`, so the window
+  /// has to measure the wait for the CHANGESET, not the round trip.
+  func testAnAnsweredCommandRestartsItsWindow() {
+    var states = PendingSessionSettleStates()
+    let token = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+
+    let answeredAt = addUptime(now, PendingSessionSettleStates.staleAfter - 1)
+    states.restartBackstop(for: "session-1", token: token, uptime: answeredAt)
+
+    // Past the original deadline but inside the restarted one.
+    states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter + 1))
+    XCTAssertNotNil(states["session-1"])
+
+    states.prune(against: [session()], uptime: addUptime(answeredAt, PendingSessionSettleStates.staleAfter))
+    XCTAssertNil(states["session-1"])
+  }
+
+  func testASlowCommandCannotExtendAnIntentTheUserReplaced() {
+    var states = PendingSessionSettleStates()
+    let stale = states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
+    states.begin(.unsettle(uptime: now), for: "session-1", baseline: nil)
+
+    states.restartBackstop(for: "session-1", token: stale, uptime: addUptime(now, 100))
+
+    states.prune(against: [session()], uptime: addUptime(now, PendingSessionSettleStates.staleAfter))
+    XCTAssertNil(states["session-1"], "the replaced command's answer must not extend the newer intent")
+  }
+
   func testAnUnknownBaselineFallsBackToValueEquality() {
     var states = PendingSessionSettleStates()
     states.begin(.settle(uptime: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: nil)
