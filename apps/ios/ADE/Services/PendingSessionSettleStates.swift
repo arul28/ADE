@@ -46,6 +46,21 @@ struct PendingSessionSettleIntent: Equatable {
   /// the row still carries, and the host will clear it too when it processes the
   /// commands in order. Outer `nil` means the row was unknown at begin.
   fileprivate var presentedOverride: String??
+  /// Set when this intent replaced one that was still in flight.
+  ///
+  /// With two or more commands outstanding, a replicated row change cannot be
+  /// attributed to a particular command: `settle → unsettle → settle` sends the
+  /// first settle's changeset, which both moves the row off this intent's
+  /// baseline and matches it, so movement would confirm the wrong command and
+  /// the row would then flip when the intervening unsettle replicated.
+  ///
+  /// The phone has no per-command marker to fix that — the host's lifecycle
+  /// revision is host-local. So an intent in this state is deliberately NOT
+  /// confirmable: it keeps showing what the user last asked for and yields to
+  /// the replicated truth at the backstop, by which point the whole run has
+  /// converged. Briefly trailing the truth beats confidently showing the wrong
+  /// command's result.
+  fileprivate var replacedInFlight = false
 
   struct Baseline: Equatable {
     var settledAt: String?
@@ -170,6 +185,7 @@ struct PendingSessionSettleStates: Equatable {
     stamped.presentedOverride = baseline.map { row in
       PendingSessionSettleIntent.normalized((intents[sessionId]?.applied(to: row) ?? row).settleOverride)
     }
+    stamped.replacedInFlight = intents[sessionId] != nil
     intents[sessionId] = stamped
     return nextToken
   }
@@ -232,7 +248,7 @@ struct PendingSessionSettleStates: Equatable {
         }
       }
       let movedSinceCommand = intent.baseline == nil || intent.sawRowChange
-      guard movedSinceCommand, intent.isSatisfied(by: session) else { continue }
+      guard !intent.replacedInFlight, movedSinceCommand, intent.isSatisfied(by: session) else { continue }
       intents.removeValue(forKey: session.id)
     }
     intents = intents.filter { now.timeIntervalSince($0.value.startedAt) < PendingSessionSettleStates.staleAfter }

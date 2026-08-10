@@ -2051,7 +2051,12 @@ The iOS pieces:
   rollback because those columns guard no host decision. Instant feedback for
   settle comes from `PendingSessionSettleStates` — a local, non-persisted overlay
   applied when session rows are read, resolved when the host's changeset confirms
-  it, when the command fails, or by a bounded staleness backstop. The host
+  it, when the command fails, or by a bounded staleness backstop. With two or
+  more commands outstanding for one session the overlay stops trying to confirm
+  at all: a replicated row change cannot be attributed to a particular command
+  without a per-command marker, and the host's lifecycle revision is host-local.
+  It keeps showing what the user last asked for and yields to replicated truth at
+  the backstop, rather than confirming against the wrong command. The host
   enforces the same rule against phones on older builds by dropping those columns
   from inbound phone changesets (`syncHostService`), and such a phone self-heals
   on the next `refreshWorkSessions`. See

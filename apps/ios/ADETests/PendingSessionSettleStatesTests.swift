@@ -268,9 +268,34 @@ final class PendingSessionSettleStatesTests: XCTestCase {
     XCTAssertNotNil(states["session-1"])
     XCTAssertNil(states.apply(to: settledByFirstCommand).settledAt)
 
-    // The unsettle lands: the row has now moved AND matches.
+    // It is NOT confirmable by movement either: with two commands outstanding a
+    // row change cannot be attributed to one of them. It holds what the user
+    // last asked for and yields at the backstop, by which point the run has
+    // converged.
     states.prune(against: [unsettled], now: now)
+    XCTAssertNotNil(states["session-1"])
+
+    states.prune(against: [unsettled], now: now.addingTimeInterval(PendingSessionSettleStates.staleAfter))
     XCTAssertNil(states["session-1"])
+  }
+
+  /// `settle → unsettle → settle` before anything replicates. The first
+  /// settle's changeset both moves the row off the third command's baseline and
+  /// matches it, so confirming on movement would retire the overlay against the
+  /// WRONG command — and the row would then flip when the intervening unsettle
+  /// replicated.
+  func testAThirdOverlappingCommandIsNotConfirmedByAnEarlierOnesChangeset() {
+    var states = PendingSessionSettleStates()
+    let unsettled = session()
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:00.000Z"), for: "session-1", baseline: unsettled)
+    states.begin(.unsettle(now: now), for: "session-1", baseline: unsettled)
+    states.begin(.settle(now: now, timestamp: "2026-08-10T12:00:02.000Z"), for: "session-1", baseline: unsettled)
+
+    // The FIRST settle replicates. It matches the third intent by value, and it
+    // moved the row — but it is not the third command.
+    states.prune(against: [session(settledAt: "2026-08-10T12:00:00.417Z")], now: now)
+
+    XCTAssertNotNil(states["session-1"], "an earlier command's changeset must not confirm the latest one")
   }
 
   /// A keep-active pin plus an overlapping pair of commands. Host-side the

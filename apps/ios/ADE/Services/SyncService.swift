@@ -19393,6 +19393,15 @@ final class SyncService: ObservableObject {
           connectionState == .connected
     else { return }
 
+    // Reconnect makes `canSendLiveRequests()` true immediately, so reads stop
+    // holding a queued settle's deadline — and hydration below performs reads
+    // (and posts a database change) BEFORE `flushPendingOperations` gets to
+    // re-stamp on its success path. Without this a settle queued for longer
+    // than `staleAfter` would snap back to unsettled in the moments between
+    // reconnecting and replaying it. Rebase the deadlines here, at the earliest
+    // point the connection is usable.
+    pendingSessionSettleStates.holdBackstop(now: Date())
+
     if activeProjectId == nil {
       refreshProjectCatalog()
     }
