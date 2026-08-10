@@ -1853,6 +1853,12 @@ export function AgentChatComposer({
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
+  // Plain textarea chips are painted by an overlay, while the serialized
+  // draft intentionally stores only the opaque mention pointer. Keep the
+  // selected row's title separately so the visible chip stays user-facing.
+  // This is a presentation cache only; send-time parsing still uses the
+  // canonical @chat:<id> token in `draft`.
+  const mentionLabelsRef = useRef<Map<string, string>>(new Map());
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
@@ -2004,12 +2010,16 @@ export function AgentChatComposer({
     let pos = 0;
     plainComposerTokens.forEach((token, index) => {
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
+      const tokenText = draft.slice(token.start, token.end);
+      const displayText = token.kind === "mention"
+        ? mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
+        : tokenText;
       segments.push(
         <span
           key={`chip-${index}-${token.start}`}
           className="rounded-[4px] bg-violet-500/14 text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"
         >
-          {draft.slice(token.start, token.end)}
+          {displayText}
         </span>,
       );
       pos = token.end;
@@ -3886,6 +3896,7 @@ export function AgentChatComposer({
       // A mention is a pointer, not an attachment: nothing is resolved or read
       // now. The token is expanded into an <ade-mention> block at send time.
       const token = formatChatMentionToken(item.mention.kind, item.mention.id);
+      mentionLabelsRef.current.set(token, item.mention.title);
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "mention",

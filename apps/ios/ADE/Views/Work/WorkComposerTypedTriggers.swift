@@ -152,14 +152,16 @@ struct WorkComposerTriggerMatch: Equatable {
 }
 
 /// Pure, cursor-relative trigger detection shared by the composer text view.
+/// Applied to the substring before the cursor. When both match (rare), the one
+/// whose trigger char sits closest to the cursor wins.
 /// Mirrors the desktop/TUI regexes exactly:
 ///   slash — `(?:^|\s)/([^\s/]*)$`
-///   at    — `(?:^|\s)@([^\s@]*)$`
-/// applied to the substring before the cursor. When both match (rare), the one
-/// whose trigger char sits closest to the cursor wins.
+///   at    — `(?:^|[ \t\r\n])@([^@\r\n]*)$`
+/// The `@` query may contain spaces for multi-word entity names, but it stops
+/// at a newline or another `@`.
 enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
-  private static let atRegex = try! NSRegularExpression(pattern: "(?:^|\\s)@([^\\s@]*)$")
+  private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
 
   static func detect(in text: NSString, cursor: Int) -> WorkComposerTriggerMatch? {
     guard cursor >= 0, cursor <= text.length else { return nil }

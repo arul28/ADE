@@ -51,6 +51,19 @@ describe("detectComposerTrigger", () => {
     expect(detectComposerTrigger(text, text.length)).toEqual({ type: "at", query: "src/foo.ts", start: 4 });
   });
 
+  it("keeps an at trigger open across spaces for multi-word chat names", () => {
+    expect(detectComposerTrigger("@a b c", 6)).toEqual({ type: "at", query: "a b c", start: 0 });
+    // A trailing space is still part of the in-progress query. The menu trims
+    // it for searching, so cached suggestions remain visible while the next
+    // word is being typed.
+    expect(detectComposerTrigger("@a ", 3)).toEqual({ type: "at", query: "a ", start: 0 });
+  });
+
+  it("does not let an at query cross a newline or another at sign", () => {
+    expect(detectComposerTrigger("@a\nb", 4)).toBeNull();
+    expect(detectComposerTrigger("@a@b", 4)).toBeNull();
+  });
+
   it("does not trigger on emails", () => {
     const text = "mail user@doma";
     expect(detectComposerTrigger(text, text.length)).toBeNull();

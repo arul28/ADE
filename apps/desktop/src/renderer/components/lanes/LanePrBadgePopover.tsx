@@ -15,7 +15,8 @@ import {
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
-import { lanePrAttention, lanePrAttentionColor, lanePrAttentionRank } from "../../lib/lanePrBadge";
+import { lanePrAggregateAttention, lanePrAttention, lanePrAttentionColor, pickPrimaryPr } from "../../lib/lanePrBadge";
+import { LanePrHoverCard } from "./LanePrHoverCard";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -92,24 +93,57 @@ export function LanePrBadgePopover({
   onOpenList?: () => void;
 }) {
   const allPrs = prs?.length ? prs : legacyPr ? [legacyPr] : [];
-  const primaryPr = allPrs.length > 1
-    ? allPrs.reduce((best, candidate) => (
-      lanePrAttentionRank(candidate) > lanePrAttentionRank(best) ? candidate : best
-    ), allPrs[0]!)
-    : allPrs[0] ?? null;
+  const primaryPr = pickPrimaryPr(allPrs) ?? allPrs[0] ?? null;
   if (!primaryPr) return null;
   if (allPrs.length > 1) {
-    const aggregateColor = lanePrAttentionColor(lanePrAttention(primaryPr));
+    const aggregateColor = lanePrAttentionColor(lanePrAggregateAttention(allPrs));
     const countClass = "rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px font-mono text-[9px] font-semibold text-muted-fg/65";
     const activate = (event: React.SyntheticEvent, candidate = primaryPr) => {
       event.stopPropagation();
       onActivate(event, candidate);
     };
     return (
-      <span
-        className="group relative inline-flex shrink-0 items-center gap-1"
-        onClick={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
+      <LanePrHoverCard
+        className="inline-flex shrink-0 items-center gap-1"
+        label={`Pull requests (${allPrs.length})`}
+        width={300}
+        content={(
+          <div className="block overflow-hidden" style={{ ...floatingPane(), fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+            <div className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: COLORS.textMuted }}>
+              Pull requests ({allPrs.length})
+            </div>
+            {allPrs.map((candidate) => (
+              <div
+                key={candidate.id}
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 transition-colors hover:bg-white/[0.05]"
+                onClick={(event) => activate(event, candidate)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    activate(event, candidate);
+                  }
+                }}
+                title={candidate.title}
+              >
+                <StatusDot color={lanePrAttentionColor(lanePrAttention(candidate))} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                    <span className="font-mono">#{candidate.githubPrNumber}</span>
+                    <span style={{ color: lanePrTagColor(candidate.state) }}>{candidate.state}</span>
+                    {candidate.laneRole === "previous" ? <span className="text-[9px] font-normal" style={{ color: COLORS.textMuted }}>previous</span> : null}
+                  </span>
+                  <span className="block truncate text-[10px]" style={{ color: COLORS.textMuted }}>{candidate.title || "Untitled pull request"}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1" title={`CI ${candidate.checksStatus ?? "unknown"} · review ${candidate.reviewStatus ?? "unknown"}`}>
+                  <StatusDot color={getPrCiDotColor({ checksStatus: candidate.checksStatus ?? "none" })} />
+                  <StatusDot color={getPrReviewDotColor({ reviewStatus: candidate.reviewStatus ?? "none" })} />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       >
         <button
           type="button"
@@ -150,44 +184,7 @@ export function LanePrBadgePopover({
             +{allPrs.length - 1}
           </span>
         )}
-        <span className="pointer-events-none invisible absolute left-0 top-full z-[80] w-[300px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
-          <span className="block overflow-hidden" style={{ ...floatingPane(), fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-            <span className="block px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: COLORS.textMuted }}>
-              Pull requests ({allPrs.length})
-            </span>
-            {allPrs.map((candidate) => (
-              <span
-                key={candidate.id}
-                role="button"
-                tabIndex={0}
-                className="flex cursor-pointer items-center gap-2 px-3 py-2 transition-colors hover:bg-white/[0.05]"
-                onClick={(event) => activate(event, candidate)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    activate(event, candidate);
-                  }
-                }}
-                title={candidate.title}
-              >
-                <StatusDot color={lanePrAttentionColor(lanePrAttention(candidate))} />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
-                    <span className="font-mono">#{candidate.githubPrNumber}</span>
-                    <span style={{ color: lanePrTagColor(candidate.state) }}>{candidate.state}</span>
-                    {candidate.laneRole === "previous" ? <span className="text-[9px] font-normal" style={{ color: COLORS.textMuted }}>previous</span> : null}
-                  </span>
-                  <span className="block truncate text-[10px]" style={{ color: COLORS.textMuted }}>{candidate.title || "Untitled pull request"}</span>
-                </span>
-                <span className="flex shrink-0 items-center gap-1" title={`CI ${candidate.checksStatus ?? "unknown"} · review ${candidate.reviewStatus ?? "unknown"}`}>
-                  <StatusDot color={getPrCiDotColor({ checksStatus: candidate.checksStatus ?? "none" })} />
-                  <StatusDot color={getPrReviewDotColor({ reviewStatus: candidate.reviewStatus ?? "none" })} />
-                </span>
-              </span>
-            ))}
-          </span>
-        </span>
-      </span>
+      </LanePrHoverCard>
     );
   }
   const pr = primaryPr;

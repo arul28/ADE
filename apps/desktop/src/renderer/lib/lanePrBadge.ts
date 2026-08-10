@@ -21,13 +21,17 @@ export function primaryPrStateRank(state: PrState): number {
   }
 }
 
-type PrimaryPrComparable = Pick<PrSummary, "state" | "updatedAt" | "githubPrNumber">;
+type PrimaryPrComparable = {
+  state: PrSummary["state"];
+  updatedAt?: string | null;
+  githubPrNumber: number;
+};
 
 function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): number {
   const byRank = primaryPrStateRank(a.state) - primaryPrStateRank(b.state);
   if (byRank !== 0) return byRank;
-  const aUpdated = Date.parse(a.updatedAt);
-  const bUpdated = Date.parse(b.updatedAt);
+  const aUpdated = Date.parse(a.updatedAt ?? "");
+  const bUpdated = Date.parse(b.updatedAt ?? "");
   if (Number.isFinite(aUpdated) && Number.isFinite(bUpdated) && aUpdated !== bUpdated) {
     return bUpdated - aUpdated;
   }
@@ -40,7 +44,7 @@ function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): numbe
  * number) wins. Returns null for an empty list. Pure — the caller pre-filters
  * to a lane's PRs.
  */
-export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: T[]): T | null {
+export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: readonly T[]): T | null {
   let best: T | null = null;
   for (const pr of prs) {
     if (best === null || comparePrimaryPr(pr, best) < 0) best = pr;
@@ -49,9 +53,10 @@ export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: T[]): T | null
 }
 
 /**
- * Choose the lane badge's attention target. A failing or blocked historical PR
- * must be able to win over a healthy current PR so the collapsed chip never
- * hides the lane's most actionable problem.
+ * Choose the PR represented by a lane badge. The collapsed card should point
+ * to the newest open work first; when no work is open, the latest draft or
+ * terminal PR activity is the useful fallback. Attention remains an aggregate
+ * signal on the badge, but it must not replace the user's current PR context.
  */
 export function selectPrimaryLanePr(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
@@ -64,17 +69,7 @@ export function selectPrimaryLanePr(
   const candidates = lanePrs.length > 0
     ? lanePrs
     : prs.filter((pr) => pr.laneId === lane.id && !pr.detached);
-  let best: PrSummary | null = null;
-  for (const pr of candidates) {
-    if (!best || compareLanePrimaryPr(pr, best) < 0) best = pr;
-  }
-  return best;
-}
-
-function compareLanePrimaryPr(a: PrSummary, b: PrSummary): number {
-  const byAttention = lanePrAttentionRank(b) - lanePrAttentionRank(a);
-  if (byAttention !== 0) return byAttention;
-  return comparePrimaryPr(a, b);
+  return pickPrimaryPr(candidates);
 }
 
 export function lanePrsForLane(

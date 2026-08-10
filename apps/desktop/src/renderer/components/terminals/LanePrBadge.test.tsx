@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../../shared/types";
 import { LanePrBadge } from "./LanePrBadge";
 import { LanePrBadgePopover } from "../lanes/LanePrBadgePopover";
@@ -50,6 +50,16 @@ function tag(overrides: Partial<LaneTabPrTag> = {}): LaneTabPrTag {
   };
 }
 
+function openLanePrHoverCard(): HTMLElement {
+  const cluster = screen.getByTitle("2 pull requests on this lane");
+  const trigger = cluster.firstElementChild;
+  if (!(trigger instanceof HTMLElement)) throw new Error("lane PR hover trigger not found");
+  fireEvent.mouseEnter(trigger);
+  return screen.getByTestId("lane-pr-hover-card");
+}
+
+afterEach(cleanup);
+
 describe("LanePrBadge", () => {
   it("keeps a single PR as the compact chip", () => {
     render(<LanePrBadge pr={pr()} onOpen={vi.fn()} />);
@@ -78,6 +88,8 @@ describe("LanePrBadge", () => {
     );
 
     expect(screen.getByRole("button", { name: "Open 2 pull requests for this lane" })).toBeTruthy();
+    const hoverCard = openLanePrHoverCard();
+    expect(hoverCard.parentElement).toBe(document.body);
     fireEvent.click(screen.getByTitle("Pull request #100 · Merged · Previous work"));
     expect(onOpen).toHaveBeenCalledWith(previous);
 
@@ -94,6 +106,7 @@ describe("LanePrBadge", () => {
       />,
     );
 
+    openLanePrHoverCard();
     expect(screen.getByRole("img", { name: "CI failing; Review changes requested" })).toBeTruthy();
   });
 

@@ -4,7 +4,8 @@ import SwiftUI
 @testable import ADE
 
 /// Pure-logic coverage for the cursor-relative trigger detector that mirrors the
-/// shared desktop/TUI regexes (`(?:^|\s)/([^\s/]*)$` and `(?:^|\s)@([^\s@]*)$`).
+/// shared desktop/TUI regexes (`(?:^|\s)/([^\s/]*)$` and
+/// `(?:^|[ \t\r\n])@([^@\r\n]*)$`).
 /// Locks in the boundary rules that keep paths, fractions, and emails from
 /// opening the suggestion strip, plus the closest-to-cursor tie-break.
 final class WorkComposerTriggerDetectorTests: XCTestCase {
@@ -62,6 +63,18 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     let match = detect("@a/b/c")
     XCTAssertEqual(match?.kind, .at)
     XCTAssertEqual(match?.query, "a/b/c")
+  }
+
+  func testAtSupportsMultiWordQueries() {
+    let match = detect("@a b c")
+    XCTAssertEqual(match?.kind, .at)
+    XCTAssertEqual(match?.query, "a b c")
+    XCTAssertEqual(match?.range, NSRange(location: 0, length: 6))
+  }
+
+  func testAtDoesNotCrossNewlinesOrAnotherAtSign() {
+    XCTAssertNil(detect("@a\nb"))
+    XCTAssertNil(detect("@a@b"))
   }
 
   func testEmailDoesNotTrigger() {

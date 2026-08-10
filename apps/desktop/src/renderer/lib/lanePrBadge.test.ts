@@ -100,7 +100,7 @@ describe("selectPrimaryLanePr", () => {
     updatedAt: "2026-07-02T00:00:00.000Z",
   };
 
-  it("lets an actionable failing historical PR win over a healthy current PR", () => {
+  it("keeps the newest open PR on the collapsed lane badge", () => {
     const healthyCurrent = {
       ...base,
       id: "current",
@@ -110,6 +110,7 @@ describe("selectPrimaryLanePr", () => {
       headBranch: "current",
       checksStatus: "passing" as const,
       reviewStatus: "approved" as const,
+      updatedAt: "2026-07-02T00:00:00.000Z",
     };
     const failingPrevious = {
       ...base,
@@ -120,9 +121,37 @@ describe("selectPrimaryLanePr", () => {
       headBranch: "old-branch",
       checksStatus: "failing" as const,
       reviewStatus: "approved" as const,
+      updatedAt: "2026-07-03T00:00:00.000Z",
     };
 
     expect(selectPrimaryLanePr(lane, [healthyCurrent, failingPrevious])?.id).toBe("previous");
+  });
+
+  it("uses the latest activity when multiple terminal PRs remain", () => {
+    const olderMerged = {
+      ...base,
+      id: "older-merged",
+      githubPrNumber: 8,
+      title: "Older merged",
+      state: "merged" as const,
+      headBranch: "older",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    };
+    const newerMerged = {
+      ...base,
+      id: "newer-merged",
+      githubPrNumber: 7,
+      title: "Newer merged",
+      state: "merged" as const,
+      headBranch: "newer",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+      updatedAt: "2026-07-04T00:00:00.000Z",
+    };
+
+    expect(selectPrimaryLanePr(lane, [olderMerged, newerMerged])?.id).toBe("newer-merged");
   });
 });
 

@@ -1,7 +1,7 @@
 // Cursor-relative trigger detection for the prompt composers (desktop chat
 // composer, ade-code TUI prompt, mirrored on iOS). A trigger is an in-progress
-// `/command` or `@file` token that ends exactly at the cursor, so suggestion
-// menus can open anywhere in the draft — not just at position 0.
+// `/command` or `@` query that ends exactly at the cursor, so suggestion menus
+// can open anywhere in the draft — not just at position 0.
 
 export type ComposerTriggerType = "slash" | "at";
 
@@ -14,11 +14,12 @@ export type ComposerTrigger = {
 };
 
 // Both triggers must sit at a word boundary (start of text or after
-// whitespace) and their token must run unbroken to the cursor. The slash token
-// is a command name only: no whitespace and no `/` inside, so paths like
+// whitespace) and their token must run to the cursor. The slash token is a
+// command name only: no whitespace and no `/` inside, so paths like
 // `/usr/bin` and fractions like `3/4` never trigger. The `@` token allows `/`
-// (file paths) but not another `@`, so emails never trigger.
-const AT_TRIGGER_RE = /(?:^|\s)(@([^\s@]*))$/;
+// (file paths) and spaces (chat names are commonly multi-word), but not
+// another `@` or a newline, so emails and cross-line prose never trigger.
+const AT_TRIGGER_RE = /(?:^|[ \t\r\n])(@([^@\r\n]*))$/;
 const SLASH_TRIGGER_RE = /(?:^|\s)(\/([^\s/]*))$/;
 
 export function detectComposerTrigger(text: string, cursorPos: number): ComposerTrigger | null {

@@ -682,6 +682,38 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
+  it("keeps spaced chat mentions searchable and displays the chat title in the chip", async () => {
+    const onSearchMentions = vi.fn().mockResolvedValue([{
+      kind: "chat" as const,
+      id: "chat-1",
+      title: "a b c",
+      subtitle: "Primary · codex",
+    }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      onSearchMentions,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+
+    fireEvent.change(textbox, {
+      target: { value: "@a b c", selectionStart: 6 },
+    });
+    view.rerender(<AgentChatComposer {...props} draft="@a b c" />);
+
+    await waitFor(() => expect(onSearchMentions).toHaveBeenCalledWith("a b c"));
+    fireEvent.click(await screen.findByText("a b c"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("@chat:chat-1 ");
+    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " />);
+
+    const chip = await screen.findByText("a b c");
+    expect(chip.textContent).toBe("a b c");
+    expect(chip.closest("[aria-hidden]")).not.toBeNull();
+    expect(view.container.querySelector("[aria-hidden]")?.textContent).not.toContain("@chat:chat-1");
+  });
+
   it("uses lane attachment search for at-command suggestions before a session exists", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "docs/README.md", type: "file" }]);
 
