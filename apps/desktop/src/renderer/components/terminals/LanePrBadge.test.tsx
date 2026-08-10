@@ -125,6 +125,27 @@ describe("LanePrBadge", () => {
     expect(screen.getByTestId("lane-pr-hover-card")).toBe(hoverCard);
   });
 
+  it("does not bubble portaled panel clicks into the enclosing row", () => {
+    const onRowClick = vi.fn();
+    const onRowMouseDown = vi.fn();
+    render(
+      <div onClick={onRowClick} onMouseDown={onRowMouseDown}>
+        <LanePrBadge
+          pr={pr()}
+          prs={[pr(), pr({ id: "pr-100", githubPrNumber: 100 })]}
+          onOpen={vi.fn()}
+        />
+      </div>,
+    );
+
+    const hoverCard = openLanePrHoverCard();
+    fireEvent.mouseDown(hoverCard);
+    fireEvent.click(hoverCard);
+
+    expect(onRowMouseDown).not.toHaveBeenCalled();
+    expect(onRowClick).not.toHaveBeenCalled();
+  });
+
   it("moves focus into the multi-PR hover card from the trigger", async () => {
     render(
       <LanePrBadge

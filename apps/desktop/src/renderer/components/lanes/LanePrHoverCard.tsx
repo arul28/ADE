@@ -161,6 +161,11 @@ export function LanePrHoverCard({
       role="dialog"
       aria-label={label}
       data-testid="lane-pr-hover-card"
+      // React portals retain their logical parent event path. Keep clicks on
+      // panel chrome from selecting the enclosing lane/session row while
+      // allowing candidate-row handlers to run before this bubble listener.
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
       onMouseEnter={cancelClose}
       onMouseLeave={scheduleClose}
       onFocus={cancelClose}
