@@ -15498,7 +15498,7 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes"],
+      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes", "foldedReplay"],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),

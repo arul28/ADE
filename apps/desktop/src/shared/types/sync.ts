@@ -132,6 +132,12 @@ export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
  * Peers that do not declare it keep the base64 wire byte for byte.
  */
 export const SYNC_BINARY_ENVELOPES_CAPABILITY = "binaryEnvelopes";
+/**
+ * Hello capability a client declares when it accepts a chat replay snapshot
+ * whose streaming deltas have been folded into the message they belong to.
+ * Clients that do not declare it receive every individual delta, unchanged.
+ */
+export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
