@@ -5423,6 +5423,30 @@ function AgentChatMessageListMain({
     onLoadOlderHistoryRef.current?.();
   }, []);
 
+  // Re-arm after a batch that changed nothing visible.
+  //
+  // A capped batch (maxAnchorEvents) can advance the cursor while every event it
+  // returned folds into an already-rendered row or is a `work_log_group` row the
+  // timeline drops — so `groupedRows` and scroll geometry are unchanged. The
+  // sentinel is then still intersecting, and IntersectionObserver only fires on
+  // a CHANGE in intersection, so no further callback arrives; the underfill
+  // effect does not apply to a normally scrollable thread either. Without this,
+  // paging stalls until the reader scrolls again.
+  //
+  // Keyed strictly on the load COMPLETING (true -> false), not on transcript
+  // identity: `events` changes on every streaming delta, and re-arming on that
+  // would keep paging a thread the reader is merely parked at the top of.
+  const wasLoadingOlderHistoryRef = useRef(false);
+  useEffect(() => {
+    const finishedLoading = wasLoadingOlderHistoryRef.current && !loadingOlderHistory;
+    wasLoadingOlderHistoryRef.current = loadingOlderHistory;
+    if (!finishedLoading || !hasOlderHistory || olderHistoryError) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    if (root.scrollTop > resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)) return;
+    maybeRequestOlderHistory(root.scrollTop);
+  }, [loadingOlderHistory, hasOlderHistory, olderHistoryError, maybeRequestOlderHistory]);
+
   useEffect(() => {
     const root = scrollRef.current;
     const sentinel = olderHistorySentinelRef.current;

@@ -294,15 +294,22 @@ export function useWorkspacePathOpener(args: {
   }, []);
 
   const openWorkspacePath = React.useCallback(async (path: string | WorkspacePathLocation) => {
-    let resolvedWorkspaces = workspaces;
-    let target = resolveFilesNavigationTarget({ path, workspaces: resolvedWorkspaces, fallbackLaneId: laneId });
-    const candidate = typeof path === "string" ? parseWorkspacePathLocation(path) : path;
-    if (!target && candidate && (candidate.path.startsWith("/") || isWindowsAbsolutePath(candidate.path))) {
-      // A lane created since the warm-up read: re-read once before giving up.
-      resolvedWorkspaces = await loadFilesWorkspaces(true);
-      setWorkspaces(resolvedWorkspaces);
-      target = resolveFilesNavigationTarget({ path, workspaces: resolvedWorkspaces, fallbackLaneId: laneId });
-    }
+    // NAVIGATION always resolves against a fresh read, never the cache.
+    // `listWorkspaces` is project-scoped, and nothing invalidates the module
+    // cache on a project switch — so a stale root that still *matches* (local
+    // and remote copies at the same path, nested roots, a recreated lane)
+    // resolves successfully with the previous project's lane id and opens the
+    // wrong workspace. Because it resolves, the force-on-miss path below never
+    // runs and the error is silent. One IPC on an explicit click is the right
+    // price for that; DISPLAY formatting keeps using the cache, where a stale
+    // root only costs a longer-looking path.
+    const resolvedWorkspaces = await loadFilesWorkspaces(true);
+    setWorkspaces(resolvedWorkspaces);
+    const target = resolveFilesNavigationTarget({
+      path,
+      workspaces: resolvedWorkspaces,
+      fallbackLaneId: laneId,
+    });
     if (!target) return;
     navigate("/files", {
       state: {
