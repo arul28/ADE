@@ -5509,6 +5509,7 @@ final class SyncService: ObservableObject {
     roamTask?.cancel()
     reconnectStabilityTask?.cancel()
     pendingOperationFlushTask?.cancel()
+    pendingSessionSettleBackstopTask?.cancel()
     outboundCursorPersistTask?.cancel()
     remoteCursorProfilePersistTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
@@ -9310,6 +9311,9 @@ final class SyncService: ObservableObject {
   /// In-flight settle intents, applied over session reads so a settle feels
   /// immediate without a replicating write. Never persisted.
   private var pendingSessionSettleStates = PendingSessionSettleStates()
+  /// Timer that guarantees the overlay's staleness backstop fires even when no
+  /// read is coming. See `schedulePendingSessionSettleBackstopSweep`.
+  private var pendingSessionSettleBackstopTask: Task<Void, Never>?
 
   /// Record an in-flight settle intent and nudge the projections, mirroring the
   /// re-render the optimistic DB write used to trigger through
@@ -9326,6 +9330,7 @@ final class SyncService: ObservableObject {
       baseline: database.fetchSession(id: sessionId)
     )
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
+    schedulePendingSessionSettleBackstopSweep()
     return token
   }
 
@@ -9340,6 +9345,33 @@ final class SyncService: ObservableObject {
   /// sessions that are no longer on screen, and on unpair the host is
   /// permanently unreachable, so `holdBackstop` would otherwise keep the overlay
   /// painting for the rest of the app's life.
+  /// Guarantee the staleness backstop actually fires.
+  ///
+  /// `prune` only runs from a session read, and reads are driven by database
+  /// changes. A command whose confirming changeset never arrives produces no
+  /// database change, so on a quiet screen nothing would ever re-evaluate the
+  /// deadline and the overlay would persist indefinitely — `staleAfter` would be
+  /// a promise the code does not keep. This is the timer that keeps it.
+  ///
+  /// Re-arms while any intent is still in flight (an offline hold keeps
+  /// re-stamping deadlines, so one shot is not enough) and stops as soon as the
+  /// map empties.
+  private func schedulePendingSessionSettleBackstopSweep() {
+    pendingSessionSettleBackstopTask?.cancel()
+    guard !pendingSessionSettleStates.isEmpty else {
+      pendingSessionSettleBackstopTask = nil
+      return
+    }
+    pendingSessionSettleBackstopTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(PendingSessionSettleStates.staleAfter * 1_000_000_000) + 250_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.pendingSessionSettleBackstopTask = nil
+      // Reading through the chokepoint prunes and repaints if anything expired.
+      _ = self.localSessions()
+      self.schedulePendingSessionSettleBackstopSweep()
+    }
+  }
+
   private func resetPendingSessionSettleStates() {
     guard !pendingSessionSettleStates.isEmpty else { return }
     pendingSessionSettleStates.removeAll()
@@ -19399,8 +19431,9 @@ final class SyncService: ObservableObject {
     // re-stamp on its success path. Without this a settle queued for longer
     // than `staleAfter` would snap back to unsettled in the moments between
     // reconnecting and replaying it. Rebase the deadlines here, at the earliest
-    // point the connection is usable.
+    // point the connection is usable, and re-arm the sweep that enforces them.
     pendingSessionSettleStates.holdBackstop(now: Date())
+    schedulePendingSessionSettleBackstopSweep()
 
     if activeProjectId == nil {
       refreshProjectCatalog()
