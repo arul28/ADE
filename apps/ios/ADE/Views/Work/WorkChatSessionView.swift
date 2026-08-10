@@ -107,11 +107,27 @@ struct WorkChatPrependAnchor {
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
   var offsetY: CGFloat = 0
+  var scrollableHeight: CGFloat = 0
   /// Position of the row currently being probed (the list's first row, or the
   /// armed row while a prepend is in flight), in the scroll coordinate space.
   var probeRowId: String?
   var probeRowY: CGFloat?
   var prependAnchor: WorkChatPrependAnchor?
+}
+
+/// The scroll geometry the transcript reacts to, rounded so sub-pixel jitter
+/// doesn't wake the observer.
+struct WorkChatScrollGeometrySample: Equatable {
+  let offsetY: CGFloat
+  /// Largest in-range content offset, used only to clamp a restore.
+  let scrollableHeight: CGFloat
+
+  init(_ geometry: ScrollGeometry) {
+    self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
+    let scrollable = geometry.contentSize.height - geometry.containerSize.height
+      + geometry.contentInsets.top + geometry.contentInsets.bottom
+    self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
+  }
 }
 
 /// Number of layout passes a prepend anchor stays armed for.
@@ -761,8 +777,13 @@ struct WorkChatSessionView: View {
     transaction.disablesAnimations = true
     withTransaction(transaction) {
       // Applied to the live offset so a scroll during the prepend is kept;
-      // only the inserted height is undone.
-      scrollPosition.scrollTo(y: scrollMetrics.offsetY + insertedHeight)
+      // only the inserted height is undone. Clamped to the scrollable range the
+      // way t3code's `restore(_:in:dataSource:)` bounds its `setContentOffset`:
+      // a measured height should never land out of range, but the retained
+      // last-probe path can carry a stale measurement, and a bounded restore
+      // fails as a slightly-wrong position instead of a blank overscroll.
+      let target = min(max(0, scrollMetrics.offsetY + insertedHeight), scrollMetrics.scrollableHeight)
+      scrollPosition.scrollTo(y: target)
     }
   }
 
@@ -1220,13 +1241,13 @@ struct WorkChatSessionView: View {
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
           .scrollPosition($scrollPosition)
-          .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            // Rounded so sub-pixel jitter doesn't wake the observer.
-            (geometry.contentOffset.y * 2).rounded() / 2
-          } action: { _, offsetY in
+          .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
+            WorkChatScrollGeometrySample(geometry)
+          } action: { _, sample in
             // Recorded into a reference box, not @State: this fires per scroll
             // frame and must not invalidate the transcript.
-            scrollMetrics.offsetY = offsetY
+            scrollMetrics.offsetY = sample.offsetY
+            scrollMetrics.scrollableHeight = sample.scrollableHeight
           }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
