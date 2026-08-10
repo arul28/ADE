@@ -278,6 +278,7 @@ import type { ProductAnalyticsService } from "../../../../desktop/src/main/servi
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
+import { stopSettledSessionMachinery } from "../../../../desktop/src/main/services/sessions/sessionMachineryTeardown";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
@@ -4092,6 +4093,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       sessionService: args.sessionService,
       agentChatService: args.agentChatService ?? null,
       ptyService: args.ptyService,
+      logger: args.logger,
     });
     if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
     return { ok: true, sessionId };
@@ -4129,6 +4131,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         ptyService: args.ptyService,
       });
     }
+    await stopSettledSessionMachinery(
+      {
+        sessionService: args.sessionService,
+        agentChatService: args.agentChatService ?? null,
+        logger: args.logger,
+      },
+      sessionIds,
+    );
     return args.sessionService.settleSessions(sessionIds);
   });
   register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {

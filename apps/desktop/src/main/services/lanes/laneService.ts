@@ -3814,6 +3814,44 @@ export function createLaneService({
     throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
   }
 
+  /**
+   * Stop everything a lane is still running: chat sessions, PTY sessions, file
+   * watchers, and the rebase machinery watching it.
+   *
+   * Shared by `archive` and `archiveAndReclaim` so a step added for one cannot
+   * be forgotten by the other. `delete` runs the same steps through its own
+   * `runStep` progress reporting (the delete dialog shows each one), so it
+   * stays separate on purpose — keep the two in sync when adding a step.
+   *
+   * Best-effort per step: a lane must still archive when one watcher refuses
+   * to stop, and the caller's port-lease release is what actually needs the
+   * processes gone.
+   */
+  const stopLaneRuntimeWork = async (laneId: string): Promise<void> => {
+    const warn = (step: string, error: unknown): void => {
+      logger.warn("lane_runtime_teardown.step_failed", {
+        laneId,
+        step,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      teardownDeps?.autoRebaseService?.cancelForLane(laneId);
+    } catch (error) { warn("cancel_auto_rebase", error); }
+    try {
+      await teardownDeps?.rebaseSuggestionService?.dismiss({ laneId });
+    } catch (error) { warn("dismiss_rebase_suggestion", error); }
+    try {
+      await teardownDeps?.agentChatService?.disposeForLane(laneId);
+    } catch (error) { warn("stop_chats", error); }
+    try {
+      teardownDeps?.ptyService?.disposeForLane(laneId);
+    } catch (error) { warn("stop_ptys", error); }
+    try {
+      teardownDeps?.fileWatcherService?.stopAllForWorkspace(laneId);
+    } catch (error) { warn("stop_watchers", error); }
+  };
+
   // Named so a few methods (branch-drift resolution) can delegate to sibling
   // methods instead of duplicating their transaction/rollback handling.
   const laneServiceApi = {
@@ -6268,7 +6306,7 @@ export function createLaneService({
         if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
           throw new Error("ADE will not reclaim generated data through a symbolic link.");
         }
-        laneServiceApi.archive({ laneId: args.laneId });
+        await laneServiceApi.archive({ laneId: args.laneId });
         runtimeOpts?.onArchived?.();
         db.run(
           `insert into local_lane_storage_state(
@@ -6282,11 +6320,7 @@ export function createLaneService({
              updated_at = excluded.updated_at`,
           [args.laneId, projectId, row.worktree_path, risk.reclaimableBytes, now],
         );
-        teardownDeps?.autoRebaseService?.cancelForLane(args.laneId);
-        await teardownDeps?.rebaseSuggestionService?.dismiss({ laneId: args.laneId });
-        await teardownDeps?.agentChatService?.disposeForLane(args.laneId);
-        teardownDeps?.ptyService?.disposeForLane(args.laneId);
-        teardownDeps?.fileWatcherService?.stopAllForWorkspace(args.laneId);
+        await stopLaneRuntimeWork(args.laneId);
         if (runtimeOpts?.teardownEnv) {
           try {
             await runtimeOpts.teardownEnv();
@@ -6417,7 +6451,23 @@ export function createLaneService({
       }
     },
 
-    archive({ laneId }: { laneId: string }): void {
+    /**
+     * Archive a lane, stopping its runtime work first.
+     *
+     * The stop is not cosmetic and its ORDER is the point. Every caller
+     * releases the lane's port lease and proxy route immediately after this
+     * resolves (`releaseLaneRuntimeResources`). Archive used to be a bare
+     * status write, so those resources were handed back while the lane's dev
+     * servers and agent processes were still bound to the ports — the lease
+     * could then be reassigned to another lane that could not bind, and the
+     * abandoned processes went on holding memory and ports indefinitely
+     * because the archived lane is filtered out of every surface that could
+     * have shown them to the user.
+     *
+     * Async for that reason, and the same teardown steps `delete` and
+     * `archiveAndReclaim` already run — one list, not three.
+     */
+    async archive({ laneId }: { laneId: string }): Promise<void> {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       if (row.lane_type === "primary") {
@@ -6436,6 +6486,10 @@ export function createLaneService({
       if (activeGroupMember) {
         throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
       }
+
+      // Before the status write, so a teardown failure leaves the lane visible
+      // and still owned rather than hidden with live processes behind it.
+      await stopLaneRuntimeWork(laneId);
 
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);

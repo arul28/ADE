@@ -205,7 +205,25 @@ and in tests.
   presenting a false live/green agent.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
-  registry. Plain settle writes lifecycle state. `dismissPendingInput: true`
+  registry. Settle stops the machinery the session owns before it writes the
+  lifecycle column — see
+  `apps/desktop/src/main/services/sessions/sessionMachineryTeardown.ts`. It
+  pauses the session's scheduled work (pauses rather than cancels, so an
+  unsettle can bring hand-made schedules back) and calls
+  `agentChatService.stopBackgroundWork`, which stops every live child before
+  the parent. **Terminal panes stay open**: an agent's background shell is
+  thread background work, but a pane the user opened is theirs, and closing it
+  on settle would destroy scrollback nobody asked to lose. An ACTIVE foreground
+  turn is also left alone — its subagents are work the user can see happening,
+  and the row un-settles on its own activity anyway. What escapes is stated
+  rather than pretended away: processes an agent detached with
+  `nohup`/`setsid`/`disown` leave ADE's tree entirely, and Codex background
+  subagents are reported but expose no stop control. Every settle entry point
+  runs it — the single/bulk ADE actions, the `sessions.settle`/`settleMany`
+  IPC handlers, the `session.settle*` sync commands, and the PR-merge
+  auto-settle (which bypasses settlement blockers and is therefore the path
+  most likely to file a session that is still running something).
+  `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native
   terminal prompts are rejected because ADE cannot answer them truthfully.
@@ -278,6 +296,24 @@ Shared types and IPC:
   explicit/structured attention → declared settle at rest → stopped/failure/
   clean exit → stale/running/resting. It is the source of the one-word row capsule,
   Work grouping, and the loud-vs-quiet attention split.
+  **Live background work promotes a resting session back to `running`.** A
+  session whose foreground turn ended while its background shells, monitors, or
+  subagent fleet kept going used to project to `ready`/`idle`, so the Work-tab
+  dot, the TopBar rollup, the dock badge and the Lanes agent list all showed
+  nothing while agents were mid-run — the "Background work" copy existed but
+  never reached the phase those surfaces derive from. The promotion also
+  returns `liveness` (`"turn" | "background" | "monitoring"`), which is what the
+  label reads; it is not a phase, because filing, buckets, the roster status and
+  iOS's `AgentRunPhase` all want the three treated identically.
+  `monitoring` is set only when watch loops are the SOLE live work — one real
+  job among three monitors still reads as working.
+  Classification is a **denylist** (`MONITOR_TASK_TYPES` / `INERT_TASK_TYPES`,
+  via `classifyBackgroundWorkKind`): unknown task types count as WORKING,
+  because an allowlist silently drops a real subagent the first time a provider
+  SDK renames a type. Liveness is in-memory and deliberately empty after a
+  restart — orphaned background work is not live work — and it sits BELOW
+  failure, stopped, settled and stale in the precedence order, so a lingering
+  "Working" can never mask a failed session.
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit
@@ -317,11 +353,13 @@ Shared types and IPC:
   and Activity surfaces and mirrored by iOS widgets/Activity drawer. Blue means
   work in flight, amber is reserved exclusively for `Needs you`, emerald is a
   clean unseen outcome, red is failure, and neutral is true but non-actionable.
-  An idle or ready session that still has live background jobs is named for what
-  it is — **Background work**, or **Background work ×N** — rather than reusing
-  the bare **Working** of a live turn, and it sets `showsElapsed`, so the row
-  carries a duration instead of an unfalsifiable claim that the model is still
-  thinking.
+  A session running only because of background work is named for what it is —
+  **Background work** / **Background work ×N**, or **Monitoring** / **Monitoring
+  ×N** when watch loops are all that is left — rather than reusing the bare
+  **Working** of a live turn, and it sets `showsElapsed`, so the row carries a
+  duration instead of an unfalsifiable claim that the model is still thinking.
+  Plan mode is a property of a live turn only: a background-promoted row never
+  reads **Planning**.
   It also owns the short working-duration formatter; renderer icon components
   map its dependency-free glyph ids to platform symbols.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze

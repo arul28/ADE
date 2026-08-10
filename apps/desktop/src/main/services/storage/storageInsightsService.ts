@@ -78,7 +78,7 @@ type LaneLifecycleBackend = {
     activeWatcherCount: number;
     blockedReasons: Array<{ code: string }>;
   }>;
-  archive: (args: { laneId: string }) => void;
+  archive: (args: { laneId: string }) => Promise<void>;
 };
 
 type LaneCleanupConfigReader = {
@@ -439,7 +439,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         if (!candidate.dueByAge && stillNeedsArchive <= 0) continue;
         try {
           if (hasActiveLaneWorktreeLock(candidate.laneId)) continue;
-          laneService.archive({ laneId: candidate.laneId });
+          // Await before the lease release: the lane's processes have to be
+          // gone before their ports are handed back.
+          await laneService.archive({ laneId: candidate.laneId });
           await options.releaseLaneRuntimeResources?.(candidate.laneId);
           archivedAutomatically += 1;
           if (stillNeedsArchive > 0) stillNeedsArchive -= 1;

@@ -1007,7 +1007,7 @@ describe("storageMaintenanceJournal", () => {
       );
     };
     insertLock("lane-locked", lockedPath, "lock-before-scan");
-    const archive = vi.fn();
+    const archive = vi.fn(async () => {});
     const getReclaimRisk = vi.fn(async (laneId: string) => {
       if (laneId === "lane-raced") insertLock(laneId, racedPath, "lock-during-scan");
       return {
@@ -1070,7 +1070,7 @@ describe("storageMaintenanceJournal", () => {
     const worktreePath = path.join(projectRoot, ".ade", "worktrees", "lane-invalid-activity");
     seedLane(db, { id: "lane-invalid-activity", name: "Invalid activity", worktreePath });
     db.run("update lanes set created_at = 'not-a-date' where id = ?", ["lane-invalid-activity"]);
-    const archive = vi.fn();
+    const archive = vi.fn(async () => {});
     const service = createStorageInsightsService({
       projectRoot,
       adeHome,
@@ -1127,7 +1127,7 @@ describe("storageMaintenanceJournal", () => {
           throw new Error("lane scan failed");
         }),
         getReclaimRisk: vi.fn(),
-        archive: vi.fn(),
+        archive: vi.fn(async () => {}),
       },
       projectConfigService: {
         get: () => ({
@@ -1170,7 +1170,7 @@ describe("storageMaintenanceJournal", () => {
       worktreePath: retainedPath,
       archivedAt: "2026-07-01T00:00:00.000Z",
     });
-    const archive = vi.fn(({ laneId }: { laneId: string }) => {
+    const archive = vi.fn(async ({ laneId }: { laneId: string }) => {
       db.run(
         "update lanes set status = 'archived', archived_at = ? where id = ?",
         [new Date().toISOString(), laneId],

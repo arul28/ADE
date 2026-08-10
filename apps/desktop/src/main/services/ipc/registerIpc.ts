@@ -51,6 +51,7 @@ import {
   parseWakeReason,
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
+import { stopSettledSessionMachinery } from "../sessions/sessionMachineryTeardown";
 import {
   getSessionLifecycleSettings,
   setSessionLifecycleSettings,
@@ -6030,7 +6031,7 @@ export function registerIpc({
       .list({ includeArchived: true, includeStatus: false })
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
       .catch(() => null);
-    ctx.laneService.archive(arg);
+    await ctx.laneService.archive(arg);
     try {
       releaseLaneRuntimeResources(ctx, arg.laneId);
     } finally {
@@ -6966,6 +6967,7 @@ export function registerIpc({
         sessionService: ctx.sessionService,
         agentChatService: ctx.agentChatService,
         ptyService: ctx.ptyService,
+        logger: ctx.logger,
       });
       if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
     },
@@ -6986,9 +6988,14 @@ export function registerIpc({
     async (_event, arg: { sessionIds?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
       if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
-      return ctx.sessionService.settleSessions(
-        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+      const sessionIds = arg.sessionIds.filter(
+        (sessionId): sessionId is string => typeof sessionId === "string",
       );
+      await stopSettledSessionMachinery(
+        { sessionService: ctx.sessionService, agentChatService: ctx.agentChatService, logger: ctx.logger },
+        sessionIds,
+      );
+      return ctx.sessionService.settleSessions(sessionIds);
     },
   );
 

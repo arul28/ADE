@@ -4371,6 +4371,57 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     return { db, service, repoRoot, worktreesDir, childPath };
   }
 
+  it("stops the lane's runtime work before archiving it", async () => {
+    // Archive used to be a bare status write. Every caller releases the lane's
+    // port lease and proxy route the moment it returns, so the lane's dev
+    // servers and agents were still bound to those ports when the lease was
+    // handed back — and, filtered out of every surface, went on holding them
+    // indefinitely.
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+
+    await service.archive({ laneId: "lane-child" });
+
+    expect(fake.calls).toContain("stop_chats");
+    expect(fake.calls).toContain("stop_ptys");
+    expect(fake.calls).toContain("stop_watchers");
+    expect(
+      db.get<{ status: string }>("select status from lanes where id = ?", ["lane-child"])?.status,
+    ).toBe("archived");
+  });
+
+  it("still archives when one teardown step throws, after attempting it", async () => {
+    // Each step is best-effort on purpose — a lane must not become
+    // un-archivable because one watcher refuses to stop. What must hold is
+    // that every stop is ATTEMPTED before the status write, and that a failure
+    // is logged rather than swallowed silently.
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    fake.ptyService.disposeForLane.mockImplementation(() => {
+      throw new Error("pty teardown exploded");
+    });
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+
+    // Individual steps are best-effort, so the archive still completes — what
+    // must hold is that the stop was ATTEMPTED before the status write.
+    await service.archive({ laneId: "lane-child" });
+    expect(fake.ptyService.disposeForLane).toHaveBeenCalledWith("lane-child");
+    expect(
+      db.get<{ status: string }>("select status from lanes where id = ?", ["lane-child"])?.status,
+    ).toBe("archived");
+  });
+
+  it("skips teardown for an already-archived lane", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service } = await setupWithLane({ teardown: fake, events });
+    await service.archive({ laneId: "lane-child" });
+    const callsAfterFirst = [...fake.calls];
+    await service.archive({ laneId: "lane-child" });
+    expect(fake.calls).toEqual(callsAfterFirst);
+  });
+
   it("transfers shared proof ownership so the final owning lane can delete it", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

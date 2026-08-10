@@ -864,6 +864,7 @@ describe("prMergeAutoSettlementService", () => {
             settledAt: settledSessionIds.has("raw-shell") ? "2026-03-24T12:01:05.000Z" : null,
           },
         ]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent,
@@ -911,6 +912,55 @@ describe("prMergeAutoSettlementService", () => {
     expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
   });
 
+  it("stops the merged session's machinery before filing it", async () => {
+    // This path deliberately bypasses the settlement blockers, so it is the
+    // one most likely to file a session that is still running something. Before
+    // teardown reached it, the merged lane's monitors kept polling and woke the
+    // thread hours after the PR had landed.
+    const db = createMemoryDb();
+    const order: string[] = [];
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+      order.push("settle");
+      return ids;
+    });
+    const stopBackgroundWork = vi.fn(async () => {
+      order.push("stop");
+      return { stopped: 1, skippedActiveTurn: false };
+    });
+    const setScheduledWorkPaused = vi.fn(async ({ sessionId }: { sessionId: string }) => {
+      order.push("pause");
+      return { sessionId, paused: true, nextWakeAt: null };
+    });
+    const rows = [{ id: "chat-live", toolType: "claude-chat", archivedAt: null, settledAt: null }];
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => rows),
+        get: vi.fn((id: string) => rows.find((row) => row.id === id) ?? null),
+        settleSessionsWithOutcome,
+      } as any,
+      agentChatService: {
+        stopBackgroundWork,
+        setScheduledWorkPaused,
+        listScheduledWork: vi.fn(async () => [{ id: "sched-1", status: "scheduled" }]),
+      } as any,
+      emitEvent: vi.fn(),
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [createSummary({ state: "merged", mergedAt: "2026-03-24T12:01:00.000Z" })],
+      polledAt: "2026-03-24T12:01:30.000Z",
+    });
+
+    expect(stopBackgroundWork).toHaveBeenCalledWith({ sessionId: "chat-live" });
+    expect(setScheduledWorkPaused).toHaveBeenCalledWith({ sessionId: "chat-live", paused: true });
+    expect(order).toEqual(["pause", "stop", "settle"]);
+  });
+
   it("does not re-settle after reactivation, but settles for a later PR", async () => {
     const db = createMemoryDb();
     let settled = false;
@@ -928,6 +978,7 @@ describe("prMergeAutoSettlementService", () => {
           archivedAt: null,
           settledAt: settled ? "2026-03-24T12:01:05.000Z" : null,
         }]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent: vi.fn(),
@@ -1009,6 +1060,7 @@ describe("prMergeAutoSettlementService", () => {
           archivedAt: null,
           settledAt: null,
         }]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent: vi.fn(),
@@ -1081,6 +1133,7 @@ describe("prMergeAutoSettlementService", () => {
           { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
           { laneId: "lane-1", id: "chat-other", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent: vi.fn(),
@@ -1124,6 +1177,7 @@ describe("prMergeAutoSettlementService", () => {
           archivedAt: null,
           settledAt: null,
         }]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent,
@@ -1187,6 +1241,7 @@ describe("prMergeAutoSettlementService", () => {
           archivedAt: null,
           settledAt: null,
         }]),
+        get: vi.fn(() => null),
         settleSessionsWithOutcome,
       }) as any,
       emitEvent: vi.fn(),

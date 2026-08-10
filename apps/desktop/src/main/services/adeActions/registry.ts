@@ -126,6 +126,7 @@ import {
   parseWakeReason,
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
+import { stopSettledSessionMachinery } from "../sessions/sessionMachineryTeardown";
 import {
   getSessionLifecycleSettings,
   setSessionLifecycleSettings,
@@ -2126,6 +2127,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         sessionService,
         agentChatService: runtime.agentChatService,
         ptyService: runtime.ptyService,
+        logger: runtime.logger,
       })) {
         throw new Error(`Session '${sessionId}' was not found.`);
       }
@@ -2146,7 +2148,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     // Bulk settle/unsettle for renderer surfaces on remote-bound projects
     // (mirrors deleteSession's generic trust posture).
-    settleSessions: (args?: unknown) => {
+    settleSessions: async (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSessions");
       const sessionIds = Array.isArray(record.sessionIds)
         ? record.sessionIds.filter((id): id is string => typeof id === "string")
@@ -2168,6 +2170,14 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
           "session.settleSessions does not dismiss pending input; use session.settleSession for a single session.",
         );
       }
+      await stopSettledSessionMachinery(
+        {
+          sessionService,
+          agentChatService: runtime.agentChatService,
+          logger: runtime.logger,
+        },
+        sessionIds,
+      );
       return sessionService.settleSessions(sessionIds);
     },
     unsettleSessions: (args?: unknown) => {
@@ -2506,7 +2516,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     archive: async (args?: { laneId?: string }): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const lane = await findLaneForArchive(laneId);
-      runtime.laneService.archive({ laneId });
+      await runtime.laneService.archive({ laneId });
       try {
         releaseLaneRuntimeResources(runtime, laneId);
       } finally {

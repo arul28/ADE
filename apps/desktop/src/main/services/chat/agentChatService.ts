@@ -39269,6 +39269,105 @@ export function createAgentChatService(args: {
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
+  /**
+   * Stop the background work a session still owns, WITHOUT closing the session
+   * or interrupting a turn the user is watching.
+   *
+   * This is the runtime half of settle teardown. Settle used to be a pure
+   * column write: the row went quiet and every monitor, background shell and
+   * subagent it had spawned kept running — burning tokens, holding ports, and
+   * (via scheduled work) waking the thread hours later.
+   *
+   * Two rules shape what it touches:
+   *
+   *   • An ACTIVE foreground turn is left alone. Its subagents belong to work
+   *     the user can see happening, and killing them because the row was filed
+   *     would be worse than the leak. A settled session that is still streaming
+   *     un-settles on its own activity anyway.
+   *   • Children stop before parents. Stopping only the parent leaves the fleet
+   *     running and untracked, which is how a "stopped" agent keeps spending.
+   *
+   * Returns how much live work was found, so callers can report honestly rather
+   * than claiming a teardown that did nothing.
+   */
+  const stopBackgroundWork = async (
+    { sessionId }: { sessionId: string },
+  ): Promise<{ stopped: number; skippedActiveTurn: boolean }> => {
+    const managed = managedSessions.get(sessionId.trim());
+    if (!managed || managed.closed || managed.deleted) return { stopped: 0, skippedActiveTurn: false };
+    const runtime = managed.runtime;
+    if (!runtime) return { stopped: 0, skippedActiveTurn: false };
+
+    const turnActive = managed.session.status === "active" || Boolean(runtime.activeTurnId);
+    const stopped = totalBackgroundWork(runtimeBackgroundWork(runtime));
+    if (turnActive) return { stopped: 0, skippedActiveTurn: true };
+    if (stopped === 0) return { stopped: 0, skippedActiveTurn: false };
+
+    try {
+      switch (runtime.kind) {
+        case "claude": {
+          // Children first: this drains workflow agents, then subagents, then
+          // the background shells each of them owns.
+          await stopActiveClaudeSubagents(
+            managed,
+            runtime,
+            runtime.activeTurnId ?? undefined,
+            "Stopped when the session was settled",
+          );
+          // Anything still on the authoritative level had no `activeSubagents`
+          // entry to be reached through — a plain backgrounded shell, usually.
+          // Those are exactly the ones that survived the old teardown.
+          const control = getClaudeQueryControl(runtime.query);
+          for (const taskId of [...runtime.liveBackgroundTaskIds]) {
+            if (typeof control.stopTask === "function") {
+              try {
+                await awaitClaudeControlCall(
+                  `Stopping Claude background task '${taskId}'`,
+                  CLAUDE_STOP_TASK_TIMEOUT_MS,
+                  () => control.stopTask!(taskId),
+                );
+              } catch (error) {
+                logger.warn("agent_chat.settle_background_stop_failed", {
+                  sessionId: managed.session.id,
+                  taskId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+            emitClaudeBackgroundTaskUpdate(managed, runtime, { taskId, status: "stopped" });
+          }
+          break;
+        }
+        case "cursor": {
+          const agentId = managed.session.cursorCloudAgentId;
+          if (!agentId) break;
+          for (const runId of [...runtime.cloudRuns.keys()]) {
+            await cancelCursorCloudRun({ agentId, runId }).catch((error: unknown) => {
+              logger.warn("agent_chat.settle_cloud_cancel_failed", {
+                sessionId: managed.session.id,
+                runId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+          break;
+        }
+        default:
+          // Codex reports background subagents but exposes no per-subagent stop
+          // control, and opencode/droid/pi report no background work at all.
+          // Clearing ADE's tracking without actually stopping anything would
+          // make the row lie, so this is deliberately a no-op for them.
+          break;
+      }
+    } catch (error) {
+      logger.warn("agent_chat.settle_background_teardown_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return { stopped, skippedActiveTurn: false };
+  };
+
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
@@ -44150,6 +44249,7 @@ export function createAgentChatService(args: {
     getSessionSummary,
     ensureSessionSurface,
     hasActiveWorkloads,
+    stopBackgroundWork,
     hasRetainableSessions,
     countActiveForLane,
     disposeForLane,
