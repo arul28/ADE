@@ -35,6 +35,12 @@ let workPendingUploadPathPrefix = "ade-pending-upload://"
 /// Roughly one message's worth of attachments (`workChatInputAttachmentLimit`).
 let workPendingUploadPreviewLimit = 10
 
+/// Chips render at 56-72pt, so ~256px covers 3x displays. The composer's own
+/// image is the *upload* render at up to 2400px — around 23 MB decoded, which
+/// ten of would be a quarter-gigabyte resident for thumbnails nobody sees at
+/// that size.
+private let workPendingUploadPreviewMaxPixels: CGFloat = 256
+
 func workAttachmentIsPendingUpload(_ ref: AgentChatFileRef) -> Bool {
   ref.path.hasPrefix(workPendingUploadPathPrefix)
 }
@@ -65,11 +71,18 @@ final class WorkPendingUploadPreviewStore {
         path: "\(workPendingUploadPathPrefix)\(attachment.id.uuidString)",
         type: "image"
       )
-      if let image = attachment.image {
-        store(image, forPath: ref.path)
+      if let thumbnail = attachment.image.map(workPendingUploadThumbnail) {
+        store(thumbnail, forPath: ref.path)
       }
       return ref
     }
+  }
+
+  /// Drops every held thumbnail. Called on `didReceiveMemoryWarning` — these
+  /// exist only to smooth a handoff, and the host copy can always be refetched.
+  func purge() {
+    imagesByPath.removeAll()
+    insertionOrder.removeAll()
   }
 
   /// Re-keys each placeholder's image onto the host path the save returned.
@@ -114,6 +127,21 @@ final class WorkPendingUploadPreviewStore {
   private func removeEntry(forPath path: String) {
     guard imagesByPath.removeValue(forKey: path) != nil else { return }
     insertionOrder.removeAll { $0 == path }
+  }
+}
+
+/// Downscales the composer's upload-sized render to chip size. Returns the
+/// original when it is already small enough.
+@MainActor
+private func workPendingUploadThumbnail(_ image: UIImage) -> UIImage {
+  let longestSide = max(image.size.width, image.size.height)
+  guard longestSide > workPendingUploadPreviewMaxPixels, longestSide > 0 else { return image }
+  let scale = workPendingUploadPreviewMaxPixels / longestSide
+  let target = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  let format = UIGraphicsImageRendererFormat.default()
+  format.scale = 1
+  return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+    image.draw(in: CGRect(origin: .zero, size: target))
   }
 }
 

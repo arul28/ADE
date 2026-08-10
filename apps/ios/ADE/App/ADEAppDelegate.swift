@@ -32,6 +32,9 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
         workPurgeMarkdownRenderCaches()
         ADECodeRenderingCache.shared.purgeOnMemoryWarning()
+        MainActor.assumeIsolated {
+            WorkPendingUploadPreviewStore.shared.purge()
+        }
     }
 
     /// Register the approval-alert category so approval pushes carry inline

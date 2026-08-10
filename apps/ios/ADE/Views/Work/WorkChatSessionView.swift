@@ -92,7 +92,6 @@ func workChatShouldContinueAutomaticOlderHistory(
 struct WorkChatPrependAnchor {
   let rowId: String
   let rowY: CGFloat
-  let offsetY: CGFloat
   /// Layout passes to wait for before giving up, so an abandoned prepend cannot
   /// leave the anchor armed to fire on an unrelated later change.
   var remainingAttempts: Int
@@ -720,7 +719,6 @@ struct WorkChatSessionView: View {
     scrollMetrics.prependAnchor = WorkChatPrependAnchor(
       rowId: previousFirstId,
       rowY: previousFirstRowY,
-      offsetY: scrollMetrics.offsetY,
       remainingAttempts: workChatPrependAnchorAttempts
     )
   }
@@ -750,7 +748,12 @@ struct WorkChatSessionView: View {
     var transaction = Transaction()
     transaction.disablesAnimations = true
     withTransaction(transaction) {
-      scrollPosition.scrollTo(y: anchor.offsetY + displacement)
+      // Corrected from the *live* offset, not the captured one. The reader can
+      // keep scrolling between arming and the layout pass that measures the
+      // displacement; correcting from an offset captured at arm time would snap
+      // them back to where they were when the page started loading. Only the
+      // inserted height needs undoing.
+      scrollPosition.scrollTo(y: scrollMetrics.offsetY + displacement)
     }
   }
 

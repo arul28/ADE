@@ -365,11 +365,23 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     let incrementalSeconds = Date().timeIntervalSince(incrementalStart)
 
     ADECodeRenderingCache.shared.purgeOnMemoryWarning()
+    let wholeTextStart = Date()
+    for snapshot in snapshots {
+      _ = SyntaxHighlighter.highlightedSegment(Substring(snapshot), as: .swift)
+    }
+    let wholeTextSeconds = Date().timeIntervalSince(wholeTextStart)
+
+    ADECodeRenderingCache.shared.purgeOnMemoryWarning()
     let legacyStart = Date()
     for snapshot in snapshots {
       _ = Self.legacyHighlight(snapshot, as: .swift)
     }
     let legacySeconds = Date().timeIntervalSince(legacyStart)
+    print(String(
+      format: "whole-text with the role fill (no prefix reuse): %.3f ms per tick (%.1fx vs previous)",
+      wholeTextSeconds * 1000 / Double(snapshots.count),
+      legacySeconds / max(wholeTextSeconds, .leastNonzeroMagnitude)
+    ))
 
     let ticks = Double(snapshots.count)
     print(String(
@@ -504,18 +516,58 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
+  /// Languages allowed to reuse a stable prefix, each pinned to the rule
+  /// patterns that claim was made about.
+  ///
+  /// Reuse is only sound while nothing in a language's rules can match across a
+  /// newline except the delimiters the boundary counts. That is a property of
+  /// the patterns, not something the code can re-derive, and every time it has
+  /// been wrong the symptom was a completed block frozen mis-highlighted in
+  /// cache. If one of these fingerprints changes, re-check the new pattern
+  /// against `multilineDelimiters(for:)` before updating the constant.
+  private static let prefixReuseFingerprints: [FilesLanguage: String] = [
+    .swift: "2c7b721d13b3bcc9",
+    .typescript: "fa894f542c775be5",
+    .javascript: "2f738c3408aa7929",
+    .python: "6de225fbadd012d8",
+    .rust: "563f92af2415db71",
+    .go: "3575d64645ceff4c",
+    .java: "aa8e57e8d480c530",
+    .html: "561765deebafcca7",
+  ]
+
   func testLanguagesWithUnmodelledMultilineRulesOptOutOfPrefixReuse() {
-    // CSS selector lists, YAML's `^\s*` key rule, and Markdown links all cross a
-    // newline with no delimiter to count, so these must not reuse a prefix.
-    for language in [FilesLanguage.css, .yaml, .markdown] {
+    // Each of these has a rule whose match crosses, or depends on text past, a
+    // newline with no delimiter to count: CSS selector lists, YAML's `^\s*` key
+    // rule, Markdown links, and JSON's `(?=\s*:)` key lookahead.
+    for language in [FilesLanguage.css, .yaml, .markdown, .json] {
       XCTAssertNil(
         SyntaxHighlighter.multilineDelimiters(for: language),
         "\(language.rawValue) has newline-crossing rules the balance scan cannot model"
       )
     }
-    for language in [FilesLanguage.swift, .typescript, .javascript, .python, .rust, .go, .java, .html, .json] {
+    for language in Self.prefixReuseFingerprints.keys {
       XCTAssertNotNil(SyntaxHighlighter.multilineDelimiters(for: language))
     }
+  }
+
+  func testPrefixReuseLanguagesStillHaveTheRulesThatClaimWasMadeAbout() {
+    for (language, pinned) in Self.prefixReuseFingerprints where !pinned.isEmpty {
+      XCTAssertEqual(
+        SyntaxHighlighter.tokenRuleFingerprint(for: language), pinned,
+        """
+        \(language.rawValue)'s token rules changed. Prefix reuse assumes no rule \
+        matches across a newline except the counted delimiters — re-check the new \
+        pattern against multilineDelimiters(for:), then update this fingerprint.
+        """
+      )
+    }
+  }
+
+  func testStreamingJsonKeyLookaheadMatchesFullHighlight() {
+    // The key rule only matches once `(?=\s*:)` finds the colon, which can
+    // arrive after the newline — the key would otherwise freeze unhighlighted.
+    assertIncrementalMatchesFullHighlight("{\n  \"key\"\n: 1,\n  \"b\": 2\n}", as: .json)
   }
 
   func testMultilineCssSelectorStillMatchesFullHighlight() {
@@ -668,3 +720,4 @@ final class WorkInlineMarkdownCacheTests: XCTestCase {
     XCTAssertFalse(workMarkdownSharedCacheHolds(text))
   }
 }
+

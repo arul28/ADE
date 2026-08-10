@@ -477,15 +477,29 @@ struct SyntaxHighlighter {
         symmetric: [quote, apostrophe],
         pairs: [(open: "<!--", close: "-->")]
       )
-    case .json:
-      return SyntaxMultilineDelimiters(symmetric: [quote])
     case .plaintext:
       return .none
-    case .css, .yaml, .markdown:
-      // CSS selector lists, YAML's `^\s*` key rule, and Markdown links all cross
-      // newlines without a delimiter to count. No prefix reuse for these.
+    case .css, .yaml, .markdown, .json:
+      // Each has a rule whose match depends on text the boundary cannot see:
+      // CSS's selector list runs through `[...\s,>+~]*\s*\{`, YAML's key rule
+      // opens with `^\s*`, a Markdown link's `[^\]]+` spans lines, and JSON's
+      // key rule only matches once its `(?=\s*:)` lookahead finds the colon —
+      // which may arrive after the newline. No prefix reuse for these.
       return nil
     }
+  }
+
+  /// Fingerprint of a language's rule patterns.
+  ///
+  /// Whether a language may reuse a stable prefix is a claim about *these
+  /// patterns*: that nothing in them can match across a newline except the
+  /// delimiters `multilineDelimiters(for:)` counts. That claim cannot be
+  /// re-derived at runtime, and every time it has been wrong the symptom was a
+  /// completed code block frozen mis-highlighted in cache. A pinned test hashes
+  /// this, so editing a rule for an opted-in language fails loudly instead of
+  /// silently invalidating the boundary.
+  static func tokenRuleFingerprint(for language: FilesLanguage) -> String {
+    workStableDigest(tokenRules(for: language).map(\.pattern).joined(separator: "\u{1F}"))
   }
 
   private static func tokenRules(for language: FilesLanguage) -> [TokenRule] {
