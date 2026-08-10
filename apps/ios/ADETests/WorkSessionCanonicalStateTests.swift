@@ -778,6 +778,80 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(visibleUserMessages.filter { $0.attachments == [second] }.count, 1)
   }
 
+  /// Two sends of the *same* text share one dedupe key, unlike the attachment
+  /// cases above. Suppression counts represented rows instead of testing set
+  /// membership, so the first matching transcript row retires exactly one echo —
+  /// `sending` now releases as soon as the host accepts a message, which makes
+  /// back-to-back identical sends easy to produce.
+  func testIdenticalEchoesAreRetiredOneRowAtATime() {
+    let echoes = [
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now)),
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now.addingTimeInterval(1))),
+    ]
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: iso(now),
+        sequence: 1,
+        event: .userMessage(
+          text: "continue",
+          attachments: nil,
+          turnId: nil,
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      )
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: echoes
+    )
+    let visibleUserMessages = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload, message.role == "user" { return message }
+      return nil
+    }
+    // One transcript row plus the still-unrepresented second echo.
+    XCTAssertEqual(visibleUserMessages.count, 2)
+    XCTAssertEqual(visibleUserMessages.filter { $0.markdown == "continue" }.count, 2)
+
+    let remaining = workUnrepresentedLocalEchoMessages(
+      echoes,
+      representedKeyCounts: workRepresentedEchoKeyCounts(from: transcript)
+    )
+    XCTAssertEqual(remaining.count, 1)
+    XCTAssertEqual(remaining.first?.id, echoes[1].id, "the newer echo must survive")
+  }
+
+  func testBothIdenticalEchoesRetireOnceBothRowsArrive() {
+    let echoes = [
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now)),
+      WorkLocalEchoMessage(text: "continue", timestamp: iso(now.addingTimeInterval(1))),
+    ]
+    let transcript = (1...2).map { sequence in
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: iso(now.addingTimeInterval(TimeInterval(sequence))),
+        sequence: sequence,
+        event: .userMessage(
+          text: "continue",
+          attachments: nil,
+          turnId: nil,
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      )
+    }
+
+    let counts = workRepresentedEchoKeyCounts(from: transcript)
+    XCTAssertEqual(counts.values.reduce(0, +), 2)
+    XCTAssertTrue(workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: counts).isEmpty)
+  }
+
   // MARK: - Fixtures
 
   private func makeSession(

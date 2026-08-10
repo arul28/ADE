@@ -432,40 +432,6 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
   }
 }
 
-/// Echo suppression counts matches instead of testing set membership. Releasing
-/// `sending` as soon as the host accepts a message makes back-to-back identical
-/// sends easy, and a set test retired both of them on the first matching row.
-final class WorkLocalEchoSuppressionTests: XCTestCase {
-  func testOneRepresentedRowRetiresOnlyOneOfTwoIdenticalEchoes() {
-    let echoes = [
-      WorkLocalEchoMessage(text: "continue", timestamp: "2026-08-09T00:00:01Z"),
-      WorkLocalEchoMessage(text: "continue", timestamp: "2026-08-09T00:00:02Z"),
-    ]
-    guard let key = workLocalEchoDedupeKey(text: "continue", attachments: nil) else {
-      return XCTFail("expected a dedupe key for non-empty text")
-    }
-
-    let afterFirstRow = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 1])
-    XCTAssertEqual(afterFirstRow.count, 1)
-    XCTAssertEqual(afterFirstRow.first?.id, echoes[1].id, "the newer echo must survive")
-
-    let afterBothRows = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 2])
-    XCTAssertTrue(afterBothRows.isEmpty)
-  }
-
-  func testUnrelatedEchoesAreUntouched() {
-    let echoes = [
-      WorkLocalEchoMessage(text: "first", timestamp: "2026-08-09T00:00:01Z"),
-      WorkLocalEchoMessage(text: "second", timestamp: "2026-08-09T00:00:02Z"),
-    ]
-    guard let key = workLocalEchoDedupeKey(text: "first", attachments: nil) else {
-      return XCTFail("expected a dedupe key for non-empty text")
-    }
-    let remaining = workUnrepresentedLocalEchoMessages(echoes, representedKeyCounts: [key: 1])
-    XCTAssertEqual(remaining.map(\.text), ["second"])
-  }
-}
-
 /// A streaming turn used to insert one throwaway render per delta into the
 /// shared inline-markdown cache, evicting every finished message in a long
 /// chat. Intermediate revisions now render without displacing finished work,
