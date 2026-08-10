@@ -317,6 +317,11 @@ struct SyntaxHighlighter {
     _ text: String,
     as language: FilesLanguage
   ) -> AttributedString {
+    guard let delimiters = multilineDelimiters(for: language) else {
+      // This language has newline-crossing rules the balance scan cannot model.
+      return highlightedSegment(text[...], as: language)
+    }
+
     let reusable = ADECodeRenderingCache.shared.highlightPrefix(for: language)
       .flatMap { prefix -> SyntaxHighlightPrefix? in
         // Byte-prefix check: only a block that literally grew from this prefix
@@ -331,7 +336,7 @@ struct SyntaxHighlighter {
     let boundaryOffset = syntaxStableBoundaryOffset(
       in: text,
       from: scanOffset,
-      delimiters: multilineDelimiters(for: language)
+      delimiters: delimiters
     )
 
     let boundary = String.Index(utf16Offset: boundaryOffset, in: text)
@@ -432,7 +437,18 @@ struct SyntaxHighlighter {
   /// Mirrors the newline-crossing constructs in `tokenRules(for:)`. Keep the two
   /// in step: a delimiter missing here can let the stable prefix split inside a
   /// construct, and an extra one only shortens the prefix.
-  static func multilineDelimiters(for language: FilesLanguage) -> SyntaxMultilineDelimiters {
+  /// The delimiters for a language whose newline-crossing constructs the balance
+  /// scan can model completely, or `nil` when it cannot.
+  ///
+  /// `nil` means "do not reuse a prefix for this language" — it highlights whole
+  /// text per tick, exactly as it did before incremental highlighting existed.
+  /// Some rules cross a newline without any delimiter at all: CSS matches a
+  /// selector list through `[...\s,>+~]*\s*\{`, YAML's key rule opens with
+  /// `^\s*`, and a Markdown link's `[^\]]+` spans lines. Modeling those would
+  /// mean re-implementing each regex, and a model that is *nearly* right is what
+  /// produced three separate boundary bugs here. Declaring the gap costs those
+  /// three languages the speedup and costs correctness nothing.
+  static func multilineDelimiters(for language: FilesLanguage) -> SyntaxMultilineDelimiters? {
     typealias Symmetric = SyntaxMultilineDelimiters.Symmetric
     let blockComment = [(open: "/*", close: "*/")]
     let quote = Symmetric(character: "\"")
@@ -461,18 +477,14 @@ struct SyntaxHighlighter {
         symmetric: [quote, apostrophe],
         pairs: [(open: "<!--", close: "-->")]
       )
-    case .css:
-      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe], pairs: blockComment)
     case .json:
       return SyntaxMultilineDelimiters(symmetric: [quote])
-    case .yaml:
-      return SyntaxMultilineDelimiters(symmetric: [quote, apostrophe])
-    case .markdown:
-      // Covers both `inline` and ``` fences: a fence is three backticks, so an
-      // open fence reads as unbalanced until its closer arrives.
-      return SyntaxMultilineDelimiters(symmetric: [Symmetric(character: "`", escapes: false)])
     case .plaintext:
       return .none
+    case .css, .yaml, .markdown:
+      // CSS selector lists, YAML's `^\s*` key rule, and Markdown links all cross
+      // newlines without a delimiter to count. No prefix reuse for these.
+      return nil
     }
   }
 

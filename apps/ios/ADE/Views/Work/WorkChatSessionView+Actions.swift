@@ -544,6 +544,16 @@ private func workIncrementalLocalEchoSignature(_ localEchoMessages: [WorkLocalEc
     hasher.combine(echo.text.hashValue)
     hasher.combine(echo.timestamp)
     hasher.combine(echo.deliveryState)
+    // Attachment refs change without touching count, text, timestamp, or
+    // delivery state when a pending upload is swapped for its host path. Leaving
+    // them out let the assistant-tail fast path treat the echo as unchanged and
+    // keep rendering the uploading chip.
+    hasher.combine(echo.attachments?.count ?? 0)
+    for attachment in echo.attachments ?? [] {
+      hasher.combine(attachment.path)
+      hasher.combine(attachment.type)
+      hasher.combine(attachment.url)
+    }
   }
   return hasher.finalize()
 }

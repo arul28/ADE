@@ -504,6 +504,37 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
+  func testLanguagesWithUnmodelledMultilineRulesOptOutOfPrefixReuse() {
+    // CSS selector lists, YAML's `^\s*` key rule, and Markdown links all cross a
+    // newline with no delimiter to count, so these must not reuse a prefix.
+    for language in [FilesLanguage.css, .yaml, .markdown] {
+      XCTAssertNil(
+        SyntaxHighlighter.multilineDelimiters(for: language),
+        "\(language.rawValue) has newline-crossing rules the balance scan cannot model"
+      )
+    }
+    for language in [FilesLanguage.swift, .typescript, .javascript, .python, .rust, .go, .java, .html, .json] {
+      XCTAssertNotNil(SyntaxHighlighter.multilineDelimiters(for: language))
+    }
+  }
+
+  func testMultilineCssSelectorStillMatchesFullHighlight() {
+    assertIncrementalMatchesFullHighlight(
+      """
+      .foo,
+      .bar {
+        color: red;
+      }
+      """,
+      as: .css
+    )
+  }
+
+  func testMultilineYamlAndMarkdownStillMatchFullHighlight() {
+    assertIncrementalMatchesFullHighlight("a:\n\n  b: 1\nc: 2", as: .yaml)
+    assertIncrementalMatchesFullHighlight("see [long\nlink](https://x.test)\n\ntext", as: .markdown)
+  }
+
   func testDifferentBlockOfSameLanguageDoesNotReuseForeignPrefix() {
     let first = "let alpha = 1\nlet beta = 2\n"
     _ = SyntaxHighlighter.highlightedAttributedString(first, as: .swift)

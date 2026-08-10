@@ -883,6 +883,12 @@ struct WorkChatSessionView: View {
       let streamingMessageId = streamingAssistantMessageId
       let userBubbleWidth = maxUserBubbleWidth
       let probeRowId = prependProbeRowId
+      // A streaming or expanded assistant message renders as several suffixed
+      // block rows, so the probed *timeline* entry has no render row with a
+      // matching id. Resolve through `sourceEntryId` and pick its first block,
+      // or the probe silently never installs and the anchor never arms.
+      let probeRenderRowId = visibleTimelineRenderEntries
+        .first { $0.sourceEntryId == probeRowId }?.id
       ForEach(visibleTimelineRenderEntries) { entry in
         timelineRenderEntryView(
           for: entry,
@@ -894,12 +900,14 @@ struct WorkChatSessionView: View {
           // Exactly one row carries this probe. It measures how far a prepend
           // pushed the reader's content down, which total content height cannot
           // do while the tail is also streaming.
-          if entry.id == probeRowId {
+          if let probeRowId, entry.id == probeRenderRowId {
             GeometryReader { geometry in
               Color.clear.preference(
                 key: WorkChatPrependProbePreferenceKey.self,
+                // Published in timeline-entry id space, which is what the anchor
+                // compares against.
                 value: WorkChatPrependProbeSample(
-                  rowId: entry.id,
+                  rowId: probeRowId,
                   y: geometry.frame(in: .named(workChatScrollCoordinateSpace)).minY
                 )
               )
