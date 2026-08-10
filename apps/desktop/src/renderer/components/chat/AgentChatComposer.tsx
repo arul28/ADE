@@ -1901,7 +1901,10 @@ export function AgentChatComposer({
   const imeComposingRef = useRef(false);
   const promptHistoryIndexRef = useRef<number | null>(null);
   const promptHistorySelectedKeyRef = useRef<string | null>(null);
-  const promptHistoryStashRef = useRef<Promise<PromptStashEntry | null> | null>(null);
+  const promptHistoryStashRef = useRef<{
+    promise: Promise<PromptStashEntry | null>;
+    consume: ComposerPromptStashHandle["consume"];
+  } | null>(null);
   const promptHistoryDraftBeforeRef = useRef<string | null>(null);
   const promptHistoryAppliedDraftRef = useRef<string | null>(null);
   const promptHistoryObservedDraftRef = useRef(draft);
@@ -1934,8 +1937,8 @@ export function AgentChatComposer({
       const pendingStash = promptHistoryStashRef.current;
       promptHistoryStashRef.current = null;
       if (pendingStash) {
-        void pendingStash.then((entry) => {
-          if (entry) void promptStashRef.current?.consume(entry);
+        void pendingStash.promise.then((entry) => {
+          if (entry) void pendingStash.consume(entry);
         });
       }
     }
@@ -1962,7 +1965,16 @@ export function AgentChatComposer({
     };
   }, [cancelPromptHistorySequence]);
 
-  useEffect(() => () => cancelPromptHistorySequence(), [cancelPromptHistorySequence]);
+  useEffect(() => () => {
+    cancelPromptHistorySequence();
+    const pendingStash = promptHistoryStashRef.current;
+    promptHistoryStashRef.current = null;
+    if (pendingStash) {
+      void pendingStash.promise.then((entry) => {
+        if (entry) void pendingStash.consume(entry);
+      });
+    }
+  }, [cancelPromptHistorySequence]);
 
   useEffect(() => {
     const previousDraft = promptHistoryObservedDraftRef.current;
@@ -3871,7 +3883,13 @@ export function AgentChatComposer({
     if (!currentText.trim() && attachments.length === 0) return;
     promptHistoryDraftBeforeRef.current = currentText;
     if (typeof window.ade?.agentChat?.promptStashes?.create === "function") {
-      promptHistoryStashRef.current = promptStashRef.current?.activatePreservingDraft() ?? null;
+      const stashHandle = promptStashRef.current;
+      if (stashHandle) {
+        promptHistoryStashRef.current = {
+          promise: stashHandle.activatePreservingDraft(),
+          consume: stashHandle.consume,
+        };
+      }
     }
   }, [attachments.length]);
 
@@ -3893,8 +3911,8 @@ export function AgentChatComposer({
     }
     onPromptHistoryNavigate?.(null);
     if (promptHistoryStash) {
-      void promptHistoryStash.then((entry) => {
-        if (entry) void promptStashRef.current?.consume(entry);
+      void promptHistoryStash.promise.then((entry) => {
+        if (entry) void promptHistoryStash.consume(entry);
       });
     }
   }, [onDraftChange, onPromptHistoryNavigate, restoreTextareaCaret, setRichEditorText, useRichComposer]);

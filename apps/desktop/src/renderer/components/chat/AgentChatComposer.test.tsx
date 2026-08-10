@@ -1403,6 +1403,55 @@ describe("AgentChatComposer", () => {
     ));
   });
 
+  it("consumes an auto-stash that finishes after the composer unmounts", async () => {
+    let resolveCreate: ((entry: {
+      id: string;
+      text: string;
+      provider: string;
+      modelId: string;
+      createdAt: string;
+    }) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const remove = vi.fn().mockResolvedValue(true);
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create,
+          delete: remove,
+        },
+      },
+    };
+    const props = buildComposerProps({
+      draft: "unfinished draft",
+      promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
+      turnActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    textbox.focus();
+    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    resolveCreate?.({
+      id: "stash-auto-unmounted-1",
+      text: "unfinished draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-08-10T12:00:00.000Z",
+    });
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      { id: "stash-auto-unmounted-1" },
+      null,
+    ));
+  });
+
   it("consumes the auto-stash when history restores the original draft", async () => {
     const create = vi.fn().mockResolvedValue({
       id: "stash-auto-restore-1",
