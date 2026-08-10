@@ -1,6 +1,8 @@
 # Settle teardown — design
 
-**Status:** design, not implemented. Do not build from this until it is reviewed.
+**Status:** reviewed and approved with amendments. Steps 0-2 of §5 are cleared
+to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
+and the race-matrix tests have been seen to pass.
 
 Settle currently writes a lifecycle column and stops nothing. A session filed as
 "done" can still own a background shell, a subagent fleet, or a Cursor cloud run
@@ -118,6 +120,41 @@ short-lived `settling` state the chokepoint sets before teardown starts:
   pretending otherwise would resurrect the "orphaned work is live work" mistake
   that the liveness half deliberately avoids.
 
+### 3b-i. What each clearer does DURING `settling`
+
+This is the hole that sinks the naive version, and it is not obvious: **teardown
+itself produces output.** A process being stopped emits its final chunks, which
+means C4 fires *because* teardown is running. If C4 bumps the guard revision or
+trips abort, every real teardown self-aborts and a settle can never land — the
+feature would be dead on arrival and would look like a mysterious no-op.
+
+So the clearers are not uniform during `settling`. They split by whether they
+represent a **human decision** or **mechanical exhaust**:
+
+| Clearer | During `settling` | Why |
+|---|---|---|
+| C3 `clearTurnStartMarkers` (turn start) | **ABORT** | A user turn is the one thing that outranks a settle (§3c). |
+| C6 `markLastTurnFailed` | **ABORT**, and surface the failure | `failed` outranks `settled` in canonical precedence; filing a failure as done would bury it. |
+| C7 `requestAttention` (`ade chat ask`) | **ABORT** | `needs_you` outranks `settled`; an agent raising its hand must not be silenced by an in-flight settle. |
+| C4 `setLastOutputPreview` | **SWALLOWED** | Mechanical exhaust, and largely *produced by the teardown itself*. Does not clear `settled_at`, does not bump the revision, does not abort. |
+| C5 `touchSessionActivity` | **SWALLOWED** | Same: activity bookkeeping, not a human decision. |
+
+"Swallowed" means precisely three things, and all three matter: the write does
+**not** clear `settled_at`, does **not** bump the guard revision, and does
+**not** trip abort. The preview/`last_output_at` columns still update — the row
+keeps showing live output while it settles, which is exactly what a visible
+`Settling…` state should look like.
+
+**Before `settling` starts, all five clear normally, exactly as today.** The
+swallow is scoped to the settling window and nothing else.
+
+The residual risk is honest and small: a *user* typing into a terminal during
+the settling window produces C4/C5 and would be swallowed. That is why C3 is the
+abort trigger — an accepted turn is the durable signal of user intent, and raw
+output is not. For a plain (non-chat) terminal with no turn concept, the settling
+window is the whole exposure; it is bounded by `T` and by the fact that settling
+is visible while it runs.
+
 ### 3c. The rule for a turn arriving mid-teardown
 
 **An accepted user turn ABORTS the settle and the teardown. Never the reverse.**
@@ -132,10 +169,89 @@ Concretely: teardown checks an abort signal between each stop call; a turn start
 which is an argument for stopping the **cheapest-to-lose things first** (cloud
 runs and monitors before long-lived shells), not for a heroic restore.
 
-**Open question for review:** what does an *abandoned* settle report to its
-caller? Silently returning success is what #1059 did and it is a small lie. A
-distinct `settle_aborted_by_activity` result is honest but is a new contract for
-five entry points, mobile included.
+**Abort result — decided.** An abandoned settle returns a typed
+`settle_aborted_by_activity` outcome. **Never silent success** — that is what
+#1059 did, and a caller that cannot tell "filed" from "not filed" will build on
+the wrong assumption. The contract, per entry point:
+
+| Entry point | Contract |
+|---|---|
+| `sessions.settle` / `settleMany` (IPC, desktop UI) | Typed outcome; the surface shows a quiet toast — *"Settle canceled — session became active"*. Not an error dialog: nothing went wrong, the user simply started working again. |
+| `session.settleSession` / `session.settleSessions` (sync, iOS + hosted web) | Typed outcome in the reply envelope. Older clients that only understand `{ok}` must still parse it — treat the outcome as **additive**, never a new error shape (see the mobile-compatibility rule in `../sync-and-multi-device/`). |
+| `session.settleSessions` (ADE action registry) | Typed outcome in the result; bulk callers get per-session outcomes, not one aggregate boolean. |
+| PR-merge auto-settle (`prMergeAutoSettlementService`) | Consumes the outcome and does **not** mark the PR handled for an aborted session, so a later pass can retry. Today it marks handled unconditionally. |
+| CTO operator tool | Typed outcome surfaced in the tool result, so the model is told the settle did not take rather than assuming it did. |
+
+The bulk shape is the load-bearing one: `settleSessions` currently returns a
+changed-id list, and an aborted id is simply absent from it — which is already
+*almost* the right contract. Making the absence explicit (id + reason) is the
+smallest honest change.
+
+### 3c-i. Precondition: `settled_at` must become host-authoritative
+
+**Verified, and the chokepoint is currently bypassable.** This is a hard
+precondition, not a caveat.
+
+`terminal_sessions` is a CRR table (it is not in `LOCAL_ONLY_CRR_EXCLUDED_TABLES`
+in `kvDb.ts:775`), and iOS writes `settled_at` into its **own replica**
+optimistically before sending the remote command:
+`apps/ios/ADE/Services/Database.swift:2128` `updateSessionLifecycleLocked`
+assigns `settled_at`, called from `SyncService.swift:9286` on the settle path.
+The existing code comment there states the hazard outright — *"`terminal_sessions`
+is a CRR table whose local writes replicate upstream"* — and the call site does
+carry a rollback for a failed remote command.
+
+Intent is not the problem: every iOS settle *does* route through the host's
+`session.settle*` remote command, and so through the chokepoint
+(`syncRemoteCommandService.ts:4132` → `sessionService.settleSessions`). The
+problem is the **replica write racing the chokepoint's decision**. The phone
+cannot know the host's revision, so its optimistic `settled_at` carries no
+revision bump. If the host's guard *rejects* the settle (a turn started, §3c),
+the host leaves `settled_at` null — and the phone's optimistic row still
+replicates in and settles it anyway. The guard is defeated by a merge, not by a
+caller.
+
+**Required before the chokepoint lands:** iOS stops writing `settled_at` /
+`settle_override` / `settle_source` into its replica. The optimistic
+responsiveness those writes buy is preserved with a **local pending-UI state**
+(not a CRR write) that resolves when the host's changeset arrives or the command
+fails. The rollback path in `SyncService.swift:9286` becomes unnecessary and
+should go with it — it exists only to undo a write we will no longer make.
+
+Snooze columns (`snoozed_until`, `snoozed_at`, `woke_*`) are out of scope here;
+they are written by the same helper but are not guarded by a revision and have
+no teardown attached.
+
+### 3c-ii. Where the revision column lives
+
+**The revision must be local-only.** `terminal_sessions` is CRR, and C4 writes
+that row *per terminal output chunk* (`sessionService.ts:1299` — a single
+`update` carrying `last_output_preview` + `last_output_at`). Adding a revision
+column to that table would ride the same statement and the same row, but
+cr-sqlite clocks are **per column**, so it would add a clock entry to every
+chunk — sync amplification on the highest-frequency write in the product, for a
+value no other device can use.
+
+So: a local-only `session_lifecycle_revisions` table added to
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES` (`kvDb.ts:775`), keyed by session id. The
+revision is a **host-local concurrency token**, and this is consistent with
+making the column host-authoritative in §3c-i — only the host runs the
+chokepoint, so only the host needs the token.
+
+Two constraints on the schema, both from the CRR rules in
+`../../ARCHITECTURE.md` and `kvDb.ts`:
+
+- the table is excluded from CRR, so the no-non-PK-unique-index rule does not
+  bind it — but the exclusion must be *added deliberately*, and
+  `removeExcludedCrrMetadata` will un-CRR it if a prior build converted it;
+- it must be keyed by session id alone (PK), so the atomic
+  `update … set rev = rev + 1` stays a single statement on the write path.
+
+Cost on C4 is one extra local `update` per chunk against a two-column,
+PK-lookup, non-replicated table. If that proves measurable under a terminal
+firehose, the fallback is to keep the revision **in memory** on the host and
+accept that a mid-settle restart resolves to not-settled — which §3b already
+requires for the `settling` state anyway, so the two degrade identically.
 
 ### 3d. When teardown cannot confirm
 
@@ -150,10 +266,29 @@ times out, or fails, the options are:
 3. **Settle and record the unconfirmed work** — a marker on the row ("settled,
    1 job could not be stopped") with no change to filing.
 
-Option 3 is the recommendation: it neither blocks the user nor re-lights the
-row, and it makes the residue visible where it actually happened. **This needs
-sign-off before implementation** — it is the one place where the honest answer
-and the quiet answer differ.
+**Option 3 is signed off.** It neither blocks the user nor re-lights the row,
+and it makes the residue visible where it actually happened. Two additions are
+part of the decision, and both exist because a label alone would just be a
+prettier way of losing the process:
+
+1. **The residue must keep the un-stopped work discoverable, not merely
+   labelled.** Concretely: it lands on a diagnostics surface that lists what
+   could not be stopped and why, and — where the process is one ADE actually
+   tracks — it stays eligible for the existing ppid-based orphan reaper
+   (`services/processes/orphanedAgentProcessReaper.ts`). A user who sees
+   "1 job could not be stopped" must have somewhere to go. Work that escaped the
+   process tree entirely (`nohup`/`setsid`/`disown`) is still unreachable and
+   must be reported as such rather than silently folded into the same count.
+2. **Emit an analytics event**, so we learn how often stops actually fail in the
+   field instead of guessing. Per `docs/logging.md`: reuse `ade_feature_used`
+   with coarse allowlisted properties — provider, a coarse failure reason
+   (`no_stop_control` / `timeout` / `rejected`), and a bucketed count. **No**
+   session ids, task ids, commands, or error text. One event per settle that had
+   residue, deduplicated per session, not one per failed task — a fleet that
+   fails to stop must not become a burst.
+
+Together these turn R5 from a silent hazard into a measured one, which is the
+precondition for ever tightening it further.
 
 ---
 
@@ -189,11 +324,18 @@ three, and that is why it produced a defect every round.
 
 ## 5. Sequencing
 
+0. **Precondition (§3c-i):** make `settled_at` host-authoritative — iOS stops
+   writing the settle columns into its replica and uses a local pending-UI state
+   instead. Until this lands, a revision-guarded write is defeatable by CRR
+   merge, so the chokepoint would provide a guarantee it does not actually have.
 1. Land the chokepoint + lifecycle revision (3a) **alone**, with no teardown.
    It is pure refactor with a testable invariant: no `settled_at` mutation
-   outside one function, and every mutation bumps the revision.
-2. Add the `settling` state and abort rule (3b, 3c), still with a no-op
-   teardown, and test the race matrix directly against the revision.
+   outside one function, and every mutation bumps the revision. The revision
+   goes in a local-only table (§3c-ii).
+2. Add the `settling` state, the per-clearer behavior table (3b-i), and the
+   abort rule (3c) — still with a **no-op teardown** — and test the race matrix
+   directly against the revision. The C4/C5 swallow is the case to test hardest:
+   it is what makes a real teardown able to finish at all.
 3. Only then attach real teardown, reusing `stopLaneRuntimeWork`'s shape.
 4. Resolve 3d by decision before step 3.
 
