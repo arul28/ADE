@@ -1,13 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { setPluginInstallService } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
+import {
+  setPluginActionInvoker,
+  setPluginInstallService,
+} from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
 import type { PluginSyncMeter } from "../../../../../ade-cli/src/services/plugins/pluginSyncMeter";
-import type { PluginPresenceRow } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
+import {
+  readAllPluginPresence,
+  type PluginPresenceRow,
+} from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
+import {
+  createPluginRegistryService,
+  type PluginRegistryService,
+} from "../../../../../ade-cli/src/services/plugins/pluginRegistryService";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import { pluginHasRuntimeEntry, type PluginManifest, type PluginManifestSetting } from "../../../shared/plugins/manifest";
+import {
+  parsePluginManifestJson,
+  pluginHasRuntimeEntry,
+  type PluginManifest,
+  type PluginManifestSetting,
+} from "../../../shared/plugins/manifest";
 import { writeTextAtomic } from "../shared/utils";
 import {
   PluginSdkError,
@@ -15,8 +30,11 @@ import {
   type PluginDetail,
   type PluginDomainService,
   type PluginLogEntry,
+  type PluginMarketplaceIndex,
   type PluginPanelRecord,
+  type PluginPresenceMachineRow,
   type PluginRuntimeStatus,
+  type PluginSourceInspection,
   type PluginSummary,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
@@ -53,8 +71,32 @@ export type PluginProjectBinding = {
   onPluginDataChanged?: () => void;
 };
 
+export type PluginHostServiceArgs = {
+  logger: Logger;
+  pluginsRoot?: string;
+  adeVersion?: string | null;
+} & PluginMachineContext;
+
+/**
+ * The machine-identity half of the host's dependencies, supplied AFTER
+ * construction.
+ *
+ * The host is built early in bootstrap — the resource sampler and the action
+ * registry both need it — while the machine identity and the push-relay state
+ * file are established much later in the same startup. Rather than move either,
+ * the host starts without them and learns them when they exist; every consumer
+ * reads through the current value, so nothing captures a stale one.
+ */
+export type PluginMachineContext = {
+  localMachineKey?: () => string | null;
+  listAccountMachines?: () => Promise<{ machineKey: string; label?: string | null; online?: boolean }[] | null>;
+  reportInstall?: (install: { pluginId: string; version: string }) => void | Promise<void>;
+};
+
 export type PluginHostService = {
   attachProject(binding: PluginProjectBinding): { detach(): void };
+  /** Supply (or replace) the machine identity. Merged over what is already set. */
+  setMachineContext(context: PluginMachineContext): void;
   /** The `plugin` action-domain service, scoped to one project (null = machine). */
   domainService(projectId: string | null): PluginDomainService;
   /** Child pids for the resource sampler's "plugin-host" role. */
@@ -145,6 +187,47 @@ function coerceSettingValue(setting: PluginManifestSetting, value: unknown): str
   return value;
 }
 
+/** Case variants a plugin may ship its readme under, in the order tried. */
+const PLUGIN_README_FILES = ["README.md", "readme.md", "Readme.md"] as const;
+
+/** Bytes of a readme served to the UI. Past this it is a document, not a page. */
+const PLUGIN_README_MAX_BYTES = 256 * 1024;
+
+function readPluginReadme(pluginRoot: string): string | null {
+  for (const name of PLUGIN_README_FILES) {
+    try {
+      const target = path.join(pluginRoot, name);
+      const stats = fs.statSync(target);
+      if (!stats.isFile()) continue;
+      if (stats.size > PLUGIN_README_MAX_BYTES) {
+        return `${fs.readFileSync(target, "utf8").slice(0, PLUGIN_README_MAX_BYTES)}\n\n…`;
+      }
+      return fs.readFileSync(target, "utf8");
+    } catch {
+      // Missing or unreadable: try the next spelling, then report none.
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse `plugin.json` from a directory the machine can already read.
+ *
+ * Null for anything else — a URL, a missing path, an unparseable manifest.
+ * Deliberately quiet: this answers "can I show you what this adds before you
+ * install it", and "no" is a normal answer, not an error.
+ */
+function readManifestFromDirectory(source: string): PluginManifest | null {
+  try {
+    const resolved = path.resolve(source);
+    const raw = fs.readFileSync(path.join(resolved, "plugin.json"), "utf8");
+    const parsed = parsePluginManifestJson(raw);
+    return parsed.manifest;
+  } catch {
+    return null;
+  }
+}
+
 function effectiveConfig(
   manifest: PluginManifest | null,
   stored: Record<string, string | number | boolean | null> | undefined,
@@ -186,6 +269,7 @@ function toSummary(
     // Present only when the manifest declares tokens: the renderer's theme
     // engine treats a non-null `theme` as "this plugin can be applied as one".
     theme: manifest?.theme ? { displayName: manifest.displayName, tokens: manifest.theme.tokens } : null,
+    disabledContributions: installed.record.disabledContributions ?? [],
     cli: manifest?.cli ?? [],
     restartCount: runtime.restartCount,
     lastCrashAt: runtime.lastCrashAt,
@@ -228,12 +312,42 @@ function mergeWireUsage(
   };
 }
 
-function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: string | null }): PluginHostService {
+function createHost(args: PluginHostServiceArgs): PluginHostService {
   const { logger } = args;
+  let machine: PluginMachineContext = {
+    ...(args.localMachineKey ? { localMachineKey: args.localMachineKey } : {}),
+    ...(args.listAccountMachines ? { listAccountMachines: args.listAccountMachines } : {}),
+    ...(args.reportInstall ? { reportInstall: args.reportInstall } : {}),
+  };
+  /**
+   * The directory client, built on first use.
+   *
+   * Lazy because most sessions never open the Marketplace, and constructing it
+   * resolves a cache path under the machine ADE directory — work a session that
+   * only runs an installed plugin should not pay for.
+   */
+  let registryService: PluginRegistryService | null = null;
+  const registry = (): PluginRegistryService => {
+    registryService ??= createPluginRegistryService({ logger });
+    return registryService;
+  };
   const installs: PluginInstallService = createPluginInstallService({
     logger,
     ...(args.pluginsRoot ? { pluginsRoot: args.pluginsRoot } : {}),
     adeVersion: args.adeVersion ?? null,
+    /**
+     * The install service verifies against the directory's digest, so it needs
+     * the entry — from the CACHE only. A network fetch here would make every
+     * install wait on the directory, and the digest is a tamper check on bytes
+     * the machine already has, not a permission to install.
+     */
+    resolveRegistryEntry: async (pluginId: string) => {
+      const cached = registry().readCachedIndex();
+      return cached?.entries.find((entry) => entry.pluginId === pluginId) ?? null;
+    },
+    // Read through the mutable context, not captured at construction: the ping
+    // target is wired later in bootstrap than the host is built.
+    reportInstall: (install) => machine.reportInstall?.(install),
   });
   const secrets: PluginSecretStore = createPluginSecretStore();
   /**
@@ -254,6 +368,10 @@ function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: s
   // another machine; `dispose()` clears it, because a stale handle answering
   // after teardown is worse than "plugins are unavailable on this computer".
   setPluginInstallService(createPluginInstallServiceAdapter({ install: installs, onChanged: publishPresence }));
+  // Every plugin tap from a phone lands here: `plugins.invoke` resolves this at
+  // call time and runs the same domain path the desktop's `plugin.invoke` does,
+  // so a handler cannot behave differently depending on which device asked.
+  setPluginActionInvoker(async (invokeArgs) => domainService(null).invoke(invokeArgs));
   const projects = new Map<string, AttachedProject>();
   const supervisors = new Map<string, PluginChildSupervisor>();
   /**
@@ -445,6 +563,77 @@ function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: s
         return installed ? detailFor(installed) : null;
       },
 
+      async marketplaceIndex(indexArgs): Promise<PluginMarketplaceIndex | null> {
+        const result = await registry().fetchIndex(indexArgs?.refresh ? { refresh: true } : {});
+        if (!result) return null;
+        return { entries: result.entries, fetchedAt: result.fetchedAt, origin: result.origin };
+      },
+
+      async presence(): Promise<PluginPresenceMachineRow[]> {
+        const attached = scopedProject();
+        // No project database means no synced rows to read. Empty reads as
+        // "this machine only", which is what the UI should show.
+        if (!attached) return [];
+        let localKey: string | null = null;
+        try {
+          localKey = machine.localMachineKey?.() ?? null;
+        } catch {
+          localKey = null;
+        }
+        const directory = new Map<string, { label?: string | null; online?: boolean }>();
+        try {
+          for (const entry of (await machine.listAccountMachines?.()) ?? []) {
+            directory.set(entry.machineKey, { label: entry.label, online: entry.online });
+          }
+        } catch {
+          // An unavailable directory costs names and reachability, not rows.
+        }
+        return readAllPluginPresence(attached.binding.db).map((row): PluginPresenceMachineRow => {
+          const isThisMachine = localKey !== null && row.machineKey === localKey;
+          const known = directory.get(row.machineKey);
+          return {
+            machineKey: row.machineKey,
+            // Never invented: without a directory the key IS the name, which
+            // reads as unfamiliar rather than as the wrong computer.
+            machineName: known?.label?.trim() || (isThisMachine ? "This computer" : row.machineKey),
+            pluginId: row.pluginId,
+            version: row.version || null,
+            enabled: row.enabled,
+            // The machine answering is by definition reachable from itself.
+            online: isThisMachine ? true : known?.online === true,
+            isThisMachine,
+          };
+        });
+      },
+
+      async getReadme(readmeArgs): Promise<string | null> {
+        const installed = installs.get(requireId(readmeArgs?.pluginId, "pluginId"));
+        if (!installed) return null;
+        return readPluginReadme(installed.root);
+      },
+
+      async inspectSource(inspectArgs): Promise<PluginSourceInspection | null> {
+        const source = requireId(inspectArgs?.source, "source").trim();
+        // A local directory (or an already-installed plugin's root) can be read
+        // here and now. A remote source is reported as itself with no manifest:
+        // fetching one would mean cloning, and inspecting must never be the
+        // step that puts code on the machine.
+        const local = readManifestFromDirectory(source);
+        return { source, manifest: local };
+      },
+
+      async setContributionEnabled(contributionArgs): Promise<PluginSummary> {
+        const pluginId = requireId(contributionArgs?.pluginId, "pluginId");
+        const socketId = requireId(contributionArgs?.socketId, "socketId");
+        requireInstalled(pluginId);
+        const installed = installs.setContributionEnabled(
+          pluginId,
+          socketId,
+          contributionArgs.enabled !== false,
+        );
+        return toSummary(installed, runtimeStateFor(installed));
+      },
+
       async getPanel(panelArgs): Promise<PluginPanelRecord | null> {
         const pluginId = requireId(panelArgs?.pluginId, "pluginId");
         const panelId = requireId(panelArgs?.panelId, "panelId");
@@ -579,6 +768,10 @@ function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: s
   });
 
   return {
+    setMachineContext(context) {
+      machine = { ...machine, ...context };
+    },
+
     attachProject(binding) {
       const existing = projects.get(binding.projectId);
       if (existing) {
@@ -612,6 +805,7 @@ function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: s
       if (disposed) return;
       disposed = true;
       setPluginInstallService(null);
+      setPluginActionInvoker(null);
       const running = [...supervisors.values()];
       supervisors.clear();
       projects.clear();
@@ -636,11 +830,7 @@ function createHost(args: { logger: Logger; pluginsRoot?: string; adeVersion?: s
 let sharedHost: PluginHostService | null = null;
 
 /** Machine-scoped singleton, mirroring `getSharedProductAnalyticsService`. */
-export function getSharedPluginHostService(args: {
-  logger: Logger;
-  pluginsRoot?: string;
-  adeVersion?: string | null;
-}): PluginHostService {
+export function getSharedPluginHostService(args: PluginHostServiceArgs): PluginHostService {
   if (!sharedHost) sharedHost = createHost(args);
   return sharedHost;
 }

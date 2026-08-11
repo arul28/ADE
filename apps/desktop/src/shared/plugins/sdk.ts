@@ -29,6 +29,7 @@
  */
 
 import type { PluginManifest, PluginManifestSetting } from "./manifest";
+import type { PluginRegistryEntry } from "./registryIndex";
 import type { PluginEntityKind, PluginSocketKind, PluginSurfaceId } from "./sockets";
 
 /** SDK surface version announced to the child in `hello`. */
@@ -347,6 +348,12 @@ export type PluginInstallRecord = {
   source: PluginInstallSource;
   installedAt: string;
   updatedAt: string;
+  /**
+   * Manifest socket ids the user switched off — see
+   * {@link PluginSummary.disabledContributions}. Optional on the wire so a
+   * registry written by an older build parses; the reader fills in `[]`.
+   */
+  disabledContributions?: string[];
 };
 
 export type PluginRuntimeStatus =
@@ -374,12 +381,86 @@ export type PluginSummary = {
   source: PluginInstallSource;
   installedAt: string;
   hasEntry: boolean;
-  surfaces: { kind: string; id: string; title: string; panelId: string; icon?: string }[];
+  /**
+   * Manifest surfaces, in manifest shape. The renderer's own `tabs` list is
+   * derived from these at the preload boundary rather than duplicated here: a
+   * second spelling of the same manifest fact is the drift this contract exists
+   * to prevent.
+   */
+  surfaces: {
+    kind: string;
+    id: string;
+    title: string;
+    panelId: string;
+    icon?: string;
+    /**
+     * Set when the surface gates a compiled-in tab instead of rendering a panel
+     * (`PLUGIN_BUILTIN_SURFACE_IDS`). Optional on the wire: a host that predates
+     * the field simply reports the surface without it, and the client then shows
+     * the built-in tab as it always did rather than hiding a page it cannot
+     * prove is owned.
+     */
+    builtin?: string;
+  }[];
   /** Present only for theme plugins; the renderer's theme engine consumes it. */
   theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
+  /**
+   * Manifest socket ids the user switched OFF, from the machine install
+   * registry.
+   *
+   * A list of what is off rather than what is on, because contributions are on
+   * by default: an empty list has to mean "everything this plugin declares is
+   * live", and a list of enabled ids would read as "nothing is" on any plugin
+   * installed before the field existed.
+   *
+   * Optional to match the renderer's `InstalledPlugin`, where absent and empty
+   * mean the same thing — the host always populates it, so a caller that sees
+   * `undefined` is talking to an older host, not to a plugin with everything
+   * switched off.
+   */
+  disabledContributions?: string[];
   cli: string[];
   restartCount: number;
   lastCrashAt: string | null;
+};
+
+/**
+ * One plugin's install state on one machine in the account.
+ *
+ * Flattened per (machine, plugin) because that is the grain the Marketplace's
+ * coverage matrix draws. `isThisMachine` is stamped by the HOST: the renderer
+ * holds no machine key, and a wrong guess shows someone another machine's
+ * install state as their own.
+ */
+export type PluginPresenceMachineRow = {
+  machineKey: string;
+  machineName: string;
+  pluginId: string;
+  version: string | null;
+  enabled: boolean;
+  /** False for a machine in the directory that is not reachable right now. */
+  online: boolean;
+  isThisMachine: boolean;
+};
+
+/** The plugin directory, as the Marketplace reads it. */
+export type PluginMarketplaceIndex = {
+  entries: PluginRegistryEntry[];
+  /** When the bytes were last confirmed current. A 304 counts. */
+  fetchedAt: string | null;
+  origin: "network" | "cache";
+};
+
+/**
+ * What the host learned by reading an install source without installing it.
+ *
+ * `manifest` is null for a source this machine cannot read without fetching it
+ * (a git URL): the modal then shows what the directory claims instead. Reading
+ * a source must never be the thing that puts code on the machine.
+ */
+export type PluginSourceInspection = {
+  source: string;
+  manifest: PluginManifest | null;
 };
 
 /**
@@ -456,6 +537,31 @@ export type PluginDomainService = {
   getCollection(
     args: { pluginId: string; collection: string; keyPrefix?: string; limit?: number },
   ): Promise<PluginCollectionRow[]>;
+  /**
+   * The plugin directory. Null when there is neither a network answer nor a
+   * cache — distinct from an empty index, which means the directory is
+   * reachable and lists nothing.
+   */
+  marketplaceIndex(args?: { refresh?: boolean }): Promise<PluginMarketplaceIndex | null>;
+  /**
+   * Install state across the account's machines, from the synced presence
+   * table. Empty on a machine with no sync host, which reads as
+   * "this machine only" rather than as an error.
+   */
+  presence(): Promise<PluginPresenceMachineRow[]>;
+  /** An installed plugin's README, or null when it ships none. */
+  getReadme(args: { pluginId: string }): Promise<string | null>;
+  /** Read an install source WITHOUT installing it. See {@link PluginSourceInspection}. */
+  inspectSource(args: { source: string }): Promise<PluginSourceInspection | null>;
+  /**
+   * Turn one of a plugin's declared socket contributions off or on. Persisted
+   * in the machine install registry, so it survives a restart and a reinstall.
+   */
+  setContributionEnabled(args: {
+    pluginId: string;
+    socketId: string;
+    enabled: boolean;
+  }): Promise<PluginSummary>;
   install(args: { source: string; ref?: string; enable?: boolean }): Promise<PluginSummary>;
   uninstall(args: { pluginId: string }): Promise<{ removed: boolean }>;
   enable(args: { pluginId: string }): Promise<PluginSummary>;
@@ -489,11 +595,16 @@ export const PLUGIN_DOMAIN_ACTIONS = [
   "get",
   "getCollection",
   "getPanel",
+  "getReadme",
+  "inspectSource",
   "install",
   "invoke",
   "list",
+  "marketplaceIndex",
+  "presence",
   "reload",
   "setConfig",
+  "setContributionEnabled",
   "uninstall",
   "usageSummary",
 ] as const;
@@ -510,6 +621,12 @@ export const PLUGIN_READ_ONLY_DOMAIN_ACTIONS: readonly PluginDomainAction[] = [
   "get",
   "getPanel",
   "getCollection",
+  "getReadme",
+  // Reading a source is deliberately a READ: it parses a manifest the machine
+  // can already see and never fetches or installs anything.
+  "inspectSource",
+  "marketplaceIndex",
+  "presence",
   "usageSummary",
 ];
 

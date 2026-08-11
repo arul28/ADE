@@ -64,6 +64,30 @@ const PLUGIN_THEME_TOKEN_PREFIXES = [
 
 export type PluginSurfaceKind = "tab" | "pane";
 
+/**
+ * Tabs that ship compiled into the app and can be *gated* by a plugin rather
+ * than rendered by one.
+ *
+ * Some of ADE's own tabs cannot be expressed as vocabulary — the Graph is an
+ * interactive canvas, not a list of rows — but they are still optional weight
+ * in the rail. A surface with `builtin` set does not draw anything: it says
+ * "this plugin owns the existing tab named here", and the client renders its
+ * own compiled page in place of a plugin panel. Uninstalling the plugin takes
+ * the tab out of the rail; the route itself stays reachable so old deeplinks
+ * keep working.
+ *
+ * The list is CLOSED and lives here rather than in the renderer because every
+ * client validates against it: a name outside it is a manifest typo, and
+ * honouring it would produce a rail item that navigates nowhere.
+ */
+export const PLUGIN_BUILTIN_SURFACE_IDS = ["graph"] as const;
+
+export type PluginBuiltinSurfaceId = (typeof PLUGIN_BUILTIN_SURFACE_IDS)[number];
+
+export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltinSurfaceId {
+  return PLUGIN_BUILTIN_SURFACE_IDS.some((id) => id === value);
+}
+
 export type PluginManifestSurface = {
   kind: PluginSurfaceKind;
   id: string;
@@ -71,6 +95,11 @@ export type PluginManifestSurface = {
   icon?: string;
   panelId: string;
   order?: number;
+  /**
+   * Names a compiled-in tab this surface gates instead of rendering. Only ever
+   * present on an official manifest — see the trust note in {@link parseSurfaces}.
+   */
+  builtin?: PluginBuiltinSurfaceId;
 };
 
 export type PluginManifestPanel = {
@@ -194,7 +223,25 @@ function parseIdentifier(value: unknown): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(text) ? text : null;
 }
 
-function parseSurfaces(raw: unknown, ctx: ParseContext): PluginManifestSurface[] {
+/**
+ * `official` gates `builtin`, and it is worth being precise about what that
+ * gate is and is not.
+ *
+ * It is NOT proof of provenance: `official` is a field the manifest sets about
+ * itself, and this parser is pure — it has no directory, no signature and no
+ * filesystem. Provenance is established elsewhere, by the directory entry the
+ * installer checks (`registryIndex.ts`: an official entry carries a per-version
+ * sha256 that must match the fetched tree).
+ *
+ * What the gate buys is a floor: a manifest that does not even claim official
+ * tier cannot claim a compiled-in tab, so a copied or mistyped manifest fails
+ * loudly here instead of quietly taking over a rail item. And the ceiling on
+ * getting it wrong is deliberately low — `builtin` decides whether one of the
+ * user's OWN pages appears in their OWN rail, and names a route from a closed
+ * list. It runs no code, reads no data and reaches nothing the app was not
+ * already shipping.
+ */
+function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): PluginManifestSurface[] {
   return parseArray(raw, "surfaces", ctx, (entry, label) => {
     if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
     const kind = entry.kind === "pane" ? "pane" : entry.kind === "tab" ? "tab" : null;
@@ -205,6 +252,17 @@ function parseSurfaces(raw: unknown, ctx: ParseContext): PluginManifestSurface[]
     if (!title) return ctx.drop(`${label}.title is required`);
     const panelId = parseIdentifier(entry.panelId);
     if (!panelId) return ctx.drop(`${label}.panelId is missing or not an identifier`);
+    let builtin: PluginBuiltinSurfaceId | null = null;
+    if (entry.builtin !== undefined) {
+      const requested = trimmedString(entry.builtin);
+      if (!isPluginBuiltinSurfaceId(requested)) {
+        ctx.warnings.push(`${label}.builtin "${String(entry.builtin)}" is not a gateable built-in tab — ignored`);
+      } else if (!official) {
+        ctx.warnings.push(`${label}.builtin is honoured only for official plugins — ignored`);
+      } else {
+        builtin = requested;
+      }
+    }
     return {
       kind,
       id,
@@ -212,6 +270,7 @@ function parseSurfaces(raw: unknown, ctx: ParseContext): PluginManifestSurface[]
       panelId,
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
       ...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
+      ...(builtin ? { builtin } : {}),
     };
   });
 }
@@ -476,7 +535,8 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
     errors.push("minAdeVersion must be major.minor.patch");
   }
 
-  const surfaces = parseSurfaces(raw.surfaces, ctx);
+  const official = raw.official === true;
+  const surfaces = parseSurfaces(raw.surfaces, ctx, official);
   const panels = parsePanels(raw.panels, ctx);
   const sockets = parseSockets(raw.sockets, ctx);
   const settings = parseSettings(raw.settings, ctx);
@@ -514,7 +574,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       cli,
       skills,
       ...(theme ? { theme } : {}),
-      official: raw.official === true,
+      official,
     },
     errors,
     warnings,

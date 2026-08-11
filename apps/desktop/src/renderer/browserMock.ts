@@ -5550,7 +5550,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       list: async () => [],
       import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
     },
-    plugins: {
+    // Singular, matching what preload publishes. The browser preview has no
+    // plugin host, so every member answers the empty-but-valid shape its
+    // contract promises rather than being absent — a missing member reads to
+    // the renderer's bridge as "this build cannot do it", which is a different
+    // claim from "there is nothing here".
+    plugin: {
       list: async () => [],
       getPanel: async () => null,
       getCollection: async () => [],
@@ -5565,6 +5570,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setEnabled: resolvedArg(undefined),
       getConfig: async () => ({}),
       setConfig: resolvedArg(undefined),
+      setContributionEnabled: resolvedArg(undefined),
+      marketplaceIndex: async () => null,
+      presence: async () => [],
+      getReadme: async () => null,
+      inspectSource: async () => null,
       usageSummary: async () => [],
       onChanged: () => () => {},
     },

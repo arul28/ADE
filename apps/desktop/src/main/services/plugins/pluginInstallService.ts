@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { Logger } from "../logging/logger";
@@ -11,6 +11,11 @@ import {
   parsePluginManifestJson,
   type PluginManifest,
 } from "../../../shared/plugins/manifest";
+import {
+  requiresChecksumVerification,
+  verifyPluginChecksum,
+  type PluginRegistryEntry,
+} from "../../../shared/plugins/registryIndex";
 import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/plugins/sdk";
 import { emitPluginChange } from "./pluginEvents";
 
@@ -30,6 +35,9 @@ const PLUGIN_INSTALL_MAX_FILES = 5_000;
 const PLUGIN_COPY_EXCLUDED_DIRS = new Set([".git", "node_modules"]);
 
 const PLUGIN_GIT_CLONE_TIMEOUT_MS = 120_000;
+
+/** Archiving an already-local shallow clone is disk work, not network work. */
+const PLUGIN_GIT_ARCHIVE_TIMEOUT_MS = 30_000;
 
 /**
  * Git sources are matched, not sanitized. The URL reaches `git` as one argv
@@ -58,6 +66,8 @@ export type PluginInstallService = {
   install(args: { source: string; ref?: string; enable?: boolean }): Promise<PluginInstalledPlugin>;
   uninstall(pluginId: string): { removed: boolean };
   setEnabled(pluginId: string, enabled: boolean): PluginInstalledPlugin;
+  /** Persist one socket contribution's on/off state in the install registry. */
+  setContributionEnabled(pluginId: string, socketId: string, enabled: boolean): PluginInstalledPlugin;
   /** Re-read the manifest from disk (the `ade plugin dev` loop). */
   reload(pluginId: string): PluginInstalledPlugin;
   /** Absolute skill directories that exist, enabled plugins only. */
@@ -92,6 +102,9 @@ function parseInstallRecord(pluginId: string, raw: unknown): PluginInstallRecord
   if (!isRecord(raw)) return null;
   const version = typeof raw.version === "string" ? raw.version : "0.0.0";
   const installedAt = typeof raw.installedAt === "string" ? raw.installedAt : nowIso();
+  const disabled = Array.isArray(raw.disabledContributions)
+    ? [...new Set(raw.disabledContributions.filter((id): id is string => typeof id === "string" && id.length > 0))]
+    : [];
   return {
     pluginId,
     version,
@@ -99,7 +112,55 @@ function parseInstallRecord(pluginId: string, raw: unknown): PluginInstallRecord
     source: parseInstallSource(raw.source),
     installedAt,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : installedAt,
+    // Always present after a read, so nothing downstream has to distinguish
+    // "no field" from "nothing disabled" — they mean the same thing.
+    disabledContributions: disabled,
   };
+}
+
+/**
+ * The sha256 the directory vouches for, computed the directory's way.
+ *
+ * The recipe is fixed in `registry/README.md` — `git archive` of the tag,
+ * excluding `.git`, through sha256 — and it has to be reproduced EXACTLY or
+ * every official plugin fails to install. That is why this shells out to `git`
+ * over the clone instead of walking the tree: any hand-rolled traversal would
+ * be a second, subtly different definition of "the source tree", and the
+ * disagreement would only ever show up on a real official release.
+ *
+ * Returns null when the staged tree is not a git clone (a local-directory
+ * install), which is never an official-registry source. `-o` writes the archive
+ * to a file rather than a pipe: `spawnAsync` caps captured output, and a
+ * truncated tar would hash to a confident wrong answer.
+ */
+async function gitArchiveDigest(stagingDir: string, logger: Logger): Promise<string | null> {
+  if (!dirExists(path.join(stagingDir, ".git"))) return null;
+  const tarPath = path.join(path.dirname(stagingDir), `.archive-${randomUUID()}.tar`);
+  try {
+    const result = await spawnAsync(
+      "git",
+      ["-C", stagingDir, "archive", "--format=tar", "-o", tarPath, "HEAD"],
+      { timeout: PLUGIN_GIT_ARCHIVE_TIMEOUT_MS, maxOutputBytes: 8_000 },
+    );
+    if (result.status !== 0) {
+      logger.warn("plugin.checksum_archive_failed", { stderr: result.stderr.trim().slice(0, 200) });
+      return null;
+    }
+    const hash = createHash("sha256");
+    hash.update(fs.readFileSync(tarPath));
+    return hash.digest("hex");
+  } catch (error) {
+    logger.warn("plugin.checksum_archive_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  } finally {
+    try {
+      fs.rmSync(tarPath, { force: true });
+    } catch {
+      // The archive is scratch; failing to remove it must not fail an install.
+    }
+  }
 }
 
 function readRegistryFile(statePath: string): PluginRegistryFile {
@@ -223,6 +284,20 @@ export function createPluginInstallService(deps: {
   logger: Logger;
   pluginsRoot?: string;
   adeVersion?: string | null;
+  /**
+   * The directory's entry for a plugin, when the directory is reachable.
+   * Injected rather than imported so this service never fetches anything
+   * itself; a null answer (offline, or an unlisted plugin) installs unverified.
+   */
+  resolveRegistryEntry?: (
+    pluginId: string,
+  ) => Promise<Pick<PluginRegistryEntry, "official" | "checksums"> | null>;
+  /**
+   * Tell the directory an install happened. Fire-and-forget by contract: the
+   * install has already succeeded by the time this runs, and telemetry that can
+   * fail an install is worse than telemetry that is occasionally missing.
+   */
+  reportInstall?: (install: { pluginId: string; version: string }) => void | Promise<void>;
 }): PluginInstallService {
   const root = deps.pluginsRoot?.trim() || resolvePluginsRoot();
   const statePath = path.join(root, PLUGIN_STATE_FILE);
@@ -298,6 +373,49 @@ export function createPluginInstallService(deps: {
     }
   };
 
+  /**
+   * Refuse a staged tree whose bytes disagree with the digest the directory
+   * published for this version.
+   *
+   * Runs while the plugin is still in staging, so a tampered tree is never
+   * moved into place and never runs. The three-way verdict is Wave E's: only a
+   * MISMATCH is fatal. "Unverified" covers every community plugin and any
+   * official release the crawler has not indexed yet, and failing those would
+   * make the directory a gate on installing anything at all.
+   */
+  const verifyStagedTree = async (stagingDir: string, manifest: PluginManifest): Promise<void> => {
+    if (!deps.resolveRegistryEntry) return;
+    let entry: Pick<PluginRegistryEntry, "official" | "checksums"> | null = null;
+    try {
+      entry = await deps.resolveRegistryEntry(manifest.name);
+    } catch {
+      // An unreachable directory installs unverified rather than not at all.
+      return;
+    }
+    if (!entry || !requiresChecksumVerification(entry, manifest.version)) return;
+    const actual = await gitArchiveDigest(stagingDir, deps.logger);
+    if (!actual) {
+      throw new Error(
+        `Plugin "${manifest.name}" ${manifest.version} is an official release with a published checksum, `
+        + "but this install has no git archive to verify against it.",
+      );
+    }
+    const verdict = verifyPluginChecksum({ entry, version: manifest.version, actual });
+    if (verdict.kind === "mismatch") {
+      deps.logger.error("plugin.checksum_mismatch", {
+        pluginId: manifest.name,
+        version: manifest.version,
+        expected: verdict.expected,
+        actual: verdict.actual,
+      });
+      throw new Error(
+        `Plugin "${manifest.name}" ${manifest.version} does not match the checksum ADE publishes for it. `
+        + "Refusing to install.",
+      );
+    }
+    deps.logger.info("plugin.checksum_verified", { pluginId: manifest.name, version: manifest.version });
+  };
+
   const install = async (args: { source: string; ref?: string; enable?: boolean }): Promise<PluginInstalledPlugin> => {
     const source = args.source?.trim();
     if (!source) throw new Error("A plugin source path or git URL is required.");
@@ -327,6 +445,7 @@ export function createPluginInstallService(deps: {
           `Plugin "${parsed.manifest.name}" requires ADE ${parsed.manifest.minAdeVersion} or newer.`,
         );
       }
+      await verifyStagedTree(stagingDir, parsed.manifest);
       manifest = parsed.manifest;
       warnings = parsed.warnings;
     } catch (error) {
@@ -378,6 +497,21 @@ export function createPluginInstallService(deps: {
       warnings: warnings.length,
     });
     emitPluginChange({ kind: "installs", pluginId });
+    // After the install is committed, and never awaited: the directory's
+    // install counts are worth having, and not at the cost of making a
+    // successful install look slow or — if the relay is down — failed.
+    if (deps.reportInstall) {
+      void (async () => {
+        try {
+          await deps.reportInstall?.({ pluginId, version: record.version });
+        } catch (error) {
+          deps.logger.debug("plugin.install_ping_failed", {
+            pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    }
     return { record, manifest, root: target, errors: [], warnings };
   };
 
@@ -414,6 +548,31 @@ export function createPluginInstallService(deps: {
     return describe(next);
   };
 
+  const setContributionEnabled = (
+    pluginId: string,
+    socketId: string,
+    enabled: boolean,
+  ): PluginInstalledPlugin => {
+    const id = socketId?.trim();
+    if (!id) throw new Error("A contribution id is required.");
+    const { registry, record } = requireRecord(pluginId);
+    const disabled = new Set(record.disabledContributions ?? []);
+    // Stored as the OFF list, so a contribution the manifest adds later is on
+    // by default rather than silently absent — see PluginSummary's docblock.
+    if (enabled) disabled.delete(id);
+    else disabled.add(id);
+    const next: PluginInstallRecord = {
+      ...record,
+      disabledContributions: [...disabled].sort(),
+      updatedAt: nowIso(),
+    };
+    registry.plugins[pluginId] = next;
+    writeRegistry(registry);
+    deps.logger.info("plugin.contribution_toggled", { pluginId, socketId: id, enabled });
+    emitPluginChange({ kind: "installs", pluginId });
+    return describe(next);
+  };
+
   const reload = (pluginId: string): PluginInstalledPlugin => {
     const { registry, record } = requireRecord(pluginId);
     const described = describe(record);
@@ -431,7 +590,7 @@ export function createPluginInstallService(deps: {
 
   const skillRoots = (): string[] => collectSkillRoots(root, list());
 
-  return { root, list, get, install, uninstall, setEnabled, reload, skillRoots };
+  return { root, list, get, install, uninstall, setEnabled, setContributionEnabled, reload, skillRoots };
 }
 
 function collectSkillRoots(root: string, installed: readonly PluginInstalledPlugin[]): string[] {

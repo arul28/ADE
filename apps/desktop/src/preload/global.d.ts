@@ -717,11 +717,14 @@ import type {
 } from "../shared/types/productAnalytics";
 import type {
   InstalledPlugin,
+  MarketplaceIndexPayload,
   PluginChangeEvent,
   PluginCollectionRow,
   PluginInstallRequest,
   PluginInstallResult,
   PluginPanelRecord,
+  PluginPresenceRow,
+  PluginSourceInspection,
   PluginUsageRow,
 } from "../renderer/lib/pluginRuntimeBridge";
 
@@ -2157,11 +2160,15 @@ declare global {
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
       /**
-       * Members with no action behind them yet (the marketplace half, and
-       * `openLogs`) are absent rather than stubbed: the renderer's bridge treats
-       * a missing member as "unavailable", and a stub would read as "supported".
+       * SINGULAR, matching the one `plugin` action domain. No `plugins` alias
+       * exists: the renderer's bridge accepts either name so an older host keeps
+       * working, but this build publishes exactly one.
+       *
+       * Members with no action behind them yet (`openLogs`) are absent rather
+       * than stubbed: the renderer's bridge treats a missing member as
+       * "unavailable", and a stub would read as "supported".
        */
-      plugins: {
+      plugin: {
         list: () => Promise<InstalledPlugin[]>;
         getPanel: (args: {
           pluginId: string;
@@ -2189,7 +2196,20 @@ declare global {
         getConfig: (args: {
           pluginId: string;
         }) => Promise<Record<string, string | number | boolean | null>>;
-        setConfig: (args: { pluginId: string; key: string; value: unknown }) => Promise<void>;
+        /** A PATCH: absent keys keep their value, null resets to the default. */
+        setConfig: (args: {
+          pluginId: string;
+          values: Record<string, string | number | boolean | null>;
+        }) => Promise<void>;
+        setContributionEnabled: (args: {
+          pluginId: string;
+          socketId: string;
+          enabled: boolean;
+        }) => Promise<void>;
+        marketplaceIndex: (args?: { refresh?: boolean }) => Promise<MarketplaceIndexPayload | null>;
+        presence: () => Promise<PluginPresenceRow[]>;
+        getReadme: (args: { pluginId: string }) => Promise<string | null>;
+        inspectSource: (args: { source: string }) => Promise<PluginSourceInspection | null>;
         usageSummary: (args?: { pluginId?: string }) => Promise<PluginUsageRow[]>;
         onChanged: (cb: (event: PluginChangeEvent) => void) => () => void;
       };

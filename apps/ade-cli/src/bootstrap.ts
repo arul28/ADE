@@ -106,6 +106,7 @@ import {
   setPluginPresenceService,
 } from "./services/plugins/pluginPresenceService";
 import { createPluginSyncMeter } from "./services/plugins/pluginSyncMeter";
+import { reportPluginInstall } from "./services/plugins/pluginInstallPing";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import {
@@ -1566,6 +1567,27 @@ export async function createAdeRuntime(args: {
     "sync-cloud-relay.json",
   );
   const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
+  // The plugin host was built before this identity existed. Presence rows stamp
+  // `isThisMachine` from the key, and the install ping signs with the push
+  // registration — both live here, so the host learns them here.
+  pluginHostService.setMachineContext({
+    localMachineKey: () => {
+      try {
+        return cloudRelayStore.getMachineIdentity().machineKey || null;
+      } catch {
+        // An unpaired machine has no key. Null reads as "none of these rows are
+        // mine", which is true, and far better than a wrong key marking another
+        // computer's installs as this one's.
+        return null;
+      }
+    },
+    reportInstall: async (install) => {
+      await reportPluginInstall(
+        { store: createPushRegistrationStore({ filePath: resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir), logger }), logger },
+        install,
+      );
+    },
+  });
   const syncDeviceIdPath = path.join(
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
     "sync-device-id",

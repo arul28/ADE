@@ -19,7 +19,10 @@ import {
   PLUGIN_READ_ONLY_DOMAIN_ACTIONS,
   type PluginCollectionRow as PluginHostCollectionRow,
   type PluginDetail,
+  type PluginMarketplaceIndex,
+  type PluginPresenceMachineRow,
   type PluginRuntimeStatus as PluginHostRuntimeStatus,
+  type PluginSourceInspection,
   type PluginSummary,
   type PluginUsageSummary,
 } from "../shared/plugins/sdk";
@@ -7664,7 +7667,11 @@ contextBridge.exposeInMainWorld("ade", {
   // Plugins route strictly: the Electron main process keeps a dormant
   // AppContext whose services are null, so the silently-falling-back family
   // would answer a routing failure with a crash or a wrong empty result.
-  plugins: {
+  //
+  // SINGULAR, matching the single `plugin` action domain (D1). There is no
+  // `plugins` alias: two names for one namespace is how half the renderer ends
+  // up reading a namespace nobody publishes.
+  plugin: {
     list: async (): Promise<InstalledPlugin[]> => {
       // Disabled plugins are part of the list the UI draws — it renders the
       // on/off state, so asking only for enabled ones would hide the switch.
@@ -7761,19 +7768,46 @@ contextBridge.exposeInMainWorld("ade", {
       );
       return detail?.config ?? {};
     },
+    // ONE shape, the host's: `{pluginId, values}` where values is a patch. The
+    // renderer's bridge sends exactly this. An adapter here that read `key`
+    // and `value` instead would not fail — it would post `{undefined: undefined}`
+    // and report success for a setting that was never written.
     setConfig: async (input: {
       pluginId: string;
-      key: string;
-      value: unknown;
+      values: Record<string, string | number | boolean | null>;
     }): Promise<void> => {
-      const args = {
-        pluginId: input.pluginId,
-        values: { [input.key]: input.value as string | number | boolean | null },
-      };
+      const args = { pluginId: input.pluginId, values: input.values ?? {} };
       await callProjectRuntimeActionStrictOr("plugin", "setConfig", { args }, () =>
         ipcRenderer.invoke(IPC.pluginSetConfig, args),
       );
     },
+    setContributionEnabled: async (input: {
+      pluginId: string;
+      socketId: string;
+      enabled: boolean;
+    }): Promise<void> => {
+      await callProjectRuntimeActionStrictOr("plugin", "setContributionEnabled", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginSetContributionEnabled, input),
+      );
+    },
+    marketplaceIndex: async (input: { refresh?: boolean } = {}): Promise<PluginMarketplaceIndex | null> => {
+      const args = input.refresh ? { refresh: true } : {};
+      return callProjectRuntimeActionStrictOr("plugin", "marketplaceIndex", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginMarketplaceIndex, args),
+      );
+    },
+    presence: async (): Promise<PluginPresenceMachineRow[]> =>
+      callProjectRuntimeActionStrictOr("plugin", "presence", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.pluginPresence, {}),
+      ),
+    getReadme: async (input: { pluginId: string }): Promise<string | null> =>
+      callProjectRuntimeActionStrictOr("plugin", "getReadme", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginGetReadme, input),
+      ),
+    inspectSource: async (input: { source: string }): Promise<PluginSourceInspection | null> =>
+      callProjectRuntimeActionStrictOr("plugin", "inspectSource", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginInspectSource, input),
+      ),
     usageSummary: async (input: { pluginId?: string } = {}): Promise<PluginUsageRow[]> => {
       const args = input.pluginId ? { pluginId: input.pluginId } : {};
       const summary = await callProjectRuntimeActionStrictOr<PluginUsageSummary>(

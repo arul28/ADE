@@ -699,7 +699,10 @@ import {
   assertPluginCollectionName,
   type PluginCollectionRow,
   type PluginDetail,
+  type PluginMarketplaceIndex,
   type PluginPanelRecord,
+  type PluginPresenceMachineRow,
+  type PluginSourceInspection,
   type PluginSummary,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
@@ -5932,6 +5935,50 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["pluginHostService"]);
     return ctx.pluginHostService.domainService(ctx.projectId).reload({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginSetContributionEnabled, async (_event, arg: unknown): Promise<PluginSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    if (!isRecord(arg)) throw new Error("plugin setContributionEnabled expects an object payload.");
+    const socketId = typeof arg.socketId === "string" ? arg.socketId.trim() : "";
+    if (!socketId) throw new Error("plugin setContributionEnabled socketId must be a non-empty string.");
+    if (typeof arg.enabled !== "boolean") {
+      throw new Error("plugin setContributionEnabled enabled must be a boolean.");
+    }
+    return ctx.pluginHostService.domainService(ctx.projectId).setContributionEnabled({
+      pluginId: requirePluginId(arg),
+      socketId,
+      enabled: arg.enabled,
+    });
+  });
+
+  ipcMain.handle(IPC.pluginMarketplaceIndex, async (_event, arg: unknown): Promise<PluginMarketplaceIndex | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    const refresh = isRecord(arg) && arg.refresh === true;
+    return ctx.pluginHostService.domainService(ctx.projectId).marketplaceIndex(refresh ? { refresh } : {});
+  });
+
+  ipcMain.handle(IPC.pluginPresence, async (): Promise<PluginPresenceMachineRow[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).presence();
+  });
+
+  ipcMain.handle(IPC.pluginGetReadme, async (_event, arg: unknown): Promise<string | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).getReadme({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginInspectSource, async (_event, arg: unknown): Promise<PluginSourceInspection | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    if (!isRecord(arg)) throw new Error("plugin inspectSource expects an object payload.");
+    const source = typeof arg.source === "string" ? arg.source.trim() : "";
+    if (!source) throw new Error("plugin inspectSource source must be a non-empty string.");
+    return ctx.pluginHostService.domainService(ctx.projectId).inspectSource({ source });
   });
 
 

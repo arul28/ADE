@@ -60,6 +60,9 @@ function stubInstallService(overrides: Partial<PluginInstallService> = {}): {
     setEnabled: (_pluginId, enabled) => installed({
       record: { ...installed().record, enabled },
     }),
+    setContributionEnabled: (_pluginId, socketId, enabled) => installed({
+      record: { ...installed().record, disabledContributions: enabled ? [] : [socketId] },
+    }),
     reload: () => installed(),
     skillRoots: () => [],
     ...overrides,

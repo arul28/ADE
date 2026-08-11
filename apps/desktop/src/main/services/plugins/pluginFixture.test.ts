@@ -114,4 +114,61 @@ describe("hello-plugin fixture", () => {
     await expect(install.install({ source: broken })).rejects.toThrow();
     expect(install.list()).toEqual([]);
   });
+
+  it("installs a community plugin unverified and tells the directory it happened", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const reportInstall = vi.fn();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      // No published digest: community plugins live here permanently, and
+      // failing them would make the directory a gate on installing anything.
+      resolveRegistryEntry: async () => ({ official: false, checksums: {} }),
+      reportInstall,
+    });
+
+    const installed = await install.install({ source: fixtureRoot });
+    expect(installed.record.pluginId).toBe("hello-plugin");
+
+    // Fired after the install is committed, and never awaited by it.
+    await vi.waitFor(() => expect(reportInstall).toHaveBeenCalledWith({
+      pluginId: "hello-plugin",
+      version: "0.1.0",
+    }));
+  });
+
+  it("refuses an official release it cannot verify against the published digest", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      resolveRegistryEntry: async () => ({
+        official: true,
+        // The digest recipe is `git archive` of the tag — see registry/README.
+        // A local-directory install has no archive to reproduce it from, so the
+        // one thing it must not do is shrug and install anyway.
+        checksums: { "0.1.0": "a".repeat(64) },
+      }),
+    });
+
+    await expect(install.install({ source: fixtureRoot })).rejects.toThrow(/checksum/i);
+    // Refused while still in staging: nothing was moved into place, so nothing
+    // of the unverified tree can run.
+    expect(install.list()).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin"))).toBe(false);
+  });
+
+  it("installs when the directory is unreachable rather than blocking on it", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      resolveRegistryEntry: async () => {
+        throw new Error("offline");
+      },
+    });
+
+    const installed = await install.install({ source: fixtureRoot });
+    expect(installed.record.pluginId).toBe("hello-plugin");
+  });
 });

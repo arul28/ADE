@@ -3375,6 +3375,67 @@ describe("plugin remote commands", () => {
     expect(callOnMachine).not.toHaveBeenCalled();
   });
 
+  it("routes a phone's plugin tap to the host's own invoke path", async () => {
+    // Every button, form and menu item a plugin puts on a phone rides this one
+    // action: iOS gates outbound commands against an allowlist compiled into
+    // the app, so a per-plugin action name could never pass a build that
+    // shipped before the plugin existed. The action travels in `actionId`.
+    const invoke = vi.fn().mockResolvedValue({ message: "Refreshed 3 issues" });
+    setPluginActionInvoker(invoke);
+    const { service } = createService({});
+
+    const result = await service.execute(makePayload("plugins.invoke", {
+      pluginId: "graph",
+      actionId: "refresh",
+      payload: { laneId: "lane-1" },
+    }));
+
+    expect(invoke).toHaveBeenCalledWith({
+      pluginId: "graph",
+      action: "refresh",
+      args: { laneId: "lane-1" },
+    });
+    // `{ok, message}` is what the phone decodes; anything else it ignores.
+    expect(result).toMatchObject({ ok: true, message: "Refreshed 3 issues" });
+  });
+
+  it("accepts `action` as a synonym and treats a missing handler answer as success", async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    setPluginActionInvoker(invoke);
+    const { service } = createService({});
+
+    // The desktop's own vocabulary says `action`; both spellings reach the
+    // same handler rather than one of them silently invoking nothing.
+    const result = await service.execute(makePayload("plugins.invoke", {
+      pluginId: "graph",
+      action: "refresh",
+    }));
+
+    expect(invoke).toHaveBeenCalledWith({ pluginId: "graph", action: "refresh", args: {} });
+    // A handler that returns nothing still ran. The error path is reserved for
+    // transport and policy failures, which are the ones a user can act on.
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("refuses a plugin invoke with no action and reports an unbound host as unavailable", async () => {
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.invoke", { pluginId: "graph" })))
+      .rejects.toThrow(/action id/i);
+    await expect(service.execute(makePayload("plugins.invoke", { pluginId: "graph", actionId: "refresh" })))
+      .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
+  });
+
+  it("keeps plugin invoke off the viewer path", () => {
+    const { service } = createService({});
+    // A plugin handler may write anything, so this is mutating for the same
+    // reason `plugin.invoke` is — but NOT approval-gated: the install was the
+    // trust decision, and a prompt per tap makes a plugin unusable from a phone.
+    expect(service.getDescriptor("plugins.invoke")?.policy).toEqual({ viewerAllowed: false });
+    expect(service.getDescriptor("plugins.invoke")?.scope).toBe("runtime");
+    expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toContain("plugins.invoke");
+  });
+
   it("refuses a machine-scoped toggle when it cannot reach other machines", async () => {
     setPluginInstallService({
       install: vi.fn(),

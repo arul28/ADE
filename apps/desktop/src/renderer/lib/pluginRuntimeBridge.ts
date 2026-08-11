@@ -30,6 +30,13 @@ export type PluginTabDescriptor = {
   panelId: string;
   /** Phosphor icon name; resolved through `pluginIcons.ts`, never rendered raw. */
   icon?: string | null;
+  /**
+   * Names a compiled-in tab this surface gates rather than renders — see
+   * `PLUGIN_BUILTIN_SURFACE_IDS` in `shared/plugins/manifest.ts`. Absent on
+   * every ordinary plugin tab, and absent from a host too old to report it, so
+   * `builtinTabs.ts` treats its absence as "not a gate" and never as "hidden".
+   */
+  builtin?: string | null;
 };
 
 export type InstalledPlugin = {

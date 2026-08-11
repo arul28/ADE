@@ -1241,6 +1241,31 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { pluginId: string, values: object }",
       example: "ade actions run plugin.setConfig --input-json '{\"pluginId\":\"graph\",\"values\":{\"defaultLane\":\"main\"}}'",
     },
+    setContributionEnabled: {
+      description: "Turn one of a plugin's declared socket contributions off or on. Persisted per machine, so it survives a restart and a reinstall.",
+      input: "object { pluginId: string, socketId: string, enabled: boolean }",
+      example: "ade actions run plugin.setContributionEnabled --input-json '{\"pluginId\":\"graph\",\"socketId\":\"pr-badge\",\"enabled\":false}'",
+    },
+    marketplaceIndex: {
+      description: "The plugin directory. Cached for six hours; `refresh` revalidates. Null when there is neither a network answer nor a cache.",
+      input: "object { refresh?: boolean }",
+      example: "ade actions run plugin.marketplaceIndex --text",
+    },
+    presence: {
+      description: "Which machines on the account have which plugins installed, from the synced presence table.",
+      input: "object {}",
+      example: "ade actions run plugin.presence --text",
+    },
+    getReadme: {
+      description: "An installed plugin's README, or null when it ships none.",
+      input: "object { pluginId: string }",
+      example: "ade actions run plugin.getReadme --input-json '{\"pluginId\":\"graph\"}' --text",
+    },
+    inspectSource: {
+      description: "Read an install source WITHOUT installing it. A local directory answers with its manifest; a remote URL answers with no manifest, because inspecting must never be what fetches code.",
+      input: "object { source: string }",
+      example: "ade actions run plugin.inspectSource --input-json '{\"source\":\"/path/to/plugin\"}'",
+    },
     install: {
       description: "Install a plugin from a git URL or a local directory. Operator-only: this puts third-party code on the machine.",
       input: "object { source: string, ref?: string, enable?: boolean }",

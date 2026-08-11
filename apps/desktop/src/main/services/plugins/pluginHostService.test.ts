@@ -108,3 +108,72 @@ describe("plugin.setConfig", () => {
     expect((rejected as PluginSdkError).code).toBe("plugin_not_found");
   });
 });
+
+describe("plugin contributions, readme and source inspection", () => {
+  afterEach(async () => {
+    await disposeSharedPluginHostService();
+    while (scratchDirs.length) fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
+  });
+
+  it("persists a disabled contribution as an OFF list that survives a reload", async () => {
+    const { plugins, pluginsRoot } = await hostWithFixture();
+
+    const before = await plugins.list({});
+    // On by default: an empty list has to mean "everything this plugin
+    // declares is live", or a plugin installed before the field existed would
+    // read as fully switched off.
+    expect(before[0]?.disabledContributions).toEqual([]);
+
+    const summary = await plugins.setContributionEnabled({
+      pluginId: "hello-plugin",
+      socketId: "greeting",
+      enabled: false,
+    });
+    expect(summary.disabledContributions).toEqual(["greeting"]);
+
+    // Persisted in the machine install registry, not held in memory.
+    const state = JSON.parse(fs.readFileSync(path.join(pluginsRoot, "state.json"), "utf8")) as {
+      plugins: Record<string, { disabledContributions?: string[] }>;
+    };
+    expect(state.plugins["hello-plugin"]?.disabledContributions).toEqual(["greeting"]);
+    expect((await plugins.list({}))[0]?.disabledContributions).toEqual(["greeting"]);
+
+    const reenabled = await plugins.setContributionEnabled({
+      pluginId: "hello-plugin",
+      socketId: "greeting",
+      enabled: true,
+    });
+    expect(reenabled.disabledContributions).toEqual([]);
+  });
+
+  it("reads an installed plugin's readme and answers null when it ships none", async () => {
+    const { plugins, pluginsRoot } = await hostWithFixture();
+
+    expect(await plugins.getReadme({ pluginId: "hello-plugin" })).toBeNull();
+
+    fs.writeFileSync(path.join(pluginsRoot, "hello-plugin", "README.md"), "# Hello\n", "utf8");
+    expect(await plugins.getReadme({ pluginId: "hello-plugin" })).toBe("# Hello\n");
+    expect(await plugins.getReadme({ pluginId: "not-installed" })).toBeNull();
+  });
+
+  it("inspects a local source without installing it, and never fetches a remote one", async () => {
+    const { plugins, pluginsRoot } = await hostWithFixture();
+
+    const local = await plugins.inspectSource({ source: fixtureRoot });
+    expect(local?.manifest?.name).toBe("hello-plugin");
+
+    // A URL is reported as itself with no manifest: reading a source must never
+    // be the step that puts code on the machine.
+    const remote = await plugins.inspectSource({ source: "https://example.test/graph.git" });
+    expect(remote).toEqual({ source: "https://example.test/graph.git", manifest: null });
+    expect(fs.readdirSync(pluginsRoot).sort()).toEqual(["hello-plugin", "state.json"]);
+  });
+
+  it("reports no presence rows when no project database is attached", async () => {
+    const { plugins } = await hostWithFixture();
+
+    // Empty reads as "this machine only" rather than as an error — the rows
+    // live in a project database this host has not been given.
+    expect(await plugins.presence()).toEqual([]);
+  });
+});
