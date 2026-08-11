@@ -29701,6 +29701,17 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
+          // One local line per child turn completion. A parent that never got
+          // woken is otherwise indistinguishable from a child that never
+          // finished, which is exactly how the original incident went unnoticed.
+          logger.info("agent_chat.spawn_completion_routed", {
+            childSessionId,
+            parentSessionId,
+            childTurnId: resolvedTurnId,
+            spawnKind,
+            status: resultStatus,
+            routedTo: parentShouldWake ? "wake" : "quiet_notice",
+          });
           if (parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,

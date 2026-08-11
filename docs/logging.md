@@ -36,6 +36,15 @@ SDK still compacts naturally above its high-water mark. The fallback gate's
 debug line is `agent_chat.claude_context_compaction_fallback_gate`; neither line
 is a PostHog event.
 
+Spawned-child turn completions record the local structured line
+`agent_chat.spawn_completion_routed` with `childSessionId`, `parentSessionId`,
+`childTurnId`, `spawnKind`, `status`, and `routedTo` (`wake` or
+`quiet_notice`). Write it for every completion, including the quiet ones: a
+parent that was never woken is otherwise indistinguishable in the logs from a
+child that never finished, which is how the original mis-attribution went
+unnoticed. A final delivery failure keeps its own
+`agent_chat.spawn_completion_delivery_failed` line. Neither is a PostHog event.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map

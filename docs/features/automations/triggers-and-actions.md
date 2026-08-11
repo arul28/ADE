@@ -173,6 +173,8 @@ Action types (`AutomationActionType`):
 
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/registry.ts`.
 
+Rule config is not a trusted author of chat-message provenance. Before dispatching any `chat` domain action, the automation service runs `stripHostAuthoredMessageProvenance` (from `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts`) over each resolved argument's `metadata`, deleting `spawnDispatch`, `orchestrationOrigin`, `scheduledWake`, `spawnCompletion`, `agentRelay`, and `hostContinuation`. Those keys decide whether a spawned agent's turn completion wakes another agent, and the host derives them from observed identity — see [Chat](../chat/README.md#mission-ownership-decides-the-wake).
+
 `AdeActionEditor` is split into two modes: a structured form driven by `adeActionSchemas.ts` (one input per declared `AdeActionParam`, with type-aware widgets — strings, numbers, booleans, comma-separated string arrays, enum dropdowns, and a JSON editor for free-form `json` params) and a raw JSON fallback (`Show JSON` toggle) for actions that have no schema entry or for users who want full control. The action picker filters by domain and search, surfaces `description` text, and inserts `{{trigger.*}}` placeholders (`trigger.lane.id`, `trigger.pr.id`, `trigger.pr.number`, `trigger.pr.title`, `trigger.pr.author`, `trigger.branch`) directly into the focused string input.
 
 ### Deferred cleanup lifecycle
