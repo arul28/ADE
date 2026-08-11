@@ -2092,31 +2092,30 @@ final class DatabaseService {
     notifyDidChange(touchedTables: ["terminal_sessions"])
   }
 
-  /// Optimistic local write for the ADE-125 session lifecycle columns
-  /// (settle / settle override / snooze overlay / woke marker). The phone is a
-  /// controller and never owns these values — the host's remote command is the
-  /// source of truth and reconciles over sync — but writing locally first keeps
-  /// the row from flickering back for a round trip.
+  /// Optimistic local write for the snooze visibility overlay (`snoozed_until`,
+  /// `snoozed_at`) and the woke marker. The phone is a controller and never owns
+  /// these values — the host's remote command is the source of truth and
+  /// reconciles over sync — but writing locally first keeps the row from
+  /// flickering back for a round trip.
+  ///
+  /// The settle columns (`settled_at`, `settle_override`, `settle_source`) are
+  /// deliberately NOT writable from here — they are host-authoritative and a
+  /// replicating write can defeat a host rejection by CRDT merge. See
+  /// `PendingSessionSettleStates.swift` for the replacement.
   ///
   /// Each parameter is a two-level optional so "leave alone" and "clear" are
   /// distinguishable: `nil` skips the column, `.some(nil)` sets it to NULL,
   /// `.some(value)` writes the value.
-  func updateSessionLifecycle(
+  func updateSessionSnoozeOverlay(
     sessionId: String,
-    settledAt: String?? = nil,
-    settleOverride: String?? = nil,
-    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
     wokeReason: String?? = nil
   ) throws {
     try withLock {
-      try updateSessionLifecycleLocked(
+      try updateSessionSnoozeOverlayLocked(
         sessionId: sessionId,
-        settledAt: settledAt,
-        settleOverride: settleOverride,
-        settleSource: settleSource,
         snoozedUntil: snoozedUntil,
         snoozedAt: snoozedAt,
         wokeAt: wokeAt,
@@ -2125,11 +2124,8 @@ final class DatabaseService {
     }
   }
 
-  private func updateSessionLifecycleLocked(
+  private func updateSessionSnoozeOverlayLocked(
     sessionId: String,
-    settledAt: String?? = nil,
-    settleOverride: String?? = nil,
-    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -2148,9 +2144,6 @@ final class DatabaseService {
       values.append(update)
     }
 
-    assign("settled_at", settledAt)
-    assign("settle_override", settleOverride)
-    assign("settle_source", settleSource)
     assign("snoozed_until", snoozedUntil)
     assign("snoozed_at", snoozedAt)
     assign("woke_at", wokeAt)

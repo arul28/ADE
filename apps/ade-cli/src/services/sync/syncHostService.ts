@@ -353,6 +353,35 @@ const SYNC_HOST_AUTHORITATIVE_TABLES = new Set([
 const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
   SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
 
+/**
+ * Settle columns on `terminal_sessions`. The host decides these — a settle
+ * arrives as a `session.settle*` remote command and is written by
+ * `sessionService`, which is the only place that can weigh the decision against
+ * live work.
+ *
+ * A phone must not author them over CRR. `terminal_sessions` replicates, so a
+ * phone's optimistic `settled_at` carries no host lifecycle revision and merges
+ * in regardless of what the host decided: the host can *reject* a settle and
+ * still end up with a settled row. That is a guard defeated by a merge rather
+ * than by a caller, and no amount of host-side checking closes it.
+ *
+ * Current iOS builds no longer write these (they use a local pending-UI overlay
+ * instead — see `PendingSessionSettleStates.swift`), but a paired phone on an
+ * older build still does, so the host enforces it rather than trusting the
+ * client version. The drop is silent and per-column: everything else in the
+ * batch, including the phone's own snooze overlay, applies normally.
+ *
+ * Scoped to phone peers on purpose. A paired *desktop* peer runs the same
+ * `sessionService` chokepoint, so its settle writes are host-decided too and
+ * must keep replicating.
+ */
+const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>([
+  ["terminal_sessions", new Set(["settled_at", "settle_override", "settle_source"])],
+]);
+
+const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
+  HOST_AUTHORITATIVE_COLUMNS_BY_TABLE.get(change.table)?.has(change.cid) ?? false;
+
 const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
   ...MOBILE_CHANGESET_EXCLUDED_TABLES,
   ...SYNC_HOST_AUTHORITATIVE_TABLES,
@@ -7596,7 +7625,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         // Brain-seizure guard: never let a peer's CRR rows for host-authoritative
         // tables (e.g. sync_cluster_state) win and flip brain ownership.
-        const filtered = changes.filter((change) => !isHostAuthoritativeTable(change));
+        // Settle-authority guard: never let a phone's optimistic settle column
+        // merge over the host's decision (older iOS builds still write them).
+        // The two rules are not symmetric: the table rule applies to every
+        // peer, the column rule only to phones.
+        //
+        // `isMobilePeer`, not `isMobileChangesetPeer`: it resolves a
+        // record-backed peer through its PAIRING RECORD rather than the
+        // `hello` metadata the peer declares about itself, so a paired phone
+        // cannot opt out of the guard by claiming to be a desktop.
+        const isPhonePeer = isMobilePeer(peer);
+        const filtered = changes.filter((change) => {
+          if (isHostAuthoritativeTable(change)) return false;
+          if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;
+          return true;
+        });
         try {
           let appliedCount = 0;
           if (filtered.length > 0) {

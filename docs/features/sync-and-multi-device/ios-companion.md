@@ -244,6 +244,13 @@ apps/ios/
 │   │   │                             # account-wide "agent runs" activity
 │   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
 │   │   │                               # quota snapshot + refresh state
+│   │   ├── PendingSessionSettleStates.swift # in-flight settle/unsettle/
+│   │   │                            # override intents, applied over session
+│   │   │                            # reads. Purely local and never persisted,
+│   │   │                            # because the settle columns are
+│   │   │                            # host-authoritative and a replicating
+│   │   │                            # write could defeat a host rejection by
+│   │   │                            # CRDT merge
 │   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, roam-trigger
 │   │   │                            # policy (failover vs upgrade probe),
 │   │   │                            # path-change, heartbeat-silence,
@@ -278,7 +285,10 @@ apps/ios/
 │   │                                # discovery, personal-chat cache/actions/
 │   │                                # subscription routing, session.* lifecycle
 │   │                                # (settle / override / snooze / wake /
-│   │                                # clear-woke-marker) callers
+│   │                                # clear-woke-marker) callers, and the
+│   │                                # session read chokepoint (localSessions()
+│   │                                # / localSession(id:)) that overlays
+│   │                                # in-flight settle intents onto rows
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -2028,8 +2038,29 @@ The iOS pieces:
   optional `String` fields through `decodeIfPresent`, and include them in
   equality so a lifecycle-only change still redraws the row.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
-  callers. Mobile has no local write path for lifecycle, so these commands are
-  the mechanism, and the connect-time descriptor list gates the affordances.
+  callers. The phone never decides a lifecycle value, so these commands are the
+  mechanism, and the connect-time descriptor list gates the affordances.
+- **The settle columns are host-authoritative and the phone never writes them.**
+  `settled_at`, `settle_override`, and `settle_source` are decided by the host's
+  `sessionService`, which is the only place that can weigh a settle against live
+  work. `terminal_sessions` is a CRR table, so a local optimistic write on the
+  phone replicates upstream carrying no host lifecycle revision — it can win a
+  merge against a host that *rejected* the settle and file a live session as
+  done. `Database.updateSessionSnoozeOverlay` therefore cannot write them at all;
+  it is scoped to the snooze overlay, which keeps its optimistic write plus
+  rollback because those columns guard no host decision. Instant feedback for
+  settle comes from `PendingSessionSettleStates` — a local, non-persisted overlay
+  applied when session rows are read, resolved when the host's changeset confirms
+  it, when the command fails, or by a bounded staleness backstop. With two or
+  more commands outstanding for one session the overlay stops trying to confirm
+  at all: a replicated row change cannot be attributed to a particular command
+  without a per-command marker, and the host's lifecycle revision is host-local.
+  It keeps showing what the user last asked for and yields to replicated truth at
+  the backstop, rather than confirming against the wrong command. The host
+  enforces the same rule against phones on older builds by dropping those columns
+  from inbound phone changesets (`syncHostService`), and such a phone self-heals
+  on the next `refreshWorkSessions`. See
+  [settle-teardown design §3c-i](../terminals-and-sessions/settle-teardown-design.md).
 - `apps/ios/ADE/Views/Work/WorkSessionCanonicalState.swift` is the Swift mirror
   of the shared derivation, including the settle-override tier and
   `isSessionFiledAsSnoozed`. It also owns the row's status vocabulary:
@@ -2067,7 +2098,9 @@ The iOS pieces:
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation,
   the row status vocabulary, and scoped view-state parity;
   `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, and the
-  quiet-zone shelves.
+  quiet-zone shelves; `PendingSessionSettleStatesTests.swift` covers the settle
+  overlay — what each intent paints, which host row satisfies it, token-scoped
+  failure, and the staleness backstop.
 
 Two invariants govern changes here. The Swift derivation must stay
 behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts` —

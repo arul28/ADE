@@ -251,6 +251,16 @@ standard SQL on the host side, so iOS stays in parity.
 - **Deletes are tombstones.** `cid = "-1"` (see `localDeleteColumnId`
   in `Database.swift`) marks the row dead. A resurrection from
   another device with a newer `col_version` wins over the tombstone.
+- **A merge is not a caller, so a host-side check cannot guard a
+  replicated column.** Where a column encodes a decision only the host
+  may make, a controller's optimistic write to it merges in on the
+  ordinary LWW rule and simply overwrites the decision — including a
+  decision to *refuse*. Nothing on the host is reached, so no amount of
+  validation there closes it. Such columns are declared host-authoritative
+  and filtered out of the offending peer's inbound changesets;
+  `terminal_sessions.settled_at` / `settle_override` / `settle_source` are
+  the current set. See
+  [Host-authoritative columns](./README.md#host-authoritative-columns-are-peer-scoped).
 
 ## Schema implications
 
@@ -317,6 +327,12 @@ machine-bound.
 **Moving an existing table into that set is a rollout-hazard change,
 and it is only safe because `applyChanges` now skips inbound rows for
 local-only tables** — see [Apply](#apply).
+
+"The host owns all writes and controllers only read" is a design intent,
+not a property the CRR gives you: nothing stops a controller writing the
+column anyway, and the write replicates. When the value is one a host
+*decision* rests on, back the intent with the host-authoritative column
+filter described in [Merge semantics](#merge-semantics).
 
 ### Local clears that must not propagate
 

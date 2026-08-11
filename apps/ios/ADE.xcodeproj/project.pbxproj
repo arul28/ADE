@@ -77,6 +77,8 @@
 		B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */; };
 		B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000001F /* PairedHostCredentialStateTests.swift */; };
 		B70000000000000000000099 /* SyncAccountConnectRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */; };
+		B7000000000000000000009B /* PendingSessionSettleStates.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000009A /* PendingSessionSettleStates.swift */; };
+		B7000000000000000000009D /* PendingSessionSettleStatesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000009C /* PendingSessionSettleStatesTests.swift */; };
 		B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* SyncTransportSelectionTests.swift */; };
 		B80000000000000000000002 /* SyncConnectionRace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* SyncConnectionRace.swift */; };
 		B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* SyncTerminalInputQueue.swift */; };
@@ -481,6 +483,8 @@
 		B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicyTests.swift; path = ADETests/SyncRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		B7000000000000000000001F /* PairedHostCredentialStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairedHostCredentialStateTests.swift; path = ADETests/PairedHostCredentialStateTests.swift; sourceTree = "<group>"; };
 		B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncAccountConnectRecoveryTests.swift; path = ADETests/SyncAccountConnectRecoveryTests.swift; sourceTree = "<group>"; };
+		B7000000000000000000009A /* PendingSessionSettleStates.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PendingSessionSettleStates.swift; path = ADE/Services/PendingSessionSettleStates.swift; sourceTree = "<group>"; };
+		B7000000000000000000009C /* PendingSessionSettleStatesTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PendingSessionSettleStatesTests.swift; path = ADETests/PendingSessionSettleStatesTests.swift; sourceTree = "<group>"; };
 		B90000000000000000000001 /* SyncTransportSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTransportSelectionTests.swift; path = ADETests/SyncTransportSelectionTests.swift; sourceTree = "<group>"; };
 		B80000000000000000000001 /* SyncConnectionRace.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncConnectionRace.swift; path = ADE/Services/SyncConnectionRace.swift; sourceTree = "<group>"; };
 		B80000000000000000000003 /* SyncTerminalInputQueue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTerminalInputQueue.swift; path = ADE/Services/SyncTerminalInputQueue.swift; sourceTree = "<group>"; };
@@ -920,6 +924,7 @@
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
+				B7000000000000000000009A /* PendingSessionSettleStates.swift */,
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
@@ -1095,6 +1100,7 @@
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
 				B7000000000000000000001F /* PairedHostCredentialStateTests.swift */,
 				B70000000000000000000098 /* SyncAccountConnectRecoveryTests.swift */,
+				B7000000000000000000009C /* PendingSessionSettleStatesTests.swift */,
 				B90000000000000000000001 /* SyncTransportSelectionTests.swift */,
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
@@ -1431,6 +1437,7 @@
 				C5B00000000000000000000C /* SSHPairingViewModel.swift in Sources */,
 				C5B00000000000000000000D /* SSHPairingView.swift in Sources */,
 				B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */,
+				B7000000000000000000009B /* PendingSessionSettleStates.swift in Sources */,
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
@@ -1609,6 +1616,7 @@
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,
 				B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */,
 				B70000000000000000000099 /* SyncAccountConnectRecoveryTests.swift in Sources */,
+				B7000000000000000000009D /* PendingSessionSettleStatesTests.swift in Sources */,
 				B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */,
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,

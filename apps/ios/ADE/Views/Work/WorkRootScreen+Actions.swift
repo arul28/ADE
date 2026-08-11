@@ -420,9 +420,11 @@ extension WorkRootScreen {
   // MARK: - Session lifecycle (ADE-125)
   //
   // Every one of these is a host command: the phone is a controller and never
-  // runs agents, so it never owns a lifecycle column. `SyncService` writes the
-  // column locally first (so the row doesn't flicker), rolls that back if the
-  // host rejects, and `reload()` reconciles against the replicated truth.
+  // runs agents, so it never owns a lifecycle column. `SyncService` shows the
+  // change immediately — a local pending overlay for the host-authoritative
+  // settle columns, an optimistic write for the snooze overlay — drops or rolls
+  // that back if the host rejects, and `reload()` reconciles against the
+  // replicated truth.
 
   private func runSessionLifecycle(_ work: @escaping () async throws -> Void) {
     Task {
@@ -433,7 +435,8 @@ extension WorkRootScreen {
         ADEHaptics.error()
         let message = error.localizedDescription
         // Reconcile against replicated truth first — `SyncService` has already
-        // rolled the optimistic column back — and only then surface the
+        // dropped the pending settle overlay / rolled the optimistic snooze
+        // column back — and only then surface the
         // failure. This must NOT go through `errorMessage`: every successful
         // projection load clears that (`reload()` here, and
         // `reloadFromPersistedProjection()` on the very next CRDT tick, which
