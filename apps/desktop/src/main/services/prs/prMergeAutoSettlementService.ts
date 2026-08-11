@@ -11,6 +11,13 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import { isChatToolType } from "../sessions/chatSessionProjection";
+
+/**
+ * The abort reasons that mean "something is running right now". Only these make
+ * a retry wait: the others either resolve on their own or, in the case of
+ * `teardown_failed`, describe work that is still running and still needs stopping.
+ */
+const ACTIVITY_ABORTS = new Set<string>(["turn_start", "turn_failed", "attention_requested"]);
 import type { AgentChatSessionSummary } from "../../../shared/types";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
@@ -268,7 +275,14 @@ export function createPrMergeAutoSettlementService(args: {
           // the PR unhandled is the point: a later pass retries, instead of this
           // merge being consumed by a settle that never landed.
           abandonedThisPr = true;
-          abortedSessionIds.add(session.id);
+          // ONLY an activity abort waits for the turn to end. `teardown_failed`
+          // means the stop itself failed while the work kept running — making it
+          // wait for inactivity would never stop that work again, because the
+          // work is exactly what it would be waiting on. `lifecycle_changed` and
+          // `joined_in_flight` are momentary and clear on their own.
+          if (settleResult.aborted.some((entry) => ACTIVITY_ABORTS.has(entry.reason))) {
+            abortedSessionIds.add(session.id);
+          }
         }
       }
 

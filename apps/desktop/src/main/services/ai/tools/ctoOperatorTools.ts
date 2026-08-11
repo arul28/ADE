@@ -29,6 +29,7 @@ import type { createCtoStateService } from "../../cto/ctoStateService";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
+import { settleAbortMessage } from "../../sessions/settleTerminalSession";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -559,13 +560,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         if (!result.found) return { success: false, error: `Session not found: ${sessionId}` };
         if (!result.settled) {
-          // The session went active while the settle was in flight. Saying "not
-          // found" here would send the operator looking for a session that is
-          // sitting right there, working.
-          return {
-            success: false,
-            error: `Session is active again, so it was not settled: ${sessionId}`,
-          };
+          // The reason matters: `teardown_failed` and `joined_in_flight` do not
+          // mean the session went active, and saying so misdirects the operator.
+          return { success: false, error: settleAbortMessage(sessionId, result.abortedBy) };
         }
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {

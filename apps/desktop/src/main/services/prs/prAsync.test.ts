@@ -1156,6 +1156,48 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
+  it("retries a teardown failure immediately instead of waiting for the work to stop", async () => {
+    const db = createMemoryDb();
+    // The stop failed and the work is still running — which is precisely why an
+    // inactivity gate must not apply: it would wait on the thing it must stop.
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: [] as string[],
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "teardown_failed" })),
+    }));
+    const getChatLiveness = vi.fn(async () => ({ status: "active" as const, awaitingInput: false }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get: vi.fn(() => null),
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+
+    expect(
+      settleSessionsReportingAborts,
+      "a failed stop must be attempted again, not parked behind the running work",
+    ).toHaveBeenCalledTimes(2);
+    expect(getChatLiveness, "a teardown failure must not consult the activity gate").not.toHaveBeenCalled();
+  });
+
   it("holds the retry while the chat is mid-turn, and reads chat liveness not the row", async () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
