@@ -9,6 +9,7 @@ import {
   PLUGIN_MACHINE_UNREACHABLE_CODE,
   PLUGIN_PRESENCE_LIST_ACTION,
   PLUGIN_PRESENCE_SYNC_ACTION,
+  type PluginPresenceDirectoryClient,
   type PluginPresenceDirectoryMachine,
 } from "./pluginPresenceService";
 import { readPluginPresenceForMachine, type PluginPresenceRow } from "./pluginTableWriters";
@@ -235,5 +236,66 @@ describe("plugin presence fan-out", () => {
     await reachable.service.callOnMachine("machine-b", "plugins.install", { kind: "git", url: "u" });
     expect(reachable.callMachineMethod.mock.calls[0][0]).toBe("target-machine-b");
     expect(reachable.callMachineMethod.mock.calls[0][2]).toEqual({ kind: "git", url: "u" });
+  });
+
+  it("prefers the injected directoryClient over the construction-time deps once one is set (ROUTED-FROM-B)", async () => {
+    // Constructed the way the brain does: every directory dep is INERT,
+    // matching "resolving a machine key to a paired target, and calling it,
+    // live in `remoteConnectionService`, which the brain does not have" —
+    // `PluginPresenceDirectoryClient`'s own doc. `setDirectoryClient` is how
+    // the desktop main process wires in the real one AFTER construction.
+    // `directoryIdentities()`/`readPresenceMatrix()` and `callOnMachine()`
+    // used to read `deps` directly instead of the (by-then live) client, so
+    // they kept failing exactly as if nothing had ever been wired in.
+    const inertResolve = vi.fn(() => null);
+    const inertIsConnected = vi.fn(() => false);
+    const { service } = build({
+      listMachines: async () => {
+        throw new Error("no directory in the brain");
+      },
+      resolveTargetIdForMachineKey: inertResolve,
+      isTargetConnected: inertIsConnected,
+    });
+
+    const liveCallMachineMethod = vi.fn<Parameters<CallMachineMethod>, Promise<unknown>>(
+      async () => ({ plugins: [row("graph")] }),
+    );
+    const liveClient: PluginPresenceDirectoryClient = {
+      // A label distinct from the key: `directoryIdentities` falling through
+      // to the inert (throwing) `deps.listMachines` reads as the machineKey
+      // fallback, so this is what distinguishes "used the live client" from
+      // "silently degraded to unnamed" — the two outcomes this bug conflated.
+      listMachines: async () => [{ ...machine("machine-a"), label: "Live Label A" }],
+      resolveTargetIdForMachineKey: (key) => `live-target-${key}`,
+      isTargetConnected: () => true,
+      callMachineMethod: liveCallMachineMethod as never,
+    };
+    service.setDirectoryClient(liveClient);
+    // Populate machine-a's replicated presence rows — `refreshFromDirectory`
+    // already routed through `directoryClient` correctly before this fix, so
+    // this part is just setup for the assertion below, not what is under test.
+    await service.refreshFromDirectory();
+
+    const matrix = await service.readPresenceMatrix();
+    expect(matrix.find((entry) => entry.machineKey === "machine-a")?.machineName).toBe("Live Label A");
+    // The inert deps were never consulted once a live client existed.
+    expect(inertResolve).not.toHaveBeenCalled();
+
+    await service.callOnMachine("machine-a", "plugins.install", { kind: "registry", pluginId: "graph" });
+    expect(liveCallMachineMethod).toHaveBeenCalledWith(
+      "live-target-machine-a",
+      "plugins.install",
+      { kind: "registry", pluginId: "graph" },
+      expect.anything(),
+    );
+    expect(inertResolve).not.toHaveBeenCalled();
+    expect(inertIsConnected).not.toHaveBeenCalled();
+
+    // Passing null restores the inert default rather than leaving the live
+    // client's now-stale handle behind.
+    service.setDirectoryClient(null);
+    await expect(service.callOnMachine("machine-a", "plugins.install"))
+      .rejects.toMatchObject({ code: PLUGIN_MACHINE_UNREACHABLE_CODE });
+    expect(inertResolve).toHaveBeenCalledWith("machine-a");
   });
 });

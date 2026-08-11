@@ -123,8 +123,6 @@ export type PluginPresenceMatrixRow = {
 
 /** Remote command a machine calls to read another machine's presence rows. */
 export const PLUGIN_PRESENCE_LIST_ACTION = "plugins.presenceList";
-/** Remote command that returns the account-wide coverage matrix. */
-export const PLUGIN_PRESENCE_MATRIX_ACTION = "plugins.presenceMatrix";
 /** Remote command a machine calls to tell peers its install state changed. */
 export const PLUGIN_PRESENCE_SYNC_ACTION = "plugins.presenceSync";
 
@@ -364,7 +362,14 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
    */
   async function directoryIdentities(): Promise<Map<string, PluginPresenceDirectoryMachine>> {
     try {
-      const machines = await deps.listMachines();
+      // Through `directoryClient`, like `reachableTargets`/`runRefresh` above —
+      // NOT `deps.listMachines()` directly. `directoryClient` starts as the
+      // inert default built from `deps` and is replaced by `setDirectoryClient`
+      // once the desktop main process wires in the real one; reading `deps`
+      // here meant this kept asking the inert default even after that,
+      // degrading every matrix row to "unnamed, offline-looking" regardless of
+      // whether a live client was actually available.
+      const machines = await directoryClient.listMachines();
       return new Map((machines ?? []).map((machine) => [machine.machineKey, machine]));
     } catch (error) {
       deps.logger?.debug?.("plugin.presence.matrix_directory_unavailable", {
@@ -404,14 +409,18 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
     action: string,
     params: Record<string, unknown> = {},
   ): Promise<T> {
-    const targetId = deps.resolveTargetIdForMachineKey(machineKey);
+    // Resolved and checked through `directoryClient`, the same handle the
+    // call below already goes through — reading `deps` here meant a target
+    // the LIVE client could resolve and reach still got rejected as unpaired
+    // or unreachable if construction happened before `setDirectoryClient` ran.
+    const targetId = directoryClient.resolveTargetIdForMachineKey(machineKey);
     if (!targetId) {
       throw codedError(
         "That computer isn't paired with this one.",
         PLUGIN_MACHINE_UNREACHABLE_CODE,
       );
     }
-    if (deps.isTargetConnected && !deps.isTargetConnected(targetId)) {
+    if (directoryClient.isTargetConnected && !directoryClient.isTargetConnected(targetId)) {
       throw codedError(
         "That computer isn't connected right now.",
         PLUGIN_MACHINE_UNREACHABLE_CODE,

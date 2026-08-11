@@ -244,7 +244,7 @@ exports.actions = {
 | `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}` |
 | `ade.secrets.get/set/delete(name)` | Machine credential store, namespaced `plugin:<id>:<NAME>`. Never readable by another plugin |
 | `ade.contributions.publish(entityKind, entityId, socket, payload)` | Publish or clear (`payload: null`) a dynamic contribution |
-| `ade.events.on(event, cb)` | `lane.changed`, `pr.changed`, `session.changed`, `install.changed`. Debounced; returns an unsubscribe function. Payload is `{event, ids[], projectId}` |
+| `ade.events.on(event, cb)` | `lane.changed`, `pr.changed`, `session.changed`, `install.changed`. Debounced; returns an unsubscribe function. Payload is `{event, ids[], projectId, overflow?}` — `overflow: true` means `ids` was truncated at the delivery cap; treat it as a bare refetch signal rather than trusting the partial list |
 | `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for a panel the manifest never declared |
 | `ade.config.get()` | Current values for `manifest.settings`, defaults applied. `secret` kinds are redacted |
 | `ade.log(level, message, fields?)` | `debug`/`info`/`warn`/`error` into the ring buffer `ade plugin logs` reads |

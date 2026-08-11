@@ -173,6 +173,67 @@ describe("pluginInstallServiceAdapter", () => {
     expect(changes).toBe(3);
   });
 
+  it("runs afterChange with the pluginId and kind for every verb, before onChanged (R2)", async () => {
+    // A remote install/enable/disable/uninstall used to touch only the
+    // install registry — nothing stopped the old child, no codeless plugin's
+    // panels were seeded, and an uninstall left the child running with its
+    // data and secrets intact. `afterChange` is what the host wires to run
+    // the same lifecycle a local action goes through.
+    const { service } = stubInstallService();
+    const calls: Array<{ pluginId: string; kind: string }> = [];
+    const order: string[] = [];
+    const adapter = createPluginInstallServiceAdapter({
+      install: service,
+      afterChange: (pluginId, kind) => {
+        calls.push({ pluginId, kind });
+        order.push("afterChange");
+      },
+      onChanged: () => {
+        order.push("onChanged");
+      },
+    });
+
+    await adapter.install({ kind: "path", path: "/tmp/graph" });
+    await adapter.uninstall("graph");
+    await adapter.setEnabled("graph", false);
+    await adapter.setEnabled("graph", true);
+
+    expect(calls).toEqual([
+      { pluginId: "graph", kind: "install" },
+      { pluginId: "graph", kind: "uninstall" },
+      { pluginId: "graph", kind: "disable" },
+      { pluginId: "graph", kind: "enable" },
+    ]);
+    // afterChange completes (stop/reconcile/cleanup) before presence — which
+    // reports the state that just changed — is republished.
+    expect(order).toEqual(["afterChange", "onChanged", "afterChange", "onChanged", "afterChange", "onChanged", "afterChange", "onChanged"]);
+  });
+
+  it("waits for afterChange before resolving, so a caller cannot observe the change before its lifecycle ran", async () => {
+    const { service } = stubInstallService();
+    let resolveAfterChange: (() => void) | null = null;
+    let settled = false;
+    const adapter = createPluginInstallServiceAdapter({
+      install: service,
+      afterChange: () => new Promise<void>((resolve) => {
+        resolveAfterChange = resolve;
+      }),
+    });
+
+    const installPromise = adapter.install({ kind: "path", path: "/tmp/graph" }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveAfterChange!();
+    await installPromise;
+    expect(settled).toBe(true);
+  });
+
   it("falls back to the registry record when the manifest cannot be read", () => {
     const row = toPluginPresenceRow(installed({ manifest: null }));
 

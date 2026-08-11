@@ -7310,6 +7310,63 @@ describe("outbound changeset ack retries", () => {
     }
   });
 
+  it("retries the reseed excluding plugin tables when THEY alone blow the shared budget (R12)", async () => {
+    // Two data-heavy plugins pushing the SHARED 4 MiB cache budget over its
+    // cap must not disable the whole-database reseed for a phone that was
+    // never going to receive a plugin row anyway (it advertises no
+    // `pluginTables` capability below). Without the retry, this peer would
+    // have fallen back to bounded incremental replay exactly like the test
+    // above, for a budget spent entirely on rows it can never apply.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const bulkyValue = "x".repeat(200_000); // 200 KB per row, 30 rows ~= 6 MiB.
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: [
+        ...Array.from({ length: 400 }, (_, index) => makeChange(index + 1, index)),
+        ...Array.from({ length: 30 }, (_, index) => ({
+          ...makeChange(400 + index + 1, 400 + index, bulkyValue),
+          table: "plugin_collections",
+          cid: "value_json",
+          pk: `plugin-key-${index}`,
+        })),
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // No `pluginTables` capability: exactly the majority case the shared
+      // cache used to fail regardless of what it was built for.
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-non-plugin-peer", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const envelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "reseed recovered after excluding plugin tables",
+      );
+      const reseed = envelope.payload as SyncChangesetBatchPayload;
+      // Still a real reseed, not the incremental fallback — and it carries
+      // every one of this peer's kv rows.
+      expect(reseed.reason).toBe("catchup");
+      expect(reseed.toDbVersion).toBe(state.dbVersion);
+      expect(reseed.changes).toHaveLength(400);
+      expect(reseed.changes.every((change) => change.table === "kv")).toBe(true);
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_host.mobile_replica_reseed_retrying_without_plugins",
+        expect.objectContaining({ targetDbVersion: state.dbVersion }),
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_host.mobile_replica_reseed_ready",
+        expect.objectContaining({ targetDbVersion: state.dbVersion, rows: 400 }),
+      );
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it.each([
     {
       name: "a replica at the reseed threshold",
@@ -8068,6 +8125,101 @@ describe("inbound changeset_batch guards", () => {
       expect(ackPayload.appliedCount).toBe(5);
       expect(applyChanges).toHaveBeenCalledTimes(1);
       expect(applyChanges.mock.calls[0]?.[0]).toHaveLength(5);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects a non-string, non-null inbound plugin value instead of measuring it as zero bytes (R4)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-bytes-scalar");
+
+      // A wire-encoded `{type:"bytes",base64}` scalar is not a string, so
+      // `typeof value === "string"` was false and the guard fell through to
+      // measuring it at zero bytes — a multi-MB blob passing a 64 KB cap.
+      const bytesScalar = makePeerChange("plugin_collections", 1, 0);
+      bytesScalar.cid = "value_json";
+      bytesScalar.val = { type: "bytes", base64: "x".repeat(200_000) } as unknown as string;
+      const benign = makePeerChange("kv", 2, 1);
+      const requestId = "batch-bytes-scalar";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: { batchId: requestId, fromDbVersion: 0, toDbVersion: 2, changes: [bytesScalar, benign] },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      expect((ack.payload as { ok?: boolean }).ok).toBe(true);
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
+      expect(appliedRows.every((row) => row.table !== "plugin_collections")).toBe(true);
+      expect(appliedRows).toHaveLength(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("drops a whole over-budget plugin row rather than just its tripped column (R15)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-row-drop");
+
+      // Same row (same `pk`): an over-budget `schema_json` column alongside an
+      // in-budget `title` column for the SAME panel. The old per-CHANGE filter
+      // dropped only the tripped entry and still applied `title`, landing a
+      // panel whose schema silently never arrived — a corrupted row, not a
+      // smaller one. A second, untouched row proves the guard is row-scoped,
+      // not table-wide.
+      const oversizedSchema = makePeerChange("plugin_panels", 1, 0, "x".repeat(PLUGIN_PANEL_SCHEMA_MAX_BYTES + 1));
+      oversizedSchema.cid = "schema_json";
+      oversizedSchema.pk = "panel-row-1";
+      const sameRowTitle = makePeerChange("plugin_panels", 1, 1, "New Title");
+      sameRowTitle.cid = "title";
+      sameRowTitle.pk = "panel-row-1";
+      const otherRow = makePeerChange("plugin_panels", 1, 2, "Other Title");
+      otherRow.cid = "title";
+      otherRow.pk = "panel-row-2";
+      const requestId = "batch-row-drop";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: {
+          batchId: requestId,
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [oversizedSchema, sameRowTitle, otherRow],
+        },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      expect((ack.payload as { ok?: boolean }).ok).toBe(true);
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
+      // Neither column of the oversized row applies...
+      expect(appliedRows.some((row) => row.pk === "panel-row-1")).toBe(false);
+      // ...while the other panel's row is untouched.
+      expect(appliedRows.map((row) => row.pk)).toEqual(["panel-row-2"]);
     } finally {
       try {
         peer?.ws.close();
@@ -12864,6 +13016,22 @@ describe("plugin table sync", () => {
       val: oversized,
     })).toBeNull();
     expect(inboundPluginChangeRejection({ table: "kv", cid: "value", val: oversized })).toBeNull();
+
+    // A wire-encoded bytes scalar is not a string, so measuring it with
+    // `Buffer.byteLength` would have skipped it entirely and scored zero —
+    // this column is JSON text from one writer, and nothing that writer
+    // produces is ever anything but a string or null.
+    expect(inboundPluginChangeRejection({
+      table: "plugin_collections",
+      cid: "value_json",
+      val: { type: "bytes", base64: "x".repeat(200_000) },
+    })).toMatchObject({ table: "plugin_collections", column: "value_json" });
+    // null is the writer's own "no value" and stays welcome.
+    expect(inboundPluginChangeRejection({
+      table: "plugin_collections",
+      cid: "value_json",
+      val: null,
+    })).toBeNull();
   });
 
   it("reseeds a capable phone with the plugin rows its cursor is about to pass", () => {

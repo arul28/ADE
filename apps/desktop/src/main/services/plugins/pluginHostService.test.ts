@@ -11,8 +11,10 @@ import {
   type PluginRuntimeStatus,
 } from "../../../shared/plugins/sdk";
 import { openKvDb, type AdeDb } from "../state/kvDb";
+import { requirePluginInstallService } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import type { createPluginChildSupervisor, PluginChildSupervisor } from "./pluginChildSupervisor";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
+import { emitPluginChange } from "./pluginEvents";
 import { disposeSharedPluginHostService, getSharedPluginHostService } from "./pluginHostService";
 
 /**
@@ -300,40 +302,40 @@ describe("plugin contributions, readme and source inspection", () => {
  * start, and a panel a manifest DECLARES exists without the plugin running —
  * which is the only way a plugin that ships no code can render.
  */
+/** A plugin with a declared panel and no `entry` — a theme, or a static tab. */
+function codelessPluginDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-codeless-"));
+  scratchDirs.push(dir);
+  const root = path.join(dir, "quiet-plugin");
+  fs.mkdirSync(path.join(root, "panels"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "plugin.json"),
+    JSON.stringify({
+      name: "quiet-plugin",
+      version: "1.0.0",
+      displayName: "Quiet",
+      description: "Ships a panel and no code at all.",
+      vocabVersion: 1,
+      surfaces: [{ kind: "tab", id: "quiet", title: "Quiet", panelId: "main" }],
+      panels: [{ id: "main", schemaFile: "panels/main.json", title: "Quiet" }],
+    }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "panels", "main.json"),
+    JSON.stringify({
+      v: 1,
+      title: "Quiet",
+      fallback: { title: "Quiet", text: "Open ADE to see this." },
+      body: [{ component: "text", text: "Declared, never published." }],
+    }),
+    "utf8",
+  );
+  return root;
+}
+
 describe("plugin start and panel materialization", () => {
   afterEach(closeScratch);
-
-  /** A plugin with a declared panel and no `entry` — a theme, or a static tab. */
-  function codelessPluginDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-codeless-"));
-    scratchDirs.push(dir);
-    const root = path.join(dir, "quiet-plugin");
-    fs.mkdirSync(path.join(root, "panels"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "plugin.json"),
-      JSON.stringify({
-        name: "quiet-plugin",
-        version: "1.0.0",
-        displayName: "Quiet",
-        description: "Ships a panel and no code at all.",
-        vocabVersion: 1,
-        surfaces: [{ kind: "tab", id: "quiet", title: "Quiet", panelId: "main" }],
-        panels: [{ id: "main", schemaFile: "panels/main.json", title: "Quiet" }],
-      }),
-      "utf8",
-    );
-    fs.writeFileSync(
-      path.join(root, "panels", "main.json"),
-      JSON.stringify({
-        v: 1,
-        title: "Quiet",
-        fallback: { title: "Quiet", text: "Open ADE to see this." },
-        body: [{ component: "text", text: "Declared, never published." }],
-      }),
-      "utf8",
-    );
-    return root;
-  }
 
   it("starts an enabled plugin as soon as it is installed", async () => {
     const { supervisors } = await hostWithFixture();
@@ -416,6 +418,22 @@ describe("plugin start and panel materialization", () => {
     expect(second.starts).toBe(1);
   });
 
+  it("does not reset another plugin's live panel when a different plugin installs (R1)", async () => {
+    // `codelessPluginDir` seeds itself as `quiet-plugin`; `hostWithFixture`
+    // then installs it as plugin B, and this test installs `hello-plugin`
+    // (plugin A) a second time on top. `reconcile`'s `replacePanelsFor` must
+    // name ONLY the plugin that just changed — a bare boolean would have
+    // clobbered every OTHER installed plugin's live panel with its shipped
+    // default on someone else's install.
+    const { plugins, store } = await hostWithFixture({ source: codelessPluginDir() });
+    store!.updatePanel("quiet-plugin", "main", { schema: { v: 1, title: "Live from quiet-plugin" }, vocabVersion: 1 });
+    expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Live from quiet-plugin" });
+
+    await plugins.install({ source: fixtureRoot });
+
+    expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Live from quiet-plugin" });
+  });
+
   it("tells running plugins that the install set moved", async () => {
     vi.useFakeTimers();
     try {
@@ -437,6 +455,162 @@ describe("plugin start and panel materialization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("flags overflow rather than silently truncating an install burst past the id cap", async () => {
+    vi.useFakeTimers();
+    try {
+      const { supervisors } = await hostWithFixture();
+      const running = supervisors.latest("hello-plugin")!;
+      running.sent.length = 0;
+
+      // 55 distinct plugin ids in one coalescing window — well past the
+      // 50-id cap `flushInstallEvent` carries per delivery. Before `overflow`
+      // existed, the ids past 50 vanished with nothing on the wire to say so.
+      for (let index = 0; index < 55; index += 1) {
+        emitPluginChange({ kind: "installs", pluginId: `synthetic-${index}` });
+      }
+      vi.runOnlyPendingTimers();
+
+      const frame = running.sent.find(
+        (entry): entry is Extract<PluginHostFrame, { type: "event" }> =>
+          entry.type === "event" && entry.payload.event === "install.changed",
+      );
+      expect(frame?.payload.ids).toHaveLength(50);
+      expect(frame?.payload.overflow).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * A remote peer's `plugins.install`/`uninstall`/`enable`/`disable` reach the
+ * host through `pluginInstallServiceAdapter`, not through `domainService`
+ * directly — `requirePluginInstallService()` is exactly the handle
+ * `syncRemoteCommandService.ts` resolves to answer those actions from another
+ * machine. Before `afterChange` was wired, the adapter only ever touched the
+ * install REGISTRY: nothing stopped the old child, no codeless plugin's
+ * declared panels were seeded, and an uninstall left the child running with
+ * its data and secrets intact.
+ */
+describe("remote install lifecycle through the sync adapter (R2)", () => {
+  afterEach(closeScratch);
+
+  it("seeds a codeless plugin's declared panels on a remote install, exactly as a local one does", async () => {
+    const { store } = await hostWithFixture();
+    const remote = requirePluginInstallService();
+
+    const record = await remote.install({ kind: "path", path: codelessPluginDir() });
+
+    expect(record.pluginId).toBe("quiet-plugin");
+    // `install()` alone never reads a manifest's declared panels — only
+    // `afterChange` reconciling with `replacePanelsFor` makes this appear.
+    expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Quiet" });
+  });
+
+  it("stops the old child on a remote install of an existing plugin, not just the registry row", async () => {
+    const { supervisors } = await hostWithFixture();
+    const remote = requirePluginInstallService();
+    const first = supervisors.latest("hello-plugin")!;
+
+    await remote.install({ kind: "path", path: fixtureRoot });
+
+    expect(first.disposals).toBe(1);
+    const second = supervisors.latest("hello-plugin")!;
+    expect(second).not.toBe(first);
+    expect(second.starts).toBe(1);
+  });
+
+  it("stops the child and frees data on a remote uninstall, not just the registry row", async () => {
+    const { store, supervisors } = await hostWithFixture();
+    const remote = requirePluginInstallService();
+    const running = supervisors.latest("hello-plugin")!;
+    store!.updatePanel("hello-plugin", "main", { schema: { v: 1, title: "Live" }, vocabVersion: 1 });
+    expect(store!.readPanel("hello-plugin", "main")).not.toBeNull();
+
+    await remote.uninstall("hello-plugin");
+
+    expect(running.disposals).toBe(1);
+    expect(store!.readPanel("hello-plugin", "main")).toBeNull();
+  });
+
+  it("stops a running child on a remote disable and restarts it on a remote enable", async () => {
+    const { supervisors } = await hostWithFixture();
+    const remote = requirePluginInstallService();
+    const running = supervisors.latest("hello-plugin")!;
+
+    await remote.setEnabled("hello-plugin", false);
+    expect(running.disposals).toBe(1);
+    expect(running.status()).toBe("stopped");
+
+    await remote.setEnabled("hello-plugin", true);
+    expect(supervisors.latest("hello-plugin")?.starts).toBe(1);
+    expect(supervisors.latest("hello-plugin")?.status()).toBe("running");
+  });
+});
+
+describe("install failure and race handling (R5, R6)", () => {
+  afterEach(closeScratch);
+
+  it("reconciles a plugin back up when its install fails after the old child already stopped (R5)", async () => {
+    const { plugins, supervisors } = await hostWithFixture();
+    expect(supervisors.latest("hello-plugin")?.status()).toBe("running");
+
+    // `beforeReplace` has already stopped the running child by the time the
+    // rename itself fails — nothing in `pluginInstallService` knows how to
+    // restart a plugin; only `reconcile` (via the host's catch) does.
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+      throw new Error("simulated rename failure");
+    });
+    try {
+      await expect(plugins.install({ source: fixtureRoot })).rejects.toThrow(/simulated rename failure/);
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    // The child `beforeReplace` stopped is back up, not left stopped with
+    // nothing having noticed the install failed.
+    expect(supervisors.latest("hello-plugin")?.status()).toBe("running");
+  });
+
+  it("stops a supervisor a racing reconcile resurrected mid-install, unconditionally (R6)", async () => {
+    const { plugins, host, supervisors } = await hostWithFixture();
+    const first = supervisors.latest("hello-plugin")!;
+    const originalDispose = first.dispose;
+    let raced = false;
+    // `beforeReplace` stops `first` before the rename. While that dispose is
+    // in flight — the old directory is still fully on disk — simulate an
+    // unrelated `attachProject` (equally: another `enable`/`setConfig`)
+    // landing in the same window and reconciling, which resurrects a
+    // supervisor for "hello-plugin" from whatever is on disk at that instant.
+    first.dispose = async () => {
+      await originalDispose();
+      if (!raced) {
+        raced = true;
+        const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-race-"));
+        scratchDirs.push(projectRoot);
+        const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), silentLogger());
+        openDatabases.push(db);
+        host.attachProject({ projectId: "race-project", projectRoot, db, invokeAdeAction: async () => null });
+      }
+    };
+
+    await plugins.install({ source: fixtureRoot });
+
+    const raceEntries = supervisors.built.filter((entry) => entry.pluginId === "hello-plugin");
+    // The original, the race-resurrected one, and the final one from the
+    // install's own reconcile: at least three distinct supervisor objects.
+    expect(raceEntries.length).toBeGreaterThanOrEqual(3);
+    const latest = supervisors.latest("hello-plugin")!;
+    // Nothing but the very last one survives — including the one the race
+    // brought back, which an "only if the id changed" stop would have missed.
+    for (const entry of raceEntries) {
+      if (entry === latest) continue;
+      expect(entry.disposals).toBeGreaterThanOrEqual(1);
+    }
+    expect(latest.status()).toBe("running");
+    expect(latest.starts).toBe(1);
   });
 });
 
@@ -476,6 +650,22 @@ describe("plugin.listContributions", () => {
 
     // The same row is not a PRs contribution: this plugin declares no PR socket.
     expect(await plugins.listContributions({ surface: "prs" })).toEqual([]);
+  });
+
+  it("drops a row whose entityKind is not one of the closed list, rather than passing it through (NEW-B2)", async () => {
+    const { plugins, store } = await hostWithProject();
+    // Simulates a row this build predates (a future entity kind) or a
+    // corrupted one — nothing upstream of this read restricts `entityKind`
+    // the way a manifest-declared `socket` is restricted, so this is the one
+    // guard `listContributions` cannot get for free from the `declared` map
+    // lookup.
+    store.publishContribution("hello-plugin", "not-a-real-kind" as never, "x-1", "row-badge", { text: "ok", tone: "success" });
+    store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "ok", tone: "success" });
+
+    const lanes = await plugins.listContributions({ surface: "lanes" });
+
+    expect(lanes).toHaveLength(1);
+    expect(lanes[0]).toMatchObject({ entityKind: "lane", entityId: "lane-1" });
   });
 
   it("drops rows whose socket the user switched off, and restores them when re-enabled", async () => {

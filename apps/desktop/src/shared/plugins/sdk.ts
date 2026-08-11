@@ -16,8 +16,9 @@
  *    constants below are not advice to the plugin — they are the numbers the
  *    host checks before a row lands, and a plugin that exceeds one gets a typed
  *    {@link PluginSdkErrorCode} refusal it can act on, never a silent truncation.
- *    (Wave C unifies these with `dbMaintenanceApi.ts`; they live here so the
- *    SDK's own writer never depends on the maintenance module's load order.)
+ *    `dbMaintenanceApi.ts`'s doctor pass re-exports these rather than
+ *    redeclaring them, so the writer and the doctor can never disagree about
+ *    a ceiling.
  * 3. **Transport is NDJSON over the child's stdio, one JSON object per line.**
  *    stdin is open for the RPC channel and nothing else; the child never reads
  *    user input, and the host gates every write on `writable`. Errors cross the
@@ -195,6 +196,17 @@ export type PluginEventPayload = {
   /** Entity ids that changed since the last delivery, capped and deduped. */
   ids: string[];
   projectId: string | null;
+  /**
+   * `ids` was truncated at the delivery cap. Absent, never `false`, when it
+   * was not — additive so a plugin compiled against the two-field payload
+   * keeps working.
+   *
+   * `ids` is not a diff a listener can trust once this is set: more changed
+   * than the cap carries, so the honest read is "the install set moved,
+   * treat this the same as `install.changed` with no ids at all" — re-read
+   * the roster (`plugin.list`) rather than acting only on the ids present.
+   */
+  overflow?: true;
 };
 
 /**

@@ -6,6 +6,7 @@ import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/ty
 import { runWithAbortSignal } from "./abortSignal";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import {
+  PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE,
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   requirePluginActionInvoker,
   requirePluginInstallService,
@@ -420,6 +421,66 @@ type RegisteredRemoteCommand = {
     context: SyncRemoteCommandExecutionContext,
   ) => Promise<unknown>;
 };
+
+export type RemoteCommandPolicyDecision =
+  | { allowed: true }
+  | { allowed: false; message: string; code: string };
+
+/**
+ * The one gate every caller of a registered remote command has to pass,
+ * regardless of which transport got them here.
+ *
+ * `execute()` below runs a handler unconditionally — the policy on its
+ * descriptor is enforced by whoever dispatches TO it, not by `execute()`
+ * itself, because only the dispatcher knows whether the caller is a paired
+ * peer or this machine's own daemon. The websocket peer-command path in
+ * `syncHostService.ts` was the only caller that actually ran this check; the
+ * local RPC bridges in `multiProjectRpcServer.ts` called `executeRemoteCommand`
+ * straight through with a comment claiming the same enforcement, which was
+ * never true — `execute()` has never consulted a policy. Extracted so both
+ * paths run identically instead of drifting.
+ */
+export function evaluateRemoteCommandPolicy(
+  action: string,
+  descriptor: SyncRemoteCommandDescriptor | null,
+  context: { requestedProjectId: string | null; hostProjectId: string | null },
+): RemoteCommandPolicyDecision {
+  const policy = descriptor?.policy ?? null;
+  if (!policy) {
+    return { allowed: false, message: `Unsupported remote command: ${action}.`, code: "unsupported_command" };
+  }
+  if (descriptor?.scope === "project") {
+    if (context.hostProjectId && !context.requestedProjectId) {
+      return {
+        allowed: false,
+        message: `Remote command ${action} requires projectId. Select the project again and retry.`,
+        code: "missing_project",
+      };
+    }
+    if (context.requestedProjectId && !context.hostProjectId) {
+      return {
+        allowed: false,
+        message: `Remote command ${action} requires an open project on this ADE machine.`,
+        code: "project_not_open",
+      };
+    }
+  }
+  if (!policy.viewerAllowed) {
+    return {
+      allowed: false,
+      message: `Remote command ${action} is not available to paired controller devices.`,
+      code: "forbidden_command",
+    };
+  }
+  if (policy.localOnly || policy.requiresApproval) {
+    return {
+      allowed: false,
+      message: `Remote command ${action} requires approval on this machine.`,
+      code: "approval_required",
+    };
+  }
+  return { allowed: true };
+}
 
 export const AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS = 30_000;
 
@@ -5816,11 +5877,22 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
 }
 
 /**
- * Parse an untrusted install request into one of the three sources.
+ * Parse an untrusted install request into the one source a remote peer may
+ * name.
  *
  * Strict rather than tolerant: this payload arrives from another machine and
  * decides what code gets cloned onto this one, so an unrecognized shape is
  * rejected instead of being coerced into a best guess.
+ *
+ * `registry` only — never `git` or `path`. Those two name an ARBITRARY
+ * repository or filesystem path for this machine to clone or copy from, and
+ * that is a trust decision for the person sitting at this machine's own
+ * keyboard, not one a paired peer gets to make on their behalf. A bundled
+ * package (a starter theme, a pilot) still installs by id through the
+ * `registry` branch — {@link createPluginInstallServiceAdapter}'s bundled-
+ * package check runs before it ever needs the directory. The desktop's own
+ * LOCAL install action (`plugin.install`, driven by the user in this UI) is
+ * unaffected: it never reaches this parser at all.
  */
 function parsePluginInstallSource(payload: Record<string, unknown>): PluginInstallSource {
   const kind = typeof payload.kind === "string" ? payload.kind.trim() : "";
@@ -5832,16 +5904,12 @@ function parsePluginInstallSource(payload: Record<string, unknown>): PluginInsta
       : null;
     return { kind: "registry", pluginId, version };
   }
-  if (kind === "git") {
-    const url = typeof payload.url === "string" ? payload.url.trim() : "";
-    if (!url) throw new Error("A repository URL is required to install from git.");
-    const ref = typeof payload.ref === "string" && payload.ref.trim() ? payload.ref.trim() : null;
-    return { kind: "git", url, ref };
-  }
-  if (kind === "path") {
-    const sourcePath = typeof payload.path === "string" ? payload.path.trim() : "";
-    if (!sourcePath) throw new Error("A folder path is required to install from disk.");
-    return { kind: "path", path: sourcePath };
+  if (kind === "git" || kind === "path") {
+    throw codedError(
+      `A paired computer cannot install a plugin from ${kind === "git" ? "a git URL" : "a local path"}. `
+      + "Install it from the plugin directory, or on this computer directly.",
+      PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE,
+    );
   }
   throw new Error("Unsupported plugin install source.");
 }

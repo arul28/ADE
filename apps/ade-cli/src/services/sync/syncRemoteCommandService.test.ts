@@ -10,6 +10,7 @@ import {
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
 } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import {
+  PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE,
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   setPluginActionInvoker,
   setPluginInstallService,
@@ -3296,8 +3297,27 @@ describe("plugin remote commands", () => {
 
     await expect(service.execute(makePayload("plugins.install", { kind: "curl", url: "http://x" })))
       .rejects.toThrow(/Unsupported plugin install source/);
+  });
+
+  it("refuses a git or path install from a paired peer regardless of the fields it supplies (coordinator ruling)", async () => {
+    // `git` and `path` name an ARBITRARY source for this machine to clone or
+    // copy from — a trust decision for the person at this machine's own
+    // keyboard, not one a paired peer gets to make. Only `registry` crosses
+    // this wire; a bundled package (a starter theme, a pilot) still installs
+    // by id through that branch.
+    const install = vi.fn();
+    setPluginInstallService({ install, uninstall: vi.fn(), setEnabled: vi.fn(), list: vi.fn() } as never);
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.install", { kind: "git", url: "https://example.test/graph.git" })))
+      .rejects.toMatchObject({ code: PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE });
+    await expect(service.execute(makePayload("plugins.install", { kind: "path", path: "/tmp/graph" })))
+      .rejects.toMatchObject({ code: PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE });
+    // Even with none of the kind-specific fields, refused for the KIND —
+    // "no URL" and "not installable at all" must not be the same message.
     await expect(service.execute(makePayload("plugins.install", { kind: "git" })))
-      .rejects.toThrow(/repository URL/);
+      .rejects.toMatchObject({ code: PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE });
+    expect(install).not.toHaveBeenCalled();
   });
 
   it("returns the coverage matrix with every machine's rows", async () => {
@@ -3358,9 +3378,13 @@ describe("plugin remote commands", () => {
     } as never);
     const { service } = createService({});
 
+    // `registry`, not `git`: the coordinator ruling above restricts this
+    // command's source to what a paired peer may legitimately name, and the
+    // routing this test proves (self-targeted machineKey runs locally rather
+    // than dialing out) is orthogonal to which kind is allowed.
     await service.execute(makePayload("plugins.install", {
-      kind: "git",
-      url: "https://example.test/graph.git",
+      kind: "registry",
+      pluginId: "graph",
       machineKey: "machine-a",
     }));
 

@@ -86,6 +86,7 @@ import {
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
+import { evaluateRemoteCommandPolicy } from "./services/sync/syncRemoteCommandService";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 type HandlerEntry = {
@@ -1174,6 +1175,25 @@ export function createMultiProjectRpcRequestHandler(
   type ActiveSyncService = NonNullable<Awaited<ReturnType<typeof resolveSyncService>>>;
 
   /**
+   * The same gate the websocket peer-command path runs, for the local RPC
+   * bridges in this file that hand a method straight to
+   * `executeRemoteCommand` — which runs a registered handler unconditionally
+   * and never consults its own descriptor's policy. Only called where the
+   * bridged action is meant to be reachable from wherever this call
+   * originated; `sync.getDesktopPairingInfo` above is deliberately exempt
+   * because it is local-only by construction, never bridged from a peer.
+   */
+  const requireRemoteCommandPolicyAllowed = (syncService: ActiveSyncService, action: string): void => {
+    const decision = evaluateRemoteCommandPolicy(action, syncService.getRemoteCommandDescriptor(action), {
+      requestedProjectId: null,
+      hostProjectId: null,
+    });
+    if (!decision.allowed) {
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, decision.message, { code: decision.code });
+    }
+  };
+
+  /**
    * Run a `sync.*` method against the project-scoped sync service, falling back
    * to the machine-level pairing controls when no project scope owns sync.
    *
@@ -2028,9 +2048,14 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.getDesktopPairingInfo") {
       const syncService = await getSyncService();
-      // This daemon socket is the trusted desktop-local surface. The paired
-      // command path still consults the descriptor's viewerAllowed=false
-      // policy before it can reach the same handler.
+      // This daemon socket is the trusted desktop-local surface — the ONLY
+      // caller of this JSON-RPC method is this machine's own desktop process,
+      // never a remote peer, which is why it is exempt from the policy gate
+      // below rather than running it. A remote paired viewer reaches
+      // `sync.getDesktopPairingInfo` only through the websocket peer-command
+      // path in `syncHostService.ts`, which runs `evaluateRemoteCommandPolicy`
+      // and rejects it there: the descriptor's `viewerAllowed: false` is what
+      // stops a phone from minting its own runtime-channel pairing grant.
       return await syncService.executeRemoteCommand({
         commandId: `local-runtime-${randomUUID()}`,
         action: "sync.getDesktopPairingInfo",
@@ -2073,9 +2098,12 @@ export function createMultiProjectRpcRequestHandler(
     if (isPluginMachineRpcMethod(method)) {
       // Bridged to the remote-command registry rather than reimplemented, so
       // one machine calling another lands on exactly the handler a phone
-      // reaches — including that registry's policy check, which is where the
-      // decision about what a paired device may do already lives.
+      // reaches. The allowlist above keeps this to six always-viewerAllowed
+      // actions today, but `executeRemoteCommand` itself enforces nothing, so
+      // the gate is run here explicitly rather than trusted to stay true by
+      // construction as the allowlist grows.
       const syncService = await getSyncService();
+      requireRemoteCommandPolicyAllowed(syncService, method);
       return await syncService.executeRemoteCommand({
         commandId: `local-runtime-${randomUUID()}`,
         action: method,

@@ -5,9 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Logger } from "../logging/logger";
-import * as sdk from "../../../shared/plugins/sdk";
 import { PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN, PluginSdkError } from "../../../shared/plugins/sdk";
-import * as maintenance from "../state/dbMaintenanceApi";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createPluginDataStore, PLUGIN_TABLE_DDL, type PluginDataStore } from "./pluginDataStore";
 
@@ -66,19 +64,6 @@ describe("pluginDataStore", () => {
   afterEach(() => {
     while (openDatabases.length) openDatabases.pop()?.close();
     while (tempRoots.length) fs.rmSync(tempRoots.pop()!, { recursive: true, force: true });
-  });
-
-  it("enforces the same numbers the storage doctor prunes to", () => {
-    // The budgets exist twice on purpose (the SDK contract must not depend on
-    // the maintenance module's load order), so this writer — the one place both
-    // copies actually meet — is where drift between them has to fail.
-    expect(sdk.PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN).toBe(maintenance.PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN);
-    expect(sdk.PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN).toBe(maintenance.PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN);
-    expect(sdk.PLUGIN_COLLECTION_VALUE_MAX_BYTES).toBe(maintenance.PLUGIN_COLLECTION_VALUE_MAX_BYTES);
-    expect(sdk.PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN).toBe(maintenance.PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN);
-    expect(sdk.PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES).toBe(maintenance.PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES);
-    expect(sdk.PLUGIN_PANELS_MAX_PER_PLUGIN).toBe(maintenance.PLUGIN_PANELS_MAX_PER_PLUGIN);
-    expect(sdk.PLUGIN_PANEL_SCHEMA_MAX_BYTES).toBe(maintenance.PLUGIN_PANEL_SCHEMA_MAX_BYTES);
   });
 
   it("declares the same table shape the kvDb migration creates", async () => {

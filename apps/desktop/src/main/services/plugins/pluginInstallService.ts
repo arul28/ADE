@@ -405,6 +405,20 @@ export function createPluginInstallService(deps: {
   reportInstall?: (install: { pluginId: string; version: string }) => void | Promise<void>;
   /** Bundled plugin packages to seed. Defaults to {@link resolveBuiltinPluginsRoot}. */
   builtinPluginsRoot?: string | null;
+  /**
+   * Runs after the manifest is parsed (so the id being replaced is known) and
+   * before the staged tree is renamed over an existing install.
+   *
+   * Every source kind stages to a temp directory first and only reveals its
+   * plugin id once that staged manifest is read — a git clone or a bundled
+   * copy names its id no earlier than a local directory does. Wired to
+   * `pluginHostService`'s `stopSupervisor` so a running child is never left
+   * holding a handle into the directory this function is about to rename: on
+   * Windows that handle makes the rename fail outright, and everywhere else
+   * the old process keeps answering requests while the new version is already
+   * reported installed.
+   */
+  beforeReplace?: (pluginId: string) => void | Promise<void>;
 }): PluginInstallService {
   const root = deps.pluginsRoot?.trim() || resolvePluginsRoot();
   const statePath = pluginRegistryFilePath(root);
@@ -703,6 +717,17 @@ export function createPluginInstallService(deps: {
     const target = pluginRootWithin(root, pluginId);
     const previous = `${target}.previous-${randomUUID()}`;
     const hadPrevious = dirExists(target);
+    // Between parsing the manifest (this is the first point the id this
+    // install is REPLACING is known, for every source kind) and the rename
+    // below that moves the staged tree over it.
+    if (hadPrevious) {
+      try {
+        await deps.beforeReplace?.(pluginId);
+      } catch (error) {
+        removeQuietly(stagingDir);
+        throw error;
+      }
+    }
     try {
       if (hadPrevious) fs.renameSync(target, previous);
       fs.renameSync(stagingDir, target);

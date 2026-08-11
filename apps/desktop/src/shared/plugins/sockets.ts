@@ -59,6 +59,11 @@ export function isPluginSurfaceId(value: unknown): value is PluginSurfaceId {
   return oneOf(value, PLUGIN_SURFACE_IDS) !== null;
 }
 
+/** Narrow an untrusted string to an entity kind. Lives here, beside the list. */
+export function isPluginEntityKind(value: unknown): value is PluginEntityKind {
+  return oneOf(value, PLUGIN_ENTITY_KINDS) !== null;
+}
+
 /**
  * What each socket kind needs before it can render anything.
  *

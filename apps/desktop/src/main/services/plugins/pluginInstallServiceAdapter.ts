@@ -98,10 +98,30 @@ function toSyncRecord(
   };
 }
 
-export function createPluginInstallServiceAdapter(deps: {
+/** What changed, for {@link PluginInstallServiceAdapterDeps.afterChange}. */
+export type PluginInstallChangeKind = "install" | "uninstall" | "enable" | "disable";
+
+type PluginInstallServiceAdapterDeps = {
   install: PluginInstallService;
   /** Fired after any install-state change, so presence can republish. */
   onChanged?: () => void;
+  /**
+   * Runs the SAME lifecycle a local install/enable/disable/uninstall goes
+   * through — stopping the old child, materializing panels, and (on
+   * uninstall) freeing the plugin's data and secrets — before the call
+   * resolves.
+   *
+   * Without this a remote peer's `plugins.install`/`uninstall`/`enable`/
+   * `disable` only ever touched the install REGISTRY: nothing stopped the old
+   * child, nothing seeded a codeless plugin's declared panels, and an
+   * uninstall left the child running and skipped `removePluginData` and
+   * `secrets.removeAll` — because those all live in `pluginHostService`'s
+   * `domainService`, which this adapter deliberately does not call (its own
+   * `install` takes a `{kind}`-tagged source, not the plain string
+   * `domainService.install` expects). Wired by the host to run the same steps
+   * through a facade instead.
+   */
+  afterChange?: (pluginId: string, kind: PluginInstallChangeKind) => void | Promise<void>;
   /**
    * Live child status, straight from the supervisor. Optional: a host that
    * cannot answer leaves `status` off the record rather than guessing from
@@ -116,8 +136,16 @@ export function createPluginInstallServiceAdapter(deps: {
     pluginId: string,
     version: string | null,
   ) => Promise<{ source: string; ref?: string | null } | null>;
-}): SyncPluginInstallService {
-  const changed = (): void => {
+};
+
+export function createPluginInstallServiceAdapter(
+  deps: PluginInstallServiceAdapterDeps,
+): SyncPluginInstallService {
+  // `afterChange` runs BEFORE `onChanged`: presence should report state that
+  // already reflects the stop/reconcile/cleanup this call just triggered, not
+  // a snapshot from the instant before it.
+  const changed = async (pluginId: string, kind: PluginInstallChangeKind): Promise<void> => {
+    await deps.afterChange?.(pluginId, kind);
     deps.onChanged?.();
   };
   const record = (installed: PluginInstalledPlugin): SyncPluginInstallRecord =>
@@ -138,7 +166,7 @@ export function createPluginInstallServiceAdapter(deps: {
         );
         if (bundledVersion && !wantsAnotherVersion) {
           const installed = await deps.install.install({ source: source.pluginId });
-          changed();
+          await changed(installed.record.pluginId, "install");
           return record(installed);
         }
         // Otherwise a registry id names an entry, not a place to clone from.
@@ -160,7 +188,7 @@ export function createPluginInstallServiceAdapter(deps: {
           source: resolved.source,
           ...(resolved.ref ? { ref: resolved.ref } : {}),
         });
-        changed();
+        await changed(installed.record.pluginId, "install");
         return record(installed);
       }
       const installed = source.kind === "path"
@@ -169,19 +197,19 @@ export function createPluginInstallServiceAdapter(deps: {
           source: source.url,
           ...(source.ref ? { ref: source.ref } : {}),
         });
-      changed();
+      await changed(installed.record.pluginId, "install");
       return record(installed);
     },
 
     async uninstall(pluginId: string): Promise<{ removed: boolean }> {
       const result = deps.install.uninstall(pluginId);
-      changed();
+      await changed(pluginId, "uninstall");
       return result;
     },
 
     async setEnabled(pluginId: string, enabled: boolean): Promise<SyncPluginInstallRecord> {
       const installed = deps.install.setEnabled(pluginId, enabled);
-      changed();
+      await changed(pluginId, enabled ? "enable" : "disable");
       return record(installed);
     },
 

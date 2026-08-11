@@ -110,20 +110,23 @@ export const EVENT_LOG_RETENTION_DAYS = 30;
 // `prunePluginRowsForAbsentPlugins` for why a presence-keyed delete against a
 // CRR table destroys other machines' data.
 
-/** Total `value_json` bytes one plugin may hold across all its collections. */
-export const PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN = 2 * 1024 * 1024;
-/** Rows one plugin may hold in `plugin_collections`, across all collections. */
-export const PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN = 4_000;
-/** Bytes of a single `plugin_collections.value_json`. */
-export const PLUGIN_COLLECTION_VALUE_MAX_BYTES = 64 * 1024;
-/** Materialized socket outputs one plugin may hold in `plugin_contributions`. */
-export const PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN = 2_000;
-/** Bytes of a single `plugin_contributions.payload_json`. */
-export const PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES = 4 * 1024;
-/** Panels one plugin may declare. */
-export const PLUGIN_PANELS_MAX_PER_PLUGIN = 32;
-/** Bytes of a single `plugin_panels.schema_json` (matches the vocabulary limit). */
-export const PLUGIN_PANEL_SCHEMA_MAX_BYTES = 64 * 1024;
+/**
+ * The seven writer-enforced plugin budgets, re-exported rather than declared:
+ * `sdk.ts` is the one place every consumer — the SDK server, the sync-side
+ * inbound guard, and this module's own doctor pass — can already import from,
+ * and two independent literals with the same values are two numbers that can
+ * drift the next time only one of them changes. Same pattern as
+ * `PLUGIN_BUDGET_EXCEEDED_CODE` just below.
+ */
+export {
+  PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
+  PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
+  PLUGIN_COLLECTION_VALUE_MAX_BYTES,
+  PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
+  PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
+  PLUGIN_PANELS_MAX_PER_PLUGIN,
+  PLUGIN_PANEL_SCHEMA_MAX_BYTES,
+} from "../../../shared/plugins/sdk";
 /** Per-plugin wire-meter rollups older than this are deleted. */
 export const PLUGIN_WIRE_METER_RETENTION_DAYS = 45;
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   comparePluginContributions,
+  isPluginEntityKind,
+  isPluginSocketKind,
+  isPluginSurfaceId,
   parsePluginContributionPayload,
   splitPluginRowBadges,
   type PluginContribution,
@@ -71,5 +74,21 @@ describe("contribution placement", () => {
     const split = splitPluginRowBadges([badge("a", 1)]);
     expect(split.visible).toHaveLength(1);
     expect(split.overflowCount).toBe(0);
+  });
+});
+
+describe("closed-list guards", () => {
+  it("narrows only a member of each list, and rejects everything else (NEW-B2)", () => {
+    expect(isPluginSocketKind("row-badge")).toBe(true);
+    expect(isPluginSocketKind("row-badges")).toBe(false);
+    expect(isPluginSocketKind(undefined)).toBe(false);
+    expect(isPluginSocketKind(42)).toBe(false);
+
+    expect(isPluginSurfaceId("lanes")).toBe(true);
+    expect(isPluginSurfaceId("lane")).toBe(false);
+
+    expect(isPluginEntityKind("pr")).toBe(true);
+    expect(isPluginEntityKind("pull_request")).toBe(false);
+    expect(isPluginEntityKind(null)).toBe(false);
   });
 });

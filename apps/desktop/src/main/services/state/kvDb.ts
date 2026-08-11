@@ -784,16 +784,6 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
 
 /**
- * Append-only event logs that had no retention at all, with the column each one
- * actually timestamps on.
- *
- * All seven are CRR tables, so every row replicated to every paired device
- * forever — including phones. They are near-empty on a typical project today,
- * which is precisely why this is worth fixing now: the cost of an unbounded
- * append-only log is paid by whichever user first drives it hard, and it is
- * paid on their phone as well as their desktop.
- */
-/**
  * The three plugin data tables, in the one place their SQL is written.
  *
  * `pluginDataStore.ensureTables` has to create these too — it runs against a
@@ -862,6 +852,16 @@ export const PLUGIN_TABLE_DDL: readonly string[] = [
   "create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id)",
 ];
 
+/**
+ * Append-only event logs that had no retention at all, with the column each one
+ * actually timestamps on.
+ *
+ * All seven are CRR tables, so every row replicated to every paired device
+ * forever — including phones. They are near-empty on a typical project today,
+ * which is precisely why this is worth fixing now: the cost of an unbounded
+ * append-only log is paid by whichever user first drives it hard, and it is
+ * paid on their phone as well as their desktop.
+ */
 const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: string]> = [
   ["linear_sync_events", "created_at"],
   ["linear_workflow_run_events", "created_at"],

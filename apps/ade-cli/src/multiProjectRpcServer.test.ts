@@ -1796,6 +1796,11 @@ describe("multi-project RPC server", () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
     const executeRemoteCommand = vi.fn(async () => ({ plugins: [] }));
+    const getRemoteCommandDescriptor = vi.fn((action: string) => ({
+      action,
+      scope: "runtime" as const,
+      policy: { viewerAllowed: true },
+    }));
     const scopeRegistry = {
       get: vi.fn(),
       ensureSyncHost: vi.fn(),
@@ -1803,7 +1808,7 @@ describe("multi-project RPC server", () => {
       resolveActiveSyncHost: vi.fn(async () => ({
         registryProjectId: added.projectId,
         record: added,
-        runtime: { syncService: { executeRemoteCommand } },
+        runtime: { syncService: { executeRemoteCommand, getRemoteCommandDescriptor } },
         dispose: vi.fn(),
       })),
       dispose: vi.fn(),
@@ -1847,6 +1852,56 @@ describe("multi-project RPC server", () => {
       action: "plugins.install",
       args: { kind: "registry", pluginId: "graph" },
     });
+
+    handler.dispose();
+  });
+
+  it("runs the descriptor's policy gate before bridging a plugin command, not just after", async () => {
+    // `executeRemoteCommand` runs a registered handler unconditionally — it
+    // does not consult the descriptor's own policy — so the bridge above has
+    // to run the same viewerAllowed/localOnly/requiresApproval gate the
+    // websocket peer-command path runs, or a future addition to the plugin
+    // allowlist with a non-viewerAllowed policy would reach its handler from
+    // this local RPC surface with nothing standing in the way.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const executeRemoteCommand = vi.fn(async () => ({ plugins: [] }));
+    const getRemoteCommandDescriptor = vi.fn(() => ({
+      action: "plugins.presenceList" as const,
+      scope: "runtime" as const,
+      policy: { viewerAllowed: false },
+    }));
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService: { executeRemoteCommand, getRemoteCommandDescriptor } },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "plugins.presenceList",
+      params: {},
+    })).rejects.toMatchObject({
+      code: JsonRpcErrorCode.policyDenied,
+      message: expect.stringMatching(/not available to paired controller devices/),
+    });
+    expect(executeRemoteCommand).not.toHaveBeenCalled();
 
     handler.dispose();
   });

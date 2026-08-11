@@ -40,10 +40,10 @@ import {
   type PluginSummary,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
-import type {
-  PluginEntityKind,
-  PluginSocketKind,
-  PluginSurfaceId,
+import {
+  isPluginEntityKind,
+  isPluginSocketKind,
+  isPluginSurfaceId,
 } from "../../../shared/plugins/sockets";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { createPluginChildSupervisor, type PluginChildSupervisor } from "./pluginChildSupervisor";
@@ -368,6 +368,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     // Read through the mutable context, not captured at construction: the ping
     // target is wired later in bootstrap than the host is built.
     reportInstall: (install) => machine.reportInstall?.(install),
+    // Forward reference to a `const` declared further down in this function:
+    // safe because the callback only runs once an install actually reaches
+    // the rename step, by which point `stopSupervisor` is long since defined
+    // — the same pattern `setPluginInstallService`'s `runtimeStatus` below
+    // already relies on for `supervisors`.
+    beforeReplace: (pluginId: string) => stopSupervisor(pluginId),
   });
   const secrets: PluginSecretStore = createPluginSecretStore();
   /**
@@ -383,6 +389,39 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  };
+  /**
+   * Free everything an uninstalled plugin left behind that the registry
+   * delete alone does not reach: its rows in every attached project, and its
+   * machine-scoped secrets. Shared by the local `uninstall` action and the
+   * remote-command adapter's `afterChange`, so a peer's uninstall cleans up
+   * exactly as thoroughly as one run from this desktop's own UI.
+   */
+  const cleanupUninstalledPluginData = async (pluginId: string): Promise<void> => {
+    // Rows outlive the install otherwise: `plugin_collections` is keyed by
+    // plugin id and nothing else would ever collect them.
+    for (const attached of projects.values()) {
+      try {
+        attached.data.removePluginData(pluginId);
+      } catch (error) {
+        logger.warn("plugin.data_cleanup_failed", {
+          pluginId,
+          projectId: attached.binding.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    // Secrets are machine-scoped, so no project cleanup would ever reach
+    // them: an uninstalled plugin's tokens would sit in the credential
+    // store with nothing left that knows their names.
+    try {
+      await secrets.removeAll(pluginId);
+    } catch (error) {
+      logger.warn("plugin.secret_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
   // The sync layer resolves this handle at call time to answer `plugins.*` from
   // another machine; `dispose()` clears it, because a stale handle answering
@@ -407,6 +446,25 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       // The version is a tag on the entry's repository; an entry that does not
       // publish the asked-for version still installs from its default ref.
       return { source: entry.source, ref: version && version !== entry.version ? version : null };
+    },
+    // Remote install/enable/disable/uninstall used to touch only the install
+    // REGISTRY: nothing stopped the old child, no codeless plugin's panels
+    // were seeded, and an uninstall left the child running with its data and
+    // secrets intact. This runs the same lifecycle the local action below
+    // does, keyed by what changed.
+    afterChange: async (pluginId, kind) => {
+      if (kind === "uninstall") {
+        await stopSupervisor(pluginId);
+        await cleanupUninstalledPluginData(pluginId);
+        return;
+      }
+      if (kind === "install") {
+        await stopSupervisor(pluginId);
+        reconcile({ replacePanelsFor: pluginId });
+        return;
+      }
+      // enable / disable: no code changed, just whether it should be running.
+      reconcile();
     },
   }));
   // Every plugin tap from a phone lands here: `plugins.invoke` resolves this at
@@ -626,8 +684,16 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    * without this an installed plugin sat idle — no panels, no contributions,
    * nothing on any surface — until someone happened to invoke one of its
    * actions.
+   *
+   * `replacePanelsFor` names the ONE plugin whose code just changed, never a
+   * blanket "replace everything": `reconcile` runs on install, and it also
+   * runs a plain convergence pass over EVERY installed plugin (reload, enable,
+   * project attach). A boolean here would clobber every OTHER plugin's live
+   * panel content with its shipped default on somebody else's install — a
+   * plugin that had published real data would flash back to its manifest
+   * defaults because a second, unrelated plugin was installed.
    */
-  const reconcile = (options?: { replacePanels?: boolean }): void => {
+  const reconcile = (options?: { replacePanelsFor?: string }): void => {
     const installed = new Map(installs.list().map((plugin) => [plugin.record.pluginId, plugin]));
     for (const [pluginId, supervisor] of [...supervisors]) {
       const plugin = installed.get(pluginId);
@@ -645,7 +711,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     if (disposed) return;
     for (const plugin of installed.values()) {
       if (!plugin.record.enabled || !plugin.manifest) continue;
-      seedDeclaredPanels(plugin, options?.replacePanels === true);
+      seedDeclaredPanels(plugin, options?.replacePanelsFor === plugin.record.pluginId);
       if (!pluginHasRuntimeEntry(plugin.manifest)) continue;
       startQuietly(ensureSupervisor(plugin));
     }
@@ -657,7 +723,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    */
   const applyInstallChange = (
     installed: PluginInstalledPlugin,
-    options?: { replacePanels?: boolean },
+    options?: { replacePanelsFor?: string },
   ): PluginSummary => {
     reconcile(options);
     publishPresence();
@@ -775,7 +841,14 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       },
 
       async listContributions(contributionArgs): Promise<PluginContributionRecord[]> {
-        const surface = requireId(contributionArgs?.surface, "surface");
+        const surfaceInput = requireId(contributionArgs?.surface, "surface");
+        // Every socket a manifest declares is already restricted to
+        // `PLUGIN_SURFACE_IDS` by the manifest parser, so an unrecognized
+        // `surface` here can never match one and `declared` would end up
+        // empty anyway — but that is an accident of the filter below, not a
+        // guarantee this function makes. Checking directly is what makes it one.
+        if (!isPluginSurfaceId(surfaceInput)) return [];
+        const surface = surfaceInput;
         const attached = scopedProject();
         if (!attached) return [];
         // Manifest sockets are the join: the table stores a socket KIND, and
@@ -812,6 +885,15 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           // plugin that stopped declaring a socket all drop out here, so no
           // caller has to re-derive any of it.
           if (!match || !match.enabled) continue;
+          // `row.socket` matching a `declared` key already implies it is one
+          // of `PLUGIN_SOCKET_KINDS` -- `declared`'s keys come from a parsed
+          // manifest, which only ever carries those -- but `entityKind` has
+          // no such indirect guarantee: it comes straight off the row with
+          // nothing upstream restricting it to the closed union. A row from a
+          // future entity kind this build predates, or a corrupted one, is
+          // dropped rather than handed to a renderer as a value it has no
+          // case for.
+          if (!isPluginEntityKind(row.entityKind) || !isPluginSocketKind(row.socket)) continue;
           let payload: unknown = null;
           try {
             payload = JSON.parse(row.payloadJson) as unknown;
@@ -819,11 +901,11 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             payload = null;
           }
           results.push({
-            entityKind: row.entityKind as PluginEntityKind,
+            entityKind: row.entityKind,
             entityId: row.entityId,
             pluginId: row.pluginId,
-            socket: row.socket as PluginSocketKind,
-            surface: surface as PluginSurfaceId,
+            socket: row.socket,
+            surface,
             socketId: match.socketId,
             payload,
             updatedAt: row.updatedAt || null,
@@ -921,47 +1003,39 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       },
 
       async install(installArgs) {
-        // A local source names its plugin before anything is copied, which is
-        // the only chance to stop the child BEFORE its directory is renamed out
-        // from under it: on Windows a live cwd handle makes that rename fail
-        // outright, and everywhere else the old code keeps running while the
-        // new version is reported as installed.
-        const incoming = readManifestFromDirectory(installArgs.source)?.name ?? null;
-        if (incoming) await stopSupervisor(incoming);
-        const installed = await installs.install(installArgs);
-        // A git source only reveals its id here; either way the supervisor for
-        // the installed id must not survive the code it was running.
-        if (installed.record.pluginId !== incoming) await stopSupervisor(installed.record.pluginId);
-        return applyInstallChange(installed, { replacePanels: true });
+        // The stop-before-rename that used to live here only ever worked for a
+        // local-directory source, because that was the only kind whose plugin
+        // id `pluginHostService` could learn before `installs.install` ran —
+        // a git source reveals its id only after cloning. `installs.install`
+        // now runs the same stop for every source kind itself, through
+        // `beforeReplace` (wired below), between parsing the manifest and
+        // renaming the directory into place.
+        let installed: PluginInstalledPlugin;
+        try {
+          installed = await installs.install(installArgs);
+        } catch (error) {
+          // A failed install (bad manifest, unsupported ADE version, checksum
+          // mismatch) can still have stopped the plugin's OLD child via
+          // `beforeReplace` before it failed. Reconcile so a plugin that
+          // failed to upgrade comes back up on whatever code is still on disk
+          // rather than sitting stopped with nothing to explain why.
+          reconcile();
+          throw error;
+        }
+        // Unconditional, not "only if this install learned a different id than
+        // it stopped before renaming": a supervisor for the installed id must
+        // not survive past this point regardless of how it got here — whether
+        // `beforeReplace` already stopped it, or a concurrent call (another
+        // `invoke`, another `reconcile`) resurrected one in the window while
+        // this install was staging. `stopSupervisor` is a no-op if none runs.
+        await stopSupervisor(installed.record.pluginId);
+        return applyInstallChange(installed, { replacePanelsFor: installed.record.pluginId });
       },
 
       async uninstall(uninstallArgs) {
         await stopSupervisor(uninstallArgs.pluginId);
         const result = installs.uninstall(uninstallArgs.pluginId);
-        // Rows outlive the install otherwise: `plugin_collections` is keyed by
-        // plugin id and nothing else would ever collect them.
-        for (const attached of projects.values()) {
-          try {
-            attached.data.removePluginData(uninstallArgs.pluginId);
-          } catch (error) {
-            logger.warn("plugin.data_cleanup_failed", {
-              pluginId: uninstallArgs.pluginId,
-              projectId: attached.binding.projectId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        // Secrets are machine-scoped, so no project cleanup would ever reach
-        // them: an uninstalled plugin's tokens would sit in the credential
-        // store with nothing left that knows their names.
-        try {
-          await secrets.removeAll(uninstallArgs.pluginId);
-        } catch (error) {
-          logger.warn("plugin.secret_cleanup_failed", {
-            pluginId: uninstallArgs.pluginId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        await cleanupUninstalledPluginData(uninstallArgs.pluginId);
         publishPresence();
         return result;
       },
@@ -1000,7 +1074,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         // The point of a reload is to run what is on disk NOW, panels included:
         // `ade plugin dev` edits a panel schema and expects the surface to
         // follow, so the declared schema replaces what the last run published.
-        reconcile({ replacePanels: true });
+        reconcile({ replacePanelsFor: reloadArgs.pluginId });
         // Only a version change is news for presence; the `ade plugin dev` loop
         // reloads constantly and republishing every time would be pure noise.
         if (installed.record.version !== before) publishPresence();
@@ -1026,7 +1100,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
 
   const flushInstallEvent = (): void => {
     installEventTimer = null;
-    const ids = [...pendingInstallIds].slice(0, PLUGIN_EVENT_MAX_IDS);
+    const pending = [...pendingInstallIds];
+    // Truncating silently used to mean a plugin that read only `ids` never
+    // learned about the rest of a burst past the cap — the truncation was
+    // invisible on the wire. `overflow` says so explicitly, so a listener
+    // that only trusts `ids` at least knows it is trusting a partial list.
+    const overflow = pending.length > PLUGIN_EVENT_MAX_IDS;
+    const ids = pending.slice(0, PLUGIN_EVENT_MAX_IDS);
     pendingInstallIds.clear();
     for (const [pluginId, supervisor] of supervisors) {
       // Only a running child has an open stdin; `send` refuses the rest, and
@@ -1038,6 +1118,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           event: "install.changed",
           ids,
           projectId: resolveProject(pluginId)?.binding.projectId ?? null,
+          ...(overflow ? { overflow: true as const } : {}),
         },
       });
     }

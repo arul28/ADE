@@ -243,7 +243,11 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  evaluateRemoteCommandPolicy,
+  type SyncRemoteCommandService,
+} from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
@@ -530,16 +534,57 @@ export function inboundPluginChangeRejection(
   const rule = PLUGIN_INBOUND_VALUE_MAX_BYTES.get(change.table);
   if (!rule || change.cid !== rule.column) return null;
   const value = change.val;
-  const bytes = typeof value === "string"
-    ? Buffer.byteLength(value, "utf8")
-    : (value instanceof Uint8Array ? value.byteLength : 0);
+  // These three columns are JSON TEXT from exactly one writer on this machine
+  // (see the plugin writers' own caps above); nothing that writer produces is
+  // ever anything but a string or null. A wire-encoded `{type:"bytes",base64}`
+  // scalar is neither — `typeof value === "object"`, not `"string"` — so it
+  // fell through to the `: 0` branch below at zero measured bytes and sailed
+  // through the cap it exists to enforce. Rejecting any non-string, non-null
+  // value outright closes that rather than trying to size one.
+  if (value !== null && typeof value !== "string") {
+    return { table: change.table, column: rule.column, bytes: rule.maxBytes + 1, maxBytes: rule.maxBytes };
+  }
+  const bytes = value === null ? 0 : Buffer.byteLength(value, "utf8");
   if (bytes <= rule.maxBytes) return null;
   return { table: change.table, column: rule.column, bytes, maxBytes: rule.maxBytes };
+}
+
+/**
+ * A stable key for "the same logical row" a `crsql_changes` entry belongs to,
+ * built from the row's own opaque `pk` scalar — no decode of cr-sqlite's
+ * packed primary key needed. `applyChanges` carries one entry per CHANGED
+ * COLUMN, so two entries with equal `table` and `pk` are always edits to the
+ * same row.
+ */
+function pluginChangeRowKey(change: Pick<CrsqlChangeRow, "table" | "pk">): string {
+  const pk = change.pk;
+  const pkKey = pk === null || typeof pk !== "object" ? `${typeof pk}:${String(pk)}` : `bytes:${pk.base64}`;
+  return `${change.table}\u0000${pkKey}`;
 }
 
 const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
   ...MOBILE_CHANGESET_EXCLUDED_TABLES,
   ...SYNC_HOST_AUTHORITATIVE_TABLES,
+];
+
+/**
+ * The reseed's fallback exclusion set: everything the ordinary build already
+ * excludes, plus every plugin-gated table.
+ *
+ * Used only on the ONE retry after a build comes back `too_large` with plugin
+ * rows included — see the `too_large` branch of `buildMobileReplicaReseedStep`.
+ * The shared cache's 10k-row / 4 MiB budget is spent by every table it scans
+ * regardless of who ends up receiving the row, so two data-heavy plugins can
+ * blow the budget and disable the whole-database reseed for every phone —
+ * including the majority that were never going to receive a plugin row anyway
+ * (`sendMobileReplicaReseed` already drops them per peer). Retrying without
+ * `SYNC_PLUGIN_TABLES` gets those phones their reseed back; a plugin-capable
+ * phone simply does not get plugin rows from THIS fast path and falls back to
+ * the ordinary windowed incremental catch-up for them.
+ */
+const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES_NO_PLUGINS = [
+  ...MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+  ...SYNC_PLUGIN_TABLES,
 ];
 
 // Inbound peer changeset_batch ceilings. The 25MB envelope is the only other
@@ -2993,6 +3038,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // database; an oversized replica falls back to incremental replay.
   let mobileReplicaReseedCache: MobileReplicaReseedCache | null = null;
   let mobileReplicaReseedAdvancedPollGeneration = -1;
+  // Set the moment a build for the CURRENT `mobileReplicaReseedCache` retries
+  // without plugin tables (see the `too_large` branch below), and reset
+  // whenever a new cache starts. Bounds the retry to once per reseed target so
+  // a database that is still too large without plugin data does not rebuild
+  // forever.
+  let mobileReplicaReseedRetriedWithoutPlugins = false;
   // Constructing the cache is shared, but gzip/frame generation happens once
   // per recipient. Admit only one fresh compact send per poll so a reconnect
   // burst cannot monopolize the event loop or outbound socket budget.
@@ -4743,6 +4794,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       || cachedTargetLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
     ) {
       mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
+      mobileReplicaReseedRetriedWithoutPlugins = false;
       args.logger.info("sync_host.mobile_replica_reseed_started", {
         targetDbVersion,
         maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
@@ -4750,45 +4802,74 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     }
 
-    const cache = mobileReplicaReseedCache;
-    if (cache.status !== "building") return cache;
-    if (pollGeneration <= mobileReplicaReseedAdvancedPollGeneration) return cache;
+    if (mobileReplicaReseedCache.status !== "building") return mobileReplicaReseedCache;
+    if (pollGeneration <= mobileReplicaReseedAdvancedPollGeneration) return mobileReplicaReseedCache;
     mobileReplicaReseedAdvancedPollGeneration = pollGeneration;
-    let advancedCache = cache;
-    for (let emptyWindows = 0; emptyWindows < MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL; emptyWindows += 1) {
-      advancedCache = advanceMobileReplicaReseedCache({
-        cache: advancedCache,
-        versionWindow: SYNC_EXPORT_VERSION_WINDOW,
-        exportChangesSince: args.db.sync.exportChangesSince,
-        excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
-        // Plugin rows stay IN the shared cache and are dropped per peer at send
-        // time (`sendMobileReplicaReseed`). Excluding them from the build looks
-        // safer and is not: the reseed advances a phone's cursor all the way to
-        // `targetDbVersion`, so a phone that CAN apply plugin rows would skip
-        // every one in the reseeded range and never see them again.
-        includeChange: (change) =>
-          !isHostAuthoritativeTable(change)
-          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
-      });
-      if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
-    }
-    if (advancedCache.status === "too_large") {
-      args.logger.info("sync_host.mobile_replica_reseed_skipped", {
+
+    // Runs at most twice: once with plugin rows in the scan, and — only if
+    // that comes back `too_large` and this reseed target has not already
+    // retried — once more with `SYNC_PLUGIN_TABLES` excluded entirely. The
+    // second pass restarts the scan from db_version 0, which is the point of
+    // the retry: the budget it was competing against is now spent on tables
+    // every phone actually reads.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const excludingPlugins = mobileReplicaReseedRetriedWithoutPlugins;
+      let advancedCache = mobileReplicaReseedCache;
+      for (let emptyWindows = 0; emptyWindows < MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL; emptyWindows += 1) {
+        advancedCache = advanceMobileReplicaReseedCache({
+          cache: advancedCache,
+          versionWindow: SYNC_EXPORT_VERSION_WINDOW,
+          exportChangesSince: args.db.sync.exportChangesSince,
+          excludeTables: excludingPlugins
+            ? MOBILE_REPLICA_RESEED_EXCLUDED_TABLES_NO_PLUGINS
+            : MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+          // Plugin rows stay IN the shared cache on the FIRST pass and are
+          // dropped per peer at send time (`sendMobileReplicaReseed`).
+          // Excluding them from the build looks safer and is not: the reseed
+          // advances a phone's cursor all the way to `targetDbVersion`, so a
+          // phone that CAN apply plugin rows would skip every one in the
+          // reseeded range and never see them again. The retry pass already
+          // excludes them at the source, so this filter is a no-op there.
+          includeChange: (change) =>
+            !isHostAuthoritativeTable(change)
+            && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
+        });
+        if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
+      }
+      mobileReplicaReseedCache = advancedCache;
+
+      if (advancedCache.status !== "too_large" || mobileReplicaReseedRetriedWithoutPlugins) {
+        if (advancedCache.status === "too_large") {
+          args.logger.info("sync_host.mobile_replica_reseed_skipped", {
+            targetDbVersion: advancedCache.targetDbVersion,
+            scanFromDbVersion: advancedCache.scanFromDbVersion,
+            reason: "compacted_state_too_large",
+            retriedWithoutPlugins: mobileReplicaReseedRetriedWithoutPlugins,
+            maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
+            maxBytes: MOBILE_REPLICA_RESEED_MAX_BYTES,
+          });
+        } else if (advancedCache.status === "ready") {
+          args.logger.info("sync_host.mobile_replica_reseed_ready", {
+            targetDbVersion: advancedCache.targetDbVersion,
+            rows: advancedCache.changes.length,
+            approximateBytes: advancedCache.approximateBytes,
+            buildSteps: advancedCache.buildSteps,
+          });
+        }
+        return advancedCache;
+      }
+
+      // Two data-heavy plugins pushing the SHARED budget over its cap must
+      // not disable the whole-database reseed for every phone — most never
+      // receive a plugin row from it anyway. One retry, excluding plugin
+      // tables from the scan entirely.
+      args.logger.info("sync_host.mobile_replica_reseed_retrying_without_plugins", {
         targetDbVersion: advancedCache.targetDbVersion,
-        scanFromDbVersion: advancedCache.scanFromDbVersion,
-        reason: "compacted_state_too_large",
-        maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
-        maxBytes: MOBILE_REPLICA_RESEED_MAX_BYTES,
       });
-    } else if (advancedCache.status === "ready") {
-      args.logger.info("sync_host.mobile_replica_reseed_ready", {
-        targetDbVersion: advancedCache.targetDbVersion,
-        rows: advancedCache.changes.length,
-        approximateBytes: advancedCache.approximateBytes,
-        buildSteps: advancedCache.buildSteps,
-      });
+      mobileReplicaReseedRetriedWithoutPlugins = true;
+      mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
     }
-    return advancedCache;
+    return mobileReplicaReseedCache;
   }
 
   function sendMobileReplicaReseed(
@@ -6574,7 +6655,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     const descriptor = remoteCommandService.getDescriptor(payload.action);
-    const policy = descriptor?.policy ?? null;
     const shouldRouteToProject =
       Boolean(args.remoteCommandExecutor)
       && Boolean(requestedProjectId)
@@ -6624,26 +6704,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return;
     }
-    if (!policy) {
-      reject(`Unsupported remote command: ${payload.action}.`);
-      return;
-    }
-    if (descriptor?.scope === "project") {
-      if (hostProjectId && !requestedProjectId) {
-        reject(`Remote command ${payload.action} requires projectId. Select the project again and retry.`, "missing_project");
-        return;
-      }
-      if (requestedProjectId && !hostProjectId) {
-        reject(`Remote command ${payload.action} requires an open project on this ADE machine.`, "project_not_open");
-        return;
-      }
-    }
-    if (!policy.viewerAllowed) {
-      reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
-      return;
-    }
-    if (policy.localOnly || policy.requiresApproval) {
-      reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
+    const policyDecision = evaluateRemoteCommandPolicy(payload.action, descriptor, {
+      requestedProjectId,
+      hostProjectId,
+    });
+    if (!policyDecision.allowed) {
+      reject(policyDecision.message, policyDecision.code);
       return;
     }
 
@@ -8132,15 +8198,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // cannot opt out of the guard by claiming to be a desktop.
         const isPhonePeer = isMobilePeer(peer);
         const pluginRejections: Array<{ table: string; column: string; bytes: number; maxBytes: number }> = [];
-        const filtered = changes.filter((change) => {
-          if (isHostAuthoritativeTable(change)) return false;
-          if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;
-          // Plugin budgets are enforced in the writer, inside the insert
-          // transaction — a path an inbound changeset never takes. Without this
-          // a paired peer is the way around every per-value cap.
+        // Plugin budgets are enforced in the writer, inside the insert
+        // transaction — a path an inbound changeset never takes. Without this
+        // a paired peer is the way around every per-value cap. A first pass
+        // finds every ROW with an over-budget column — `crsql_changes` carries
+        // one entry per changed column, so dropping only the tripped entry
+        // would still apply that row's other columns and land a row whose
+        // oversized field silently never arrived, which is a corrupted row,
+        // not a smaller one.
+        const rejectedRowKeys = new Set<string>();
+        for (const change of changes) {
           const pluginRejection = inboundPluginChangeRejection(change);
           if (pluginRejection) {
             pluginRejections.push(pluginRejection);
+            rejectedRowKeys.add(pluginChangeRowKey(change));
+          }
+        }
+        const filtered = changes.filter((change) => {
+          if (isHostAuthoritativeTable(change)) return false;
+          if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;
+          if (PLUGIN_INBOUND_VALUE_MAX_BYTES.has(change.table) && rejectedRowKeys.has(pluginChangeRowKey(change))) {
             return false;
           }
           return true;

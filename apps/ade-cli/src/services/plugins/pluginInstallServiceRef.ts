@@ -24,6 +24,18 @@ import { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/
  */
 export { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/plugins/sdk";
 
+/**
+ * A remote peer asked this machine to install from `git` or `path`.
+ *
+ * Only `registry` crosses the wire from another machine — see
+ * `parsePluginInstallSource` in `syncRemoteCommandService.ts`. A remote git URL
+ * or local path names an ARBITRARY source to clone or copy onto this machine,
+ * which is a trust decision the person sitting at THIS keyboard makes, not one
+ * a paired peer gets to make for them. The desktop's own local install action
+ * still accepts all three kinds; only the peer-reachable path is narrowed.
+ */
+export const PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE = "plugin_remote_source_unsupported";
+
 export type PluginInstallSource =
   | { kind: "registry"; pluginId: string; version?: string | null }
   | { kind: "git"; url: string; ref?: string | null }
