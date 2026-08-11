@@ -1,0 +1,86 @@
+import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+
+/**
+ * The settle-teardown wiring, shared by the desktop main process and the ADE
+ * brain.
+ *
+ * It lives here rather than at each construction site because there are TWO of
+ * them, and the one that matters most is the easiest to forget: in a normal
+ * install the brain owns phone sync, remote commands, and the PR-merge poller,
+ * so wiring only the desktop leaves teardown a silent no-op for every settle a
+ * user actually triggers from their phone or from `ade`. That is ADE's oldest
+ * bug class — works in-process, no-ops in the runtime-backed build — and a
+ * shared factory is what stops the two copies drifting apart.
+ */
+
+/** Only what teardown needs, so neither caller has to hand over a whole service. */
+export type SettleTeardownChatService = {
+  interrupt: (args: { sessionId: string; mode: "stop_only" | "stop_and_clear" }) => Promise<unknown>;
+  getSessionSummary: (sessionId: string) => Promise<{
+    status: string;
+    activeBackgroundTaskCount?: number | null;
+    provider?: string | null;
+  } | null>;
+};
+
+export type SettleTeardownWiringDeps = {
+  agentChatService: SettleTeardownChatService;
+  captureAnalytics?: (args: {
+    action: string;
+    outcome: string;
+    provider?: string;
+    countBucket?: string;
+  }) => void;
+  logger?: { warn: (message: string, meta?: Record<string, unknown>) => void };
+};
+
+export type SettleTeardownWiring = {
+  runSettleTeardown: (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>;
+  onRemoteSettleWrite: (args: { columns: string[] }) => void;
+  onSettleResidue: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+};
+
+export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): SettleTeardownWiring {
+  const runSettleTeardown = createSessionSettleTeardown({
+    interrupt: async (sessionId) => {
+      // `stop_only`, never `stop_and_clear`: the latter also cancels the user's
+      // QUEUED turns. Design 3c's rule is that losing a settle costs one click
+      // while losing the user's work is unrecoverable, and a queued prompt is
+      // the user's work. If a queued turn then starts, C3 clears the settle —
+      // which is R1, and already the accepted trade.
+      await deps.agentChatService.interrupt({ sessionId, mode: "stop_only" });
+    },
+    readActiveWork: async (sessionId) => {
+      const summary = await deps.agentChatService.getSessionSummary(sessionId);
+      if (!summary) return null;
+      return {
+        active: summary.status === "active",
+        backgroundTaskCount: summary.activeBackgroundTaskCount ?? 0,
+        provider: summary.provider ?? null,
+      };
+    },
+    ...(deps.logger ? { logger: deps.logger } : {}),
+  });
+
+  return {
+    runSettleTeardown,
+    onSettleResidue: ({ provider, items }) => {
+      // One event per settle that had residue, not one per failed job: a fleet
+      // that fails to stop must not become a burst. Coarse properties only —
+      // no session id, task id, command, or error text.
+      deps.captureAnalytics?.({
+        action: "settle_teardown_residue",
+        outcome: items[0]?.reason ?? "failed",
+        countBucket: residueCountBucket(items.reduce((total, item) => total + item.count, 0)),
+        ...(provider ? { provider } : {}),
+      });
+    },
+    onRemoteSettleWrite: ({ columns }) => {
+      // Expected to be zero once every writer is host-authoritative. The column
+      // names are a fixed set; no session id or value is recorded.
+      deps.logger?.warn("settle.remote_tuple_write_reconciled", { columns });
+      deps.captureAnalytics?.({ action: "settle_remote_write_reconciled", outcome: "partial" });
+    },
+  };
+}

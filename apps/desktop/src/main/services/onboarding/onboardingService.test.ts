@@ -33,7 +33,7 @@ function createInMemoryAdeDb(): AdeDb {
       exportChangesSince: () => [],
       applyChanges: () => ({ appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false }),
       discardUnpublishedChangesForTables: () => {},
-    setRemoteSettleTupleHandler: () => {},
+      setRemoteSettleTupleHandler: () => {},
     },
     flushNow: () => {},
     close: () => {}

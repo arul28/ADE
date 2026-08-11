@@ -1213,6 +1213,42 @@ describe("product analytics producers", () => {
     })).toMatchObject({ provider: "pi" });
   });
 
+  it("keeps the settle-teardown properties through the sanitizer", () => {
+    // Both of these were silently dropped when first added: `action` is
+    // allowlisted separately from the event's key list, and `count_bucket` was
+    // registered in the key list and the value allowlist but never in the
+    // string-dispatch set, so it never reached either. The event still shipped,
+    // just anonymous — which is worse than not shipping, because the dashboard
+    // looks populated.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "settle_teardown_residue",
+      outcome: "no_stop_control",
+      provider: "codex",
+      count_bucket: "2_5",
+    })).toEqual({
+      feature: "work",
+      action: "settle_teardown_residue",
+      outcome: "no_stop_control",
+      provider: "codex",
+      count_bucket: "2_5",
+    });
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "settle_remote_write_reconciled",
+      outcome: "partial",
+    })).toMatchObject({ action: "settle_remote_write_reconciled" });
+
+    // The bucket is still a closed set: a raw count must not slip through and
+    // widen the dimension.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "settle_teardown_residue",
+      count_bucket: "37",
+    })).not.toHaveProperty("count_bucket");
+  });
+
   it("maps automation completion and failed chat turns into canonical bounded outcomes", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);

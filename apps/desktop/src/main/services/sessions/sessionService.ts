@@ -1,7 +1,8 @@
 import fs from "node:fs";
-import type { AdeDb, RemoteSettleTupleChange, SqlValue } from "../state/kvDb";
+import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
-import type { SettleAbortedReason, SettleAbortedSession, SettleResidueItem, SettleSessionsOutcome, SettleTeardownContext, SettleTeardownOutcome } from "./settlingStateRegistry";
+import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -154,15 +155,6 @@ function normalizeAttentionSource(value: unknown): SessionAttentionSource | null
   return value === "agent_explicit" || value === "provider_structured" || value === "user"
     ? value
     : null;
-}
-
-/**
- * A settle-tuple column as it arrives over the wire. Only text and null are
- * expected; anything else is not a value these columns can hold, so it becomes
- * null rather than being coerced into a shape the guard would misread.
- */
-function toSqlScalar(value: unknown): SqlValue {
-  return typeof value === "string" || typeof value === "number" ? value : null;
 }
 
 function normalizeSettleSource(value: unknown): SessionSettleSource | null {
@@ -379,6 +371,7 @@ export function createSessionService({
   db,
   runSettleTeardown,
   onRemoteSettleWrite,
+  onSettleResidue,
 }: {
   db: AdeDb;
   /**
@@ -406,9 +399,10 @@ export function createSessionService({
    * protocol-level token is justified.
    */
   onRemoteSettleWrite?: (args: { columns: string[] }) => void;
+  /** Fired only for residue attached to a settle that actually landed. */
+  onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
 }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
-
 
   // Every settle-tuple mutation goes through this writer; see
   // `settleLifecycleWriter.ts` for why it is its own module and what the
@@ -760,17 +754,6 @@ export function createSessionService({
   };
 
   /**
-   * Settle through the settling window: the shape a real teardown will run in.
-   *
-   * Per session: read the revision, open the window, run teardown, then apply
-   * the settle ONLY if nothing moved. "Nothing moved" is two checks that catch
-   * different things — the abort flag (a human decision arrived and said so) and
-   * the revision (anything else changed the settle tuple, including a change
-   * this host did not make through a caller).
-   *
-   * Teardown is real from step 3, and it is AWAITED inside the window.
-   */
-  /**
    * Record what teardown could not confirm it stopped (§3d option 3).
    *
    * Keyed by session so a re-settle REPLACES the previous record rather than
@@ -790,6 +773,17 @@ export function createSessionService({
     }
   };
 
+  /**
+   * Settle through the settling window: the shape a real teardown will run in.
+   *
+   * Per session: read the revision, open the window, run teardown, then apply
+   * the settle ONLY if nothing moved. "Nothing moved" is two checks that catch
+   * different things — the abort flag (a human decision arrived and said so) and
+   * the revision (anything else changed the settle tuple, including a change
+   * this host did not make through a caller).
+   *
+   * Teardown is real from step 3, and it is AWAITED inside the window.
+   */
   const settleManyWithTeardown = async (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
@@ -855,17 +849,115 @@ export function createSessionService({
         // stopped" marker on a row that is not settled.
         if (changed.length && teardown?.residue.length) {
           recordSettleResidue(id, teardown.residue);
+          // Reported HERE, not inside teardown: an abort arriving between
+          // teardown returning and the guards above means the settle never
+          // landed, and analytics must not claim residue for a settle that
+          // does not exist.
+          onSettleResidue?.({ provider: teardown.provider ?? null, items: teardown.residue });
         }
       } finally {
-        settleLifecycle.settling.end(id);
+        settleLifecycle.settling.end(id, begin.token);
       }
     }
 
     return { settled, aborted };
   };
 
+  /**
+   * Settle ONE session and say why if it did not take.
+   *
+   * A local function rather than an object method: both public entry points
+   * delegate here, and a method would break the moment a caller destructured it
+   * off the service.
+   */
+  const settleOneReportingAbort = async (
+    sessionId: string,
+    opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
+  ): Promise<{ found: boolean; settled: boolean; abortedBy?: SettleAbortedReason }> => {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return { found: false, settled: false };
+      const exists = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!exists) return { found: false, settled: false };
+      const note = normalizeSessionStatusNote(opts.outcome);
+      const result = await settleManyWithTeardown([trimmed], {
+        ...(note ? { outcome: note } : {}),
+        settledAt: opts.settledAt,
+        source: opts.source,
+      });
+      const abortedBy = result.aborted[0]?.reason;
+      return abortedBy
+        ? { found: true, settled: false, abortedBy }
+        : { found: true, settled: true };
+  };
   return {
     list,
+
+    /** Clears a declared settle plus any `'settled'` override. */
+    unsettleSession(sessionId: string): boolean {
+      const changed = mutateSessionMeta(sessionId, (id) => {
+        writeSettleLifecycle({
+          intent: { kind: "unsettleDeclared" },
+          sessionIds: [id],
+        });
+      });
+      return changed;
+    },
+
+    /** Explicit settle override, cleared with `settled_at` on real activity. */
+    setSettleOverride(
+      sessionId: string,
+      override: SessionSettleOverride | null,
+      source: SessionSettleSource = "user",
+    ): boolean {
+      const normalized = override == null ? null : normalizeSettleOverride(override);
+      const normalizedSource = normalizeSettleSource(source) ?? "user";
+      return mutateSessionMeta(sessionId, (id) => {
+        writeSettleLifecycle({
+          intent: { kind: "override", value: normalized, source: normalizedSource },
+          sessionIds: [id],
+        });
+      });
+    },
+
+    setSettleOverrides(sessionIds: string[], override: SessionSettleOverride | null): string[] {
+      const ids = normalizeSessionIds(sessionIds);
+      if (!ids.length) return [];
+      const normalized = override == null ? null : normalizeSettleOverride(override);
+      const placeholders = ids.map(() => "?").join(", ");
+      const present = db.all<{ id: string }>(
+        `select id from terminal_sessions where id in (${placeholders})`,
+        ids,
+      ).map((row) => row.id);
+      if (!present.length) return [];
+      const updatePlaceholders = present.map(() => "?").join(", ");
+      writeSettleLifecycle({
+        intent: { kind: "override", value: normalized, source: "user" },
+        sessionIds: present,
+      });
+      for (const id of present) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return present;
+    },
+
+    /**
+     * The host-local settle concurrency token for a session.
+     *
+     * Read it before a decision that takes time, and require it to be unchanged
+     * before applying that decision — that is the whole point of the
+     * chokepoint. 0 means "no settle-lifecycle mutation has been recorded for
+     * this session", which a caller must treat as a real value, not as absent.
+     */
+    getSettleLifecycleRevision(sessionId: string): number {
+      return settleLifecycle.readRevision(sessionId);
+    },
+
+    async settleSessions(sessionIds: string[]): Promise<string[]> {
+      return (await settleManyWithTeardown(sessionIds)).settled;
+    },
 
     upsertClaudeSessionPointer(args: {
       sessionId: string;
@@ -1580,31 +1672,13 @@ export function createSessionService({
     ): Promise<boolean> {
       // Through the settling window, like the bulk paths. This is the route a
       // USER takes (row menu -> settleTerminalSession -> here), which is the
-      // "user settle" R4 names — so it has to be joinable and abortable, and in
-      // step 3 it has to run teardown. Routing it here is what makes the R4
-      // claim true rather than only true of bulk callers.
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      // `settleMany` returns [] for both "missing" and "already settled", so the
-      // boolean contract needs its own existence check to stay honest.
-      const exists = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!exists) return false;
-      // The key must be ABSENT, not `undefined`. `settleMany` decides whether to
-      // touch `status_note` with hasOwnProperty, so passing `outcome: undefined`
-      // writes null and erases the note a previous settle left behind — which is
-      // what a re-settle after activity does when the user supplies no new text.
-      const note = normalizeSessionStatusNote(opts.outcome);
-      const result = await settleManyWithTeardown([trimmed], {
-        ...(note ? { outcome: note } : {}),
-        settledAt: opts.settledAt,
-        source: opts.source,
-      });
-      // An abort is not a success. Returning `true` here because the row exists
-      // is the silent-success contract the typed outcome exists to remove.
-      return result.aborted.length === 0;
+      // "user settle" R4 names — so it has to be joinable and abortable, and it
+      // runs real teardown.
+      //
+      // Delegates rather than duplicating: the boolean form is exactly the typed
+      // form with the reason discarded, and keeping two copies of the existence
+      // probe and the option-spread is how they drift.
+      return (await settleOneReportingAbort(sessionId, opts)).settled;
     },
 
     /**
@@ -1612,102 +1686,8 @@ export function createSessionService({
      * The boolean form cannot distinguish "no such session" from "a turn started
      * mid-settle", and rendering the second as the first misleads the user.
      */
-    async settleSessionReportingAbort(
-      sessionId: string,
-      opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
-    ): Promise<{ found: boolean; settled: boolean; abortedBy?: SettleAbortedReason }> {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return { found: false, settled: false };
-      const exists = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!exists) return { found: false, settled: false };
-      const note = normalizeSessionStatusNote(opts.outcome);
-      const result = await settleManyWithTeardown([trimmed], {
-        ...(note ? { outcome: note } : {}),
-        settledAt: opts.settledAt,
-        source: opts.source,
-      });
-      const abortedBy = result.aborted[0]?.reason;
-      return abortedBy
-        ? { found: true, settled: false, abortedBy }
-        : { found: true, settled: true };
-    },
+    settleSessionReportingAbort: settleOneReportingAbort,
 
-    /** Clears a declared settle plus any `'settled'` override. */
-    unsettleSession(sessionId: string): boolean {
-      const changed = mutateSessionMeta(sessionId, (id) => {
-        writeSettleLifecycle({
-          intent: { kind: "unsettleDeclared" },
-          sessionIds: [id],
-        });
-      });
-      return changed;
-    },
-
-    /** Explicit settle override, cleared with `settled_at` on real activity. */
-    setSettleOverride(
-      sessionId: string,
-      override: SessionSettleOverride | null,
-      source: SessionSettleSource = "user",
-    ): boolean {
-      const normalized = override == null ? null : normalizeSettleOverride(override);
-      const normalizedSource = normalizeSettleSource(source) ?? "user";
-      return mutateSessionMeta(sessionId, (id) => {
-        writeSettleLifecycle({
-          intent: { kind: "override", value: normalized, source: normalizedSource },
-          sessionIds: [id],
-        });
-      });
-    },
-
-    setSettleOverrides(sessionIds: string[], override: SessionSettleOverride | null): string[] {
-      const ids = normalizeSessionIds(sessionIds);
-      if (!ids.length) return [];
-      const normalized = override == null ? null : normalizeSettleOverride(override);
-      const placeholders = ids.map(() => "?").join(", ");
-      const present = db.all<{ id: string }>(
-        `select id from terminal_sessions where id in (${placeholders})`,
-        ids,
-      ).map((row) => row.id);
-      if (!present.length) return [];
-      const updatePlaceholders = present.map(() => "?").join(", ");
-      writeSettleLifecycle({
-        intent: { kind: "override", value: normalized, source: "user" },
-        sessionIds: present,
-      });
-      for (const id of present) {
-        emitChanged({ sessionId: id, reason: "meta-updated" });
-      }
-      return present;
-    },
-
-    /**
-     * The host-local settle concurrency token for a session.
-     *
-     * Read it before a decision that takes time, and require it to be unchanged
-     * before applying that decision — that is the whole point of the
-     * chokepoint. 0 means "no settle-lifecycle mutation has been recorded for
-     * this session", which a caller must treat as a real value, not as absent.
-     */
-    getSettleLifecycleRevision(sessionId: string): number {
-      return settleLifecycle.readRevision(sessionId);
-    },
-
-    async settleSessions(sessionIds: string[]): Promise<string[]> {
-      return (await settleManyWithTeardown(sessionIds)).settled;
-    },
-
-    /**
-     * Settle, reporting abandoned sessions explicitly.
-     *
-     * `settleSessions` leaves an aborted id simply absent from its changed-id
-     * list, which is *almost* the right contract — a caller cannot tell "filed"
-     * from "not filed, and here is why". This is that distinction, and it is
-     * what a caller with a durable consequence (the PR-merge auto-settle marking
-     * a PR handled) has to branch on.
-     */
     /**
      * Reconcile inbound settle-tuple writes from a peer (design 3c-i / R7).
      *
@@ -1717,57 +1697,45 @@ export function createSessionService({
      * lifecycle revision, so an in-flight settle would neither see it nor abort
      * for it, and it could silently overwrite a peer's explicit reactivation.
      *
-     * Routing it back through the chokepoint gives the remote decision the same
-     * revision bump, settling-window exclusion and abort semantics a local one
-     * gets — without inventing a peer-visible concurrency token, which is a
-     * protocol change the evidence does not yet justify. `onRemoteWrite` is how
-     * we find out whether any legitimate peer writer is still out there.
+     * The VALUES are left to CRR merge, which is the only thing that keeps the
+     * per-column clocks convergent — an earlier version rebuilt the intent and
+     * re-decided them, which left this host's clock permanently behind the peer
+     * and made its next genuine decision lose every merge. What the chokepoint
+     * contributes is the lifecycle revision: an in-flight settle re-reads it
+     * after its teardown await, sees it moved, and abandons rather than
+     * overwriting the peer's decision.
+     *
+     * No peer-visible concurrency token is involved; that is a protocol change
+     * the evidence does not justify. `onRemoteSettleWrite` is how we find out
+     * whether any legitimate peer writer is still out there.
      */
     reconcileRemoteSettleTuple(changes: RemoteSettleTupleChange[]): void {
-      const bySession = new Map<string, Map<string, SqlValue>>();
+      const columnsBySession = new Map<string, Set<string>>();
       for (const change of changes) {
-        const columns = bySession.get(change.sessionId) ?? new Map<string, SqlValue>();
-        columns.set(change.column, toSqlScalar(change.value));
-        bySession.set(change.sessionId, columns);
+        const columns = columnsBySession.get(change.sessionId) ?? new Set<string>();
+        columns.add(change.column);
+        columnsBySession.set(change.sessionId, columns);
       }
 
-      for (const [sessionId, columns] of bySession) {
-        const exists = db.get<{ present: number }>(
-          "select 1 as present from terminal_sessions where id = ? limit 1",
-          [sessionId],
-        );
-        // A settle for a row this host does not have is not reconcilable and
-        // not worth inventing: the row itself will arrive in the same batch or
-        // not at all.
-        if (!exists) continue;
-
-        const hasSettledAt = columns.has("settled_at");
-        const settledAt = columns.get("settled_at");
-        const override = columns.get("settle_override");
-        const source = normalizeSettleSource(columns.get("settle_source")) ?? "user";
-
-        if (hasSettledAt && typeof settledAt === "string" && settledAt) {
-          writeSettleLifecycle({
-            intent: { kind: "settle", settledAt, source },
-            guard: "(settled_at is null or settle_override is not null)",
-            sessionIds: [sessionId],
-          });
-        } else if (hasSettledAt) {
-          writeSettleLifecycle({ intent: { kind: "unsettleDeclared" }, sessionIds: [sessionId] });
-        } else if (columns.has("settle_override")) {
-          writeSettleLifecycle({
-            intent: {
-              kind: "override",
-              value: override === "settled" || override === "active" ? override : null,
-              source,
-            },
-            sessionIds: [sessionId],
-          });
-        } else {
-          continue;
+      for (const [sessionId, columns] of columnsBySession) {
+        // Per session, so one unreadable row cannot discard the rest. The values
+        // already landed; what is at stake here is only the revision bump.
+        try {
+          // The row can be absent: a settle for a session this host has never
+          // seen. Nothing to reconcile, and not a peer writer worth reporting.
+          const exists = db.get<{ present: number }>(
+            "select 1 as present from terminal_sessions where id = ? limit 1",
+            [sessionId],
+          );
+          if (!exists) continue;
+          writeSettleLifecycle({ intent: { kind: "observeRemote" }, sessionIds: [sessionId] });
+          emitChanged({ sessionId, reason: "meta-updated" });
+          onRemoteSettleWrite?.({ columns: [...columns].sort() });
+        } catch (error) {
+          // Best effort per session: the peer's values are already applied, and
+          // one unreadable row must not cost the rest of the batch its bump.
+          void error;
         }
-        emitChanged({ sessionId, reason: "meta-updated" });
-        onRemoteSettleWrite?.({ columns: [...columns.keys()].sort() });
       }
     },
 
@@ -1796,6 +1764,15 @@ export function createSessionService({
       }
     },
 
+    /**
+     * Settle, reporting abandoned sessions explicitly.
+     *
+     * `settleSessions` leaves an aborted id simply absent from its changed-id
+     * list, which is *almost* the right contract — a caller cannot tell "filed"
+     * from "not filed, and here is why". This is that distinction, and it is
+     * what a caller with a durable consequence (the PR-merge auto-settle marking
+     * a PR handled) has to branch on.
+     */
     async settleSessionsReportingAborts(
       sessionIds: string[],
       options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
@@ -2042,6 +2019,7 @@ export function createSessionService({
       // local table with no reaper, and every other session-keyed side table is
       // already cascaded here.
       settleLifecycle.forget(trimmed);
+      db.run("delete from session_settle_residue where session_id = ?", [trimmed]);
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

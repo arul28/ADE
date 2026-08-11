@@ -85,8 +85,8 @@ import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecyc
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import { createSessionService } from "./services/sessions/sessionService";
-import { createSessionSettleTeardown, residueCountBucket } from "./services/sessions/sessionSettleTeardown";
-import type { SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/settlingStateRegistry";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/sessionSettleTeardown";
+import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
@@ -2878,18 +2878,14 @@ app.whenReady().then(async () => {
     const settleTeardownRef: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
     } = { run: null };
+    const settleRemoteWriteRef: {
+      report: ((args: { columns: string[] }) => void) | null;
+      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
+    } = { report: null, residue: null };
     const sessionService = createSessionService({
       db,
-      onRemoteSettleWrite: ({ columns }) => {
-        // Expected to be zero post-step-0. Coarse on purpose: the column names
-        // are a fixed set, and no session id or value is recorded.
-        logger.warn("settle.remote_tuple_write_reconciled", { columns });
-        productAnalyticsService?.captureInternal({
-          event: "ade_feature_used",
-          surface: "desktop",
-          properties: { feature: "work", action: "settle_remote_write_reconciled", outcome: "partial" },
-        });
-      },
+      onRemoteSettleWrite: (args) => settleRemoteWriteRef.report?.(args),
+      onSettleResidue: (args) => settleRemoteWriteRef.residue?.(args),
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run
           ? await settleTeardownRef.run(sessionId, ctx)
@@ -3633,37 +3629,28 @@ app.whenReady().then(async () => {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
-    settleTeardownRef.run = createSessionSettleTeardown({
-      interrupt: async (sessionId) => {
-        await agentChatService.interrupt({ sessionId, mode: "stop_and_clear" });
-      },
-      readActiveWork: async (sessionId) => {
-        const summary = await agentChatService.getSessionSummary(sessionId);
-        if (!summary) return null;
-        return {
-          active: summary.status === "active",
-          backgroundTaskCount: summary.activeBackgroundTaskCount ?? 0,
-          provider: summary.provider ?? null,
-        };
-      },
-      logger,
-      onResidue: ({ provider, items }) => {
-        // One event per settle that had residue, not one per failed job: a
-        // fleet that fails to stop must not become a burst. Coarse properties
-        // only — no session id, task id, command, or error text.
-        productAnalyticsService?.captureInternal({
-          event: "ade_feature_used",
-          surface: "desktop",
-          properties: {
-            feature: "work",
-            action: "settle_teardown_residue",
-            outcome: items[0]?.reason ?? "failed",
-            count_bucket: residueCountBucket(items.length),
-            ...(provider ? { provider } : {}),
-          },
-        });
-      },
-    });
+    {
+      const wiring = createSettleTeardownWiring({
+        agentChatService,
+        logger,
+        captureAnalytics: ({ action, outcome, provider, countBucket }) => {
+          productAnalyticsService?.captureInternal({
+            event: "ade_feature_used",
+            surface: "desktop",
+            properties: {
+              feature: "work",
+              action,
+              outcome,
+              ...(provider ? { provider } : {}),
+              ...(countBucket ? { count_bucket: countBucket } : {}),
+            },
+          });
+        },
+      });
+      settleTeardownRef.run = wiring.runSettleTeardown;
+      settleRemoteWriteRef.report = wiring.onRemoteSettleWrite;
+      settleRemoteWriteRef.residue = wiring.onSettleResidue;
+    }
     autoRebaseActivityReady = true;
     void autoRebaseService
       .refreshActiveRebaseNeeds("activity_services_ready")

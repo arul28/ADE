@@ -258,6 +258,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "unsettleSession",
     "settleSessions",
     "unsettleSessions",
+    "getSettleResidue",
     "setSettleOverride",
     "updateLifecycleSettings",
   ],
@@ -2192,6 +2193,20 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         : [];
       sessionService.unsettleSessions(sessionIds);
       return { ok: true };
+    },
+    /**
+     * Work a settle could not confirm it stopped (design 3d option 3).
+     *
+     * Read-only, and the reason it exists: option 3 was signed off on the
+     * condition that the residue stay DISCOVERABLE rather than merely recorded.
+     * Without a read path, "settled" would quietly mean "and something may still
+     * be running" — the exact outcome the option was chosen to avoid.
+     */
+    getSettleResidue: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.getSettleResidue");
+      const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
+      if (!sessionId) throw new Error("session.getSettleResidue requires sessionId.");
+      return sessionService.getSettleResidue(sessionId) ?? { items: [] };
     },
     // -----------------------------------------------------------------------
     // Snooze / wake / settle-override. Snooze is a synced VISIBILITY overlay:

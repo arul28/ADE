@@ -580,11 +580,13 @@ it does not take the user's shell away, and ADE cannot re-spawn one it killed.
 
 Anything still running when the budget expires is recorded, and the settle still
 lands. Each item carries a coarse `reason` — `no_stop_control` (a Codex chat has
-no per-subagent stop at all), `timeout`, or `rejected` — and a `reapable` flag.
-Everything counted is still a child of this ADE process, so it stays eligible
-for the ppid-based orphan reaper; work that escaped the tree
-(`nohup`/`setsid`/`disown`) is invisible to the confirmation read and is
-therefore never folded into that count rather than being overstated as reapable.
+no per-subagent stop at all), `timeout`, or `rejected` — and the number of jobs
+it covers. Everything counted is work ADE tracks, so it stays eligible for the
+ppid-based orphan reaper. Work that escaped the process tree
+(`nohup`/`setsid`/`disown`) is invisible to the confirmation read, so it is
+never folded into that count and never overstated as recoverable — the design
+requires the distinction, and here it holds by construction rather than by a
+flag that could only ever read `true`.
 
 Residue lives in `session_settle_residue`, a **local-only** table: it describes
 processes on this host, and a peer showing "1 job could not be stopped" for a
@@ -599,36 +601,51 @@ failed job — with `provider`, the coarse `outcome` reason, and a bucketed
 
 ### 6d. Peer tuple writes: host authority finished, not consensus added
 
-R7's fix is in the **apply layer**, and it is a hold-back rather than a drop.
+R7's fix is in the **apply layer**: `db.sync.applyChanges`, the one place both
+the host and peer paths funnel through. An inbound change to `settled_at`,
+`settle_override` or `settle_source` **applies normally**, and the session layer
+is then told which sessions and columns moved so it can re-assert them through
+the chokepoint.
 
-`db.sync.applyChanges` is the single place both the host and peer paths funnel
-through, so the check lives there: an inbound change to `settled_at`,
-`settle_override` or `settle_source` is held out of the raw apply and handed to
-`sessionService.reconcileRemoteSettleTuple`, which replays the remote's intent
-**through the chokepoint**. The remote decision therefore gains this host's
-revision bump, settling-window exclusion and abort semantics.
+**It does not hold the change back, and that correction matters.** The first
+implementation kept settle-tuple rows out of `crsql_changes` and rebuilt the
+remote intent afterwards. A probe against the vendored cr-sqlite build showed
+why that is wrong: merges are last-writer-wins on a per-column `col_version`,
+and a column that never enters `crsql_changes` never raises the local counter.
+The host stays behind the peer permanently, so its **next** genuine decision — a
+user unsettle, a keep-active pin, a PR-merge settle — carries a lower version
+and is rejected by every peer. Two hosts then disagree forever. That is a
+strictly worse failure than the bypass being fixed, and it would not have shown
+up in any single-host test.
 
-Three details that are load-bearing:
+So the division is: **CRR owns the values, the chokepoint owns the revision.**
+Reconciliation writes the tuple to its own current values — a self-assignment
+that matches the row (so the revision bumps) without changing it (so cr-sqlite
+records no new column version and nothing echoes back). The revision bump is the
+whole point: an in-flight settle re-reads it after its teardown await, sees the
+world moved, and abandons instead of overwriting the peer's decision. That is
+the R7 mirror case — a peer reactivating a session mid-settle — and it is tested.
 
-- **Held, not dropped.** Step 0 drops these columns from *phone* peers, and its
-  own comment says a paired desktop's settle writes "must keep replicating"
-  because that desktop runs the same chokepoint. Both are true: the decision is
-  legitimate, it just has to arrive through the front door. Extending the phone
-  drop to desktops would discard a real decision.
-- **After the commit.** The handler writes, and re-entering a write inside the
-  batch's `BEGIN IMMEDIATE` would risk rolling back a peer's entire changeset
-  over one session row.
-- **Undecodable key -> plain apply.** Only a single TEXT primary key is decoded.
-  Anything else is not claimed, so an unfamiliar encoding degrades to today's
-  behavior instead of a silently dropped change.
+Other details that are load-bearing:
+
+- **Registered in BOTH processes.** The desktop main process and the ADE brain
+  each construct a `sessionService`, and in a normal install it is the *brain*
+  that applies changesets, serves phone sync and remote commands, and runs the
+  PR-merge poller. Wiring only the desktop would have left teardown a no-op for
+  almost every settle a user actually triggers. Both now build their hooks from
+  one `createSettleTeardownWiring` factory so they cannot drift.
+- **Per session, best effort.** One unreadable row cannot cost the rest of the
+  batch its bump, and a failure costs only the revision — never the peer's
+  decision, which has already landed.
+- **Undecodable key → no reconcile.** Only a single TEXT primary key is decoded.
+  Anything else still applies; it simply is not re-asserted.
 
 **No peer-visible concurrency token was built.** That is a protocol change, and
 the evidence does not justify it yet — which is what `onRemoteSettleWrite` is
-for. Post-step-0 it should never fire; if the field says otherwise, we will know
-which columns and how often before designing anything.
+for. If the field says legitimate peer writers still exist, we will know which
+columns and how often before designing anything.
 
-R7/R7b are unchanged and still write the row with a raw `db.run` — a bypass no
-inbound changeset can produce any more. They are kept because they pin the
-property that motivates the interception: a write that reaches the tuple without
-the chokepoint is invisible to the guard. Deleting them would delete the
-evidence for the fix. The reconciled path is asserted separately.
+R7/R7b are unchanged and still write the row with a raw `db.run`. They pin the
+property that motivates the whole mechanism: a write that reaches the tuple
+without the chokepoint is invisible to the guard. The reconciled path is
+asserted separately, against the same shape the apply layer now produces.

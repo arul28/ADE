@@ -93,7 +93,7 @@ const STRING_PROPERTIES = new Set([
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
-  "tool_error_kind", "crash_reason",
+  "tool_error_kind", "crash_reason", "count_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -120,6 +120,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "mention_expanded",
   "transaction_failed",
   "scope_selected",
+  // Settle teardown: work a settle could not confirm it stopped, and a peer
+  // settle-tuple write that had to be reconciled through the chokepoint.
+  "settle_teardown_residue",
+  "settle_remote_write_reconciled",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

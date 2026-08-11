@@ -1,4 +1,6 @@
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./settlingStateRegistry";
+
+
+import { PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL } from "../../../shared/subagentCapabilities";
 
 /**
  * Real settle teardown: stop the work a session owns, then confirm it stopped.
@@ -20,9 +22,84 @@ import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } 
  *   order below is cheapest-to-lose first.
  */
 
-/** Bounds a single provider stop, matching the chat service's own stop budget. */
+/**
+ * What a teardown could not confirm it stopped (design 3d, option 3).
+ *
+ * The settle still lands — that is the signed-off decision — but it lands WITH
+ * this attached, so "settled" never quietly means "and something is still
+ * running".
+ *
+ * Everything recorded here is work ADE tracks, which is what keeps it eligible
+ * for the ppid-based orphan reaper. Work that escaped the process tree
+ * (`nohup`/`setsid`/`disown`) is invisible to the confirmation read, so it is
+ * never counted here — the design requires that it not be folded in and
+ * overstated as recoverable, and by construction it cannot be.
+ */
+export type SettleResidueItem = {
+  /** Coarse and closed: this is also the analytics dimension. */
+  kind: "background_tasks" | "active_turn";
+  /**
+   * Why the stop did not confirm. `no_stop_control` is a provider that offers
+   * no way to stop this work at all (a Codex chat's subagents); `timeout` and
+   * `rejected` are a stop that was attempted and did not land.
+   */
+  reason: "no_stop_control" | "timeout" | "rejected";
+  /** How many jobs this item covers. Bucketed before it reaches analytics. */
+  count: number;
+  /** Human-readable, for the diagnostics surface. Never analytics. */
+  detail: string;
+};
+
+/** Checked BETWEEN stop calls, per design 3c. A turn start trips it. */
+export type SettleTeardownContext = {
+  isAborted: () => boolean;
+};
+
+/**
+ * The result of a real teardown.
+ *
+ * This replaces step 2's synchronous `SettleTeardownCompleted` brand. That
+ * brand made an awaited teardown a COMPILE error while the settle path was
+ * still synchronous. It is safe to await now because the settling window is
+ * exclusive, abortable and crash-safe, so it can be HELD across the await; the
+ * revision re-check and abort check after the await are the guards that make
+ * the suspension point survivable.
+ */
+export type SettleTeardownOutcome = {
+  residue: SettleResidueItem[];
+  /** For the residue analytics dimension. Null when the session has no chat. */
+  provider?: string | null;
+};
+
+/**
+ * How long to keep re-reading the session after a stop before calling the work
+ * residue. NOT a provider stop budget — those are shorter and live in
+ * `agentChatService` (`CLAUDE_STOP_TASK_TIMEOUT_MS` and friends). This is the
+ * grace period for a stop that has been accepted and is still draining.
+ */
 const STOP_CONFIRM_TIMEOUT_MS = 5_000;
 const STOP_CONFIRM_POLL_MS = 100;
+/**
+ * Per-call ceiling for the provider calls themselves.
+ *
+ * The poll budget above bounds the LOOP, not any single await. Without this a
+ * provider control call that never resolves would hold the settling window
+ * open forever: the `finally` that closes it is unreachable, the row is stuck
+ * showing "Settling…", it can never be settled again for the life of the
+ * process, and the IPC or remote-command caller hangs with it.
+ */
+const PROVIDER_CALL_TIMEOUT_MS = 10_000;
+
+/** Resolves to not-ok rather than rejecting, so a slow provider is residue, not a crash. */
+async function withTimeout<T>(
+  work: Promise<T>,
+  expire: () => Promise<void>,
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  return await Promise.race([
+    work.then((value) => ({ ok: true, value }) as const),
+    expire().then(() => ({ ok: false }) as const),
+  ]);
+}
 
 export type SessionActiveWork = {
   /** A turn is running right now. */
@@ -40,47 +117,61 @@ export type SessionSettleTeardownDeps = {
   interrupt: (sessionId: string) => Promise<void>;
   /** Ground truth after a stop. `null` for a session the chat service does not own. */
   readActiveWork: (sessionId: string) => Promise<SessionActiveWork | null>;
-  /**
-   * Providers with no way to stop background work at all. A Codex chat cannot
-   * stop an individual subagent, so its residue is `no_stop_control` rather
-   * than a stop that failed — the distinction is the whole point of the field.
-   */
+  /** Overrides `PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL`; tests only. */
   providersWithoutStopControl?: ReadonlySet<string>;
-  onResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
   logger?: { warn: (message: string, meta?: Record<string, unknown>) => void };
   now?: () => number;
+  /**
+   * Delay between confirmation polls. Tests fast-forward this.
+   *
+   * Deliberately NOT the same seam as `expireProviderCall`: a fast-forwarding
+   * `sleep` would otherwise win every timeout race and make every provider call
+   * look like it hung.
+   */
   sleep?: (ms: number) => Promise<void>;
+  /** Fires when a single provider call has taken too long. Real timer by default. */
+  expireProviderCall?: () => Promise<void>;
 };
 
-const DEFAULT_NO_STOP_CONTROL = new Set(["codex"]);
+
 
 export function createSessionSettleTeardown(
   deps: SessionSettleTeardownDeps,
 ): (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome> {
-  const noStopControl = deps.providersWithoutStopControl ?? DEFAULT_NO_STOP_CONTROL;
+  const noStopControl = deps.providersWithoutStopControl ?? PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL;
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const expireProviderCall = deps.expireProviderCall
+    ?? (() => new Promise<void>((resolve) => { setTimeout(resolve, PROVIDER_CALL_TIMEOUT_MS); }));
 
   return async (sessionId, ctx): Promise<SettleTeardownOutcome> => {
-    const stopped: string[] = [];
     const residue: SettleResidueItem[] = [];
 
-    const before = await deps.readActiveWork(sessionId).catch(() => null);
+    const readWork = async (): Promise<SessionActiveWork | null> => {
+      const result = await withTimeout(deps.readActiveWork(sessionId), expireProviderCall)
+        .catch(() => ({ ok: false }) as const);
+      return result.ok ? result.value : null;
+    };
+
+    const before = await readWork();
     // Nothing to stop, or a session this service does not own (a plain
     // terminal). Either way there is no work to lose and no residue to report.
     if (!before || (!before.active && before.backgroundTaskCount === 0)) {
-      return { stopped, residue };
+      return { residue };
     }
 
     const provider = before.provider;
     // Checked before the step, not after: the point of the abort is to stop
     // work we have NOT done yet.
-    if (ctx.isAborted()) return { stopped, residue };
+    if (ctx.isAborted()) return { residue };
 
     let stopRejected = false;
     try {
-      await deps.interrupt(sessionId);
-      stopped.push("interrupt");
+      const stop = await withTimeout(deps.interrupt(sessionId), expireProviderCall);
+      if (!stop.ok) {
+        stopRejected = true;
+        deps.logger?.warn("settle_teardown.step_timed_out", { step: "interrupt" });
+      }
     } catch (error) {
       stopRejected = true;
       deps.logger?.warn("settle_teardown.step_failed", {
@@ -91,32 +182,24 @@ export function createSessionSettleTeardown(
 
     // A turn that arrived while the stop was in flight wins. Do not spend the
     // confirmation budget re-reading a session the user is actively using.
-    if (ctx.isAborted()) return { stopped, residue };
+    if (ctx.isAborted()) return { residue };
 
-    const after = await waitForQuiet(sessionId, ctx);
-    const stillActive = after ? after.active || after.backgroundTaskCount > 0 : false;
-    if (stillActive && !ctx.isAborted()) {
-      const remaining = (after?.backgroundTaskCount ?? 0) + (after?.active ? 1 : 0);
+    const after = await waitForQuiet(readWork, ctx);
+    if (after && (after.active || after.backgroundTaskCount > 0) && !ctx.isAborted()) {
+      const remaining = after.backgroundTaskCount + (after.active ? 1 : 0);
       residue.push({
-        kind: after?.active && (after?.backgroundTaskCount ?? 0) === 0 ? "active_turn" : "background_tasks",
+        kind: after.active && after.backgroundTaskCount === 0 ? "active_turn" : "background_tasks",
         reason: stopRejected
           ? "rejected"
           : provider && noStopControl.has(provider)
             ? "no_stop_control"
             : "timeout",
-        // Everything counted here is still a child of this ADE process, which
-        // is what keeps it eligible for the ppid-based orphan reaper. Work that
-        // escaped the tree (`nohup`/`setsid`/`disown`) is not visible to
-        // `readActiveWork` at all, so it is never folded into this count — it is
-        // unreachable by construction, and saying otherwise would overstate what
-        // the reaper can clean up.
-        reapable: true,
+        count: remaining,
         detail: describeResidue(remaining, provider),
       });
     }
 
-    if (residue.length) deps.onResidue?.({ provider, items: residue });
-    return { stopped, residue };
+    return { residue, provider };
   };
 
   /**
@@ -125,15 +208,15 @@ export function createSessionSettleTeardown(
    * `interrupt` would report residue for work that was about to stop anyway.
    */
   async function waitForQuiet(
-    sessionId: string,
+    read: () => Promise<SessionActiveWork | null>,
     ctx: SettleTeardownContext,
   ): Promise<SessionActiveWork | null> {
     const deadline = now() + STOP_CONFIRM_TIMEOUT_MS;
-    let latest = await deps.readActiveWork(sessionId).catch(() => null);
+    let latest = await read();
     while (latest && (latest.active || latest.backgroundTaskCount > 0) && now() < deadline) {
       if (ctx.isAborted()) return latest;
       await sleep(STOP_CONFIRM_POLL_MS);
-      latest = await deps.readActiveWork(sessionId).catch(() => null);
+      latest = await read();
     }
     return latest;
   }

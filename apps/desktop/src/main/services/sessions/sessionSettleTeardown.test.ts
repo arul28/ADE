@@ -12,19 +12,20 @@ describe("session settle teardown", () => {
 
   function harness(overrides: Partial<SessionSettleTeardownDeps> = {}) {
     const interrupt = vi.fn(async () => {});
-    const onResidue = vi.fn();
     // Instant polling: the confirmation budget is real time in production, and
     // a test that actually slept 5s per case would be deleted within a month.
     let clock = 0;
     const run = createSessionSettleTeardown({
       interrupt,
       readActiveWork: async () => null,
-      onResidue,
       now: () => clock,
       sleep: async (ms: number) => { clock += ms; },
+      // Never fires unless a test asks for it, so an ordinary provider call is
+      // never mistaken for a hung one.
+      expireProviderCall: () => new Promise<void>(() => {}),
       ...overrides,
     });
-    return { run, interrupt, onResidue };
+    return { run, interrupt };
   }
 
   const work = (over: Partial<SessionActiveWork> = {}): SessionActiveWork => ({
@@ -42,22 +43,20 @@ describe("session settle teardown", () => {
     // A settle with nothing to tear down must not interrupt the session: that
     // would be a visible side effect on a row the user only meant to file.
     expect(interrupt).not.toHaveBeenCalled();
-    expect(outcome).toEqual({ stopped: [], residue: [] });
+    expect(outcome.residue).toEqual([]);
   });
 
   it("stops background work and reports no residue once the session goes quiet", async () => {
     const states = [work({ backgroundTaskCount: 2 }), work({ backgroundTaskCount: 2 }), work()];
     const readActiveWork = vi.fn(async () => states.shift() ?? work());
-    const { run, interrupt, onResidue } = harness({ readActiveWork });
+    const { run, interrupt } = harness({ readActiveWork });
 
     const outcome = await run("session-1", neverAborted);
 
     expect(interrupt).toHaveBeenCalledWith("session-1");
-    expect(outcome.stopped).toEqual(["interrupt"]);
     // The stop is asynchronous inside the provider, so a single read straight
     // after `interrupt` would call work that was already stopping "residue".
     expect(outcome.residue, "work that drained must not be reported as residue").toEqual([]);
-    expect(onResidue).not.toHaveBeenCalled();
   });
 
   /**
@@ -66,7 +65,7 @@ describe("session settle teardown", () => {
    * analytics hook fires exactly once.
    */
   it("R5: reports residue when the stop never confirms, rather than blocking the settle", async () => {
-    const { run, onResidue } = harness({
+    const { run } = harness({
       readActiveWork: async () => work({ backgroundTaskCount: 3 }),
     });
 
@@ -75,14 +74,12 @@ describe("session settle teardown", () => {
     expect(outcome.residue).toEqual([{
       kind: "background_tasks",
       reason: "timeout",
-      reapable: true,
+      count: 3,
       detail: "3 jobs on claude could not be stopped",
     }]);
-    expect(onResidue, "residue must be measured, not just displayed").toHaveBeenCalledTimes(1);
-    expect(onResidue).toHaveBeenCalledWith({
-      provider: "claude",
-      items: outcome.residue,
-    });
+    // The provider rides along for the analytics dimension. Reporting happens in
+    // the settle path, not here, so an abandoned settle cannot claim residue.
+    expect(outcome.provider).toBe("claude");
   });
 
   it("R5: calls out a provider that has no stop control at all", async () => {
@@ -106,8 +103,6 @@ describe("session settle teardown", () => {
     const outcome = await run("session-1", neverAborted);
 
     expect(outcome.residue[0]?.reason).toBe("rejected");
-    // The stop never landed, so it must not be claimed as a completed step.
-    expect(outcome.stopped).toEqual([]);
   });
 
   /**
@@ -122,12 +117,12 @@ describe("session settle teardown", () => {
     const outcome = await run("session-1", { isAborted: () => true });
 
     expect(interrupt, "an aborted settle must not stop the work that won the race").not.toHaveBeenCalled();
-    expect(outcome).toEqual({ stopped: [], residue: [] });
+    expect(outcome.residue).toEqual([]);
   });
 
   it("does not report residue for a session the user reclaimed mid-teardown", async () => {
     let aborted = false;
-    const { run, onResidue } = harness({
+    const { run } = harness({
       interrupt: vi.fn(async () => { aborted = true; }),
       readActiveWork: async () => work({ active: true, backgroundTaskCount: 1 }),
     });
@@ -138,7 +133,37 @@ describe("session settle teardown", () => {
     // "1 job could not be stopped" marker on. Reporting it would label a
     // session that is actively working as one that failed to stop.
     expect(outcome.residue).toEqual([]);
-    expect(onResidue).not.toHaveBeenCalled();
+  });
+
+  it("does not hang the settling window on a provider call that never resolves", async () => {
+    const { run } = harness({
+      // A control call that never settles. Without a per-call ceiling the
+      // settling window never closes and the row is unsettleable for the life
+      // of the process.
+      interrupt: vi.fn(() => new Promise<void>(() => {})),
+      readActiveWork: async () => work({ backgroundTaskCount: 1 }),
+      expireProviderCall: async () => {},
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue[0]?.reason).toBe("rejected");
+  });
+
+  it("resolves instead of blocking the settle when a liveness read hangs", async () => {
+    const readActiveWork = vi.fn(() => new Promise<SessionActiveWork>(() => {}));
+    const { run, interrupt } = harness({
+      readActiveWork,
+      expireProviderCall: async () => {},
+    });
+
+    // The first read never resolves. Without a per-call ceiling this awaits
+    // forever inside the settling window, and the row can never be settled
+    // again for the life of the process.
+    await expect(run("session-1", neverAborted)).resolves.toMatchObject({ residue: [] });
+    expect(readActiveWork).toHaveBeenCalledTimes(1);
+    // Unknown liveness is not licence to start stopping things.
+    expect(interrupt).not.toHaveBeenCalled();
   });
 
   it("buckets residue counts so a large fleet cannot widen the analytics dimension", () => {
