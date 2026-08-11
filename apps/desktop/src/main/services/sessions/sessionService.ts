@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import type { AdeDb, SqlValue } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -368,187 +369,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
 
-  // ---------------------------------------------------------------------
-  // The settle-lifecycle chokepoint.
-  //
-  // Every mutation of the settle tuple — `settled_at`, `settle_override`,
-  // `settle_source` — goes through `writeSettleLifecycle`, and no SQL literal
-  // anywhere else may assign those columns. `settleLifecycleChokepoint.test.ts`
-  // enforces that by scanning this file.
-  //
-  // The point is the REVISION. A settle decision is taken at t0 and (once
-  // teardown exists) applied at t0 + T, and the world is free to move in
-  // between. The revision is the detector that window needs: bumped in the same
-  // transaction as the column write, so there is no gap between "the world
-  // changed" and "the revision says so".
-  //
-  // `settle_override` is inside the tuple deliberately. It never touches
-  // `settled_at`, but a `'settled'` pin makes a row read as settled at the
-  // declared-settle tier all the same — so a revision keyed to `settled_at`
-  // alone would be blind to exactly the kind of change it exists to catch.
-  // ---------------------------------------------------------------------
-
-  /** What a settle-lifecycle mutation is asking for. */
-  type SettleLifecycleIntent =
-    | { kind: "settle"; settledAt: string; source: SessionSettleSource }
-    /** Real activity: drop the whole declaration, keep-active pin included. */
-    | { kind: "clearOnActivity" }
-    /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
-    | { kind: "unsettleDeclared" }
-    | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource };
-
-  // settle-tuple-sql:start — the ONLY region allowed to assign the settle tuple.
-  // `settleLifecycleChokepoint.test.ts` scans for assignments outside these
-  // markers, so do not remove them or widen the region to cover other code.
-  const settleTupleAssignment = (intent: SettleLifecycleIntent): { sql: string; params: SqlValue[] } => {
-    switch (intent.kind) {
-      case "settle":
-        return {
-          sql: "settled_at = coalesce(settled_at, ?), settle_override = null, settle_source = ?",
-          params: [intent.settledAt, intent.source],
-        };
-      case "clearOnActivity":
-        return { sql: "settled_at = null, settle_override = null, settle_source = null", params: [] };
-      case "unsettleDeclared":
-        return {
-          sql:
-            "settled_at = null, "
-            + "settle_override = case when settle_override = 'settled' then null else settle_override end, "
-            + "settle_source = null",
-          params: [],
-        };
-      case "override":
-        return {
-          sql:
-            "settle_override = ?, "
-            + "settle_source = case when ? = 'settled' then ? when settled_at is null then null else settle_source end",
-          params: [intent.value, intent.value, intent.source],
-        };
-    }
-  };
-
-  // settle-tuple-sql:end
-
-  /**
-   * Per-process revision counter, incremented on EVERY bump — not only when the
-   * table write fails.
-   *
-   * Both stores are needed, and not only for restart survival. ADE supports
-   * several processes against one database (`kvDb` sets `busy_timeout` for
-   * exactly that), and the desktop main process and the CLI brain each build a
-   * `sessionService` over the same file — so a table value can be AHEAD of this
-   * process, written by a sibling. Conversely, bumping memory only on failure
-   * would let the revision stall: after a failed write the table is behind, and
-   * on recovery it restarts its own count at 1, so a real mutation could produce
-   * no observable change — the failure direction that matters. Reading
-   * `max(table, in-process)` is correct against both.
-   *
-   * Bounded by the sessions this process has touched, same order as the row set
-   * it shadows.
-   */
-  const inProcessLifecycleRevisions = new Map<string, number>();
-
-  const bumpLifecycleRevisions = (sessionIds: readonly string[]): void => {
-    for (const id of sessionIds) {
-      inProcessLifecycleRevisions.set(id, (inProcessLifecycleRevisions.get(id) ?? 0) + 1);
-      try {
-        // One atomic statement, PK lookup, local-only table. This runs on the
-        // per-output-chunk path (C4), so it must not grow a pre-read.
-        db.run(
-          `insert into session_lifecycle_revisions (session_id, revision) values (?, 1)
-             on conflict(session_id) do update set revision = session_lifecycle_revisions.revision + 1`,
-          [id],
-        );
-      } catch {
-        // The in-process counter already moved, so the guard still holds within
-        // this process; restart survival and cross-process visibility are what
-        // a failed write costs.
-      }
-    }
-  };
-
-  const readLifecycleRevision = (sessionId: string): number => {
-    const trimmed = sessionId.trim();
-    if (!trimmed) return 0;
-    let persisted = 0;
-    try {
-      const row = db.get<{ revision: number }>(
-        "select revision from session_lifecycle_revisions where session_id = ?",
-        [trimmed],
-      );
-      persisted = row ? Number(row.revision) || 0 : 0;
-    } catch {
-      persisted = 0;
-    }
-    // The MAXIMUM of the two stores, never whichever answered. After a restart
-    // — or a write by a sibling ADE process — the table is ahead; after a failed
-    // write the in-process counter is. Taking either alone could hand back a
-    // LOWER number than a previous call did, and a revision that moves backwards
-    // is worse than none: it lets a stale settle match a token it should have
-    // missed. Monotonic within a process is the property this value must have;
-    // across a restart it can reset only when table writes were failing, which
-    // is benign because a restart abandons any decision that was in flight.
-    return Math.max(persisted, inProcessLifecycleRevisions.get(trimmed) ?? 0);
-  };
-
-  /**
-   * Columns a caller may set alongside the settle tuple. A closed union, so
-   * routing a tuple column through `extraSet` is a compile error rather than
-   * something only the source-scan test would catch.
-   */
-  type SettleExtraColumn =
-    | "status_note"
-    | "attention_requested_at"
-    | "attention_message"
-    | "attention_source"
-    | "last_output_preview"
-    | "last_output_at"
-    | "last_turn_failed_at";
-
-  /**
-   * The ONLY writer of the settle tuple.
-   *
-   * `sessionIds` is both the scope of the update and the set whose revisions
-   * move — one array, so the two cannot drift. `guard` is an extra predicate
-   * ANDed onto the id match; it takes no parameters, and only `settleMany` uses
-   * one (its "still unsettled" check, which another ADE process could otherwise
-   * invalidate between the select and the update).
-   */
-  const writeSettleLifecycle = (args: {
-    intent: SettleLifecycleIntent;
-    sessionIds: readonly string[];
-    extraSet?: Partial<Record<SettleExtraColumn, SqlValue>>;
-    guard?: string;
-  }): void => {
-    const ids = args.sessionIds.map((id) => id.trim()).filter(Boolean);
-    if (!ids.length) return;
-    const tuple = settleTupleAssignment(args.intent);
-    const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
-    const setClauses = [...extraEntries.map(([column]) => `${column} = ?`), tuple.sql];
-    const setParams = [...extraEntries.map(([, value]) => value), ...tuple.params];
-    const idPlaceholders = ids.map(() => "?").join(", ");
-    const where = args.guard
-      ? `${args.guard} and id in (${idPlaceholders})`
-      : `id in (${idPlaceholders})`;
-
-    const changed = db.runChanged(
-      `update terminal_sessions set ${setClauses.join(", ")} where ${where}`,
-      [...setParams, ...ids],
-    );
-    // Only a write that actually moved a row bumps. A revision that counted
-    // attempts would reject later decisions for writes that changed nothing —
-    // and, on the throttled preview path, would churn against rows that are
-    // already unsettled.
-    if (changed <= 0) return;
-    // Immediately adjacent, with no `await` between, and `bumpLifecycleRevisions`
-    // cannot throw. `AdeDb` exposes no transaction helper and an explicit BEGIN
-    // here could nest inside a caller's, so adjacency is what orders them: within
-    // this process no reader can see the column write without the bump. ADE does
-    // support several processes against one database, so a sibling process could
-    // observe the pair mid-flight; that window is microseconds and closing it
-    // needs a transaction helper `AdeDb` does not have.
-    bumpLifecycleRevisions(ids);
-  };
+  // Every settle-tuple mutation goes through this writer; see
+  // `settleLifecycleWriter.ts` for why it is its own module and what the
+  // revision guarantees.
+  const settleLifecycle = createSettleLifecycleWriter(db);
+  const writeSettleLifecycle = settleLifecycle.write;
 
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
@@ -1682,7 +1507,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * this session", which a caller must treat as a real value, not as absent.
      */
     getSettleLifecycleRevision(sessionId: string): number {
-      return readLifecycleRevision(sessionId);
+      return settleLifecycle.readRevision(sessionId);
     },
 
     settleSessions(sessionIds: string[]): string[] {
@@ -1931,12 +1756,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       // Reap the lifecycle token with its row. ADE has been bitten before by a
       // local table with no reaper, and every other session-keyed side table is
       // already cascaded here.
-      try {
-        db.run("delete from session_lifecycle_revisions where session_id = ?", [trimmed]);
-      } catch {
-        // The token is advisory; failing to reap it must not fail the delete.
-      }
-      inProcessLifecycleRevisions.delete(trimmed);
+      settleLifecycle.forget(trimmed);
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

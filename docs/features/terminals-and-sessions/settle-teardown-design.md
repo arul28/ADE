@@ -141,11 +141,12 @@ A settle then becomes: read revision `r₀` → tear down → write **conditiona
 on the revision still being `r₀`. One `where` clause replaces every ad-hoc guard,
 at every entry point, for free.
 
-**As implemented (step 1).** `writeSettleLifecycle` in `sessionService` is the
-only writer of the settle tuple, and `settleLifecycleChokepoint.test.ts` enforces
-that by scanning the source for any assignment outside the tuple generator — the
-guarantee belongs to the writer, so it has to be impossible to add an eleventh
-path without the test failing.
+**As implemented (step 1).** `settleLifecycleWriter.ts` is the only writer of the
+settle tuple, and its colocated test scans `apps/desktop/src` and
+`apps/ade-cli/src` for any assignment outside that one file — the guarantee
+belongs to the writer, so adding an eleventh path has to fail a test rather than
+pass a review. It is a separate module precisely so the allowlist is a file
+rather than a pair of offsets inside a 1800-line service.
 
 The revision lives in `session_lifecycle_revisions`, a local-only table added to
 `LOCAL_ONLY_CRR_EXCLUDED_TABLES`, bumped by a single

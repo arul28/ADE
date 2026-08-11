@@ -19,7 +19,7 @@ import { createSessionService } from "./sessionService";
  * conditional on.
  */
 
-const SESSION_SERVICE = path.join(__dirname, "sessionService.ts");
+const WRITER_MODULE = path.join(__dirname, "settleLifecycleWriter.ts");
 
 function createLogger() {
   return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as const;
@@ -50,7 +50,7 @@ function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
   );
 }
 
-describe("settle-lifecycle chokepoint", () => {
+describe("settle-lifecycle writer", () => {
   const activeDisposers: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
@@ -106,16 +106,12 @@ describe("settle-lifecycle chokepoint", () => {
 
     const offenders: string[] = [];
     for (const file of files) {
-      let source = fs.readFileSync(file, "utf8");
-      if (file === SESSION_SERVICE) {
-        // Explicit sentinels, not neighbouring identifiers: an unrelated rename
-        // must not silently turn this invariant into a no-op.
-        const start = source.indexOf("settle-tuple-sql:start");
-        const end = source.indexOf("settle-tuple-sql:end");
-        expect(start, "start sentinel missing").toBeGreaterThan(-1);
-        expect(end, "end sentinel missing").toBeGreaterThan(start);
-        source = source.slice(0, start) + source.slice(end);
-      }
+      // The writer module is the one place allowed to assign the tuple. A FILE
+      // boundary, not offsets inside a 1900-line module — that is why the writer
+      // was extracted, and it means no future reordering can widen the blind
+      // spot.
+      if (file === WRITER_MODULE) continue;
+      const source = fs.readFileSync(file, "utf8");
       // Strip comments first: prose describing what the host writes (the web
       // adapter documents the host's SQL in JSDoc) is not a writer, and matching
       // it would make this test cry wolf until someone weakened it.
