@@ -51,6 +51,15 @@ const PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const PLUGIN_ACCENT_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 /**
+ * An accent reaches a CSS custom property, so every layer that accepts one has
+ * to judge it the same way. Exported for the directory parser, which reads
+ * accents from third-party index entries the manifest parser never sees.
+ */
+export function isValidPluginAccent(value: unknown): value is string {
+  return typeof value === "string" && PLUGIN_ACCENT_PATTERN.test(value);
+}
+
+/**
  * Relative POSIX paths only. A manifest may not reach outside its own install
  * directory, and the host resolves these against the plugin root.
  */

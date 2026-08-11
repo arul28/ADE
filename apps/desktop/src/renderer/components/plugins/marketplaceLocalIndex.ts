@@ -52,7 +52,6 @@ const GRAPH = manifest({
   description: "Lanes, commits and PR overlays on one canvas — as an optional tab.",
   icon: "graph",
   accent: "#7C6FF0",
-  entry: "index.js",
   // `builtin` is what makes this a gate rather than a page: the tab it names is
   // compiled into the app, and installing or removing the plugin is what puts it
   // in or out of the rail. See `builtinTabs.ts`.
@@ -341,7 +340,13 @@ function listing(
     installs: null,
     stars: null,
     publishedAt: null,
-    source: `${REGISTRY_ORG}/${source.name}`,
+    // The install source is the plugin ID, not a URL. These packages ship inside
+    // the app, so the install resolves against what ADE already bundles and
+    // records itself as a builtin — which is also the only way back after
+    // someone removes one. The repository links below are display only; that
+    // organisation is planned, not published, and sending its URL here made
+    // every bundled install fail against a repository that does not exist.
+    source: source.name,
     changelogUrl: `${REGISTRY_ORG}/${source.name}/releases`,
     readme: extra.readme,
     manifest: source,

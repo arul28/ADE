@@ -27,7 +27,7 @@
  * with it and the renderer holds the same types.
  */
 
-import { isValidPluginId, isValidPluginVersion } from "./manifest";
+import { isValidPluginAccent, isValidPluginId, isValidPluginVersion } from "./manifest";
 import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
 
 /**
@@ -154,6 +154,34 @@ export function isSafeRegistryUrl(value: unknown): value is string {
   return url.hostname.length > 0;
 }
 
+/**
+ * Repositories ADE's own curated set lives in.
+ *
+ * `official` is a claim the DIRECTORY makes about itself, and this is the one
+ * property of that claim a reader can check without trusting the claimant: the
+ * badge means "published by ADE", so an entry wearing it while pointing
+ * somewhere else is either a mistake or an attempt, and both are answered the
+ * same way — the entry still lists, as a community plugin.
+ *
+ * This matters beyond the badge: `official` also decides whether an install is
+ * refused for a missing checksum, so a forged one buys an unverified install.
+ */
+const OFFICIAL_REPO_HOST = "github.com";
+const OFFICIAL_REPO_PATH_PREFIXES = ["/ade-plugins/"] as const;
+
+export function isCuratedPluginRepo(repo: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(repo);
+  } catch {
+    return false;
+  }
+  // Parsed rather than string-prefixed: `https://github.com/ade-plugins/../x`
+  // passes a `startsWith` and resolves somewhere else entirely.
+  if (url.protocol !== "https:" || url.hostname !== OFFICIAL_REPO_HOST) return false;
+  return OFFICIAL_REPO_PATH_PREFIXES.some((prefix) => url.pathname.startsWith(prefix));
+}
+
 export function isValidPluginChecksum(value: unknown): value is string {
   return typeof value === "string" && SHA256_HEX_PATTERN.test(value);
 }
@@ -196,7 +224,7 @@ function parseStringList(raw: unknown, maxEntries: number, maxChars: number): st
  */
 export function parsePluginRegistryEntry(
   raw: unknown,
-): { entry: PluginRegistryEntry } | { reason: string } {
+): { entry: PluginRegistryEntry; warnings: string[] } | { reason: string } {
   if (!isRecord(raw)) return { reason: "entry is not an object" };
 
   const pluginId = text(raw.pluginId, 64) ?? text(raw.name, 64);
@@ -215,8 +243,21 @@ export function parsePluginRegistryEntry(
   const source = sourceRaw && isSafeRegistryUrl(sourceRaw) ? sourceRaw : repo;
 
   const changelogUrl = text(raw.changelogUrl, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
-  const dropped: string[] = [];
-  const checksums = parseChecksums(raw.checksums, (reason) => dropped.push(reason));
+  const warnings: string[] = [];
+  const checksums = parseChecksums(raw.checksums, (reason) => warnings.push(`${pluginId}: ${reason}`));
+
+  // Demotion is loud. An entry that quietly loses its badge looks the same as
+  // one that never claimed it, and the difference is the whole signal.
+  const claimsOfficial = raw.official === true;
+  const official = claimsOfficial && isCuratedPluginRepo(repo);
+  if (claimsOfficial && !official) {
+    warnings.push(`${pluginId}: claims official but "${repo}" is outside ADE's curated repositories — listed as community`);
+  }
+
+  const rawAccent = text(raw.accent, 32);
+  if (rawAccent && !isValidPluginAccent(rawAccent)) {
+    warnings.push(`${pluginId}: accent "${rawAccent}" is not a hex colour — ignored`);
+  }
 
   const surfaces = PLUGIN_SURFACE_IDS.filter((surface) =>
     Array.isArray(raw.surfaces) && raw.surfaces.includes(surface));
@@ -233,8 +274,8 @@ export function parsePluginRegistryEntry(
       repo,
       source,
       icon: text(raw.icon, 64),
-      accent: text(raw.accent, 32),
-      official: raw.official === true,
+      accent: isValidPluginAccent(rawAccent) ? rawAccent : null,
+      official,
       featured: raw.featured === true,
       isTheme: raw.isTheme === true,
       surfaces,
@@ -248,6 +289,7 @@ export function parsePluginRegistryEntry(
       readme: text(raw.readme, PLUGIN_REGISTRY_LIMITS.maxReadmeChars),
       checksums,
     },
+    warnings,
   };
 }
 
@@ -291,6 +333,7 @@ export function parsePluginRegistryIndex(raw: unknown): PluginRegistryParseResul
       warnings.push(`entry dropped: duplicate pluginId "${parsed.entry.pluginId}"`);
       continue;
     }
+    warnings.push(...parsed.warnings);
     seen.add(parsed.entry.pluginId);
     entries.push(parsed.entry);
   }

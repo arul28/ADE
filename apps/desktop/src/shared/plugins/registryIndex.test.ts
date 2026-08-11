@@ -81,6 +81,46 @@ describe("registry entry parsing", () => {
     expect(parsed.entry.source).toBe("https://github.com/ade-plugins/graph");
   });
 
+  it("refuses an official claim from outside ADE's curated repositories", () => {
+    const forged = parsePluginRegistryEntry(entry({
+      official: true,
+      repo: "https://github.com/attacker/graph",
+    }));
+    if ("reason" in forged) throw new Error(forged.reason);
+    expect(forged.entry.official).toBe(false);
+    expect(forged.warnings.join(" ")).toContain("claims official");
+
+    // A path that only LOOKS curated until a URL parser normalizes it.
+    const traversal = parsePluginRegistryEntry(entry({
+      official: true,
+      repo: "https://github.com/ade-plugins/../attacker/graph",
+    }));
+    if ("reason" in traversal) throw new Error(traversal.reason);
+    expect(traversal.entry.official).toBe(false);
+
+    const real = parsePluginRegistryEntry(entry({ official: true }));
+    if ("reason" in real) throw new Error(real.reason);
+    expect(real.entry.official).toBe(true);
+    expect(real.warnings).toEqual([]);
+  });
+
+  it("refuses an accent that is not a hex colour, since it reaches a CSS property", () => {
+    const parsed = parsePluginRegistryEntry(entry({ accent: "red;color:blue" }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.accent).toBeNull();
+    expect(parsed.warnings.join(" ")).toContain("not a hex colour");
+
+    // Anything past the length ceiling never reaches the hex check, and must
+    // still not reach the stylesheet.
+    const long = parsePluginRegistryEntry(entry({ accent: "red; background: url(https://exfil.example)" }));
+    if ("reason" in long) throw new Error(long.reason);
+    expect(long.entry.accent).toBeNull();
+
+    const good = parsePluginRegistryEntry(entry({ accent: "#7C6FF0" }));
+    if ("reason" in good) throw new Error(good.reason);
+    expect(good.entry.accent).toBe("#7C6FF0");
+  });
+
   it("drops checksums that are not a version mapped to a sha256", () => {
     const parsed = parsePluginRegistryEntry(entry({
       checksums: { "1.0.0": DIGEST_A, "not-a-version": DIGEST_B, "1.1.0": "short" },

@@ -299,6 +299,11 @@ export function installStateFor(
 
 /* ── Adds ───────────────────────────────────────────────────────────────── */
 
+function joinSurfaceNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 /**
  * The "Adds:" lines — the one part of the install modal that is load-bearing
  * for trust, since it is the reader's only preview of what changes.
@@ -312,7 +317,18 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
   const manifest = listing.manifest;
   if (!manifest) {
     if (listing.addsSummary.length > 0) return listing.addsSummary;
-    return listing.isTheme ? ["A colour theme"] : [];
+    // No manifest and no summary is the normal case for a crawled community
+    // entry: the crawler publishes the FACTS a plugin declares and stopped
+    // publishing prose, because its wording was a second copy of this modal's
+    // and the two had drifted apart. The facts still say something worth
+    // reading, and a blank "Adds" list on the one screen that exists to say
+    // what changes is the worst possible answer.
+    const lines: string[] = [];
+    if (listing.isTheme) lines.push("A colour theme");
+    if (listing.surfaces.length > 0) {
+      lines.push(`Adds to ${joinSurfaceNames(listing.surfaces.map((surface) => SURFACE_LABELS[surface]))}`);
+    }
+    return lines;
   }
 
   const lines: string[] = [];
@@ -631,6 +647,12 @@ export function describePluginSource(source: string): PluginSourceDisplay | null
       return { text: value, url: null };
     }
   }
+
+  // A bare plugin id is the bundled package: no scheme, no separator, nothing
+  // to fetch. It is what a bundled listing installs from, so it has to read as
+  // a fact rather than as a mystery folder name.
+  const isBundledId: boolean = isValidPluginId(value);
+  if (isBundledId) return { text: "Included with ADE", url: null };
 
   // `git@host:owner/repo.git` — a real source, but not one a browser opens.
   const scp = /^[^@\s]+@([^:\s]+):(.+)$/.exec(value);
