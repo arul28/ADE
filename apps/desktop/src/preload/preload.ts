@@ -3624,6 +3624,11 @@ function toInstalledPlugin(summary: PluginSummary): InstalledPlugin {
         title: surface.title,
         panelId: surface.panelId,
         icon: surface.icon ?? null,
+        // Which core tab this plugin replaces, when it replaces one. Carried
+        // explicitly rather than inferred: the extraction pilot gates a builtin
+        // tab on it, and inferring the owner from a name would be a guess about
+        // which of two tabs the user sees.
+        ...(surface.builtin ? { builtin: surface.builtin } : {}),
       })),
     theme: summary.theme,
   };
