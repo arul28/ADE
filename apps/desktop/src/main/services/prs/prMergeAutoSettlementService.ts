@@ -11,6 +11,7 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import { isChatToolType } from "../sessions/chatSessionProjection";
+import type { AgentChatSessionSummary } from "../../../shared/types";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
   const mergedMs = Date.parse(mergedAt ?? "");
@@ -64,6 +65,23 @@ export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
+  /**
+   * Liveness for a CHAT session, straight from the chat service.
+   *
+   * A chat's persisted `terminal_sessions` row is not usable for this. It holds
+   * `status = "running"` between turns on purpose, and `runtimeState` is derived
+   * from that column, so a raw row read reports a finished chat as still
+   * running forever. `chatSessionProjection` is the only thing that resolves an
+   * idle chat, and it resolves it from these two fields.
+   *
+   * Injected as a narrow callback rather than the whole chat service, matching
+   * `chatMentionService.listChatSessions` and `laneTeardownDeps.agentChatService`.
+   * Absent (or returning null) means "not a chat" — the caller then falls back
+   * to the persisted row, which IS authoritative for tracked CLI sessions.
+   */
+  getChatLiveness?: (
+    sessionId: string,
+  ) => Promise<Pick<AgentChatSessionSummary, "status" | "awaitingInput"> | null>;
 }) {
 
 
@@ -118,6 +136,32 @@ export function createPrMergeAutoSettlementService(args: {
         return args.sessionService.list({ laneId: pr.laneId, limit: 500 })
           .filter((session) => !scope.claimedByOtherPrs.has(session.id));
     }
+  };
+
+  /**
+   * Sessions whose auto-settle was aborted by activity and that have not been
+   * seen at rest since. Service-scoped on purpose: the retry happens on a LATER
+   * poll, so a per-snapshot set would forget and retry unconditionally.
+   *
+   * In-memory only. After a restart the first poll retries once without waiting,
+   * which is the pre-existing behavior and is bounded by the abort itself: if the
+   * work is still running, the settle aborts again and re-arms this.
+   */
+  const abortedSessionIds = new Set<string>();
+
+  /**
+   * True when a session is not mid-turn, so a previously-aborted settle may
+   * retry. Chat liveness comes from the chat service; everything else reads the
+   * persisted row, which is authoritative for tracked CLI sessions.
+   */
+  const isAtRest = async (sessionId: string): Promise<boolean> => {
+    const chat = await args.getChatLiveness?.(sessionId).catch(() => null);
+    if (chat) return !chat.awaitingInput && chat.status !== "active";
+    const row = args.sessionService.get(sessionId);
+    if (!row) return true;
+    const runtime = (row.runtimeState ?? "").toLowerCase();
+    if (runtime) return runtime !== "running" && runtime !== "waiting-input";
+    return (row.status ?? "").toLowerCase() !== "running";
   };
 
   const processSnapshot = async ({
@@ -196,22 +240,23 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        // NOTE for step 3: this retries on the next poll, unconditionally.
+        // A settle that already lost this race does not retry while the work
+        // that won it is still going. Once step 3 attaches real teardown, an
+        // unconditional retry would stop that work, once per poll.
         //
-        // That is harmless while teardown is a no-op, and it is what this code
-        // did before the settling window existed — but once real teardown
-        // attaches, a retry against work that is still running would stop the
-        // very work that won the race, once per poll. Three gates were tried
-        // here and each was wrong in a different way: a lifecycle-revision check
-        // never re-arms (a turn COMPLETING does not move the settle tuple), a
-        // timer re-arms while a long turn is still running, and a raw
-        // `runtimeState` check never observes turn completion at all, because
-        // chat rows deliberately keep `status = "running"` between turns and
-        // only `chatSessionProjection` resolves an idle chat to `idle`.
-        //
-        // The correct gate therefore needs PROJECTED chat state, which means a
-        // dependency this poller does not have. Bounding it belongs with
-        // teardown, not before it.
+        // Three earlier gates were each wrong in a different way, so the
+        // predicate below is deliberately narrow: a lifecycle-revision check
+        // never re-arms (a turn COMPLETING does not touch the settle tuple), a
+        // timer re-arms mid-turn, and the persisted row is blind to chat
+        // liveness. Ask the chat service; fall back to the row only for the
+        // tracked CLI sessions whose row does not lie.
+        if (abortedSessionIds.has(session.id)) {
+          if (!(await isAtRest(session.id))) {
+            abandonedThisPr = true;
+            continue;
+          }
+          abortedSessionIds.delete(session.id);
+        }
         const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
           settledAt: polledAt,
@@ -223,6 +268,7 @@ export function createPrMergeAutoSettlementService(args: {
           // the PR unhandled is the point: a later pass retries, instead of this
           // merge being consumed by a settle that never landed.
           abandonedThisPr = true;
+          abortedSessionIds.add(session.id);
         }
       }
 

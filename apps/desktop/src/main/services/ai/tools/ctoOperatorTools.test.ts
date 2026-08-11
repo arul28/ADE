@@ -497,6 +497,7 @@ describe("createCtoOperatorTools", () => {
           ...row,
         })),
         settleSession: vi.fn(() => true),
+        settleSessionReportingAbort: vi.fn(() => ({ found: true, settled: true })),
         unsettleSession: vi.fn(() => true),
         setSettleOverride: vi.fn(() => true),
         snoozeSession: vi.fn(() => true),
@@ -548,7 +549,7 @@ describe("createCtoOperatorTools", () => {
         sessionId: "chat-1",
         outcome: "CI green",
       })).resolves.toMatchObject({ success: true });
-      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", {
+      expect(sessionService.settleSessionReportingAbort).toHaveBeenCalledWith("chat-1", {
         outcome: "CI green",
         source: "operator",
       });

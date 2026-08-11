@@ -49,6 +49,7 @@ export interface CtoOperatorToolDeps {
     | "updateMeta"
     | "get"
     | "settleSession"
+    | "settleSessionReportingAbort"
     | "unsettleSession"
     | "setSettleOverride"
     | "snoozeSession"
@@ -552,11 +553,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ sessionId, outcome }) => {
       try {
-        const ok = deps.sessionService.settleSession(sessionId, {
+        const result = deps.sessionService.settleSessionReportingAbort(sessionId, {
           ...(outcome ? { outcome } : {}),
           source: "operator",
         });
-        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        if (!result.found) return { success: false, error: `Session not found: ${sessionId}` };
+        if (!result.settled) {
+          // The session went active while the settle was in flight. Saying "not
+          // found" here would send the operator looking for a session that is
+          // sitting right there, working.
+          return {
+            success: false,
+            error: `Session is active again, so it was not settled: ${sessionId}`,
+          };
+        }
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

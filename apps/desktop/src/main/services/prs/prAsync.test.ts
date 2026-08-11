@@ -1156,6 +1156,65 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
+  it("holds the retry while the chat is mid-turn, and reads chat liveness not the row", async () => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: [] as string[],
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
+    }));
+    // The persisted row of a chat holds `running` between turns on purpose. Any
+    // gate that reads it never sees the turn end — that is the bug this pins.
+    const get = vi.fn(() => ({ id: "chat-owned", status: "running", runtimeState: "running" }));
+    let chatStatus: "active" | "idle" = "active";
+    const getChatLiveness = vi.fn(async () => ({ status: chatStatus, awaitingInput: false }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get,
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+    });
+
+    const openPr = createSummary({ state: "open" });
+    await service.processSnapshot({ prs: [openPr], polledAt: "2026-03-24T12:00:00.000Z" });
+
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    // The merge loses the race to a turn that just started.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+
+    // Still mid-turn: the retry must not fire. With real teardown attached this
+    // is what would otherwise stop the work that won the race, once per poll.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "a retry during an active turn would stop the work that won the race",
+    ).toHaveBeenCalledTimes(1);
+
+    // The turn ends. The ROW still says running — only chat liveness moves — so
+    // a row-reading gate would stay stuck here forever.
+    chatStatus = "idle";
+    settleSessionsReportingAborts.mockImplementation((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T13:01:00.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "the merge must still be filed once the turn is genuinely over",
+    ).toHaveBeenCalledTimes(2);
+    expect(get, "chat liveness must not come from the persisted row").not.toHaveBeenCalled();
+  });
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
     // machine reconciles, backfilling rows for PRs it had never stored. Every

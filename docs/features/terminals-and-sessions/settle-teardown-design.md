@@ -433,9 +433,12 @@ different way, so the next attempt should start from why:
 | Elapsed timer | Re-arms while a long turn is still running — exactly the case the bound exists to prevent. |
 | `session.runtimeState !== "running"` on the persisted row | Never observes turn completion for chat at all. Chat rows deliberately hold `status = "running"` between turns; only `chatSessionProjection` resolves an idle chat to `idle`. |
 
-The workable signal is therefore **projected** chat state, which this poller has
-no dependency on today. Wiring that dependency is step-3 scope; do not re-attempt
-a gate that reads the raw persisted row.
+The workable signal is therefore **projected** chat state. Step 2 wires it as a
+narrow injected callback (`getChatLiveness`, matching
+`chatMentionService.listChatSessions`): the chat service answers `status` and
+`awaitingInput`, and only a tracked CLI session — whose row does not lie — falls
+back to the persisted row. Do not re-attempt a gate that reads the raw row for a
+chat.
 
 ### 3d. When teardown cannot confirm
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
-import type { SettleAbortedSession, SettleSessionsOutcome, SettleTeardownCompleted } from "./settlingStateRegistry";
+import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome, SettleTeardownCompleted } from "./settlingStateRegistry";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -767,7 +767,23 @@ export function createSessionService({
         continue;
       }
       try {
-        runSettleTeardown?.(id);
+        let teardownThrew = false;
+        try {
+          runSettleTeardown?.(id);
+        } catch (error) {
+          // ONLY a teardown throw is `teardown_failed`. Persistence failures
+          // below (a SQLite lock timeout, an I/O error) must not wear that
+          // label: a caller cannot tell "the work is still running" from "the
+          // work stopped but the row did not save", and the PR poller would
+          // retry a teardown that already succeeded. Those propagate, as they
+          // did before the settling window existed.
+          teardownThrew = true;
+          void error;
+        }
+        if (teardownThrew) {
+          aborted.push({ sessionId: id, reason: "teardown_failed" });
+          continue;
+        }
 
         const abortedBy = settleLifecycle.settling.abortedBy(id);
         if (abortedBy) {
@@ -781,12 +797,6 @@ export function createSessionService({
           continue;
         }
         settled.push(...settleMany([id], options));
-      } catch (error) {
-        // A throw must not discard the accounting for the rest of the batch, nor
-        // leave earlier sessions settled with no record of it. Report this id and
-        // carry on: a bulk caller always gets a full accounting.
-        aborted.push({ sessionId: id, reason: "teardown_failed" });
-        void error;
       } finally {
         settleLifecycle.settling.end(id);
       }
@@ -1523,12 +1533,47 @@ export function createSessionService({
         [trimmed],
       );
       if (!exists) return false;
-      settleManyWithTeardown([trimmed], {
-        outcome: normalizeSessionStatusNote(opts.outcome) ?? undefined,
+      // The key must be ABSENT, not `undefined`. `settleMany` decides whether to
+      // touch `status_note` with hasOwnProperty, so passing `outcome: undefined`
+      // writes null and erases the note a previous settle left behind — which is
+      // what a re-settle after activity does when the user supplies no new text.
+      const note = normalizeSessionStatusNote(opts.outcome);
+      const result = settleManyWithTeardown([trimmed], {
+        ...(note ? { outcome: note } : {}),
         settledAt: opts.settledAt,
         source: opts.source,
       });
-      return true;
+      // An abort is not a success. Returning `true` here because the row exists
+      // is the silent-success contract the typed outcome exists to remove.
+      return result.aborted.length === 0;
+    },
+
+    /**
+     * `settleSession` with the abort reason kept, for callers that report WHY.
+     * The boolean form cannot distinguish "no such session" from "a turn started
+     * mid-settle", and rendering the second as the first misleads the user.
+     */
+    settleSessionReportingAbort(
+      sessionId: string,
+      opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
+    ): { found: boolean; settled: boolean; abortedBy?: SettleAbortedReason } {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return { found: false, settled: false };
+      const exists = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!exists) return { found: false, settled: false };
+      const note = normalizeSessionStatusNote(opts.outcome);
+      const result = settleManyWithTeardown([trimmed], {
+        ...(note ? { outcome: note } : {}),
+        settledAt: opts.settledAt,
+        source: opts.source,
+      });
+      const abortedBy = result.aborted[0]?.reason;
+      return abortedBy
+        ? { found: true, settled: false, abortedBy }
+        : { found: true, settled: true };
     },
 
     /** Clears a declared settle plus any `'settled'` override. */

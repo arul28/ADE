@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
+import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import { settleTeardownCompleted } from "./settlingStateRegistry";
 
 /**
@@ -300,15 +301,23 @@ describe("settle race matrix (teardown is a no-op)", () => {
    * nothing about batching.
    */
   it("refuses a multi-id clear rather than guessing one disposition for the batch", async () => {
-    const { service, create } = await fixture();
+    const { service, db, create } = await fixture();
     create("session-2");
     service.settleSessions(["session-1", "session-2"]);
 
-    // The only multi-id clear the API offers is `unsettleSessions`, which is a
-    // DECLARED unsettle, not a `clearOnActivity` — so it is unaffected and both
-    // rows clear.
-    service.unsettleSessions(["session-1", "session-2"]);
+    // The service API cannot express a multi-id `clearOnActivity`, so reach the
+    // writer directly — otherwise the refusal this test is named for is never
+    // executed and the test passes on unrelated behavior.
+    const writer = createSettleLifecycleWriter(db);
+    expect(() =>
+      writer.write({
+        intent: { kind: "clearOnActivity", cause: "turn_start" },
+        sessionIds: ["session-1", "session-2"],
+      }),
+    ).toThrow();
 
+    // A declared multi-id unsettle is a different intent and stays allowed.
+    service.unsettleSessions(["session-1", "session-2"]);
     expect(service.get("session-1")?.settledAt).toBeNull();
     expect(service.get("session-2")?.settledAt).toBeNull();
   });
@@ -345,13 +354,79 @@ describe("settle race matrix (teardown is a no-op)", () => {
     const { service, setTeardown } = await fixture();
     expect(service.settlingSessionIds()).toEqual([]);
 
+    // Captured, not asserted, inside the callback: a failing `expect` in there
+    // throws, the teardown catch turns it into `teardown_failed`, and the test
+    // stays green while proving nothing.
+    let duringWindow: string[] | null = null;
     setTeardown(() => {
-      expect(service.settlingSessionIds()).toEqual(["session-1"]);
+      duringWindow = service.settlingSessionIds();
     });
-    service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = service.settleSessionsReportingAborts(["session-1"]);
 
+    expect(outcome.aborted, "the teardown must not have thrown").toEqual([]);
+    expect(duringWindow, "the session must be visibly settling mid-teardown").toEqual([
+      "session-1",
+    ]);
     // Always ended, even on the abandoned path — a leaked window would make the
     // session permanently unsettleable.
     expect(service.settlingSessionIds()).toEqual([]);
+  });
+  it("keeps a persistence failure distinct from a failed teardown", async () => {
+    const { service, db, setTeardown } = await fixture();
+    let stopped = 0;
+    setTeardown(() => {
+      stopped += 1;
+    });
+    // Teardown succeeds; saving the row is what breaks.
+    // The settle tuple lands via `runChanged` (the bump needs the matched-row
+    // count), so patching `run` alone would sail straight past it.
+    const realRunChanged = db.runChanged.bind(db);
+    db.runChanged = ((sql: string, params?: unknown[]) => {
+      if (typeof sql === "string" && /update\s+terminal_sessions/i.test(sql)) {
+        throw new Error("database is locked");
+      }
+      return realRunChanged(sql, params as never);
+    }) as typeof db.runChanged;
+
+    // It must NOT come back as `teardown_failed`: the work really did stop, and
+    // labelling it a teardown failure invites a caller to retry the stop.
+    expect(() => service.settleSessionsReportingAborts(["session-1"])).toThrow(/locked/);
+    expect(stopped, "teardown ran, so it must not be reported as failed").toBe(1);
+    db.runChanged = realRunChanged;
+    // The window still closed, or the session would be permanently unsettleable.
+    expect(service.settlingSessionIds()).toEqual([]);
+  });
+
+  it("does not erase an existing status note when a re-settle supplies none", async () => {
+    const { service, db } = await fixture();
+    expect(service.settleSession("session-1", { outcome: "shipped the fix" })).toBe(true);
+    service.unsettleSession("session-1");
+
+    // Re-settling with no outcome must leave the previous note alone.
+    expect(service.settleSession("session-1")).toBe(true);
+    const row = db.get<{ status_note: string | null }>(
+      "select status_note from terminal_sessions where id = ?",
+      ["session-1"],
+    );
+    expect(row?.status_note).toBe("shipped the fix");
+  });
+
+  it("tells an aborted single-session settle apart from a missing one", async () => {
+    const { service, setTeardown } = await fixture();
+    // A turn starts while the settle is mid-teardown, exactly as in R1.
+    setTeardown(() => {
+      service.clearTurnStartMarkers("session-1");
+    });
+
+    // The boolean form must not claim success...
+    expect(service.settleSession("session-1")).toBe(false);
+    // ...and the typed form must say WHY, so a caller does not report a session
+    // that is sitting right there working as "not found".
+    const aborted = service.settleSessionReportingAbort("session-1");
+    expect(aborted).toEqual({ found: true, settled: false, abortedBy: "turn_start" });
+    expect(service.settleSessionReportingAbort("no-such-session")).toEqual({
+      found: false,
+      settled: false,
+    });
   });
 });

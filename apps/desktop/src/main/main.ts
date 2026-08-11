@@ -3589,6 +3589,12 @@ app.whenReady().then(async () => {
       db,
       sessionService,
       emitEvent: emitPrEvent,
+      getChatLiveness: async (sessionId) => {
+        const summary = await agentChatService.getSessionSummary(sessionId);
+        return summary
+          ? { status: summary.status, awaitingInput: summary.awaitingInput }
+          : null;
+      },
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
