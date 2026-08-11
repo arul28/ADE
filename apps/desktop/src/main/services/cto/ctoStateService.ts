@@ -9,7 +9,9 @@ import type {
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
-import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { buildAdeCliInlineGuidance } from "../../../shared/adeCliGuidance";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import { getDefaultModelDescriptor, listModelDescriptorsForProvider, type ModelProviderGroup } from "../../../shared/modelRegistry";
 import type { AdeDb } from "../state/kvDb";
@@ -31,6 +33,12 @@ type CtoStateServiceArgs = {
     CtoMemoryService,
     "buildMemoryContextSections"
   > | null;
+  /**
+   * Compiled surfaces this machine has. Injectable so a suite can describe a
+   * machine instead of inheriting whatever plugins the developer running the
+   * tests happens to have installed.
+   */
+  readInstalledSurfaces?: () => ReadonlySet<PluginBuiltinSurfaceId>;
 };
 
 type AppendCtoSessionLogArgs = {
@@ -83,7 +91,10 @@ function buildCtoModelSelectionKnowledge(): string[] {
   ];
 }
 
-const IMMUTABLE_CTO_DOCTRINE = [
+function buildImmutableCtoDoctrine(
+  installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId> = readInstalledBuiltinSurfaces(),
+): string {
+  return [
   "You are the CTO for the current project inside ADE.",
   "ADE (Autonomous Development Environment) is a local-first Electron desktop app that wraps your entire development workflow: git branching via lanes, AI chat sessions, terminal shells, PR management, conflict resolution, test execution, automations, and Linear issue reading, and more.",
   "You are not a generic assistant. You are the persistent technical and operational lead for this project inside ADE. You have deep knowledge of every ADE feature and can perform any action the app supports through your operator tools.",
@@ -105,8 +116,9 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
   "ADE CLI operating guidance:",
-  ADE_CLI_INLINE_GUIDANCE,
-].join("\n");
+  buildAdeCliInlineGuidance(undefined, { installedBuiltinSurfaces: installedSurfaces }),
+  ].join("\n");
+}
 
 const CTO_CONTINUITY_OPERATING_MODEL = [
   "ADE continuity model:",
@@ -135,7 +147,37 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
   "- Never store secrets in memory: no API keys, tokens, passwords, or credentials. Memory files are plaintext on disk and re-injected into prompts. Reference secrets by name (e.g. \"the LINEAR_API_KEY in ade secrets\") instead of by value; ADE also scrubs secret-shaped content on write as a backstop.",
 ].join("\n");
 
-function buildCtoEnvironmentKnowledge(): string {
+/**
+ * The page list the CTO is told about.
+ *
+ * `/graph` and `/history` are compiled surfaces owned by `ade-graph` and
+ * `ade-history`. On a machine without those plugins the pages do not exist and
+ * the rail does not show them, so naming them here would send the CTO — and the
+ * user it is talking to — at a tab that is not there. This is an ADVERTISEMENT
+ * gate, not a capability one: nothing about what the CTO may do changes.
+ */
+function buildCtoPageLines(installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId>): string[] {
+  return [
+    "  /work — Main workspace with terminal sessions and chat panels. This is where active development happens.",
+    "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
+    "  /files — File explorer for browsing and editing project files.",
+    "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
+    "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
+    ...(installedSurfaces.has("graph")
+      ? ["  /graph — Workspace dependency graph visualization showing lane relationships."]
+      : []),
+    ...(installedSurfaces.has("history")
+      ? ["  /history — Operation history timeline showing all past actions."]
+      : []),
+    "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
+    "  /settings — App settings: AI providers, GitHub auth, Linear integration, keybindings, and external connectors. Live provider usage and automation guardrails are now in the header usage popup.",
+    "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
+  ];
+}
+
+function buildCtoEnvironmentKnowledge(
+  installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId> = readInstalledBuiltinSurfaces(),
+): string {
   return [
   "# ADE Architecture & Concepts",
   "",
@@ -164,16 +206,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "## ADE Pages & Navigation",
   "",
   "ADE has these main pages (accessible via tab navigation):",
-  "  /work — Main workspace with terminal sessions and chat panels. This is where active development happens.",
-  "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
-  "  /files — File explorer for browsing and editing project files.",
-  "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
-  "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
-  "  /graph — Workspace dependency graph visualization showing lane relationships.",
-  "  /history — Operation history timeline showing all past actions.",
-  "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
-  "  /settings — App settings: AI providers, GitHub auth, Linear integration, keybindings, and external connectors. Live provider usage and automation guardrails are now in the header usage popup.",
-  "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
+  ...buildCtoPageLines(installedSurfaces),
   "",
   ...buildCtoModelSelectionKnowledge(),
   "## Critical Distinctions",
@@ -467,6 +500,7 @@ function makeDefaultIdentity(): CtoIdentity {
 
 export function createCtoStateService(args: CtoStateServiceArgs) {
   const logIntegrityService = createLogIntegrityService();
+  const readSurfaces = args.readInstalledSurfaces ?? readInstalledBuiltinSurfaces;
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
   // CTO identity is local runtime state by default; the shared scaffold keeps
@@ -741,7 +775,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions through session resumes.`);
     sections.push("");
     sections.push("ADE Operational Knowledge");
-    sections.push(buildCtoEnvironmentKnowledge());
+    sections.push(buildCtoEnvironmentKnowledge(readSurfaces()));
     sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
@@ -837,11 +871,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const identity = identityOverride
       ? { ...getIdentity(), ...identityOverride }
       : getIdentity();
+    // Read once for the whole prompt: the doctrine's skill roster and the page
+    // list must describe the same machine, and re-reading between them would
+    // let an install landing mid-build split them.
+    const installedSurfaces = readSurfaces();
     const previewSections: CtoSystemPromptPreview["sections"] = [
       {
         id: "doctrine",
         title: "Immutable ADE doctrine",
-        content: IMMUTABLE_CTO_DOCTRINE,
+        content: buildImmutableCtoDoctrine(installedSurfaces),
       },
       {
         id: "personality",
@@ -861,7 +899,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       {
         id: "knowledge",
         title: "ADE environment knowledge",
-        content: buildCtoEnvironmentKnowledge(),
+        content: buildCtoEnvironmentKnowledge(installedSurfaces),
       },
       {
         id: "capabilities",

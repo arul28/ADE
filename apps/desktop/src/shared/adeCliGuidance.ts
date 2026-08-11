@@ -1,5 +1,6 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
+import type { PluginBuiltinSurfaceId } from "./plugins/manifest";
 
 export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
@@ -15,6 +16,47 @@ export const adeBundledAgentSkills = [
   "ade-mosaic",
   "ade-plugins",
 ] as const;
+
+export type AdeBundledAgentSkill = (typeof adeBundledAgentSkills)[number];
+
+/**
+ * Skills whose whole subject is a compiled surface an official plugin owns.
+ *
+ * Every one of these stays LOADABLE regardless — `ade skill show ade-linear`
+ * works on any machine, and so does every action behind it. What the install
+ * state changes is whether the bootstrap roster tells an agent the skill is
+ * there, because pointing an agent at the iOS Simulator on a machine that has
+ * no iOS Simulator pane costs it a turn to find out.
+ */
+const SKILL_BUILTIN_SURFACE: Partial<Record<AdeBundledAgentSkill, PluginBuiltinSurfaceId>> = {
+  "ade-ios-simulator": "ios",
+  "ade-app-control": "app-control",
+  "ade-linear": "linear",
+};
+
+export type AdeGuidanceOptions = {
+  /**
+   * Compiled surfaces installed and enabled on this machine.
+   *
+   * Omitted means "this caller cannot know", NOT "none" — and the roster is
+   * then complete. That direction is deliberate: an over-long roster costs an
+   * agent one wasted lookup, while a roster trimmed on a guess hides a skill
+   * the machine really has.
+   */
+  installedBuiltinSurfaces?: ReadonlySet<PluginBuiltinSurfaceId> | null;
+};
+
+/** The roster a prompt may name, given what this machine has. */
+export function advertisedAdeAgentSkills(
+  options: AdeGuidanceOptions = {},
+): readonly AdeBundledAgentSkill[] {
+  const installed = options.installedBuiltinSurfaces;
+  if (!installed) return adeBundledAgentSkills;
+  return adeBundledAgentSkills.filter((skill) => {
+    const surface = SKILL_BUILTIN_SURFACE[skill];
+    return !surface || installed.has(surface);
+  });
+}
 
 /**
  * The status protocol agents actually get. Note what is NOT here: settling.
@@ -40,14 +82,20 @@ export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
  * blob is gone: ADE's capabilities are delivered as session-scoped Agent Skills, with
  * `ade skill show` as the runtime-independent activation fallback. Do not re-grow this.
  */
-export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
-  return buildAdeBootstrapGuidance(skillRoots);
+export function buildAdeCliAgentGuidance(
+  skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeGuidanceOptions = {},
+): string {
+  return buildAdeBootstrapGuidance(skillRoots, options);
 }
 
 export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 
-export function buildAdeCliInlineGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
-  return buildAdeCliAgentGuidance(skillRoots);
+export function buildAdeCliInlineGuidance(
+  skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeGuidanceOptions = {},
+): string {
+  return buildAdeCliAgentGuidance(skillRoots, options);
 }
 
 export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
@@ -61,12 +109,13 @@ export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
  */
 export function buildAdeBootstrapGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeGuidanceOptions = {},
 ): string {
   return [
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state; use `ade help <command>` instead of guessing.",
     "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
-    `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
+    `Skills: ${advertisedAdeAgentSkills(options).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
     "For Codex Computer Use, prefer direct `mcp__computer_use` tools and honor per-app approvals; never substitute `@oai/sky` via `node_repl`.",

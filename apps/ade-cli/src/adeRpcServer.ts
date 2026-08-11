@@ -52,6 +52,7 @@ import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../d
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { readInstalledBuiltinSurfaces } from "../../desktop/src/main/services/plugins/builtinSurfaceInstalls";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -2289,7 +2290,10 @@ async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBr
 }
 
 function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
-  return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
+  return buildAdeCliInlineGuidance(
+    getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }),
+    { installedBuiltinSurfaces: readInstalledBuiltinSurfaces() },
+  );
 }
 
 function resolveRunContextLaneId(_runtime: AdeRuntime, _callerCtx: CallerContext): string | null {
@@ -4111,6 +4115,7 @@ async function runTool(args: {
         fastMode,
         initialPrompt: initialInput,
         laneWorktreePath,
+        installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
         ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     })();

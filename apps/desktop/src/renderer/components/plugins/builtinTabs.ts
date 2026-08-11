@@ -27,47 +27,41 @@
  * routes and programmatic reveals reach these surfaces without passing a rail,
  * so each of those checks the same predicate rather than trusting that the way
  * in was hidden. `isBuiltinSurfaceVisible` is that one predicate.
+ *
+ * ## Where the table lives
+ *
+ * The surface→owner table and the bare "is the owner installed" test are in
+ * `shared/plugins/builtinSurfaces.ts`, because the main process asks the same
+ * question when it decides whether a system prompt may advertise a surface. The
+ * renderer-only part — the three-fact rule and the React hooks over the root
+ * store — stays here.
  */
 
 import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
+import {
+  BUILTIN_SURFACE_OWNERS,
+  builtinSurfaceInstalled,
+  builtinSurfaceOwner,
+  builtinSurfaceOwnerForPlugin,
+  builtinSurfaceOwnerForRoute,
+  type BuiltinSurfaceOwner,
+} from "../../../shared/plugins/builtinSurfaces";
 import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
-export type BuiltinTabGate = {
-  builtinId: PluginBuiltinSurfaceId;
-  /** Null for compiled panes that live inside Work rather than at a route. */
-  route: string | null;
-  /**
-   * The official plugin that owns it. Held in this table rather than discovered
-   * from whichever installed plugin happens to declare `builtin`, so a plugin
-   * cannot take over a core surface by naming it: the manifest field says "I
-   * gate the surface I am registered for", and this table is the registration.
-   */
-  ownerPluginId: string;
-  /** What to call it when ADE has to explain that it is not here. */
-  title: string;
-};
+export type BuiltinTabGate = BuiltinSurfaceOwner;
 
-export const BUILTIN_TAB_GATES: readonly BuiltinTabGate[] = [
-  { builtinId: "graph", route: "/graph", ownerPluginId: "ade-graph", title: "Graph" },
-  { builtinId: "review", route: "/review", ownerPluginId: "ade-review", title: "Review" },
-  { builtinId: "history", route: "/history", ownerPluginId: "ade-history", title: "History" },
-  { builtinId: "linear", route: null, ownerPluginId: "ade-linear", title: "Linear" },
-  { builtinId: "ios", route: null, ownerPluginId: "ade-ios-sim", title: "iOS Simulator" },
-  { builtinId: "app-control", route: null, ownerPluginId: "ade-app-control", title: "App Control" },
-];
+export const BUILTIN_TAB_GATES: readonly BuiltinTabGate[] = BUILTIN_SURFACE_OWNERS;
 
 export function builtinGateForRoute(route: string): BuiltinTabGate | null {
-  return BUILTIN_TAB_GATES.find((gate) => gate.route === route) ?? null;
+  return builtinSurfaceOwnerForRoute(route);
 }
 
 export function builtinGateForPlugin(pluginId: string): BuiltinTabGate | null {
-  return BUILTIN_TAB_GATES.find((gate) => gate.ownerPluginId === pluginId) ?? null;
+  return builtinSurfaceOwnerForPlugin(pluginId);
 }
 
 export function builtinGateForSurface(builtinId: PluginBuiltinSurfaceId): BuiltinTabGate {
-  const gate = BUILTIN_TAB_GATES.find((candidate) => candidate.builtinId === builtinId);
-  if (!gate) throw new Error(`No owner registered for builtin surface ${builtinId}`);
-  return gate;
+  return builtinSurfaceOwner(builtinId);
 }
 
 /** The gate a plugin actually claims: registered owner AND a matching surface. */
@@ -105,8 +99,7 @@ export function isBuiltinSurfaceVisible(
   input: BuiltinGateInput,
 ): boolean {
   if (!input.pluginSupport || !input.pluginsLoaded) return false;
-  const ownerId = builtinGateForSurface(builtinId).ownerPluginId;
-  return input.plugins.some((plugin) => plugin.pluginId === ownerId && plugin.enabled);
+  return builtinSurfaceInstalled(builtinId, input.plugins);
 }
 
 /**

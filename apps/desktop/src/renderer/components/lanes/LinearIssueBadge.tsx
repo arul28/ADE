@@ -1,6 +1,7 @@
 import React from "react";
 import { ArrowSquareOut, ChatCircleText, Check, Clipboard, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue } from "../../../shared/types";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 
@@ -54,6 +55,11 @@ export function LinearIssueBadge({
   compact?: boolean;
   onStartChatWithIssue?: () => void;
 }) {
+  // Gated inside the component rather than at each call site: four lane
+  // surfaces render this badge, and the one that forgets is the one that leaks
+  // a Linear entry point onto a machine without the plugin. Matches iOS's
+  // `LaneLinearIssueBadge`, which gates on `PluginPresenceGate` the same way.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [copyState, setCopyState] = React.useState<CopyState>("idle");
   const project = issue.projectName?.trim() || issue.projectSlug || issue.teamKey;
 
@@ -86,6 +92,8 @@ export function LinearIssueBadge({
     event.stopPropagation();
     onStartChatWithIssue?.();
   }, [onStartChatWithIssue]);
+
+  if (!linearSurfaceVisible) return null;
 
   return (
     <span className="group relative inline-flex shrink-0" onClick={(event) => event.stopPropagation()}>

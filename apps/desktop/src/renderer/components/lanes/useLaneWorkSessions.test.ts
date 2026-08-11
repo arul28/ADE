@@ -98,6 +98,11 @@ vi.mock("../../state/appStore", async (importOriginal) => {
       setState: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     })),
+    // The launch path asks the ROOT registry which compiled surfaces this
+    // machine has, so a CLI agent's skill roster matches the product. These
+    // suites describe a machine with no plugins, which is the shipped default.
+    useRootAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) =>
+      selector({ installedPlugins: [], pluginsLoaded: true })),
   };
 });
 

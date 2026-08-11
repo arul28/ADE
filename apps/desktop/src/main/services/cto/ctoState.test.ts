@@ -6,6 +6,7 @@ import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 function createLogger() {
   return {
@@ -331,5 +332,85 @@ describe("ctoStateService", () => {
     expect(manifest).not.toContain("spawnChat —");
     expect(manifest).not.toContain("createLane —");
     expect(manifest).toContain("# Operating Rules");
+  });
+});
+
+/**
+ * The CTO prompt is the biggest advertisement ADE writes, and it is read by
+ * something that will act on it: a CTO told about `/graph` on a machine without
+ * `ade-graph` sends the user to a tab the rail does not draw.
+ *
+ * Capability is deliberately NOT asserted away here. The CTO keeps every tool
+ * and every `ade` command on a machine with no plugins at all; what changes is
+ * only which surfaces the prompt names.
+ */
+describe("CTO prompt follows plugin install state", () => {
+  const surfaces = (...ids: PluginBuiltinSurfaceId[]) =>
+    () => new Set<PluginBuiltinSurfaceId>(ids);
+
+  it("omits the /graph and /history pages on a machine without their plugins", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      readInstalledSurfaces: surfaces(),
+    });
+
+    const prompt = service.previewSystemPrompt().prompt;
+    const reconstruction = service.buildReconstructionContext(5);
+
+    expect(prompt).not.toContain("/graph —");
+    expect(prompt).not.toContain("/history —");
+    expect(reconstruction).not.toContain("/graph —");
+    expect(reconstruction).not.toContain("/history —");
+    // The pages that are not plugin-owned are untouched...
+    expect(prompt).toContain("/lanes —");
+    expect(prompt).toContain("/prs —");
+    // ...and so is every capability. Trimming the page list is not a tool cut.
+    expect(prompt).toContain("ADE operator tools");
+    expect(prompt).toContain("ade actions list --text");
+
+    fixture.db.close();
+  });
+
+  it("names each page once its plugin is installed", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      readInstalledSurfaces: surfaces("graph"),
+    });
+
+    const prompt = service.previewSystemPrompt().prompt;
+
+    expect(prompt).toContain("/graph —");
+    expect(prompt).not.toContain("/history —");
+
+    fixture.db.close();
+  });
+
+  it("trims the doctrine's skill roster to the surfaces this machine has", async () => {
+    const fixture = await createStateFixture();
+    const bare = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      readInstalledSurfaces: surfaces(),
+    });
+    const withLinear = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      readInstalledSurfaces: surfaces("linear"),
+    });
+
+    expect(bare.previewSystemPrompt().prompt).not.toContain("`ade-linear`");
+    expect(withLinear.previewSystemPrompt().prompt).toContain("`ade-linear`");
+    // Not a capability gate: the loader that reaches any skill by name stays.
+    expect(bare.previewSystemPrompt().prompt).toContain("ade skill show <name> --text");
+
+    fixture.db.close();
   });
 });

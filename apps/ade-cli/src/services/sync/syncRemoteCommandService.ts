@@ -209,6 +209,7 @@ import {
   SESSION_WAKE_REASONS,
 } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
+import { readInstalledBuiltinSurfaces } from "../../../../desktop/src/main/services/plugins/builtinSurfaceInstalls";
 import {
   PERSONAL_CHAT_ACTIONS,
   isPersonalChatActionQueueable,
@@ -4288,6 +4289,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         fastMode: parsed.fastMode ?? undefined,
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
+        installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
         ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     }

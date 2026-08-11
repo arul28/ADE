@@ -3,17 +3,26 @@ import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
+import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
+import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 type Hint = {
   id: string;
   title?: string;
   body: string;
   docUrl?: string;
+  /**
+   * A compiled surface this tip is selling. A tip is an advertisement, so one
+   * pitching the Graph canvas on a machine without `ade-graph` is telling the
+   * user about a tab they do not have and cannot get to.
+   */
+  requiresSurface?: PluginBuiltinSurfaceId;
 };
 
 const SESSION_KEY = "ade.didYouKnow.shown";
 
-const DEFAULT_HINTS: Hint[] = [
+export const DEFAULT_DID_YOU_KNOW_HINTS: readonly Hint[] = [
   {
     id: "lanes-parallel",
     body: "Each lane is its own worktree, so parallel agents can change files without trampling each other.",
@@ -61,21 +70,25 @@ const DEFAULT_HINTS: Hint[] = [
   },
   {
     id: "graph-projection",
+    requiresSurface: "graph",
     body: "The workspace graph is not a separate data layer; it projects lane, PR, sync, conflict, and activity state into one canvas.",
     docUrl: docs.workspaceGraph,
   },
   {
     id: "graph-risk",
+    requiresSurface: "graph",
     body: "Graph risk mode turns pairwise file overlap into clickable conflict edges before a merge gets painful.",
     docUrl: docs.workspaceGraph,
   },
   {
     id: "ios-simulator-owner",
+    requiresSurface: "ios",
     body: "The iOS Simulator drawer is owned by the active runtime and chat/lane, so control and proof stay attached to the right work.",
     docUrl: docs.iosSimulator,
   },
   {
     id: "simulator-preview",
+    requiresSurface: "ios",
     body: "Preview Lab can resolve a selected simulator element back to SwiftUI preview targets when source context is available.",
     docUrl: docs.iosSimulator,
   },
@@ -125,19 +138,36 @@ type DidYouKnowProps = {
   hints?: Hint[];
 };
 
+/** Drop the tips selling a surface this machine does not have. */
+export function visibleDidYouKnowHints(
+  pool: readonly Hint[],
+  surfaceVisible: (builtinId: PluginBuiltinSurfaceId) => boolean,
+): Hint[] {
+  return pool.filter((candidate) => !candidate.requiresSurface || surfaceVisible(candidate.requiresSurface));
+}
+
 export function DidYouKnow({ hints }: DidYouKnowProps) {
   const didYouKnowEnabled = useAppStore((s) => s.didYouKnowEnabled);
+  const gateInput = useBuiltinGateInput();
   const [dismissed, setDismissed] = useState(false);
   const [hint, setHint] = useState<Hint | null>(null);
 
   useEffect(() => {
     if (!didYouKnowEnabled) return;
+    // Wait for the registry to resolve. Picking now would draw from a pool in
+    // which every gated tip still answers "not installed", which retires the
+    // Graph and iOS tips on the machines that actually have those surfaces.
+    if (gateInput.pluginSupport && !gateInput.pluginsLoaded) return;
     try {
       if (sessionStorage.getItem(SESSION_KEY) === "1") return;
     } catch {
       // sessionStorage unavailable — fall through and show anyway.
     }
-    const pool = hints && hints.length > 0 ? hints : DEFAULT_HINTS;
+    const pool = visibleDidYouKnowHints(
+      hints && hints.length > 0 ? hints : DEFAULT_DID_YOU_KNOW_HINTS,
+      (builtinId) => isBuiltinSurfaceVisible(builtinId, gateInput),
+    );
+    if (pool.length === 0) return;
     const pick = pool[Math.floor(Math.random() * pool.length)];
     setHint(pick ?? null);
     try {
@@ -145,7 +175,7 @@ export function DidYouKnow({ hints }: DidYouKnowProps) {
     } catch {
       /* ignore */
     }
-  }, [didYouKnowEnabled, hints]);
+  }, [didYouKnowEnabled, gateInput, hints]);
 
   if (!didYouKnowEnabled) return null;
   if (!hint || dismissed) return null;

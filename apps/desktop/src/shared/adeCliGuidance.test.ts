@@ -2,7 +2,13 @@ import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessi
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { adeBundledAgentSkills, buildAdeBootstrapGuidance, buildAdeCliAgentGuidance } from "./adeCliGuidance";
+import {
+  adeBundledAgentSkills,
+  advertisedAdeAgentSkills,
+  buildAdeBootstrapGuidance,
+  buildAdeCliAgentGuidance,
+} from "./adeCliGuidance";
+import type { PluginBuiltinSurfaceId } from "./plugins/manifest";
 
 describe("ADE CLI guidance", () => {
   it("now aliases the minimal bootstrap (the verbose always-on blob was removed)", () => {
@@ -88,5 +94,55 @@ describe("ADE bootstrap guidance", () => {
     expect(skill).toContain("sessionStatusNote.ts");
     expect(bootstrap).toContain(`${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`);
     expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
+  });
+});
+
+/**
+ * The roster is an ADVERTISEMENT, and only the advertisement is gated. Nothing
+ * here should ever assert that a skill stops loading or that an action stops
+ * running — those stay available on every machine, installed plugin or not.
+ */
+describe("advertised skill roster", () => {
+  const roots = ["/Applications/ADE.app/Contents/Resources/agent-skills"];
+  const surfaces = (...ids: PluginBuiltinSurfaceId[]) => new Set<PluginBuiltinSurfaceId>(ids);
+
+  it("names every bundled skill when the caller cannot know what is installed", () => {
+    expect(advertisedAdeAgentSkills()).toEqual(adeBundledAgentSkills);
+    expect(advertisedAdeAgentSkills({ installedBuiltinSurfaces: null })).toEqual(adeBundledAgentSkills);
+  });
+
+  it("drops the surface-owning skills on a machine with no plugins", () => {
+    const advertised = advertisedAdeAgentSkills({ installedBuiltinSurfaces: surfaces() });
+
+    expect(advertised).not.toContain("ade-ios-simulator");
+    expect(advertised).not.toContain("ade-app-control");
+    expect(advertised).not.toContain("ade-linear");
+    // Everything that is not a plugin-owned surface survives untouched.
+    expect(advertised).toContain("ade-cli-control-plane");
+    expect(advertised).toContain("ade-browser");
+    expect(advertised).toContain("ade-plugins");
+  });
+
+  it("names each skill exactly when its owning surface is installed", () => {
+    const advertised = advertisedAdeAgentSkills({ installedBuiltinSurfaces: surfaces("linear", "ios") });
+
+    expect(advertised).toContain("ade-linear");
+    expect(advertised).toContain("ade-ios-simulator");
+    expect(advertised).not.toContain("ade-app-control");
+  });
+
+  it("carries the trim into the bootstrap text the agent actually reads", () => {
+    const withNone = buildAdeBootstrapGuidance(roots, { installedBuiltinSurfaces: surfaces() });
+    const withAppControl = buildAdeBootstrapGuidance(roots, {
+      installedBuiltinSurfaces: surfaces("app-control"),
+    });
+
+    expect(withNone).not.toContain("`ade-app-control`");
+    expect(withNone).not.toContain("`ade-linear`");
+    expect(withAppControl).toContain("`ade-app-control`");
+    expect(withAppControl).not.toContain("`ade-linear`");
+    // The fallback that makes every skill reachable regardless is still there,
+    // which is what keeps this a trimmed advertisement and not a capability cut.
+    expect(withNone).toContain("ade skill show <name> --text");
   });
 });

@@ -12,6 +12,7 @@ import type {
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 
 type LaneServiceForCliLaunch = Pick<
   ReturnType<typeof createLaneService>,
@@ -101,6 +102,7 @@ export async function launchAgentChatCli(
       : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
+    installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
     ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
   });
 

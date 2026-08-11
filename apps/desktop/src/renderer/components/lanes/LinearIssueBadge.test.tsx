@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue } from "../../../shared/types";
+import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 
 function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
@@ -38,17 +39,49 @@ function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
 }
 
 describe("LinearIssueBadge", () => {
+  // The badge is a Linear entry point, so it is only in the product on a
+  // machine that has `ade-linear`. Every rendering test therefore describes
+  // such a machine; the gate itself is asserted from both sides below.
+  beforeEach(() => {
+    seedBuiltinSurfacePlugins(["linear"]);
+  });
+
   afterEach(() => {
     cleanup();
+    resetBuiltinSurfacePlugins();
     Reflect.deleteProperty(window, "ade");
     vi.restoreAllMocks();
+  });
+
+  it("renders nothing when the Linear plugin is not installed", () => {
+    resetBuiltinSurfacePlugins();
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined) } },
+    });
+
+    const { container } = render(<LinearIssueBadge issue={makeIssue()} />);
+
+    expect(container.textContent).toBe("");
+    expect(screen.queryByText("ADE-123")).toBeNull();
+  });
+
+  it("renders the issue once the Linear plugin is installed", () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined) } },
+    });
+
+    render(<LinearIssueBadge issue={makeIssue()} />);
+
+    expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);
   });
 
   it("copies the Linear issue link to the clipboard", async () => {
     const writeClipboardText = vi.fn(async () => undefined);
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { app: { writeClipboardText } },
+      value: { plugins: {}, app: { writeClipboardText } },
     });
 
     const issue = makeIssue();
@@ -65,7 +98,7 @@ describe("LinearIssueBadge", () => {
   it("starts a new chat with issue context from the hover card", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { app: { writeClipboardText: vi.fn(async () => undefined), openExternal: vi.fn(async () => undefined) } },
+      value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined), openExternal: vi.fn(async () => undefined) } },
     });
     const onStartChatWithIssue = vi.fn();
 
@@ -80,7 +113,7 @@ describe("LinearIssueBadge", () => {
     const openExternal = vi.fn(async () => undefined);
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { app: { openExternal } },
+      value: { plugins: {}, app: { openExternal } },
     });
 
     const { rerender } = render(<LinearIssueBadge issue={makeIssue()} />);

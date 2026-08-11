@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { Logger } from "../logging/logger";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import { dirExists, nowIso, spawnAsync, writeTextAtomic } from "../shared/utils";
@@ -22,8 +21,15 @@ import { emitPluginChange } from "./pluginEvents";
 import {
   pluginRegistryFilePath,
   readPluginRegistryContents,
+  resolvePluginsRoot,
   type PluginRegistryFileContents,
 } from "./pluginRegistryFile";
+
+// Re-exported because this module is where the resolver used to live and every
+// install-side caller already imports it from here; it now sits next to the
+// reader so a consumer that only reads the registry does not have to pull the
+// install service in.
+export { resolvePluginsRoot };
 
 const PLUGIN_MANIFEST_FILE = "plugin.json";
 
@@ -114,10 +120,6 @@ export type PluginInstallService = {
 /** The registry file's shape, read and written here. */
 type PluginRegistryFile = PluginRegistryFileContents;
 
-/** `<machine adeDir>/plugins` — installs are machine-scoped, never per project. */
-export function resolvePluginsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveMachineAdeLayout(env).adeDir, "plugins");
-}
 
 /**
  * The sha256 the directory vouches for, computed the directory's way.

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isValidPluginId } from "../../../shared/plugins/manifest";
 import { isRecord } from "../../../shared/plugins/parse";
 import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/plugins/sdk";
@@ -22,6 +23,11 @@ import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/p
  */
 
 export const PLUGIN_STATE_FILE = "state.json";
+
+/** `<machine adeDir>/plugins` — installs are machine-scoped, never per project. */
+export function resolvePluginsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveMachineAdeLayout(env).adeDir, "plugins");
+}
 
 export type PluginRegistryFileContents = {
   version: 2;

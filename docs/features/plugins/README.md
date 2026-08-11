@@ -317,13 +317,16 @@ fields a plugin's UI needs, never a handle to the lane's worktree, the PR's
 token, or the session's transcript.
 
 The lane row's Linear issue badge (`LinearIssueBadge`) is not a `row-badge`
-socket contribution, and stays ungated by the plugin registry on purpose even
-though `ade-linear` is an installable, disableable plugin: which Linear issue a
-lane implements is core lane metadata (`lane.linearIssue`), not something a
-plugin adds, and the badge's two actions — the external link to Linear and a
-core chat entry point — belong to neither. Uninstalling or disabling
-`ade-linear` hides that plugin's own surfaces (its pane, its `linear-issue`
-deeplink target) but never the badge.
+socket contribution — which Linear issue a lane implements is core lane
+metadata (`lane.linearIssue`), not something a plugin adds — but it follows
+`ade-linear` anyway, because it is a visible Linear entry point and a machine
+without the plugin should have none. It gates itself, on the same
+`isBuiltinSurfaceVisible("linear")` predicate as the pane and the `linear-issue`
+deeplink, rather than at each of the four lane surfaces that render it. iOS does
+the same in `LaneLinearIssueBadge` via `PluginPresenceGate`. The lane metadata
+underneath is untouched: uninstalling `ade-linear` hides the badge, it does not
+unlink the issue, and reinstalling brings the badge back with the issue still
+attached.
 
 ### Themes
 

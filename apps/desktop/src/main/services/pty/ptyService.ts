@@ -97,6 +97,7 @@ import {
   PTY_SEND_PRE_DELIVERY_ERROR_CODE,
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildOpenCodeReplayResumeLaunchCommand,
@@ -184,6 +185,7 @@ export function materializeRuntimeCliLaunch(
     ...runtimeCliLaunch,
     provider,
     laneWorktreePath,
+    installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
   });
 }
 

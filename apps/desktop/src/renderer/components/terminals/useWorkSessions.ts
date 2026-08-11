@@ -47,6 +47,7 @@ import {
   type WorkPtyLaunchResult,
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
+import { useInstalledBuiltinSurfaces } from "../plugins/useBuiltinTabs";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
 import {
@@ -428,6 +429,9 @@ const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 15_000;
 
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
+  // Handed to the launch builder so a CLI agent's bootstrap roster names only
+  // the skills whose surface this machine has.
+  const installedBuiltinSurfaces = useInstalledBuiltinSurfaces();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const appStore = useAppStoreApi();
@@ -1828,6 +1832,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // we substitute the profile's default launch.
       const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
+        installedBuiltinSurfaces,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
@@ -1936,7 +1941,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const removeSessionFromList = useCallback((sessionId: string) => {
     setSessions((prev) => prev.filter((session) => session.id !== sessionId));
-  }, []);
+  }, [installedBuiltinSurfaces]);
 
   /**
    * Route an imported external session into the Work surface. Mirrors the

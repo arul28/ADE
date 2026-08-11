@@ -16,6 +16,7 @@ import {
   subscribeWorkChatSessionCreated,
 } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
+import { useInstalledBuiltinSurfaces } from "../plugins/useBuiltinTabs";
 import {
   buildPtyContinuationLaunchFields,
   forgetWorkPtyLaunchPin,
@@ -112,6 +113,9 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
 
 export function useLaneWorkSessions(laneId: string | null) {
   const appStore = useAppStoreApi();
+  // Handed to the launch builder so a CLI agent's bootstrap roster names only
+  // the skills whose surface this machine has.
+  const installedBuiltinSurfaces = useInstalledBuiltinSurfaces();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const lanes = useAppStore((state) => state.lanes);
@@ -678,6 +682,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       // command/args).
       const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
+        installedBuiltinSurfaces,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
@@ -768,7 +773,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     focusSession(session.id);
     openSessionTab(session.id);
     void refresh({ showLoading: false, force: true });
-  }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
+  }, [focusSession, installedBuiltinSurfaces, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
   const continueCliSession = useCallback(async (
     session: TerminalSessionSummary,

@@ -7,7 +7,7 @@ import {
   isBuiltinSurfaceVisible,
   type BuiltinGateInput,
 } from "./builtinTabs";
-import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
+import { PLUGIN_BUILTIN_SURFACE_IDS, type PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 /**
  * The rail's answer to "is this built-in tab still ours to show?".
@@ -40,4 +40,23 @@ export function useVisibleBuiltinRoutes(): (route: string) => boolean {
 export function useBuiltinSurfaceVisible(builtinId: PluginBuiltinSurfaceId): boolean {
   const input = useBuiltinGateInput();
   return isBuiltinSurfaceVisible(builtinId, input);
+}
+
+/**
+ * The whole set, for code that hands the answer to something outside the render
+ * tree — an agent's bootstrap roster, for instance.
+ *
+ * Null means "not known yet", which is NOT the same as the empty set here. A
+ * hidden rail item costs a user nothing while the registry resolves, but a
+ * roster trimmed on an unresolved registry would tell an agent a skill is
+ * missing on a machine that has it, and the agent has no way to find out later.
+ */
+export function useInstalledBuiltinSurfaces(): ReadonlySet<PluginBuiltinSurfaceId> | null {
+  const input = useBuiltinGateInput();
+  return React.useMemo(() => {
+    if (input.pluginSupport && !input.pluginsLoaded) return null;
+    return new Set(
+      PLUGIN_BUILTIN_SURFACE_IDS.filter((builtinId) => isBuiltinSurfaceVisible(builtinId, input)),
+    );
+  }, [input]);
 }

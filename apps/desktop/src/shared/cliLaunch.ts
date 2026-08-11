@@ -16,12 +16,17 @@ import {
   getAgentSkillRootCandidates,
   joinAdeAgentSkillRoots,
 } from "./agentSkillRoots";
-import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
+import {
+  buildAdeCliAgentGuidance,
+  buildAdeCliInlineGuidance,
+  type AdeGuidanceOptions,
+} from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
 import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
+import type { PluginBuiltinSurfaceId } from "./plugins/manifest";
 import type { OrchestrationRole } from "./types/orchestration";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
@@ -512,7 +517,11 @@ export function codexComputerUseMcpFlags(
   ];
 }
 
-function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPrompt = false): string {
+function workTabCliPreamblePrompt(
+  skillRoots: readonly string[],
+  hasInitialPrompt = false,
+  guidanceOptions: AdeGuidanceOptions = {},
+): string {
   const launchInstruction = hasInitialPrompt
     ? [
         "ADE session guidance. Treat this as operating guidance for the CLI session",
@@ -527,7 +536,7 @@ function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPromp
   return [
     launchInstruction,
     "",
-    buildAdeCliInlineGuidance(skillRoots),
+    buildAdeCliInlineGuidance(skillRoots, guidanceOptions),
   ].join("\n");
 }
 
@@ -563,6 +572,12 @@ export function buildTrackedCliStartupCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /**
+   * Compiled surfaces this machine has, so the bootstrap roster only advertises
+   * skills whose surface is installed. Omit when the caller cannot read the
+   * plugin registry — the roster is then complete rather than guessed.
+   */
+  installedBuiltinSurfaces?: ReadonlySet<PluginBuiltinSurfaceId> | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -585,6 +600,12 @@ export function buildTrackedCliLaunchCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /**
+   * Compiled surfaces this machine has, so the bootstrap roster only advertises
+   * skills whose surface is installed. Omit when the caller cannot read the
+   * plugin registry — the roster is then complete rather than guessed.
+   */
+  installedBuiltinSurfaces?: ReadonlySet<PluginBuiltinSurfaceId> | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = effectiveOrchestrationPermissionMode(args);
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -593,6 +614,9 @@ export function buildTrackedCliLaunchCommand(args: {
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
     : getAdeAgentSkillRootsForPrompt();
   const agentSkillEnv = adeAgentSkillEnv(skillRoots);
+  const guidanceOptions: AdeGuidanceOptions = args.installedBuiltinSurfaces
+    ? { installedBuiltinSurfaces: args.installedBuiltinSurfaces }
+    : {};
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -606,7 +630,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
-    const guidance = buildAdeCliAgentGuidance(skillRoots);
+    const guidance = buildAdeCliAgentGuidance(skillRoots, guidanceOptions);
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
     // Windows keeps the user's prompt off argv. ADE launches the bare word
@@ -645,7 +669,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "codex") {
     const codexModel = resolveCodexCliModelForLaunch(args.model);
-    const initialInput = workTabCliPrompt(initialPrompt, skillRoots);
+    const initialInput = workTabCliPrompt(initialPrompt, skillRoots, guidanceOptions);
     const commandArgs: string[] = [
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
@@ -679,7 +703,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
     ];
-    const initialInput = initialPrompt ? workTabCliPrompt(initialPrompt, skillRoots) : null;
+    const initialInput = initialPrompt ? workTabCliPrompt(initialPrompt, skillRoots, guidanceOptions) : null;
     return {
       command: "cursor-agent",
       args: commandArgs,
@@ -690,7 +714,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "droid") {
-    const prompt = workTabCliPrompt(initialPrompt, skillRoots);
+    const prompt = workTabCliPrompt(initialPrompt, skillRoots, guidanceOptions);
     if (currentPlatform() === "win32") {
       // Windows Droid has to run through `powershell.exe -Command <line>` so the
       // settings JSON can be written to a temp file before droid starts, and
@@ -735,7 +759,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "pi") {
     const guidance = [
-      buildAdeCliAgentGuidance(skillRoots),
+      buildAdeCliAgentGuidance(skillRoots, guidanceOptions),
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].join("\n");
     const commandArgs = [
@@ -765,7 +789,7 @@ export function buildTrackedCliLaunchCommand(args: {
     model: args.model,
     reasoningEffort: args.reasoningEffort,
     fastMode: args.fastMode,
-    prompt: workTabCliPrompt(initialPrompt, skillRoots),
+    prompt: workTabCliPrompt(initialPrompt, skillRoots, guidanceOptions),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
   return {
@@ -941,9 +965,10 @@ function claudeSessionSettingsFlags(
 function workTabCliPrompt(
   initialPrompt: string | null,
   skillRoots: readonly string[],
+  guidanceOptions: AdeGuidanceOptions = {},
   additionalGuidance?: string,
 ): string {
-  const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt));
+  const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt), guidanceOptions);
   const withAdditionalGuidance = additionalGuidance
     ? [preamble, "", additionalGuidance].join("\n")
     : preamble;
@@ -1437,6 +1462,8 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   env?: Record<string, string>;
   initialInput?: string;
   initialInputDelayMs?: number;
+  /** Passed to the default launch so its bootstrap roster matches this machine. */
+  installedBuiltinSurfaces?: ReadonlySet<PluginBuiltinSurfaceId> | null;
 }): {
   startupCommand?: string;
   command?: string;
@@ -1473,6 +1500,9 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
     provider: args.profile,
     permissionMode,
     orchestrationRole: args.orchestrationRole,
+    ...(args.installedBuiltinSurfaces !== undefined
+      ? { installedBuiltinSurfaces: args.installedBuiltinSurfaces }
+      : {}),
   });
   return {
     startupCommand: defaultLaunch.startupCommand,
