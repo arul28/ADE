@@ -385,6 +385,40 @@ describe("settle race matrix", () => {
     // session permanently unsettleable.
     expect(service.settlingSessionIds()).toEqual([]);
   });
+  it("stops the queue when a persistence failure propagates", async () => {
+    const { service, db, create, setTeardown } = await fixture();
+    const ids = ["session-1"];
+    for (let n = 2; n <= 12; n += 1) {
+      create(`session-${n}`);
+      ids.push(`session-${n}`);
+    }
+
+    // Fail the write for one session only. The pool must stop taking new work
+    // rather than settling rows the caller has already given up on.
+    const realRunChanged = db.runChanged.bind(db);
+    let tornDown = 0;
+    setTeardown(() => { tornDown += 1; });
+    db.runChanged = ((sql: string, params?: unknown[]) => {
+      if (typeof sql === "string" && /update\s+terminal_sessions/i.test(sql)
+        && Array.isArray(params) && params.includes("session-2")) {
+        throw new Error("database is locked");
+      }
+      return realRunChanged(sql, params as never);
+    }) as typeof db.runChanged;
+
+    await expect(service.settleSessionsReportingAborts(ids)).rejects.toThrow(/locked/);
+    db.runChanged = realRunChanged;
+
+    // Far short of all twelve: the queue was drained, so the pool stopped
+    // taking new sessions instead of running on past the caller. The few
+    // already in flight when it failed still finish, which is the point —
+    // nothing is abandoned half-written.
+    expect(tornDown, "the pool must stop taking new sessions after a failure").toBeLessThan(ids.length);
+    // And every window closed, or those rows would be unsettleable for the
+    // life of the process.
+    expect(service.settlingSessionIds()).toEqual([]);
+  });
+
   it("keeps a persistence failure distinct from a failed teardown", async () => {
     const { service, db, setTeardown } = await fixture();
     let stopped = 0;

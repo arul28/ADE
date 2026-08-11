@@ -892,15 +892,32 @@ export function createSessionService({
     // aimed straight at the 30s iOS command budget this exists to protect.
     const perSession = new Map<string, SettleSessionsOutcome>();
     const queue = [...ids];
+    // A persistence failure propagates (a SQLite lock is not a settle outcome
+    // and must not be dressed up as one), but it must not leave the other
+    // workers settling sessions the caller has already given up on. Draining
+    // the queue stops new work; the sessions already in flight finish, so
+    // nothing is abandoned half-written.
+    let failure: unknown = null;
     await Promise.all(
       Array.from({ length: Math.min(SETTLE_TEARDOWN_CONCURRENCY, queue.length) }, async () => {
         for (;;) {
           const id = queue.shift();
           if (id === undefined) return;
-          perSession.set(id, await settleOne(id));
+          try {
+            perSession.set(id, await settleOne(id));
+          } catch (error) {
+            failure ??= error;
+            queue.length = 0;
+            return;
+          }
         }
       }),
     );
+    // Rethrown only after every worker has stopped, so the throw cannot race
+    // more writes. Whatever did settle is already durable, and settle is
+    // idempotent (`coalesce(settled_at, ?)`), so the caller's retry re-reports
+    // it rather than double-filing it.
+    if (failure !== null) throw failure;
 
     // Reassembled in request order. `settled` is a changed-id list that callers
     // compare against what they asked for, so it must not come back shuffled by
