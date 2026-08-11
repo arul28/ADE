@@ -364,6 +364,25 @@ describe("settle race matrix", () => {
   });
 
   /** A settling row found after a restart resolves to not-settled. */
+  it("stops a teardown whose window was force-closed out from under it", async () => {
+    const { service, setTeardown, teardownContexts } = await fixture();
+    let sawAbandoned: boolean | null = null;
+
+    setTeardown(() => {
+      // What `deleteSession` does mid-teardown: `forget` force-closes this
+      // window. Whatever occupies the id afterwards — nothing, or a fresh
+      // window opened by a later settle for a recreated session — is not ours,
+      // and a teardown reading `abortedBy` alone would see "not aborted" and
+      // keep issuing provider stops.
+      service.deleteSession("session-1");
+      sawAbandoned = teardownContexts.at(-1)?.isAborted() ?? null;
+    });
+
+    await service.settleSessionsReportingAborts(["session-1"]);
+
+    expect(sawAbandoned, "a teardown that lost its window must see itself abandoned").toBe(true);
+  });
+
   it("crash safety: the settling window does not survive the process", async () => {
     const { service, setTeardown } = await fixture();
     expect(service.settlingSessionIds()).toEqual([]);

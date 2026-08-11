@@ -832,8 +832,10 @@ export function createSessionService({
           teardown = runSettleTeardown
             ? await runSettleTeardown(id, {
               // Read live, not captured: the whole point is that a clearer can
-              // trip it while teardown is between stop calls.
-              isAborted: () => settleLifecycle.settling.abortedBy(id) !== null,
+              // trip it while teardown is between stop calls. Scoped to OUR
+              // token, so a window that was force-closed and reopened by a
+              // different settle reads as abandoned rather than as healthy.
+              isAborted: () => settleLifecycle.settling.abandoned(id, begin.token),
             })
             : null;
         } catch (error) {
@@ -850,9 +852,13 @@ export function createSessionService({
           return outcome;
         }
 
-        const abortedBy = settleLifecycle.settling.abortedBy(id);
-        if (abortedBy) {
-          outcome.aborted.push({ sessionId: id, reason: abortedBy });
+        // Same scoping after the await: if this window was replaced while
+        // teardown ran, the settle it belonged to is gone and must not land.
+        if (settleLifecycle.settling.abandoned(id, begin.token)) {
+          outcome.aborted.push({
+            sessionId: id,
+            reason: settleLifecycle.settling.abortedBy(id) ?? "lifecycle_changed",
+          });
           return outcome;
         }
         // The revision catches everything the abort flag cannot: a settle-tuple

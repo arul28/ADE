@@ -100,6 +100,20 @@ export class SettlingStateRegistry {
     return this.entries.get(sessionId)?.abortedBy ?? null;
   }
 
+  /**
+   * Has THIS window been abandoned — either aborted, or replaced?
+   *
+   * A settle that no longer owns the id must stop as surely as an aborted one.
+   * `forget` (a deleted session) force-closes the entry, and if the id is then
+   * recreated a new settle opens a fresh window; a stale teardown consulting
+   * `abortedBy` alone would read the replacement, see "not aborted", and keep
+   * issuing provider stops against the new session's work.
+   */
+  abandoned(sessionId: string, token: number): boolean {
+    const entry = this.entries.get(sessionId);
+    return !entry || entry.token !== token || entry.abortedBy !== null;
+  }
+
   startedAtRevision(sessionId: string): number | null {
     return this.entries.get(sessionId)?.startedAtRevision ?? null;
   }
