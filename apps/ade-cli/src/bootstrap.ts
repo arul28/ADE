@@ -767,7 +767,7 @@ export async function createAdeRuntime(args: {
   // stopping nothing.
   const settleTeardownRef: {
     run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
-    report: ((args: { columns: string[] }) => void) | null;
+    report: ((args: { columns: string[]; sessionCount: number }) => void) | null;
     residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
   } = { run: null, report: null, residue: null };
   const sessionService = createSessionService({
@@ -1281,21 +1281,9 @@ export async function createAdeRuntime(args: {
     const settleWiring = createSettleTeardownWiring({
       agentChatService,
       logger,
-      captureAnalytics: ({ action, outcome, provider, countBucket }) => {
-        productAnalyticsService?.captureInternal({
-          event: "ade_feature_used",
-          // The brain reports as "api": it is the non-GUI runtime surface, and
-          // it is what the other brain-side analytics here already use.
-          surface: "api",
-          properties: {
-            feature: "work",
-            action,
-            outcome,
-            ...(provider ? { provider } : {}),
-            ...(countBucket ? { count_bucket: countBucket } : {}),
-          },
-        });
-      },
+      analytics: productAnalyticsService ?? null,
+      // The brain is the non-GUI runtime surface, matching its other analytics.
+      surface: "api",
     });
     settleTeardownRef.run = settleWiring.runSettleTeardown;
     settleTeardownRef.report = settleWiring.onRemoteSettleWrite;

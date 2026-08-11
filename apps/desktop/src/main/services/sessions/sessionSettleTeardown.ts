@@ -3,7 +3,7 @@
 import { PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL } from "../../../shared/subagentCapabilities";
 
 /**
- * Real settle teardown: stop the work a session owns, then confirm it stopped.
+ * @file Real settle teardown: stop the work a session owns, then confirm it stopped.
  *
  * Shaped after `laneService.stopLaneRuntimeWork` — an ordered list of steps,
  * each in its own try/catch so one failure cannot abandon the rest — but NOT
@@ -79,6 +79,7 @@ export type SettleTeardownOutcome = {
  */
 const STOP_CONFIRM_TIMEOUT_MS = 5_000;
 const STOP_CONFIRM_POLL_MS = 100;
+const STOP_CONFIRM_MAX_POLL_MS = 800;
 /**
  * Per-call ceiling for the provider calls themselves.
  *
@@ -133,8 +134,6 @@ export type SessionSettleTeardownDeps = {
   expireProviderCall?: () => Promise<void>;
 };
 
-
-
 export function createSessionSettleTeardown(
   deps: SessionSettleTeardownDeps,
 ): (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome> {
@@ -142,18 +141,36 @@ export function createSessionSettleTeardown(
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const expireProviderCall = deps.expireProviderCall
-    ?? (() => new Promise<void>((resolve) => { setTimeout(resolve, PROVIDER_CALL_TIMEOUT_MS); }));
+    ?? (() => new Promise<void>((resolve) => { setTimeout(resolve, PROVIDER_CALL_TIMEOUT_MS).unref?.(); }));
 
   return async (sessionId, ctx): Promise<SettleTeardownOutcome> => {
     const residue: SettleResidueItem[] = [];
 
+    let readTimedOut = false;
     const readWork = async (): Promise<SessionActiveWork | null> => {
       const result = await withTimeout(deps.readActiveWork(sessionId), expireProviderCall)
         .catch(() => ({ ok: false }) as const);
-      return result.ok ? result.value : null;
+      if (!result.ok) {
+        readTimedOut = true;
+        return null;
+      }
+      return result.value;
     };
 
     const before = await readWork();
+    // A read that timed out looks exactly like "not a chat session" — null. If
+    // those were treated the same, a slow host would settle while claiming a
+    // clean teardown, which is the one outcome residue exists to make
+    // impossible. Report it instead of guessing.
+    if (readTimedOut) {
+      const residue: SettleResidueItem[] = [{
+        kind: "background_tasks",
+        reason: "timeout",
+        count: 1,
+        detail: "could not read what this session was running, so nothing was stopped",
+      }];
+      return { residue, provider: null };
+    }
     // Nothing to stop, or a session this service does not own (a plain
     // terminal). Either way there is no work to lose and no residue to report.
     if (!before || (!before.active && before.backgroundTaskCount === 0)) {
@@ -185,18 +202,31 @@ export function createSessionSettleTeardown(
     if (ctx.isAborted()) return { residue };
 
     const after = await waitForQuiet(readWork, ctx);
-    if (after && (after.active || after.backgroundTaskCount > 0) && !ctx.isAborted()) {
-      const remaining = after.backgroundTaskCount + (after.active ? 1 : 0);
-      residue.push({
-        kind: after.active && after.backgroundTaskCount === 0 ? "active_turn" : "background_tasks",
-        reason: stopRejected
-          ? "rejected"
-          : provider && noStopControl.has(provider)
-            ? "no_stop_control"
-            : "timeout",
-        count: remaining,
-        detail: describeResidue(remaining, provider),
-      });
+    if (after && !ctx.isAborted()) {
+      const reason = stopRejected
+        ? "rejected" as const
+        : provider && noStopControl.has(provider)
+          ? "no_stop_control" as const
+          : "timeout" as const;
+      // A surviving turn and surviving background tasks are separate facts.
+      // Folding them into one item lost both the kind and the count — the two
+      // things the residue exists to report.
+      if (after.backgroundTaskCount > 0) {
+        residue.push({
+          kind: "background_tasks",
+          reason,
+          count: after.backgroundTaskCount,
+          detail: describeResidue(after.backgroundTaskCount, provider, "jobs"),
+        });
+      }
+      if (after.active) {
+        residue.push({
+          kind: "active_turn",
+          reason,
+          count: 1,
+          detail: describeResidue(1, provider, "turn"),
+        });
+      }
     }
 
     return { residue, provider };
@@ -212,18 +242,24 @@ export function createSessionSettleTeardown(
     ctx: SettleTeardownContext,
   ): Promise<SessionActiveWork | null> {
     const deadline = now() + STOP_CONFIRM_TIMEOUT_MS;
+    let delay = STOP_CONFIRM_POLL_MS;
     let latest = await read();
     while (latest && (latest.active || latest.backgroundTaskCount > 0) && now() < deadline) {
       if (ctx.isAborted()) return latest;
-      await sleep(STOP_CONFIRM_POLL_MS);
+      await sleep(delay);
+      // `getSessionSummary` resolves persisted state, model descriptors and a
+      // pending-input query; 10 Hz for five seconds is ~50 of those per settle.
+      delay = Math.min(delay * 2, STOP_CONFIRM_MAX_POLL_MS);
       latest = await read();
     }
     return latest;
   }
 }
 
-function describeResidue(remaining: number, provider: string | null): string {
-  const what = remaining === 1 ? "1 job" : `${remaining} jobs`;
+function describeResidue(count: number, provider: string | null, noun: "jobs" | "turn"): string {
+  const what = noun === "turn"
+    ? "the running turn"
+    : count === 1 ? "1 job" : `${count} jobs`;
   return provider ? `${what} on ${provider} could not be stopped` : `${what} could not be stopped`;
 }
 

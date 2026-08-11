@@ -747,6 +747,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateLifecycleSettings",
     "unsettleSession",
     "unsettleSessions",
+    "getSettleResidue",
     "updateMeta",
     "wakeSession",
     "wakeSessions",
@@ -2206,7 +2207,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.getSettleResidue");
       const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
       if (!sessionId) throw new Error("session.getSettleResidue requires sessionId.");
-      return sessionService.getSettleResidue(sessionId) ?? { items: [] };
+      return sessionService.getSettleResidue(sessionId) ?? { recordedAt: null, items: [] };
     },
     // -----------------------------------------------------------------------
     // Snooze / wake / settle-override. Snooze is a synced VISIBILITY overlay:

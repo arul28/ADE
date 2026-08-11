@@ -65,7 +65,7 @@ describe("settle race matrix", () => {
     // visible to teardown WHILE it ran rather than only afterwards.
     const teardownContexts: SettleTeardownContext[] = [];
     let residue: SettleResidueItem[] = [];
-    const remoteWrites: Array<{ columns: string[] }> = [];
+    const remoteWrites: Array<{ columns: string[]; sessionCount: number }> = [];
     const service = createSessionService({
       db,
       onRemoteSettleWrite: (args) => { remoteWrites.push(args); },
@@ -234,7 +234,7 @@ describe("settle race matrix", () => {
    * deliberately left desktop peers replicating, so this is reachable in
    * production.
    *
-   * This test exists to show the BLAST RADIUS before teardown exists, per the
+   * This test exists to show the BLAST RADIUS before real teardown existed, per the
    * coordinator's step-3 review scope — it asserts today's real behavior, not
    * the behavior we want.
    */
@@ -308,7 +308,7 @@ describe("settle race matrix", () => {
     ];
     expect(
       accountedFor,
-      "step 3 must account for an id the writer never saw change",
+      "an id the writer never saw change must not vanish from both lists",
     ).toEqual([]);
   });
 
@@ -509,19 +509,36 @@ describe("settle race matrix", () => {
    * chokepoint, so it gains the revision, the settling window and the abort
    * semantics a local decision has — no peer-visible concurrency token.
    */
+  it("tears sessions down concurrently, and still reports in the caller's order", async () => {
+    const { service, create, setTeardown } = await fixture();
+    for (const id of ["session-2", "session-3"]) create(id);
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const release: Array<() => void> = [];
+    setTeardown(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise<void>((resolve) => { release.push(resolve); });
+      inFlight -= 1;
+    });
+
+    const pending = service.settleSessionsReportingAborts(["session-3", "session-1", "session-2"]);
+    // Let all three teardowns start before any finishes.
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    while (release.length) release.pop()!();
+    const outcome = await pending;
+
+    // Serial teardown was the regression: the confirmation budget is seconds,
+    // and iOS gives the whole command 30s.
+    expect(peakInFlight, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
+    // Order follows the request, not whichever teardown finished first.
+    expect(outcome.settled).toEqual(["session-3", "session-1", "session-2"]);
+  });
+
   describe("remote settle-tuple reconciliation", () => {
-    /**
-     * Decision 1 for step 3: finish host authority rather than add consensus.
-     *
-     * The VALUES are applied by CRR merge before the session layer is told —
-     * that is what keeps the per-column clocks convergent, and an earlier
-     * version that rebuilt the intent instead left this host's clock behind the
-     * peer forever, so its next genuine decision lost every merge. What
-     * reconciliation adds is the lifecycle revision, which is what an in-flight
-     * settle re-reads after its teardown await.
-     */
+    /** Stands in for `applyChanges` having merged the peer's columns. */
     const applyPeerWrite = (db: Awaited<ReturnType<typeof fixture>>["db"], sql: string, params: unknown[]) => {
-      // Stands in for `applyChanges` having merged the peer's columns.
       db.run(sql, params as never);
     };
 
@@ -543,14 +560,17 @@ describe("settle race matrix", () => {
       expect(service.get("session-1")?.settledAt).toBe("2026-08-11T00:07:00.000Z");
       // And an in-flight settle can now see that the world moved.
       expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(revisionBefore);
-      expect(remoteWrites).toEqual([{ columns: ["settle_source", "settled_at"] }]);
+      expect(remoteWrites).toEqual([{ columns: ["settle_source", "settled_at"], sessionCount: 1 }]);
     });
 
     it("makes a peer reactivation abort an in-flight settle instead of being overwritten", async () => {
-      const { db, service, setTeardown } = await fixture();
+      const { db, service, setTeardown, teardownContexts } = await fixture();
       await service.settleSessionsReportingAborts(["session-1"]);
       service.unsettleSession("session-1");
 
+      // Captured inside teardown: the window is closed by the time the call
+      // returns, so `isAborted` is only meaningful while it is still open.
+      let abortedDuringTeardown: boolean | null = null;
       setTeardown(() => {
         // The mirror case Codex raised: a peer reactivates the session while
         // this host is mid-settle.
@@ -562,11 +582,16 @@ describe("settle race matrix", () => {
         service.reconcileRemoteSettleTuple([
           { sessionId: "session-1", column: "settle_override" },
         ]);
+        abortedDuringTeardown = teardownContexts.at(-1)?.isAborted() ?? null;
       });
       const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
-      expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "lifecycle_changed" }]);
+      expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "remote_lifecycle_changed" }]);
       expect(outcome.settled).toEqual([]);
+      // Visible to teardown WHILE it runs, not only after. The revision alone is
+      // re-read after the await, which would let teardown run to completion and
+      // interrupt a turn the user just started on the other device.
+      expect(abortedDuringTeardown, "teardown must see the abort while it is still running").toBe(true);
       // The peer's reactivation survives.
       expect(service.get("session-1")?.settleOverride).toBe("active");
       expect(service.get("session-1")?.settledAt).toBeNull();
@@ -580,7 +605,7 @@ describe("settle race matrix", () => {
       expect(remoteWrites).toEqual([]);
     });
 
-    it("keeps reconciling the rest of the batch when one session fails", async () => {
+    it("keeps reconciling the rest of the batch when one session is unknown", async () => {
       const { db, service, create, remoteWrites } = await fixture();
       create("session-2");
       applyPeerWrite(db, "update terminal_sessions set settled_at = ? where id = ?", ["2026-08-11T00:07:00.000Z", "session-2"]);
@@ -590,8 +615,9 @@ describe("settle race matrix", () => {
         { sessionId: "session-2", column: "settled_at" },
       ]);
 
-      // The missing row must not cost session-2 its revision bump.
-      expect(remoteWrites).toEqual([{ columns: ["settled_at"] }]);
+      // The missing row must not cost session-2 its revision bump — and the
+      // report is ONE event for the batch, not one per session.
+      expect(remoteWrites).toEqual([{ columns: ["settled_at"], sessionCount: 2 }]);
     });
   });
 });

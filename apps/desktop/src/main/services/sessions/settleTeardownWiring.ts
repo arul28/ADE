@@ -1,8 +1,9 @@
 import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
 import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 
 /**
- * The settle-teardown wiring, shared by the desktop main process and the ADE
+ * @file The settle-teardown wiring, shared by the desktop main process and the ADE
  * brain.
  *
  * It lives here rather than at each construction site because there are TWO of
@@ -26,22 +27,33 @@ export type SettleTeardownChatService = {
 
 export type SettleTeardownWiringDeps = {
   agentChatService: SettleTeardownChatService;
-  captureAnalytics?: (args: {
-    action: string;
-    outcome: string;
-    provider?: string;
-    countBucket?: string;
-  }) => void;
-  logger?: { warn: (message: string, meta?: Record<string, unknown>) => void };
+  /**
+   * Built here rather than at each call site: the two sites were byte-identical
+   * apart from `surface`, and the property allowlist has already bitten this
+   * feature once — two copies is two chances to drift out of it.
+   */
+  analytics?: { captureInternal: (event: ProductAnalyticsCapture) => unknown } | null;
+  surface: "desktop" | "api";
+  logger?: {
+    warn: (message: string, meta?: Record<string, unknown>) => void;
+    info: (message: string, meta?: Record<string, unknown>) => void;
+  };
 };
 
 export type SettleTeardownWiring = {
   runSettleTeardown: (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>;
-  onRemoteSettleWrite: (args: { columns: string[] }) => void;
+  onRemoteSettleWrite: (args: { columns: string[]; sessionCount: number }) => void;
   onSettleResidue: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
 };
 
 export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): SettleTeardownWiring {
+  const capture = (properties: Record<string, string>): void => {
+    deps.analytics?.captureInternal({
+      event: "ade_feature_used",
+      surface: deps.surface,
+      properties: { feature: "work", ...properties },
+    });
+  };
   const runSettleTeardown = createSessionSettleTeardown({
     interrupt: async (sessionId) => {
       // `stop_only`, never `stop_and_clear`: the latter also cancels the user's
@@ -69,18 +81,24 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
       // One event per settle that had residue, not one per failed job: a fleet
       // that fails to stop must not become a burst. Coarse properties only —
       // no session id, task id, command, or error text.
-      deps.captureAnalytics?.({
+      capture({
         action: "settle_teardown_residue",
-        outcome: items[0]?.reason ?? "failed",
-        countBucket: residueCountBucket(items.reduce((total, item) => total + item.count, 0)),
+        outcome: items[0].reason,
+        count_bucket: residueCountBucket(items.reduce((total, item) => total + item.count, 0)),
         ...(provider ? { provider } : {}),
       });
     },
-    onRemoteSettleWrite: ({ columns }) => {
-      // Expected to be zero once every writer is host-authoritative. The column
-      // names are a fixed set; no session id or value is recorded.
-      deps.logger?.warn("settle.remote_tuple_write_reconciled", { columns });
-      deps.captureAnalytics?.({ action: "settle_remote_write_reconciled", outcome: "partial" });
+    onRemoteSettleWrite: ({ columns, sessionCount }) => {
+      // Not a warning and not an anomaly: a paired second desktop replicating
+      // its own settles reaches this path by design. It is a RATE signal — how
+      // much settle traffic arrives already-decided — and the column names are
+      // a fixed set, so no session id or value is recorded.
+      deps.logger?.info("settle.remote_tuple_write_reconciled", { columns, sessionCount });
+      capture({
+        action: "settle_remote_write_reconciled",
+        outcome: "partial",
+        count_bucket: residueCountBucket(sessionCount),
+      });
     },
   };
 }

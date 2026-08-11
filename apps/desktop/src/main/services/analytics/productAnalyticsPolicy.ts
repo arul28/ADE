@@ -201,7 +201,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // widened, so the scope control can never carry free text.
     "machine", "project", "account",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
     "grok", "local", "other",

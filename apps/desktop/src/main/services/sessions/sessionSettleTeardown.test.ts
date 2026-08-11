@@ -82,6 +82,21 @@ describe("session settle teardown", () => {
     expect(outcome.provider).toBe("claude");
   });
 
+  it("R5: reports a surviving turn separately from surviving background jobs", async () => {
+    const { run } = harness({
+      readActiveWork: async () => work({ active: true, backgroundTaskCount: 2 }),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    // Two facts, two items. Folded together, the count would read "3 jobs" and
+    // the running turn would disappear into the background-task bucket.
+    expect(outcome.residue).toEqual([
+      { kind: "background_tasks", reason: "timeout", count: 2, detail: "2 jobs on claude could not be stopped" },
+      { kind: "active_turn", reason: "timeout", count: 1, detail: "the running turn on claude could not be stopped" },
+    ]);
+  });
+
   it("R5: calls out a provider that has no stop control at all", async () => {
     const { run } = harness({
       // A Codex chat cannot stop an individual subagent. That is a different
@@ -160,10 +175,21 @@ describe("session settle teardown", () => {
     // The first read never resolves. Without a per-call ceiling this awaits
     // forever inside the settling window, and the row can never be settled
     // again for the life of the process.
-    await expect(run("session-1", neverAborted)).resolves.toMatchObject({ residue: [] });
+    const outcome = await run("session-1", neverAborted);
+
     expect(readActiveWork).toHaveBeenCalledTimes(1);
-    // Unknown liveness is not licence to start stopping things.
+    // Unknown liveness is not licence to start stopping things...
     expect(interrupt).not.toHaveBeenCalled();
+    // ...but it is also not licence to claim a clean teardown. A timed-out read
+    // is indistinguishable from "not a chat session" unless it says so, and
+    // silently settling over running work is the one outcome residue exists to
+    // prevent.
+    expect(outcome.residue).toEqual([{
+      kind: "background_tasks",
+      reason: "timeout",
+      count: 1,
+      detail: "could not read what this session was running, so nothing was stopped",
+    }]);
   });
 
   it("buckets residue counts so a large fleet cannot widen the analytics dimension", () => {

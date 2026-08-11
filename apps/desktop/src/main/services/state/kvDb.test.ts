@@ -866,3 +866,62 @@ describe("retention maintenance", () => {
     }
   });
 });
+
+describe("inbound settle-tuple reconciliation hook", () => {
+  /**
+   * The path with the least margin for error in the settle-teardown work: a
+   * hand-rolled decode of cr-sqlite's packed primary key. If it is wrong, peer
+   * settles quietly stop being reconciled — no exception, no log, and the only
+   * visible symptom is a race that reappears months later.
+   *
+   * Driven through the real `applyChanges` rather than by calling the handler,
+   * so the whole chain is exercised: column detection, pk decode, and the
+   * guarantee that the change still APPLIES (holding it back would desynchronise
+   * the per-column clocks).
+   */
+  it("reports settle-tuple columns to the handler and still applies them", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-settle-hook-");
+    const source = await openKvDb(path.join(projectRoot, "source", ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => source.close());
+    const target = await openKvDb(path.join(projectRoot, "target", ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => target.close());
+
+    const crrLoaded = source.get<{ present: number }>(
+      "select 1 as present from sqlite_master where type = 'table' and name = 'terminal_sessions__crsql_clock' limit 1",
+    ) !== null;
+    // cr-sqlite ships macOS-only binaries; without it there are no changesets to
+    // apply and the assertions below would be vacuously true.
+    if (!crrLoaded) return;
+
+    const insertSession = (db: typeof source) => {
+      db.run(
+        `insert into terminal_sessions (id, lane_id, title, status, started_at, tool_type)
+         values (?, ?, ?, ?, ?, ?)`,
+        ["peer-session", "lane-1", "Chat", "ended", "2026-08-11T00:00:00.000Z", "codex-chat"],
+      );
+    };
+    insertSession(source);
+    insertSession(target);
+
+    const seen: Array<{ sessionId: string; column: string }> = [];
+    target.sync.setRemoteSettleTupleHandler((changes) => { seen.push(...changes); });
+
+    const before = source.sync.getDbVersion();
+    source.run("update terminal_sessions set settled_at = ? where id = ?", ["2026-08-11T01:00:00.000Z", "peer-session"]);
+    const changes = source.sync.exportChangesSince(before)
+      .filter((change) => change.table === "terminal_sessions");
+    expect(changes.length, "the peer must actually have exported a settle change").toBeGreaterThan(0);
+
+    target.sync.applyChanges(changes);
+
+    // The decode worked: the handler learned WHICH session and column moved.
+    expect(seen).toContainEqual({ sessionId: "peer-session", column: "settled_at" });
+    // And the value landed, which is what keeps the per-column clocks convergent.
+    expect(
+      target.get<{ settled_at: string | null }>(
+        "select settled_at from terminal_sessions where id = ?",
+        ["peer-session"],
+      )?.settled_at,
+    ).toBe("2026-08-11T01:00:00.000Z");
+  });
+});

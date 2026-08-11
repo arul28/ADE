@@ -17,7 +17,12 @@
  */
 
 /** Why a settle was abandoned. Only ever set by a human-decision clearer. */
-export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";
+export type SettleAbortReason =
+  | "turn_start"
+  | "turn_failed"
+  | "attention_requested"
+  /** A peer changed the settle tuple; its decision outranks a settle in flight. */
+  | "remote_lifecycle_changed";
 
 /** Why a settle was abandoned, as reported to callers. */
 export type SettleAbortedReason =

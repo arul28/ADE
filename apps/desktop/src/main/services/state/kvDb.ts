@@ -918,14 +918,17 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
  * settle tuple has to be added to both, and to `settleLifecycleWriter`'s
  * assignment. Grep `settle_source` before changing any of them.
  */
-const SETTLE_TUPLE_COLUMNS: ReadonlySet<string> = new Set([
+const SETTLE_TUPLE_COLUMNS: ReadonlySet<RemoteSettleTupleChange["column"]> = new Set([
   "settled_at",
   "settle_override",
   "settle_source",
-]);
+] as const);
 
-function isSettleTupleChange(change: CrsqlChangeRow): boolean {
-  return change.table === "terminal_sessions" && SETTLE_TUPLE_COLUMNS.has(change.cid);
+function isSettleTupleChange(
+  change: CrsqlChangeRow,
+): change is CrsqlChangeRow & { cid: RemoteSettleTupleChange["column"] } {
+  return change.table === "terminal_sessions"
+    && SETTLE_TUPLE_COLUMNS.has(change.cid as RemoteSettleTupleChange["column"]);
 }
 
 /**
@@ -4682,15 +4685,12 @@ export async function openKvDb(
           // Reachable whenever a table is moved local-only while a paired peer
           // is still on a build that replicates it — i.e. during every rollout.
           if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
+          // Decoded before the apply, reported only after it: an undecodable
+          // key still applies, it is simply not reconciled.
+          let settleTupleChange: RemoteSettleTupleChange | null = null;
           if (remoteSettleTupleHandler && isSettleTupleChange(rawChange)) {
             const sessionId = decodeSingleTextCrsqlPrimaryKey(rawChange.pk);
-            // An undecodable key still applies; it just is not reconciled.
-            if (sessionId) {
-              remoteSettleTuple.push({
-                sessionId,
-                column: rawChange.cid as RemoteSettleTupleChange["column"],
-              });
-            }
+            if (sessionId) settleTupleChange = { sessionId, column: rawChange.cid };
           }
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
@@ -4711,6 +4711,11 @@ export async function openKvDb(
           );
           appliedCount += result.changes;
           touchedTables.add(change.table);
+          // `insert or ignore` silently drops a change whose col_version does
+          // not beat the local clock, which is exactly what a re-delivered
+          // batch looks like. Reporting one of those would bump the revision
+          // and abandon an in-flight settle over a duplicate packet.
+          if (settleTupleChange && result.changes > 0) remoteSettleTuple.push(settleTupleChange);
         }
         if (purgeRetiredTerminalSessions(db) > 0) {
           touchedTables.add("terminal_sessions");
@@ -4734,7 +4739,6 @@ export async function openKvDb(
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        touchedTables.add("terminal_sessions");
       }
 
       return {

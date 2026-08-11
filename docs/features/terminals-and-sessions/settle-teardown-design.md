@@ -569,9 +569,14 @@ So: `settleManyWithTeardown` is `async`, and `settleSessions`,
 
 | Step | Behavior |
 |---|---|
-| Read active work | No turn and no background work -> return immediately. A settle with nothing to tear down must not interrupt the session. |
+| Read active work | No turn and no background work -> return immediately. A settle with nothing to tear down must not interrupt the session. A read that TIMES OUT is not the same as "no chat session" and reports residue instead — otherwise a slow host settles while claiming a clean teardown. |
 | `interrupt` | Stops the active turn and its background work. A throw is `rejected`, not a silent pass. |
-| Confirm | Poll `getSessionSummary` until quiet or the 5s budget expires. A single read straight after `interrupt` would call work that was already stopping "residue". |
+| Confirm | Poll `getSessionSummary` (backing off to 800ms) until quiet or the 5s budget expires. A single read straight after `interrupt` would call work that was already stopping "residue". Every provider call also has its own 10s ceiling; without it a hung control call holds the settling window open forever and the row can never be settled again. |
+
+Bulk settles run these **concurrently**, bounded, and reassemble results in the
+caller's order. Serially, a bulk settle paid the confirmation budget once per
+session — and iOS allows a settle command 30s in total, so three busy sessions
+was already a guaranteed timeout while the settle ran on regardless.
 
 **Terminals are never touched, at any step.** A settle files a session as done;
 it does not take the user's shell away, and ADE cannot re-spawn one it killed.
@@ -640,10 +645,23 @@ Other details that are load-bearing:
 - **Undecodable key → no reconcile.** Only a single TEXT primary key is decoded.
   Anything else still applies; it simply is not re-asserted.
 
+**Reconciliation also trips the abort, not just the revision.** The revision is
+only re-read *after* teardown returns, so on its own it would let a teardown run
+to completion and stop a turn the user had just started on the other device —
+losing the work *and* the settle, which is the R2 shape §3c exists to prevent.
+The peer write therefore aborts the window immediately, with its own
+`remote_lifecycle_changed` reason.
+
+**Only changes cr-sqlite actually accepted are reported.** `insert or ignore`
+silently drops a change whose `col_version` does not beat the local clock, which
+is exactly what a re-delivered batch looks like. Reporting one would bump the
+revision and abandon an in-flight settle over a duplicate packet.
+
 **No peer-visible concurrency token was built.** That is a protocol change, and
-the evidence does not justify it yet — which is what `onRemoteSettleWrite` is
-for. If the field says legitimate peer writers still exist, we will know which
-columns and how often before designing anything.
+the evidence does not justify it yet. `onRemoteSettleWrite` measures how often
+this path runs — and it is *not* an anomaly counter: a paired second desktop
+replicating its own settles lands here by design. One event per changeset, never
+one per session.
 
 R7/R7b are unchanged and still write the row with a raw `db.run`. They pin the
 property that motivates the whole mechanism: a write that reaches the tuple

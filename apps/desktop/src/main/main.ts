@@ -2874,24 +2874,21 @@ app.whenReady().then(async () => {
 
     // Late-bound: the chat service that owns the work does not exist yet at
     // this point, and the settle path must not depend on construction order.
-    // Same shape as `laneTeardownDeps` below.
     const settleTeardownRef: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
-    } = { run: null };
-    const settleRemoteWriteRef: {
-      report: ((args: { columns: string[] }) => void) | null;
+      report: ((args: { columns: string[]; sessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-    } = { report: null, residue: null };
+    } = { run: null, report: null, residue: null };
     const sessionService = createSessionService({
       db,
-      onRemoteSettleWrite: (args) => settleRemoteWriteRef.report?.(args),
-      onSettleResidue: (args) => settleRemoteWriteRef.residue?.(args),
+      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
+      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run
           ? await settleTeardownRef.run(sessionId, ctx)
           // Before the chat service is up there is no background work to stop,
           // so an empty teardown is the honest answer, not a skipped one.
-          : { stopped: [], residue: [] },
+          : { residue: [] },
     });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
@@ -3633,23 +3630,12 @@ app.whenReady().then(async () => {
       const wiring = createSettleTeardownWiring({
         agentChatService,
         logger,
-        captureAnalytics: ({ action, outcome, provider, countBucket }) => {
-          productAnalyticsService?.captureInternal({
-            event: "ade_feature_used",
-            surface: "desktop",
-            properties: {
-              feature: "work",
-              action,
-              outcome,
-              ...(provider ? { provider } : {}),
-              ...(countBucket ? { count_bucket: countBucket } : {}),
-            },
-          });
-        },
+        analytics: productAnalyticsService ?? null,
+        surface: "desktop",
       });
       settleTeardownRef.run = wiring.runSettleTeardown;
-      settleRemoteWriteRef.report = wiring.onRemoteSettleWrite;
-      settleRemoteWriteRef.residue = wiring.onSettleResidue;
+      settleTeardownRef.report = wiring.onRemoteSettleWrite;
+      settleTeardownRef.residue = wiring.onSettleResidue;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService

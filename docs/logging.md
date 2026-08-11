@@ -131,13 +131,19 @@ bucket exists so a large fleet cannot widen the dimension either. No session id,
 task id, command, or error text is recorded; the human-readable residue detail
 stays on the local diagnostics row and never enters the payload.
 
-`action: "settle_remote_write_reconciled"` fires when an inbound changeset tried
-to write the settle tuple directly and had to be routed back through the
-chokepoint. It carries no properties beyond the coarse `outcome`. This is
-expected to be **zero** in the field after the host-authoritative change, and it
-exists precisely so we learn whether a legitimate peer writer still exists
-before anyone designs a protocol-level concurrency token. A non-zero rate is the
-signal to escalate, not to widen the event.
+`action: "settle_remote_write_reconciled"` fires when an inbound changeset
+carried settle-tuple columns and the session layer re-asserted them through the
+chokepoint. It carries the coarse `outcome` and a bucketed `count_bucket` of how
+many sessions one changeset covered.
+
+It is a **rate** signal, not an anomaly signal. A paired second desktop
+replicating its own settles reaches this path by design, so a non-zero rate is
+expected wherever two desktops are paired; what it measures is how much settle
+traffic arrives already-decided, which is the evidence needed before anyone
+designs a protocol-level concurrency token. **One event per changeset, never one
+per session** — a bulk settle on the peer arrives as a single apply covering N
+sessions, and reporting each would turn one remote action into an N-event
+burst.
 
 Applying an update is one transaction — app swap, background service reinstalled,
 service restarted, service answering — and the brain half failing (the app
