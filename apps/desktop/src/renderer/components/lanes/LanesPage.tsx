@@ -22,6 +22,7 @@ import {
   PluginToolbarActions,
   pluginLaneContext,
   usePluginSurfaceContributions,
+  useSurfaceContributions,
 } from "../plugins/sockets";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
@@ -714,6 +715,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // `active` matters here: Lanes stays mounted behind other tabs, and a hidden
   // surface must not read the plugin registry at all.
   const pluginContributionSet = usePluginSurfaceContributions("lanes", active);
+  const pluginFilterChips = useSurfaceContributions("lanes", "filter-chip", { active });
   const togglePluginFilterKey = useCallback((filterKey: string) => {
     setPluginFilterKeys((current) => (
       current.includes(filterKey)
@@ -723,11 +725,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, []);
 
   const laneFilterMatchedLanes = useMemo(
-    () => sortedLanes.filter((lane) => (
-      laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)
-      && entityMatchesPluginFilters(pluginContributionSet, pluginLaneContext(lane), pluginFilterKeys)
-    )),
-    [sortedLanes, laneFilter, pinnedLaneIds, pluginContributionSet, pluginFilterKeys],
+    () => {
+      // A selection outlives the chip that made it — turn the plugin off,
+      // uninstall it, or let it stop publishing the key, and the chip vanishes
+      // while the filter keeps hiding every lane, with no control left on screen
+      // to undo it. Only keys a visible chip still offers are allowed to filter.
+      const offered = new Set(pluginFilterChips.map((chip) => chip.payload.filterKey));
+      const applied = pluginFilterKeys.filter((key) => offered.has(key));
+      return sortedLanes.filter((lane) => (
+        laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)
+        && entityMatchesPluginFilters(pluginContributionSet, pluginLaneContext(lane), applied)
+      ));
+    },
+    [sortedLanes, laneFilter, pinnedLaneIds, pluginContributionSet, pluginFilterChips, pluginFilterKeys],
   );
 
   const laneOrderById = useMemo(() => {

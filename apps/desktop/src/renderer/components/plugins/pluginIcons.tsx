@@ -142,8 +142,16 @@ export const MARKETPLACE_ICON: PhosphorIcon = Storefront;
 /** Icon names a manifest may use, for docs and the authoring skill. */
 export const PLUGIN_ICON_NAMES: readonly string[] = Object.keys(PLUGIN_ICONS).sort();
 
-/** Resolve a manifest icon name. Never returns null — unknown names degrade. */
+/**
+ * Resolve a manifest icon name. Never returns null — unknown names degrade.
+ *
+ * `Object.hasOwn`, not a plain lookup: the name comes from an untrusted
+ * manifest, and `"constructor"` or `"toString"` resolve through the prototype
+ * chain to functions that are not components. React throws on the first one it
+ * is asked to render, and a tab-rail glyph renders above the route's error
+ * boundary — so a one-word manifest field could take the whole app chrome down.
+ */
 export function pluginIcon(name: string | null | undefined): PhosphorIcon {
   const key = (name ?? "").trim().toLowerCase();
-  return PLUGIN_ICONS[key] ?? DEFAULT_PLUGIN_ICON;
+  return Object.hasOwn(PLUGIN_ICONS, key) ? PLUGIN_ICONS[key]! : DEFAULT_PLUGIN_ICON;
 }

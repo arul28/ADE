@@ -58,7 +58,7 @@ import {
 import { resolveViewerKind } from "./viewerRegistry";
 import {
   PluginEmptyStateExtra,
-  useExtendSurfaceEntry,
+  pluginContextMenuItems,
   usePluginFileViewers,
   usePluginMenuEntries,
 } from "../../plugins/sockets";
@@ -1311,8 +1311,8 @@ export function FilesWorkbench({
   const closeTreeMenu = useCallback(() => setTreeMenu(null), []);
   const pluginTreeMenuEntries = usePluginMenuEntries("files", treeMenuFileContext, {
     onClose: closeTreeMenu,
+    includeExtend: true,
   });
-  const extendFilesEntry = useExtendSurfaceEntry("files", { onClose: closeTreeMenu });
 
   const treeMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!treeMenu) return [];
@@ -1341,21 +1341,12 @@ export function FilesWorkbench({
       onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
       disabled: !canRevealInFinder,
     });
-    // Plugin entries last, under their own separator: the tree menu's own rows
-    // include Delete, and nothing contributed should sit between someone's eye
-    // and the destructive action they were aiming for.
-    items.push({ type: "separator" });
-    for (const entry of pluginTreeMenuEntries) {
-      items.push({
-        type: "item",
-        label: entry.label,
-        onClick: entry.onSelect,
-        ...(entry.danger ? { danger: true } : {}),
-      });
-    }
-    items.push({ type: "item", label: extendFilesEntry.label, onClick: extendFilesEntry.onSelect });
+    // Plugin entries last, in their own titled section: the tree menu's own
+    // rows include Delete, and nothing contributed should sit between someone's
+    // eye and the destructive action they were aiming for.
+    items.push(...pluginContextMenuItems(pluginTreeMenuEntries));
     return items;
-  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder, pluginTreeMenuEntries, extendFilesEntry]);
+  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder, pluginTreeMenuEntries]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
@@ -1500,7 +1491,7 @@ export function FilesWorkbench({
                   modifierKey={modifierKeyLabel}
                 />
               </div>
-              <PluginEmptyStateExtra surface="files" />
+              <PluginEmptyStateExtra surface="files" active={active} />
             </div>
           ) : (
           <EditorGroups

@@ -11,9 +11,11 @@ export { PluginRowBadges } from "./PluginRowBadges";
 export { PluginToolbarActions } from "./PluginToolbarActions";
 export { PluginFilterChips } from "./PluginFilterChips";
 export { PluginEmptyStateExtra } from "./PluginEmptyStateExtra";
-export { PluginDetailSections, usePluginDetailSectionCount } from "./PluginDetailSections";
+export { PluginDetailSections } from "./PluginDetailSections";
 export { usePluginMenuEntries, type PluginMenuEntry } from "./usePluginMenuEntries";
+export { pluginContextMenuItems, PLUGIN_MENU_SECTION_LABEL } from "./pluginContextMenuItems";
 export { useExtendSurfaceEntry, extendSurfaceRoute } from "./useExtendSurfaceEntry";
+export { SocketBoundary } from "./SocketBoundary";
 export {
   usePluginFileViewers,
   usePluginSocketInvoke,
@@ -22,7 +24,6 @@ export {
 } from "./useSurfaceContributions";
 export {
   pluginAutomationContext,
-  pluginFileContext,
   pluginLaneContext,
   pluginPrContext,
   pluginSessionContext,

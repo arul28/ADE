@@ -18,7 +18,7 @@ import {
   unsettleSession,
   wakeSessionNow,
 } from "./sessionLifecycleActions";
-import { pluginSessionContext, useExtendSurfaceEntry, usePluginMenuEntries } from "../plugins/sockets";
+import { pluginContextMenuItems, pluginSessionContext, usePluginMenuEntries } from "../plugins/sockets";
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
@@ -217,9 +217,9 @@ function SessionContextMenuPanel({
       provider: session.toolType,
       status: session.runtimeState,
     }),
-    { onClose },
+    { onClose, includeExtend: true },
   );
-  const extendEntry = useExtendSurfaceEntry("work", { onClose });
+  const pluginMenuItems = pluginContextMenuItems(pluginEntries);
 
   const chooseSnooze = (key: SnoozeDurationKey) => {
     void snoozeSessionForDuration(session, key, Date.now(), binding);
@@ -506,16 +506,25 @@ function SessionContextMenuPanel({
         ) : null}
 
         {/* Plugin entries, then the way to get more of them — both before the
-            destructive fence below, never inside it. */}
-        {pluginEntries.length > 0 ? <MenuSeparator /> : null}
-        {pluginEntries.map((entry) => (
-          <button key={entry.key} type="button" className={MENU_ITEM_CLASS} onClick={entry.onSelect}>
-            {entry.label}
-          </button>
-        ))}
-        <button type="button" className={MENU_ITEM_CLASS} onClick={extendEntry.onSelect}>
-          {extendEntry.label}
-        </button>
+            destructive fence below, never inside it. Built by the shared
+            adapter so this menu, the PR row's and the Files tree's cannot
+            disagree about what a contributed row looks like. */}
+        {pluginMenuItems.map((item, index) => {
+          if (item.type === "separator") return <MenuSeparator key={`plugin-rule-${index}`} />;
+          if (item.type === "header") {
+            return <MenuSectionLabel key={`plugin-label-${index}`}>{item.label}</MenuSectionLabel>;
+          }
+          return (
+            <button
+              key={`${item.label}-${index}`}
+              type="button"
+              className={item.danger ? DESTRUCTIVE_ITEM_CLASS : MENU_ITEM_CLASS}
+              onClick={item.onClick}
+            >
+              {item.label}
+            </button>
+          );
+        })}
 
         {/* ── Destructive, last and fenced off. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}

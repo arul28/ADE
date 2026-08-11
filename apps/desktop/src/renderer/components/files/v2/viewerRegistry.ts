@@ -27,8 +27,16 @@ export type ViewerResolveContext = {
   pluginViewers?: readonly PluginViewerRegistration[];
 };
 
-/** The kinds a plugin viewer may take over from. Everything else is core's. */
-const PLUGIN_ELIGIBLE_FALLBACKS: ReadonlySet<ViewerKind> = new Set(["code", "binary", "largeText"]);
+/**
+ * The kinds a plugin viewer may take over from. Everything else is core's.
+ *
+ * `code` is deliberately absent. It is the default for every text file ADE has
+ * no special viewer for, so including it let one installed plugin claim `.ts`
+ * and replace Monaco — losing search, go-to-definition and editing on ordinary
+ * source. A plugin fills gaps: a format that renders as bytes, or one too large
+ * for the editor.
+ */
+const PLUGIN_ELIGIBLE_FALLBACKS: ReadonlySet<ViewerKind> = new Set(["binary", "largeText"]);
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
 const AUDIO_EXTS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
@@ -49,12 +57,12 @@ export function extensionOf(path: string): string {
  * their viewers stream bytes themselves; an oversized plain/markdown/code file
  * falls through to the read-only virtualized largeText viewer.
  *
- * A plugin viewer only claims a file that every built-in *specific* viewer
- * declined — i.e. one that would otherwise land on `code`, `binary` or
- * `largeText`. That is a deliberate narrowing of "before the binary fallback":
- * a plugin can give ADE a viewer for a format it has none for, and cannot take
- * `.mp4` away from the built-in player by installing itself. A plugin that
- * wants a format core already handles is a core change, not an install.
+ * A plugin viewer only claims a file that every built-in viewer declined — i.e.
+ * one that would otherwise land on `binary` or `largeText`. That is a deliberate
+ * narrowing of "before the binary fallback": a plugin can give ADE a viewer for
+ * a format it has none for, and cannot take `.mp4` away from the built-in player
+ * or `.ts` away from the editor by installing itself. A plugin that wants a
+ * format core already handles is a core change, not an install.
  */
 export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
   const builtIn = resolveBuiltInViewerKind(ctx);

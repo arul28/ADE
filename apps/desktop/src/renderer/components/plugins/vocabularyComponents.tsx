@@ -10,24 +10,14 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import {
-  SettingsNumber,
-  SettingsSecret,
-  SettingsSelect,
-  SettingsText,
-  SettingsToggle,
-} from "../settings/primitives";
 import { pluginIcon } from "./pluginIcons";
-import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
+import { EmptyLine, InlineError, TONE_COLOR } from "./vocabularyPrimitives";
+import type { VocabRenderContext } from "./vocabularyPrimitives";
 import type {
-  VocabAction,
   VocabBadgeNode,
   VocabButtonNode,
-  VocabChartNode,
   VocabDividerNode,
   VocabEmptyStateNode,
-  VocabField,
-  VocabFormNode,
   VocabImageNode,
   VocabInvalidNode,
   VocabKeyValueNode,
@@ -36,11 +26,17 @@ import type {
   VocabListNode,
   VocabTableNode,
   VocabTextNode,
-  VocabTone,
   VocabUnknownNode,
   VocabVideoNode,
 } from "../../../shared/plugins/vocabulary";
-import { VOCAB_LIMITS, normalizeVocabTone } from "../../../shared/plugins/vocabulary";
+import {
+  VOCAB_LIMITS,
+  bindingKey,
+  boundRowValues,
+  coerceBoundKeyValueRow,
+  coerceBoundListItem,
+  coerceBoundTableRow,
+} from "../../../shared/plugins/vocabulary";
 
 /**
  * The leaf renderers for plugin vocabulary v1.
@@ -57,48 +53,24 @@ import { VOCAB_LIMITS, normalizeVocabTone } from "../../../shared/plugins/vocabu
  * root element*. Outside a transcript those variables do not exist, so the cards
  * render unstyled. Panels therefore build on the settings/lanes token facade,
  * which is app-wide.
+ *
+ * The chart and the form are big enough to own their files; they are re-exported
+ * here so every surface still imports leaf renderers from one place.
  */
 
-/** Merged into an action's own args when a form submits. */
-export type VocabActionArgs = Record<string, string | number | boolean>;
-
-export type VocabDispatch = (action: VocabAction, extraArgs?: VocabActionArgs) => Promise<void>;
-
-export type VocabRenderContext = {
-  pluginId: string;
-  /** Rows already fetched for every binding in the panel, keyed by {@link bindingKey}. */
-  rowsByBinding: ReadonlyMap<string, PluginCollectionRow[]>;
-  dispatch: VocabDispatch;
-  /**
-   * False while the hosting surface is mounted but not visible. Media does not
-   * load and animation does not run when false — the hidden-but-mounted perf law.
-   */
-  active: boolean;
-};
-
-export const TONE_COLOR: Record<VocabTone, string> = {
-  neutral: COLORS.textMuted,
-  accent: COLORS.accent,
-  success: COLORS.success,
-  warning: COLORS.warning,
-};
+export { TONE_COLOR, InlineError } from "./vocabularyPrimitives";
+export type {
+  VocabActionArgs,
+  VocabDispatch,
+  VocabRenderContext,
+} from "./vocabularyPrimitives";
+export { VocabChart } from "./vocabularyChart";
+export { VocabForm, initialFormValues } from "./vocabularyForm";
 
 const GAP_PX = { none: 0, sm: 6, md: 12, lg: 20 } as const;
 
 export function stackGap(gap: keyof typeof GAP_PX | undefined): number {
   return GAP_PX[gap ?? "md"];
-}
-
-/**
- * Stable key for a binding, so one fetch serves every node that reads it.
- *
- * NUL separates the two halves because it is the one character neither a
- * collection name nor a key prefix can contain. With a printable separator,
- * `{collection: "a", keyPrefix: "b:c"}` and `{collection: "a:b", keyPrefix: "c"}`
- * would produce the same key and silently share one fetch.
- */
-export function bindingKey(binding: { collection: string; keyPrefix?: string }): string {
-  return `${binding.collection}\u0000${binding.keyPrefix ?? ""}`;
 }
 
 /* ── Text, badge, divider ───────────────────────────────────────────────── */
@@ -227,24 +199,6 @@ export function VocabButton({
   );
 }
 
-export function InlineError({ message }: { message: string }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 5,
-        fontFamily: SANS_FONT,
-        fontSize: 11,
-        color: COLORS.warning,
-      }}
-    >
-      <WarningCircle size={12} weight="regular" aria-hidden />
-      {message}
-    </span>
-  );
-}
-
 /* ── Bound data helpers ─────────────────────────────────────────────────── */
 
 function boundRows(
@@ -252,37 +206,10 @@ function boundRows(
   context: VocabRenderContext,
 ): unknown[] | null {
   if (!node.bind) return null;
-  const rows = context.rowsByBinding.get(bindingKey(node.bind));
-  if (!rows) return null;
-  const limit = node.bind.limit;
-  const values = rows.map((row) => row.value);
-  return typeof limit === "number" && limit > 0 ? values.slice(0, limit) : values;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function EmptyLine({ text }: { text: string }) {
-  return (
-    <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>{text}</p>
-  );
+  return boundRowValues(node.bind, context.rowsByBinding.get(bindingKey(node.bind)));
 }
 
 /* ── List ───────────────────────────────────────────────────────────────── */
-
-function coerceListItem(value: unknown): VocabListItem | null {
-  if (!isRecord(value)) return null;
-  const title = typeof value.title === "string" ? value.title.trim() : "";
-  if (!title) return null;
-  return {
-    title,
-    ...(typeof value.subtitle === "string" ? { subtitle: value.subtitle } : {}),
-    ...(typeof value.meta === "string" ? { meta: value.meta } : {}),
-    ...(value.tone !== undefined ? { tone: normalizeVocabTone(value.tone) } : {}),
-    ...(typeof value.icon === "string" ? { icon: value.icon } : {}),
-  };
-}
 
 export function VocabList({
   node,
@@ -293,7 +220,7 @@ export function VocabList({
 }) {
   const bound = boundRows(node, context);
   const items = bound
-    ? bound.map(coerceListItem).filter((item): item is VocabListItem => item !== null)
+    ? bound.map(coerceBoundListItem).filter((item): item is VocabListItem => item !== null)
     : (node.items ?? []);
 
   if (items.length === 0) {
@@ -410,9 +337,10 @@ export function VocabTable({
   context: VocabRenderContext;
 }) {
   const bound = boundRows(node, context);
-  const rows = bound
-    ? bound.filter(isRecord).map((row) => row as Record<string, unknown>)
-    : ((node.rows ?? []) as Record<string, unknown>[]);
+  const source: unknown[] = bound ?? (node.rows ?? []);
+  const rows = source
+    .map((row) => coerceBoundTableRow(row, node.columns))
+    .filter((row): row is Record<string, string> => row !== null);
   const visible = rows.slice(0, VOCAB_LIMITS.maxTableRows);
   const hidden = rows.length - visible.length;
 
@@ -455,24 +383,19 @@ export function VocabTable({
             {visible.map((row, index) => (
               <tr key={index}>
                 {node.columns.map((column) => {
-                  const value = row[column.key];
-                  const text = typeof value === "string" || typeof value === "number"
-                    ? String(value)
-                    : typeof value === "boolean"
-                      ? (value ? "Yes" : "No")
-                      : "—";
+                  const text = row[column.key] ?? "";
                   return (
                     <td
                       key={column.key}
                       style={{
                         padding: "7px 10px",
                         textAlign: column.align === "right" ? "right" : "left",
-                        color: text === "—" ? COLORS.textDim : COLORS.textSecondary,
+                        color: text ? COLORS.textSecondary : COLORS.textDim,
                         borderBottom: `1px solid ${COLORS.borderMuted}`,
                         ...(column.align === "right" ? { fontVariantNumeric: "tabular-nums" } : {}),
                       }}
                     >
-                      {text}
+                      {text || "—"}
                     </td>
                   );
                 })}
@@ -488,19 +411,6 @@ export function VocabTable({
 
 /* ── Key / value ────────────────────────────────────────────────────────── */
 
-function coerceKeyValueRow(value: unknown): VocabKeyValueRow | null {
-  if (!isRecord(value)) return null;
-  const key = typeof value.key === "string" ? value.key.trim() : "";
-  if (!key) return null;
-  return {
-    key,
-    value: typeof value.value === "string" || typeof value.value === "number"
-      ? String(value.value)
-      : "",
-    ...(value.tone !== undefined ? { tone: normalizeVocabTone(value.tone) } : {}),
-  };
-}
-
 export function VocabKeyValue({
   node,
   context,
@@ -510,7 +420,7 @@ export function VocabKeyValue({
 }) {
   const bound = boundRows(node, context);
   const rows = bound
-    ? bound.map(coerceKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
+    ? bound.map(coerceBoundKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
     : (node.rows ?? []);
 
   if (rows.length === 0) return <EmptyLine text={node.emptyText ?? "No details."} />;
@@ -546,321 +456,27 @@ export function VocabKeyValue({
   );
 }
 
-/* ── Form ───────────────────────────────────────────────────────────────── */
-
-type FormValues = Record<string, string | number | boolean>;
-
-function initialFormValues(fields: VocabField[]): FormValues {
-  const values: FormValues = {};
-  for (const field of fields) {
-    if (field.value !== undefined) values[field.id] = field.value;
-    else if (field.kind === "toggle") values[field.id] = false;
-    else if (field.kind === "number") values[field.id] = field.min ?? 0;
-    else values[field.id] = "";
-  }
-  return values;
-}
-
-export function VocabForm({
-  node,
-  context,
-}: {
-  node: VocabFormNode;
-  context: VocabRenderContext;
-}) {
-  const [values, setValues] = React.useState<FormValues>(() => initialFormValues(node.fields));
-  const [pending, setPending] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [saved, setSaved] = React.useState(false);
-
-  const setValue = (id: string, value: string | number | boolean) => {
-    setSaved(false);
-    setValues((previous) => ({ ...previous, [id]: value }));
-  };
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (node.submit.onPress.confirm && !window.confirm(node.submit.onPress.confirm)) return;
-    setPending(true);
-    setError(null);
-    try {
-      await context.dispatch(node.submit.onPress, values);
-      setSaved(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "That action failed.");
-    } finally {
-      setPending(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} style={{ display: "grid", gap: 14, minWidth: 0 }}>
-      {node.fields.map((field) => (
-        <VocabFormField
-          key={field.id}
-          field={field}
-          value={values[field.id]}
-          onChange={(next) => setValue(field.id, next)}
-          disabled={pending}
-        />
-      ))}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button
-          type="submit"
-          disabled={pending}
-          style={{ ...primaryButton(), opacity: pending ? 0.55 : 1, cursor: pending ? "default" : "pointer" }}
-          data-tour={`plugin:${context.pluginId}.submit-${node.submit.onPress.action}`}
-        >
-          {pending ? "Saving…" : node.submit.label}
-        </button>
-        {error ? <InlineError message={error} /> : null}
-        {saved && !error ? (
-          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.success }}>Saved</span>
-        ) : null}
-      </div>
-    </form>
-  );
-}
-
-function VocabFormField({
-  field,
-  value,
-  onChange,
-  disabled,
-}: {
-  field: VocabField;
-  value: string | number | boolean | undefined;
-  onChange: (value: string | number | boolean) => void;
-  disabled: boolean;
-}) {
-  const controlId = `plugin-field-${field.id}`;
-  const control = (() => {
-    switch (field.kind) {
-      case "toggle":
-        return (
-          <SettingsToggle
-            id={controlId}
-            label={field.label}
-            checked={value === true}
-            onChange={onChange}
-            disabled={disabled}
-          />
-        );
-      case "select":
-        return (
-          <SettingsSelect
-            id={controlId}
-            ariaLabel={field.label}
-            value={typeof value === "string" ? value : (field.options?.[0]?.value ?? "")}
-            options={(field.options ?? []).map((option) => ({
-              value: option.value,
-              label: option.label ?? option.value,
-            }))}
-            onChange={onChange}
-            disabled={disabled}
-          />
-        );
-      case "number":
-        return (
-          <SettingsNumber
-            id={controlId}
-            ariaLabel={field.label}
-            value={typeof value === "number" ? value : 0}
-            onChange={onChange}
-            {...(field.min !== undefined ? { min: field.min } : {})}
-            {...(field.max !== undefined ? { max: field.max } : {})}
-            {...(field.step !== undefined ? { step: field.step } : {})}
-            disabled={disabled}
-          />
-        );
-      case "secret":
-        return (
-          <SettingsSecret
-            id={controlId}
-            ariaLabel={field.label}
-            value={typeof value === "string" ? value : ""}
-            onChange={onChange}
-            disabled={disabled}
-          />
-        );
-      default:
-        return (
-          <SettingsText
-            id={controlId}
-            ariaLabel={field.label}
-            value={typeof value === "string" ? value : ""}
-            onChange={onChange}
-            {...(field.placeholder ? { placeholder: field.placeholder } : {})}
-            disabled={disabled}
-          />
-        );
-    }
-  })();
-
-  return (
-    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
-      <label
-        htmlFor={controlId}
-        style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 500, color: COLORS.textSecondary }}
-      >
-        {field.label}
-      </label>
-      {control}
-      {field.help ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>{field.help}</span>
-      ) : null}
-    </div>
-  );
-}
-
-/* ── Chart ──────────────────────────────────────────────────────────────── */
-
-const CHART_VIEWBOX_WIDTH = 600;
-const CHART_VIEWBOX_HEIGHT = 120;
+/* ── Media ──────────────────────────────────────────────────────────────── */
 
 /**
- * A deliberately small hand-rolled SVG chart, in the house style of
- * `usage/UsageDailyChart.tsx` — no charting dependency, one `<svg>`, geometry
- * computed in a memo.
+ * Schemes a panel may point media at.
  *
- * The plot stretches with `preserveAspectRatio="none"` and every stroke carries
- * `vector-effect="non-scaling-stroke"`, so a wide panel does not smear the
- * lines. Nothing textual lives inside the SVG for the same reason: labels are
- * HTML around it, where they stay the size they were asked to be.
+ * A `src` is a string from another machine that this renderer turns into a
+ * fetch. `https:` is the network case and `data:` is the self-contained one;
+ * everything else a browser will happily load is a capability the plugin was
+ * never granted — `file:` reads the disk this app can see, and a custom scheme
+ * hands the OS a launch. The same rule is enforced on iOS in
+ * `PluginVocabularyMediaViews.swift`.
  */
-export function VocabChart({ node }: { node: VocabChartNode }) {
-  const geometry = React.useMemo(() => {
-    const points = node.series.flatMap((series) => series.points);
-    const max = points.reduce((highest, point) => Math.max(highest, point.y), 0);
-    const longest = node.series.reduce((count, series) => Math.max(count, series.points.length), 0);
-    return { max: max > 0 ? max : 1, longest };
-  }, [node.series]);
+const MEDIA_SCHEMES = ["https:", "data:"];
 
-  const hasPoints = geometry.longest > 0;
-  if (!hasPoints) return <EmptyLine text={node.emptyText ?? "No data yet."} />;
-
-  const xAt = (index: number) =>
-    geometry.longest <= 1
-      ? CHART_VIEWBOX_WIDTH / 2
-      : (index / (geometry.longest - 1)) * CHART_VIEWBOX_WIDTH;
-  const yAt = (value: number) =>
-    CHART_VIEWBOX_HEIGHT - (Math.max(0, value) / geometry.max) * CHART_VIEWBOX_HEIGHT;
-
-  const first = node.series[0]?.points[0];
-  const last = node.series[0]?.points[geometry.longest - 1];
-
-  return (
-    <figure style={{ margin: 0, display: "grid", gap: 8, minWidth: 0 }}>
-      {node.title || node.series.length > 1 ? (
-        <figcaption
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            color: COLORS.textMuted,
-          }}
-        >
-          {node.title ? <span style={{ color: COLORS.textSecondary }}>{node.title}</span> : null}
-          {node.series.length > 1
-            ? node.series.map((series) => (
-                <span key={series.id} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                  <span
-                    aria-hidden
-                    style={{
-                      width: 8,
-                      height: 2,
-                      borderRadius: 1,
-                      background: TONE_COLOR[series.tone ?? "accent"],
-                    }}
-                  />
-                  {series.label ?? series.id}
-                </span>
-              ))
-            : null}
-        </figcaption>
-      ) : null}
-
-      <svg
-        role="img"
-        aria-label={node.title ?? `${node.kind} chart`}
-        width="100%"
-        height={CHART_VIEWBOX_HEIGHT}
-        viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
-        preserveAspectRatio="none"
-        style={{ display: "block", overflow: "visible" }}
-      >
-        <line
-          x1={0}
-          x2={CHART_VIEWBOX_WIDTH}
-          y1={CHART_VIEWBOX_HEIGHT}
-          y2={CHART_VIEWBOX_HEIGHT}
-          stroke={COLORS.borderMuted}
-          strokeWidth={1}
-          vectorEffect="non-scaling-stroke"
-        />
-        {node.series.map((series) => {
-          const color = TONE_COLOR[series.tone ?? "accent"];
-          if (node.kind === "bar") {
-            const slot = CHART_VIEWBOX_WIDTH / Math.max(1, geometry.longest);
-            const width = Math.max(1, slot * 0.55);
-            return (
-              <g key={series.id}>
-                {series.points.map((point, index) => {
-                  const y = yAt(point.y);
-                  return (
-                    <rect
-                      key={index}
-                      x={xAt(index) - width / 2}
-                      y={y}
-                      width={width}
-                      height={Math.max(0, CHART_VIEWBOX_HEIGHT - y)}
-                      fill={color}
-                      fillOpacity={0.55}
-                    />
-                  );
-                })}
-              </g>
-            );
-          }
-          const path = series.points
-            .map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index)},${yAt(point.y)}`)
-            .join(" ");
-          return (
-            <path
-              key={series.id}
-              d={path}
-              fill="none"
-              stroke={color}
-              strokeWidth={1.5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          );
-        })}
-      </svg>
-
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontFamily: SANS_FONT,
-          fontSize: 10.5,
-          color: COLORS.textDim,
-        }}
-      >
-        <span>{first ? String(first.x) : ""}</span>
-        <span>peak {geometry.max.toLocaleString()}</span>
-        <span>{last ? String(last.x) : ""}</span>
-      </div>
-    </figure>
-  );
+function mediaSrc(src: string | undefined): string | undefined {
+  if (!src) return undefined;
+  // Relative URLs have no scheme and would resolve against the app's own
+  // origin, so they are refused here rather than resolved.
+  const scheme = /^([a-z][a-z0-9+.-]*:)/i.exec(src.trim())?.[1]?.toLowerCase();
+  return scheme && MEDIA_SCHEMES.includes(scheme) ? src.trim() : undefined;
 }
-
-/* ── Media ──────────────────────────────────────────────────────────────── */
 
 /**
  * Plain HTML5 video. `src` is withheld until the hosting surface is visible:
@@ -868,13 +484,17 @@ export function VocabChart({ node }: { node: VocabChartNode }) {
  * for a tab nobody is looking at.
  */
 export function VocabVideo({ node, context }: { node: VocabVideoNode; context: VocabRenderContext }) {
+  const src = mediaSrc(node.src);
+  const poster = mediaSrc(node.poster);
+  if (!src) return <EmptyLine text={node.title ?? "This video can’t be played here."} />;
+
   return (
     <figure style={{ margin: 0, display: "grid", gap: 6, minWidth: 0 }}>
       <video
         controls
         preload="metadata"
-        {...(context.active ? { src: node.src } : {})}
-        {...(node.poster ? { poster: node.poster } : {})}
+        {...(context.active ? { src } : {})}
+        {...(poster ? { poster } : {})}
         style={{
           width: "100%",
           maxHeight: 420,
@@ -893,9 +513,12 @@ export function VocabVideo({ node, context }: { node: VocabVideoNode; context: V
 }
 
 export function VocabImage({ node }: { node: VocabImageNode }) {
+  const src = mediaSrc(node.src);
+  if (!src) return <EmptyLine text={node.alt} />;
+
   return (
     <img
-      src={node.src}
+      src={src}
       alt={node.alt}
       loading="lazy"
       style={{

@@ -439,8 +439,10 @@ describe("file viewer resolution", () => {
     ]);
   });
 
-  it("claims a format no built-in viewer handles", () => {
-    expect(resolveViewerKind({ path: "/scene.glb", pluginViewers: viewers })).toBe("plugin:player:play");
+  it("leaves a readable file with the editor even when a plugin registered its extension", () => {
+    // `code` is core's default for anything textual, so a plugin claiming it
+    // would replace the editor for ordinary source files.
+    expect(resolveViewerKind({ path: "/scene.glb", pluginViewers: viewers })).toBe("code");
   });
 
   it("takes over the binary and large-text fallbacks", () => {

@@ -4,6 +4,7 @@ import { splitPluginRowBadges, type PluginSurfaceId } from "../../../../shared/p
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
 import { useSurfaceContributions } from "./useSurfaceContributions";
+import { SocketBoundary } from "./SocketBoundary";
 import { SocketBadge, SocketOverflow } from "./socketUi";
 
 /**
@@ -45,16 +46,17 @@ export function PluginRowBadges({
       style={{ display: "inline-flex", alignItems: "center", gap: 4, ...style }}
     >
       {visible.map((contribution) => (
-        <SocketBadge
-          // Real identity, never the array index: these render inside
-          // virtualized lists whose rows are re-keyed as you scroll.
-          key={contributionKey(contribution)}
-          dataTour={dataTour}
-          text={contribution.payload.text}
-          tone={contribution.payload.tone}
-          {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
-          {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
-        />
+        // Real identity, never the array index: these render inside
+        // virtualized lists whose rows are re-keyed as you scroll.
+        <SocketBoundary key={contributionKey(contribution)}>
+          <SocketBadge
+            dataTour={dataTour}
+            text={contribution.payload.text}
+            tone={contribution.payload.tone}
+            {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+            {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
+          />
+        </SocketBoundary>
       ))}
       {overflowCount > 0 ? (
         <SocketOverflow
@@ -63,13 +65,14 @@ export function PluginRowBadges({
           dataTour={`plugin:${surface}.row-badge-overflow`}
         >
           {hidden.map((contribution) => (
-            <SocketBadge
-              key={contributionKey(contribution)}
-              text={contribution.payload.text}
-              tone={contribution.payload.tone}
-              {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
-              {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
-            />
+            <SocketBoundary key={contributionKey(contribution)}>
+              <SocketBadge
+                text={contribution.payload.text}
+                tone={contribution.payload.tone}
+                {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
+              />
+            </SocketBoundary>
           ))}
         </SocketOverflow>
       ) : null}

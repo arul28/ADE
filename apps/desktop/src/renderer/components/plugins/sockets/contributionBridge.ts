@@ -1,5 +1,5 @@
 /**
- * The socket taxonomy's host reads.
+ * The socket taxonomy's host reads, normalized.
  *
  * Sockets need two things the tab/panel surfaces never did: every installed
  * plugin's *manifest* sockets (what a plugin says it adds, everywhere), and the
@@ -7,29 +7,33 @@
  * say about *this* lane, *this* PR). Both are read here, once per surface, and
  * joined in memory — the perf law is that a row never fetches.
  *
- * Every call is optional-chained twice over, because two plugin namespaces
- * exist in this build and a socket surface must render on a host that has
- * neither:
- *
- * - `window.ade.plugin` is the Wave A action domain (`PluginDomainService`):
- *   `list`, `get`, `invoke`. This is the namespace the desktop host actually
- *   publishes today, so it is tried first.
- * - `window.ade.plugins` is the richer surface `pluginRuntimeBridge` codes
- *   against (panels, collections, marketplace). Where it exists it is preferred
- *   for the calls it answers better, and it is the only place a host-joined
- *   contributions reader can appear.
+ * The namespace itself is `renderer/lib/pluginRuntimeBridge`'s business, and
+ * this module goes through it rather than reaching for `window` again. What is
+ * left here is the part that is genuinely the socket layer's: turning whatever
+ * the host answered with into the two shapes `contributionModel` is allowed to
+ * trust, and not asking for the same manifest twice.
  *
  * Nothing here throws on a missing namespace. A build with no plugin support is
  * the normal case on the hosted web client and on an older host, and it must
  * read as "no contributions", never as a broken Lanes tab.
  */
 
+import { isRecord, oneOf, trimmed } from "../../../../shared/plugins/parse";
 import type { PluginManifest } from "../../../../shared/plugins/manifest";
-import type {
-  PluginEntityKind,
-  PluginSocketKind,
-  PluginSurfaceId,
+import {
+  PLUGIN_ENTITY_KINDS,
+  PLUGIN_SOCKET_KINDS,
+  PLUGIN_SURFACE_IDS,
+  type PluginEntityKind,
+  type PluginSocketKind,
+  type PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
+import {
+  invokePluginAction,
+  listInstalledPlugins,
+  readPluginContributionRows,
+  readPluginManifest,
+} from "../../../lib/pluginRuntimeBridge";
 
 /** One installed plugin, as much of it as a socket surface needs. */
 export type PluginSocketSource = {
@@ -63,185 +67,127 @@ export type PluginContributionRow = {
   updatedAt?: string | null;
 };
 
-type PluginDomainBridge = {
-  list?: (args?: { includeDisabled?: boolean }) => Promise<unknown>;
-  get?: (args: { pluginId: string }) => Promise<unknown>;
-  invoke?: (args: {
-    pluginId: string;
-    action: string;
-    args?: Record<string, unknown>;
-  }) => Promise<unknown>;
-};
-
-type PluginsBridge = {
-  list?: () => Promise<unknown>;
-  getManifest?: (args: { pluginId: string }) => Promise<unknown>;
-  invoke?: (args: {
-    pluginId: string;
-    action: string;
-    args?: Record<string, unknown>;
-  }) => Promise<unknown>;
-  /**
-   * Host-joined contributions for one surface. Optional because no host
-   * publishes it yet: until one does, static manifest sockets are the whole
-   * taxonomy and dynamic per-entity contributions are simply absent, which is a
-   * quieter UI rather than a broken one.
-   */
-  listContributions?: (args: {
-    surface: PluginSurfaceId;
-    entityKind?: PluginEntityKind;
-  }) => Promise<unknown>;
-};
-
-type AdeWindow = Window & {
-  ade?: {
-    plugin?: PluginDomainBridge | null;
-    plugins?: PluginsBridge | null;
-  };
-};
-
-function domainBridge(): PluginDomainBridge | null {
-  if (typeof window === "undefined") return null;
-  return (window as AdeWindow).ade?.plugin ?? null;
-}
-
-function pluginsBridge(): PluginsBridge | null {
-  if (typeof window === "undefined") return null;
-  return (window as AdeWindow).ade?.plugins ?? null;
-}
-
-/** True when this build exposes any plugin namespace at all. */
+/**
+ * True when this build exposes a plugin namespace at all.
+ *
+ * Deliberately narrower than `pluginsAvailable`: this asks whether the host
+ * publishes the namespace, not whether a project runtime is currently bound
+ * behind it. A surface uses it to decide there is nothing to load; the built-in
+ * tab gate uses it to decide whether an empty registry is a fact or an absence,
+ * and neither question should flip when a runtime is mid-transition.
+ */
 export function pluginSocketsAvailable(): boolean {
-  return domainBridge() !== null || pluginsBridge() !== null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  if (typeof window === "undefined") return false;
+  // The namespace ADE publishes is `plugins`, PLURAL, and it is the only one
+  // any build has. The singular `plugin` is the RPC action DOMAIN, not a window
+  // key; it is read here only as tolerance for a host that ever published it,
+  // and because the failure mode of a name mismatch is a UI that draws empty
+  // states everywhere and never says why.
+  const ade = (window as unknown as { ade?: Record<string, unknown> }).ade;
+  return Boolean(ade?.plugin ?? ade?.plugins);
 }
 
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  const items: string[] = [];
+  for (const entry of value) {
+    const text = trimmed(entry);
+    if (text) items.push(text);
+  }
+  return items;
 }
 
 /**
- * Installed plugins, from whichever namespace answers.
+ * Manifests, kept for as long as the install set does not change.
  *
- * A disabled plugin is dropped here rather than downstream: its contributions
- * are not "hidden", they do not exist, and carrying them through the model just
- * to filter them at render is how a disabled plugin ends up in a "+N" count.
+ * Every surface reveal re-reads the plugin list, and the list refreshes on
+ * child-process health events too — which arrive whenever a plugin starts,
+ * stops or crashes. Without this, each of those refetched every installed
+ * plugin's manifest to discover it had not changed. The promise is cached
+ * rather than the value so two surfaces revealing together share one read.
  */
-async function listInstalledSources(): Promise<
-  { pluginId: string; displayName: string; enabled: boolean; accent: string | null; icon: string | null; disabledContributions: string[] }[]
-> {
-  const read = async (): Promise<unknown> => {
-    const domain = domainBridge()?.list;
-    if (domain) return domain({ includeDisabled: false });
-    const plugins = pluginsBridge()?.list;
-    return plugins ? plugins() : null;
-  };
+const manifestCache = new Map<string, Promise<unknown>>();
 
-  let raw: unknown;
-  try {
-    raw = await read();
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
+function cachedManifest(pluginId: string): Promise<unknown> {
+  const cached = manifestCache.get(pluginId);
+  if (cached) return cached;
+  const pending = readPluginManifest(pluginId);
+  manifestCache.set(pluginId, pending);
+  return pending;
+}
 
-  const sources = [];
-  for (const entry of raw) {
+/** Drop cached manifests. A manifest only changes across an install or a reload. */
+export function clearPluginManifestCache(): void {
+  manifestCache.clear();
+}
+
+/**
+ * Every installed plugin plus its manifest, in one pass.
+ *
+ * The list includes plugins the user has switched OFF, and that is the shape
+ * the socket layer wants: `contributionModel` drops a disabled plugin's
+ * contributions itself, and it can only do that if `enabled` arrives. A list
+ * pre-filtered by the host would hide the difference between "off" and "not
+ * installed", which is also the difference between a contribution that should
+ * come back when the switch flips and one that never existed.
+ */
+export async function readPluginSocketSources(): Promise<PluginSocketSource[]> {
+  const installed = await listInstalledPlugins();
+  const sources: Omit<PluginSocketSource, "manifest">[] = [];
+  for (const entry of installed) {
     if (!isRecord(entry)) continue;
-    const pluginId = stringOrNull(entry.pluginId);
+    const pluginId = trimmed(entry.pluginId);
     if (!pluginId) continue;
     sources.push({
       pluginId,
-      displayName: stringOrNull(entry.displayName) ?? pluginId,
-      // Absent `enabled` means an older summary shape, and the host already
-      // filtered disabled plugins out of the list it answered with.
+      displayName: trimmed(entry.displayName) ?? pluginId,
       enabled: entry.enabled !== false,
-      accent: stringOrNull(entry.accent),
-      icon: stringOrNull(entry.icon),
+      accent: trimmed(entry.accent),
+      icon: trimmed(entry.icon),
       disabledContributions: stringList(entry.disabledContributions),
     });
   }
-  return sources;
-}
-
-/** One plugin's manifest, from whichever namespace answers. Null when unreadable. */
-async function readManifest(pluginId: string): Promise<unknown> {
-  try {
-    const getManifest = pluginsBridge()?.getManifest;
-    if (getManifest) {
-      const manifest = await getManifest({ pluginId });
-      if (manifest) return manifest;
-    }
-    const get = domainBridge()?.get;
-    if (get) {
-      const detail = await get({ pluginId });
-      if (isRecord(detail)) return detail.manifest ?? null;
-    }
-  } catch {
-    return null;
-  }
-  return null;
+  if (sources.length === 0) return [];
+  const manifests = await Promise.all(sources.map((entry) => cachedManifest(entry.pluginId)));
+  return sources.map((entry, index) => ({ ...entry, manifest: manifests[index] ?? null }));
 }
 
 /**
- * Every enabled plugin plus its manifest, in one pass.
+ * Dynamic per-entity contributions for a surface. Empty when unsupported.
  *
- * Manifests are read in parallel and only for plugins the host reports as
- * installed, so this is one round trip per installed plugin per surface reveal
- * — not per row, and not per render.
+ * Every closed-list field is checked against its list rather than asserted. A
+ * row naming a socket, entity kind or surface this build has never heard of is
+ * dropped here, where "we do not know what this is" is still true, instead of
+ * being carried through the model as a value it can only fail to match.
  */
-export async function readPluginSocketSources(): Promise<PluginSocketSource[]> {
-  const installed = await listInstalledSources();
-  if (installed.length === 0) return [];
-  const manifests = await Promise.all(installed.map((entry) => readManifest(entry.pluginId)));
-  return installed.map((entry, index) => ({
-    ...entry,
-    manifest: manifests[index] ?? null,
-  }));
-}
-
-/** Dynamic per-entity contributions for a surface. Empty when unsupported. */
 export async function readSurfaceContributionRows(
   surface: PluginSurfaceId,
   entityKind?: PluginEntityKind,
 ): Promise<PluginContributionRow[]> {
-  const listContributions = pluginsBridge()?.listContributions;
-  if (!listContributions) return [];
-  let raw: unknown;
-  try {
-    raw = await listContributions({ surface, ...(entityKind ? { entityKind } : {}) });
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
+  const raw = await readPluginContributionRows({
+    surface,
+    ...(entityKind ? { entityKind } : {}),
+  });
 
   const rows: PluginContributionRow[] = [];
   for (const entry of raw) {
     if (!isRecord(entry)) continue;
-    const pluginId = stringOrNull(entry.pluginId);
-    const entityId = stringOrNull(entry.entityId);
-    const entityKindValue = stringOrNull(entry.entityKind);
-    const socket = stringOrNull(entry.socket);
-    if (!pluginId || !entityId || !entityKindValue || !socket) continue;
-    const socketId = stringOrNull(entry.socketId);
-    const rowSurface = stringOrNull(entry.surface);
+    const pluginId = trimmed(entry.pluginId);
+    const entityId = trimmed(entry.entityId);
+    const rowEntityKind = oneOf(trimmed(entry.entityKind), PLUGIN_ENTITY_KINDS);
+    const socket = oneOf(trimmed(entry.socket), PLUGIN_SOCKET_KINDS);
+    if (!pluginId || !entityId || !rowEntityKind || !socket) continue;
+    const socketId = trimmed(entry.socketId);
+    const rowSurface = oneOf(trimmed(entry.surface), PLUGIN_SURFACE_IDS);
     rows.push({
-      entityKind: entityKindValue as PluginEntityKind,
+      entityKind: rowEntityKind,
       entityId,
       pluginId,
-      socket: socket as PluginSocketKind,
+      socket,
       ...(socketId ? { socketId } : {}),
-      ...(rowSurface ? { surface: rowSurface as PluginSurfaceId } : {}),
+      ...(rowSurface ? { surface: rowSurface } : {}),
       payload: entry.payload ?? entry.payload_json ?? null,
-      updatedAt: stringOrNull(entry.updatedAt),
+      updatedAt: trimmed(entry.updatedAt),
     });
   }
   return rows;
@@ -260,11 +206,7 @@ export async function invokePluginSocketAction(
   action: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  const domain = domainBridge()?.invoke;
-  if (domain) return domain({ pluginId, action, args });
-  const plugins = pluginsBridge()?.invoke;
-  if (plugins) return plugins({ pluginId, action, args });
-  throw new Error("This build has no plugin support.");
+  return invokePluginAction(pluginId, action, args);
 }
 
 /** Narrowing helper shared by the model; kept here so the manifest cast is in one place. */

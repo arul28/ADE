@@ -1,10 +1,10 @@
 /**
  * The renderer's view of `window.ade.plugins.*`.
  *
- * Wave A owns the preload namespace itself. This module owns the *shape* the UI
- * codes against, declared locally so the renderer compiles and degrades before
- * that namespace exists, and so the plugin surfaces have one place to look when
- * the contract moves.
+ * Wave A owns the preload namespace itself. This module owns the UI's ACCESS to
+ * it — one place that reads the namespace, degrades when it is absent, and says
+ * what this host is allowed to offer. The shapes themselves live in
+ * `shared/plugins/sdk.ts` and are re-exported below under the names the UI uses.
  *
  * Two rules from the desktop recon are enforced here rather than at each call
  * site:
@@ -18,79 +18,31 @@
  *   calls do not. Callers that must not fail on a transition use the readers.
  */
 
-import type { PluginThemeTokens } from "./pluginTheme";
+import { isPluginsUnavailable } from "../../shared/plugins/sdk";
+import type { PluginEntityKind, PluginSurfaceId } from "../../shared/plugins/sockets";
 
-/** Child-process health, as reported by the plugin host. */
-export type PluginRuntimeStatus = "running" | "starting" | "stopped" | "crashed" | "none";
+/**
+ * The wire shapes live in `shared/plugins/sdk.ts` and are re-exported here under
+ * the names the UI has always used. Declaring them here was what forced the
+ * PRELOAD to import the renderer to describe its own namespace — a layering
+ * inversion `contextBridge.exposeInMainWorld`'s `any` signature hid, so nothing
+ * checked that what preload publishes matches what the UI calls.
+ */
+export type {
+  PluginClientRuntimeStatus as PluginRuntimeStatus,
+  PluginClientTabDescriptor as PluginTabDescriptor,
+  PluginClientInstalled as InstalledPlugin,
+  PluginClientCollectionRow as PluginCollectionRow,
+  PluginClientChangeEvent as PluginChangeEvent,
+  PluginPanelRecord,
+} from "../../shared/plugins/sdk";
 
-/** One `{"kind":"tab"}` surface from a plugin's manifest. */
-export type PluginTabDescriptor = {
-  id: string;
-  title: string;
-  panelId: string;
-  /** Phosphor icon name; resolved through `pluginIcons.ts`, never rendered raw. */
-  icon?: string | null;
-  /**
-   * Names a compiled-in tab this surface gates rather than renders — see
-   * `PLUGIN_BUILTIN_SURFACE_IDS` in `shared/plugins/manifest.ts`. Absent on
-   * every ordinary plugin tab, and absent from a host too old to report it, so
-   * `builtinTabs.ts` treats its absence as "not a gate" and never as "hidden".
-   */
-  builtin?: string | null;
-};
-
-export type InstalledPlugin = {
-  pluginId: string;
-  displayName: string;
-  version: string;
-  enabled: boolean;
-  icon: string | null;
-  /** Hex accent from the manifest. Applied as a CSS variable, never inlined as a class. */
-  accent: string | null;
-  status: PluginRuntimeStatus;
-  tabs: PluginTabDescriptor[];
-  /** Present only for theme plugins. */
-  theme: { displayName: string; tokens: PluginThemeTokens } | null;
-  /**
-   * Manifest socket ids the user has switched off. Absent means none are —
-   * which is why it is a list of what is OFF: a plugin's contributions are on
-   * by default, and an absent field must not read as "everything is disabled".
-   */
-  disabledContributions?: readonly string[];
-  /** Drives the nav dot. Off unless the plugin asks for attention. */
-  attention?: boolean;
-};
-
-export type PluginPanelRecord = {
-  pluginId: string;
-  panelId: string;
-  title: string | null;
-  /** Opaque versioned JSON — parsed by `shared/plugins/vocabulary.ts`, never here. */
-  schema: unknown;
-  vocabVersion: number;
-  updatedAt: string | null;
-};
-
-export type PluginCollectionRow = {
-  key: string;
-  value: unknown;
-};
-
-/** What changed, so a subscriber can decide whether it needs to refetch. */
-export type PluginChangeEvent = {
-  /**
-   * Mirrors `main/services/plugins/pluginEvents.ts`'s `PluginChangeKind`.
-   *
-   * The daemon may send a kind this build has never heard of — the union is
-   * open in practice and grows without a renderer release. Consumers must treat
-   * an unrecognized kind as "refetch everything for this plugin" rather than
-   * dropping it, which is what `pluginChangeAffects` in the socket module does.
-   */
-  kind: "installs" | "panels" | "collections" | "contributions" | "status";
-  pluginId?: string;
-  panelId?: string;
-  collection?: string;
-};
+import type {
+  PluginClientChangeEvent as PluginChangeEvent,
+  PluginClientCollectionRow as PluginCollectionRow,
+  PluginClientInstalled as InstalledPlugin,
+  PluginPanelRecord,
+} from "../../shared/plugins/sdk";
 
 /* ── Marketplace ────────────────────────────────────────────────────────────
  *
@@ -103,66 +55,23 @@ export type PluginChangeEvent = {
  * out by pressing a button.
  */
 
-/** One entry as the directory publishes it. Shape-checked in `marketplaceModel`. */
-export type MarketplaceIndexPayload = {
-  entries: unknown[];
-  /** When the index was fetched. Null when it came from a cold cache. */
-  fetchedAt: string | null;
-  /** Whether these bytes came off the network or out of the etag cache. */
-  origin: "network" | "cache";
-};
+export type {
+  PluginClientMarketplaceIndex as MarketplaceIndexPayload,
+  PluginClientPresenceRow as PluginPresenceRow,
+  PluginClientUsageRow as PluginUsageRow,
+  PluginClientInstallRequest as PluginInstallRequest,
+  PluginClientInstallResult as PluginInstallResult,
+  PluginClientSourceInspection as PluginSourceInspection,
+} from "../../shared/plugins/sdk";
 
-/** A plugin's install state on one machine in the account. */
-export type PluginPresenceRow = {
-  machineKey: string;
-  machineName: string;
-  pluginId: string;
-  version: string | null;
-  enabled: boolean;
-  /** False for a machine that is in the directory but not reachable now. */
-  online: boolean;
-  /**
-   * Set by the host on rows for the machine this renderer runs on. The renderer
-   * cannot work this out from the rows alone, and guessing wrong shows someone
-   * another machine's install state as their own.
-   */
-  isThisMachine: boolean;
-};
-
-/** Storage and wire usage for one plugin, against its writer-enforced budget. */
-export type PluginUsageRow = {
-  pluginId: string;
-  collectionBytes: number;
-  collectionBudgetBytes: number;
-  rows: number;
-  rowBudget: number;
-  /** Bytes this plugin put on the sync wire in the last 24h, when metered. */
-  /** Cumulative sync bytes attributed to this plugin. Null when unmetered. */
-  syncBytesTotal: number | null;
-};
-
-export type PluginInstallRequest = {
-  /** Git URL or directory path. The one field an install always has. */
-  source: string;
-  /** Known ahead of time for a directory entry; absent for install-from-URL. */
-  pluginId?: string;
-  version?: string;
-  /** Install on another machine instead of this one. */
-  machineKey?: string;
-};
-
-export type PluginInstallResult = {
-  pluginId: string;
-  version: string;
-  displayName: string;
-};
-
-/** What the host learned by reading a source before installing it. */
-export type PluginSourceInspection = {
-  source: string;
-  /** Raw manifest object — parsed by `shared/plugins/manifest.ts`, never here. */
-  manifest: unknown;
-};
+import type {
+  PluginClientInstallRequest as PluginInstallRequest,
+  PluginClientInstallResult as PluginInstallResult,
+  PluginClientMarketplaceIndex as MarketplaceIndexPayload,
+  PluginClientPresenceRow as PluginPresenceRow,
+  PluginClientSourceInspection as PluginSourceInspection,
+  PluginClientUsageRow as PluginUsageRow,
+} from "../../shared/plugins/sdk";
 
 type PluginBridge = {
   list?: () => Promise<InstalledPlugin[]>;
@@ -221,15 +130,34 @@ type PluginBridge = {
     socketId: string;
     enabled: boolean;
   }) => Promise<void>;
+  /**
+   * Host-joined dynamic contributions for one surface. Static manifest sockets
+   * say a plugin CAN badge a lane; these rows say what it says about lane 7 now.
+   */
+  listContributions?: (input: {
+    surface: string;
+    entityKind?: string;
+    entityIds?: string[];
+  }) => Promise<unknown>;
+  /**
+   * Whether this host can install and enable on a machine OTHER than this one.
+   *
+   * A plain value the preload sets, not a shape probe. Inferring it from
+   * `install` + `presence` being callable said "yes" on a host whose install
+   * refuses every `machineKey` outright, so the Marketplace offered a button
+   * that could only ever fail. Absent means the same as false — an older host
+   * that does not publish it cannot be assumed to have the arm.
+   */
+  remoteInstall?: boolean;
 };
 
 function bridge(): PluginBridge | null {
   if (typeof window === "undefined") return null;
-  // The preload namespace is `plugin` (it mirrors the single `plugin` action
-  // domain, D1). `plugins` is accepted as well so this module keeps working
-  // either way rather than silently reporting "no plugin support" — the failure
-  // mode of a name mismatch here is an entire UI that renders empty states and
-  // never says why.
+  // The preload namespace is `plugins`, PLURAL, and that is the only one any
+  // ADE build publishes. The singular `plugin` is the RPC action DOMAIN, not a
+  // window namespace; it is read here only as tolerance for a host that ever
+  // published it, because the failure mode of a name mismatch is an entire UI
+  // that renders empty states and never says why.
   //
   // Read through `unknown` deliberately. The host's own declared type is the
   // full contract; this module's type is the SUBSET the UI depends on, every
@@ -240,9 +168,41 @@ function bridge(): PluginBridge | null {
   return ((ade?.plugin ?? ade?.plugins) as PluginBridge | null | undefined) ?? null;
 }
 
-/** True when this host exposes a plugin surface at all. */
+/**
+ * Whether this host answers for plugins at all.
+ *
+ * Two ways it can be no, and both have to count. The namespace can be absent —
+ * an older host, or the hosted web client. Or the namespace can be present and
+ * the machine behind it have no plugin host, which is the desktop's normal state
+ * before a project runtime binds: every call then answers the typed
+ * `plugins_unavailable`. Reporting the second case as "available" is what put
+ * install buttons on a machine-level Marketplace that could only ever fail.
+ */
 export function pluginsAvailable(): boolean {
-  return bridge() !== null;
+  return bridge() !== null && !hostReportedUnavailable;
+}
+
+/**
+ * Latched by the first typed `plugins_unavailable` any call answers with.
+ *
+ * A latch rather than a per-call flag because the capability probes are
+ * synchronous — the UI asks what it may offer while rendering, and the only
+ * evidence available by then is what an earlier call already learned. A
+ * successful list clears it, so binding a runtime restores the buttons without
+ * anyone having to remember to.
+ */
+let hostReportedUnavailable = false;
+
+/** Note a typed unavailability and say whether that is what happened. */
+function noteUnavailable(error: unknown): boolean {
+  if (!isPluginsUnavailable(error)) return false;
+  hostReportedUnavailable = true;
+  return true;
+}
+
+/** Test seam, and the reset a surface makes when a project runtime binds. */
+export function resetPluginBridgeAvailability(): void {
+  hostReportedUnavailable = false;
 }
 
 /** Installed plugins on this machine. Empty on a host with no plugin support. */
@@ -251,8 +211,10 @@ export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
   if (!plugins) return [];
   try {
     const result = await plugins();
+    if (Array.isArray(result)) hostReportedUnavailable = false;
     return Array.isArray(result) ? result : [];
-  } catch {
+  } catch (error) {
+    noteUnavailable(error);
     return [];
   }
 }
@@ -328,8 +290,25 @@ export type PluginMarketplaceCapabilities = {
   inspect: boolean;
 };
 
+export const NO_PLUGIN_MARKETPLACE_CAPABILITIES: PluginMarketplaceCapabilities = {
+  browse: false,
+  install: false,
+  uninstall: false,
+  enable: false,
+  machines: false,
+  remoteInstall: false,
+  config: false,
+  contributions: false,
+  usage: false,
+  inspect: false,
+};
+
 export function pluginMarketplaceCapabilities(): PluginMarketplaceCapabilities {
   const plugins = bridge();
+  // A published member proves the CALL exists, not that anything is behind it.
+  // Once the host has answered `plugins_unavailable`, every member is still
+  // there and every one still fails, so the probes have to stop believing them.
+  if (hostReportedUnavailable) return NO_PLUGIN_MARKETPLACE_CAPABILITIES;
   return {
     browse: typeof plugins?.marketplaceIndex === "function",
     install: typeof plugins?.install === "function",
@@ -337,9 +316,8 @@ export function pluginMarketplaceCapabilities(): PluginMarketplaceCapabilities {
     enable: typeof plugins?.setEnabled === "function"
       || (typeof plugins?.enable === "function" && typeof plugins?.disable === "function"),
     machines: typeof plugins?.presence === "function",
-    // Remote install rides the same two calls; the host decides per machine
-    // whether it is permitted, and rejects if not.
-    remoteInstall: typeof plugins?.install === "function" && typeof plugins?.presence === "function",
+    // Not inferred from `install` + `presence`: see the marker's own note.
+    remoteInstall: plugins?.remoteInstall === true,
     config: typeof plugins?.getConfig === "function"
       || typeof plugins?.get === "function"
       || typeof plugins?.invoke === "function",
@@ -365,7 +343,8 @@ export async function fetchMarketplaceIndex(
     const result = await marketplaceIndex(options.refresh ? { refresh: true } : {});
     if (!result || !Array.isArray(result.entries)) return null;
     return result;
-  } catch {
+  } catch (error) {
+    noteUnavailable(error);
     return null;
   }
 }
@@ -417,55 +396,56 @@ export async function readPluginPresence(): Promise<PluginPresenceRow[]> {
   try {
     const rows = await presence();
     return Array.isArray(rows) ? rows : [];
-  } catch {
+  } catch (error) {
+    noteUnavailable(error);
     return [];
   }
 }
 
 /**
- * Usage rows, from whichever shape the host publishes.
+ * Usage rows for the budget meters. Empty on a host that meters nothing.
  *
- * The host's rollup carries budgets once, beside a list of per-plugin counts;
- * the UI wants used-and-budget together per plugin. Folding the two here rather
- * than in the rail means the meter has one shape to render and the host is free
- * to keep its own.
+ * The preload normalizes the host's `{entries, budgets}` rollup into flat rows
+ * before it crosses, so this reads one shape. It used to fold both here as
+ * well — a second normalizer for a shape that never arrives, which is worse
+ * than no normalizer: it made the flat path look optional.
  */
 export async function readPluginUsage(pluginId?: string): Promise<PluginUsageRow[]> {
   const usageSummary = bridge()?.usageSummary;
   if (!usageSummary) return [];
   try {
     const result = await usageSummary(pluginId ? { pluginId } : {});
-    if (Array.isArray(result)) return result as PluginUsageRow[];
-    if (!result || typeof result !== "object") return [];
-    const rollup = result as {
-      entries?: unknown;
-      budgets?: { collectionBytesPerPlugin?: number; collectionRowsPerPlugin?: number };
-    };
-    if (!Array.isArray(rollup.entries)) return [];
-    const collectionBudgetBytes = rollup.budgets?.collectionBytesPerPlugin ?? 0;
-    const rowBudget = rollup.budgets?.collectionRowsPerPlugin ?? 0;
-    return rollup.entries.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return [];
-      const row = entry as {
-        pluginId?: unknown;
-        collectionBytes?: unknown;
-        collectionRows?: unknown;
-        syncBytesOut?: unknown;
-        syncBytesIn?: unknown;
-      };
-      if (typeof row.pluginId !== "string") return [];
-      const syncOut = typeof row.syncBytesOut === "number" ? row.syncBytesOut : null;
-      const syncIn = typeof row.syncBytesIn === "number" ? row.syncBytesIn : null;
-      return [{
-        pluginId: row.pluginId,
-        collectionBytes: typeof row.collectionBytes === "number" ? row.collectionBytes : 0,
-        collectionBudgetBytes,
-        rows: typeof row.collectionRows === "number" ? row.collectionRows : 0,
-        rowBudget,
-        syncBytesTotal: syncOut === null && syncIn === null ? null : (syncOut ?? 0) + (syncIn ?? 0),
-      }];
+    return Array.isArray(result) ? (result as PluginUsageRow[]) : [];
+  } catch (error) {
+    noteUnavailable(error);
+    return [];
+  }
+}
+
+/**
+ * Dynamic per-entity contributions for one surface, still unparsed.
+ *
+ * Rows are normalized by the socket layer, which owns their shape; this only
+ * gets them across the boundary. Empty — never a throw — when the host cannot
+ * join them, because a surface with no dynamic contributions is a quieter tab
+ * rather than a broken one.
+ */
+export async function readPluginContributionRows(input: {
+  surface: PluginSurfaceId;
+  entityKind?: PluginEntityKind;
+  entityIds?: readonly string[];
+}): Promise<unknown[]> {
+  const listContributions = bridge()?.listContributions;
+  if (!listContributions) return [];
+  try {
+    const rows = await listContributions({
+      surface: input.surface,
+      ...(input.entityKind ? { entityKind: input.entityKind } : {}),
+      ...(input.entityIds && input.entityIds.length > 0 ? { entityIds: [...input.entityIds] } : {}),
     });
-  } catch {
+    return Array.isArray(rows) ? rows : [];
+  } catch (error) {
+    noteUnavailable(error);
     return [];
   }
 }

@@ -30,9 +30,6 @@
 import { isValidPluginId, isValidPluginVersion } from "./manifest";
 import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
 
-/** Shape version of the index contract implemented by this file. */
-export const PLUGIN_REGISTRY_INDEX_VERSION = 1;
-
 /**
  * Ceilings. The index is fetched on a user-facing path and cached to disk, so
  * every one of these is a cost bound rather than a taste judgement: a directory

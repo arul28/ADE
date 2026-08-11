@@ -433,7 +433,6 @@ export const IPC = {
   pluginListContributions: "ade.plugin.listContributions",
   pluginInspectSource: "ade.plugin.inspectSource",
   pluginReload: "ade.plugin.reload",
-  pluginChanged: "ade.plugin.changed",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",

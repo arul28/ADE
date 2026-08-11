@@ -30,6 +30,11 @@
  * {@link PLUGIN_THEME_CHANGED_EVENT}.
  */
 
+import { isAllowedPluginThemeToken, PLUGIN_THEME_TOKEN_PREFIXES } from "../../shared/plugins/manifest";
+import type { PluginClientThemeTokens } from "../../shared/plugins/sdk";
+
+export { PLUGIN_THEME_TOKEN_PREFIXES };
+
 export const PLUGIN_THEME_STYLE_ELEMENT_ID = "ade-plugin-theme";
 
 /**
@@ -42,7 +47,12 @@ export const PLUGIN_THEME_CHANGED_EVENT = "ade:plugin-theme-changed";
 /** The built-in themes a plugin theme can extend. Mirrors `ThemeId`. */
 export type PluginThemeBaseId = "dark" | "light";
 
-export type PluginThemeTokens = Partial<Record<PluginThemeBaseId, Record<string, string>>>;
+/**
+ * Alias of the wire type in `shared/plugins/sdk.ts`. One declaration: the
+ * preload publishes these tokens, the engine paints them, and a second
+ * structural copy is how the two would drift without anything failing.
+ */
+export type PluginThemeTokens = PluginClientThemeTokens;
 
 export type PluginThemeDefinition = {
   pluginId: string;
@@ -50,24 +60,6 @@ export type PluginThemeDefinition = {
   displayName: string;
   tokens: PluginThemeTokens;
 };
-
-/**
- * Token families a theme may override.
- *
- * Deliberately not "any custom property": these are the families `index.css`
- * declares as the app palette. Letting a theme define arbitrary properties would
- * make it a general CSS injection surface, and would let a theme define tokens
- * ADE later wants to use for something else.
- */
-export const PLUGIN_THEME_TOKEN_PREFIXES: readonly string[] = [
-  "--color-",
-  "--shell-",
-  "--chat-",
-  "--work-",
-  "--pane-",
-  "--pr-",
-  "--gradient-",
-];
 
 /** Per-theme ceiling. A palette is dozens of tokens; hundreds is not a palette. */
 export const PLUGIN_THEME_MAX_TOKENS = 120;
@@ -97,9 +89,13 @@ export type SanitizedPluginTheme = {
   rejected: { token: string; reason: string }[];
 };
 
-function isAllowedTokenName(name: string): boolean {
-  return PLUGIN_THEME_TOKEN_PREFIXES.some((prefix) => name.startsWith(prefix));
-}
+/**
+ * The name half of the allowlist lives in the manifest parser so a theme is
+ * judged identically at parse time and at paint time. Both halves matter: the
+ * name is interpolated on the left of the colon, so a name that is merely
+ * prefix-correct can still close the rule and inject CSS.
+ */
+const isAllowedTokenName = isAllowedPluginThemeToken;
 
 function isSafeTokenValue(value: string): boolean {
   if (value.length === 0 || value.length > PLUGIN_THEME_MAX_VALUE_CHARS) return false;

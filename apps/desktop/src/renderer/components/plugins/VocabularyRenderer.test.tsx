@@ -115,7 +115,7 @@ describe("PluginPanelView", () => {
     const schema = {
       v: 1,
       fallback: { title: "T", text: "B" },
-      body: [{ component: "video", src: "file:///clip.mp4" }],
+      body: [{ component: "video", src: "https://cdn.example.com/clip.mp4" }],
     };
 
     const hidden = render(<PluginPanelView schema={schema} context={makeContext({ active: false })} />);
@@ -123,7 +123,31 @@ describe("PluginPanelView", () => {
     hidden.unmount();
 
     const visible = render(<PluginPanelView schema={schema} context={makeContext({ active: true })} />);
-    expect(visible.container.querySelector("video")?.getAttribute("src")).toBe("file:///clip.mp4");
+    expect(visible.container.querySelector("video")?.getAttribute("src"))
+      .toBe("https://cdn.example.com/clip.mp4");
+  });
+
+  it("loads media only from schemes a panel is allowed to point at", () => {
+    const image = (src: string) => ({
+      v: 1,
+      fallback: { title: "T", text: "B" },
+      body: [{ component: "image", src, alt: "A screenshot" }],
+    });
+
+    for (const allowed of ["https://cdn.example.com/a.png", "data:image/png;base64,AAAA"]) {
+      const view = render(<PluginPanelView schema={image(allowed)} context={makeContext()} />);
+      expect(view.container.querySelector("img")?.getAttribute("src")).toBe(allowed);
+      view.unmount();
+    }
+
+    for (const refused of ["file:///etc/passwd", "javascript:alert(1)", "/relative.png", "HTTP://x/a.png"]) {
+      const view = render(<PluginPanelView schema={image(refused)} context={makeContext()} />);
+      expect(view.container.querySelector("img"), `${refused} was loaded`).toBeNull();
+      // Refusing the fetch must not blank the node: the alt text still says
+      // what was meant to be there.
+      expect(view.container.textContent).toContain("A screenshot");
+      view.unmount();
+    }
   });
 });
 
@@ -142,5 +166,35 @@ describe("VocabularyBoundary", () => {
     );
 
     expect(container.textContent).toContain("3 lanes, 1 conflict.");
+  });
+
+  it("gives the panel another go once the schema or the plugin changes", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const Boom = (): React.ReactElement => {
+      throw new Error("leaf exploded");
+    };
+
+    const { container, rerender } = render(
+      <VocabularyBoundary fallback={{ title: "Graph", text: "3 lanes, 1 conflict." }} resetKey="a">
+        <Boom />
+      </VocabularyBoundary>,
+    );
+    expect(container.textContent).toContain("3 lanes, 1 conflict.");
+
+    // Same identity: still broken, and deliberately so — re-running the same
+    // failing schema on every registry poll would just re-throw.
+    rerender(
+      <VocabularyBoundary fallback={{ title: "Graph", text: "3 lanes, 1 conflict." }} resetKey="a">
+        <p>fixed</p>
+      </VocabularyBoundary>,
+    );
+    expect(container.textContent).not.toContain("fixed");
+
+    rerender(
+      <VocabularyBoundary fallback={{ title: "Graph", text: "3 lanes, 1 conflict." }} resetKey="b">
+        <p>fixed</p>
+      </VocabularyBoundary>,
+    );
+    expect(container.textContent).toContain("fixed");
   });
 });

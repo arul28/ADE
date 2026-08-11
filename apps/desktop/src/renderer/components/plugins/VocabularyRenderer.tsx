@@ -256,15 +256,38 @@ export function PluginFallbackCard({
  * one bad leaf reaches the route's `PageErrorBoundary` and takes the whole tab
  * down; with it, the failure is contained to the panel and the reader still
  * gets the fallback text.
+ *
+ * `resetKey` is what makes the containment temporary. A boundary that never
+ * clears stays broken for the life of its mount, which here means a plugin that
+ * has already published a fixed schema still shows the failure card, and so does
+ * a completely different plugin's panel mounted in the same place. The key
+ * carries both identities, so either changing gives the panel another go.
  */
 export class VocabularyBoundary extends React.Component<
-  { fallback: VocabFallback | null; action?: React.ReactNode; children: React.ReactNode },
-  { error: Error | null }
+  {
+    fallback: VocabFallback | null;
+    action?: React.ReactNode;
+    /** Schema + plugin identity. A new value retries the render. */
+    resetKey?: string;
+    children: React.ReactNode;
+  },
+  { error: Error | null; resetKey: string | undefined }
 > {
-  state: { error: Error | null } = { error: null };
+  state: { error: Error | null; resetKey: string | undefined } = {
+    error: null,
+    resetKey: this.props.resetKey,
+  };
 
   static getDerivedStateFromError(error: Error) {
     return { error };
+  }
+
+  static getDerivedStateFromProps(
+    props: { resetKey?: string },
+    state: { error: Error | null; resetKey: string | undefined },
+  ) {
+    if (props.resetKey === state.resetKey) return null;
+    return { error: null, resetKey: props.resetKey };
   }
 
   override render() {
@@ -281,6 +304,16 @@ export class VocabularyBoundary extends React.Component<
 }
 
 /* ── Public entry ───────────────────────────────────────────────────────── */
+
+/** Content identity for a raw schema. Empty for anything that will not serialize. */
+function schemaSignature(schema: unknown): string {
+  if (typeof schema === "string") return schema;
+  try {
+    return JSON.stringify(schema) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Parse a raw schema and render it, or render the fallback card.
@@ -302,6 +335,14 @@ export function PluginPanelView({
 }) {
   const parsed = React.useMemo(() => parsePluginPanel(schema), [schema]);
   const fallback = parsed.ok ? parsed.panel.fallback : (parsed.fallback ?? readVocabFallback(schema));
+  // Content, not object identity: the host hands back a fresh record on every
+  // poll, and resetting the boundary on each one would re-throw the same failing
+  // schema several times a minute. A schema is capped at 64 KiB, so this is the
+  // same cost class as the parse above.
+  const resetKey = React.useMemo(
+    () => `${context.pluginId}\u0000${schemaSignature(schema)}`,
+    [context.pluginId, schema],
+  );
 
   if (!parsed.ok) {
     return (
@@ -310,7 +351,7 @@ export function PluginPanelView({
   }
 
   return (
-    <VocabularyBoundary fallback={fallback} action={recoveryAction}>
+    <VocabularyBoundary fallback={fallback} action={recoveryAction} resetKey={resetKey}>
       <VocabularyRenderer panel={parsed.panel} context={context} />
     </VocabularyBoundary>
   );

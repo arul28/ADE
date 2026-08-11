@@ -4,6 +4,7 @@ import { COLORS, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
 import { useSurfaceContributions } from "./useSurfaceContributions";
+import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
 
 /**
@@ -35,38 +36,39 @@ export function PluginFilterChips({
       {contributions.map((contribution) => {
         const isSelected = selected.includes(contribution.payload.filterKey);
         return (
-          <button
-            key={contributionKey(contribution)}
-            type="button"
-            data-tour={`plugin:${surface}.filter-chip`}
-            aria-pressed={isSelected}
-            onClick={() => onToggle(contribution.payload.filterKey)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              height: 24,
-              padding: "0 8px",
-              fontSize: 11,
-              fontWeight: 500,
-              fontFamily: SANS_FONT,
-              color: isSelected ? COLORS.accent : COLORS.textMuted,
-              background: isSelected
-                ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
-                : "color-mix(in srgb, var(--color-fg) 4%, transparent)",
-              border: `1px solid ${isSelected ? COLORS.accentBorder : COLORS.borderMuted}`,
-              borderRadius: RADII.sm,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              ...style,
-            }}
-          >
-            <SocketIcon name={undefined} size={11} />
-            {contribution.payload.label}
-            {typeof contribution.payload.count === "number" ? (
-              <span style={{ color: COLORS.textDim }}>{contribution.payload.count}</span>
-            ) : null}
-          </button>
+          <SocketBoundary key={contributionKey(contribution)}>
+            <button
+              type="button"
+              data-tour={`plugin:${surface}.filter-chip`}
+              aria-pressed={isSelected}
+              onClick={() => onToggle(contribution.payload.filterKey)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                height: 24,
+                padding: "0 8px",
+                fontSize: 11,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
+                color: isSelected ? COLORS.accent : COLORS.textMuted,
+                background: isSelected
+                  ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
+                  : "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                border: `1px solid ${isSelected ? COLORS.accentBorder : COLORS.borderMuted}`,
+                borderRadius: RADII.sm,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                ...style,
+              }}
+            >
+              <SocketIcon name={undefined} size={11} />
+              {contribution.payload.label}
+              {typeof contribution.payload.count === "number" ? (
+                <span style={{ color: COLORS.textDim }}>{contribution.payload.count}</span>
+              ) : null}
+            </button>
+          </SocketBoundary>
         );
       })}
     </>

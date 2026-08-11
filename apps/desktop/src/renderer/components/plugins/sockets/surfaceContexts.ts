@@ -11,12 +11,10 @@
 
 import type {
   PluginAutomationContext,
-  PluginFileContext,
   PluginLaneContext,
   PluginPrContext,
   PluginSessionContext,
 } from "../../../../shared/plugins/context";
-import { pluginFileExtension } from "../../../../shared/plugins/context";
 
 /** `refs/heads/x` → `x`. Remote prefixes are left alone: they are a different ref. */
 function branchName(ref: string | null | undefined): string | null {
@@ -94,18 +92,5 @@ export function pluginAutomationContext(rule: {
     // showing a blank name for the same row would look like a plugin bug.
     name: rule.name?.trim() || "Untitled automation",
     enabled: rule.enabled !== false,
-  };
-}
-
-export function pluginFileContext(
-  path: string,
-  options: { workspaceId?: string | null; size?: number | null } = {},
-): PluginFileContext {
-  return {
-    kind: "file",
-    path,
-    size: options.size ?? null,
-    extension: pluginFileExtension(path),
-    workspaceId: options.workspaceId ?? null,
   };
 }

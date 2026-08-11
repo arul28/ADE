@@ -716,17 +716,19 @@ import type {
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
 import type {
-  InstalledPlugin,
-  MarketplaceIndexPayload,
-  PluginChangeEvent,
-  PluginCollectionRow,
-  PluginInstallRequest,
-  PluginInstallResult,
+  PluginClientInstalled as InstalledPlugin,
+  PluginClientMarketplaceIndex as MarketplaceIndexPayload,
+  PluginClientChangeEvent as PluginChangeEvent,
+  PluginClientCollectionRow as PluginCollectionRow,
+  PluginClientInstallRequest as PluginInstallRequest,
+  PluginClientInstallResult as PluginInstallResult,
+  PluginClientPresenceRow as PluginPresenceRow,
+  PluginContributionRecord,
+  PluginLogEntry,
   PluginPanelRecord,
-  PluginPresenceRow,
   PluginSourceInspection,
-  PluginUsageRow,
-} from "../renderer/lib/pluginRuntimeBridge";
+  PluginClientUsageRow as PluginUsageRow,
+} from "../shared/plugins/sdk";
 
 export {};
 
@@ -2160,9 +2162,10 @@ declare global {
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
       /**
-       * Shaped by type-only imports from `renderer/lib/pluginRuntimeBridge`, so
-       * drift between what preload publishes and what the UI calls is a compile
-       * error rather than a runtime empty state. One name, no alias.
+       * Shaped by type-only imports from `shared/plugins/sdk`, and the preload's
+       * own `pluginBridge.ts` is written `satisfies` this type — so drift
+       * between what preload publishes and what the UI calls is a compile error
+       * rather than a runtime empty state. One name, no alias.
        *
        * A member with no action behind it is absent rather than stubbed: the
        * bridge reads a missing member as "this host cannot do it", and a stub
@@ -2209,8 +2212,24 @@ declare global {
         marketplaceIndex: (args?: { refresh?: boolean }) => Promise<MarketplaceIndexPayload | null>;
         presence: () => Promise<PluginPresenceRow[]>;
         getReadme: (args: { pluginId: string }) => Promise<string | null>;
+        /** Raw manifest object; the renderer parses it. */
+        getManifest: (args: { pluginId: string }) => Promise<unknown | null>;
+        /** Recent lines from the plugin's child-process log ring. */
+        openLogs: (args: { pluginId: string }) => Promise<PluginLogEntry[]>;
+        /** The dynamic half of the socket taxonomy — per-entity contributions. */
+        listContributions: (args: {
+          surface: string;
+          entityKind?: string;
+          entityIds?: string[];
+        }) => Promise<PluginContributionRecord[]>;
         inspectSource: (args: { source: string }) => Promise<PluginSourceInspection | null>;
         usageSummary: (args?: { pluginId?: string }) => Promise<PluginUsageRow[]>;
+        /**
+         * Whether this host can act on a machine other than this one. A plain
+         * value, not a shape probe: `install` and `presence` are both present
+         * here and both refuse a `machineKey`.
+         */
+        remoteInstall: boolean;
         onChanged: (cb: (event: PluginChangeEvent) => void) => () => void;
       };
       pty: {

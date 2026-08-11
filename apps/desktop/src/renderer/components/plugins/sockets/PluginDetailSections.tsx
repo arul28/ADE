@@ -6,6 +6,7 @@ import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { PluginPanelHost } from "../PluginPanelHost";
 import { contributionKey } from "./contributionModel";
 import { useSurfaceContributions } from "./useSurfaceContributions";
+import { SocketBoundary } from "./SocketBoundary";
 
 /**
  * Contributed detail sections — a plugin's vocabulary panel, rendered inside a
@@ -39,31 +40,21 @@ export function PluginDetailSections({
       {contributions.map((contribution) => {
         const title = contribution.payload.title;
         return (
-          <section
-            key={contributionKey(contribution)}
-            style={{ display: "flex", flexDirection: "column", gap: 8 }}
-          >
-            {showTitles && title ? (
-              <header style={{ ...SECTION_LABEL_STYLE, color: COLORS.textMuted }}>{title}</header>
-            ) : null}
-            <PluginPanelHost
-              pluginId={contribution.pluginId}
-              panelId={contribution.payload.panelId}
-              active={active}
-              surfaceContext={context}
-            />
-          </section>
+          <SocketBoundary key={contributionKey(contribution)}>
+            <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {showTitles && title ? (
+                <header style={{ ...SECTION_LABEL_STYLE, color: COLORS.textMuted }}>{title}</header>
+              ) : null}
+              <PluginPanelHost
+                pluginId={contribution.pluginId}
+                panelId={contribution.payload.panelId}
+                active={active}
+                surfaceContext={context}
+              />
+            </section>
+          </SocketBoundary>
         );
       })}
     </div>
   );
-}
-
-/** Whether any plugin contributes a detail section here — for availability gates. */
-export function usePluginDetailSectionCount(
-  surface: PluginSurfaceId,
-  context: PluginSurfaceContext,
-  active = true,
-): number {
-  return useSurfaceContributions(surface, "detail-section", { active, context }).length;
 }

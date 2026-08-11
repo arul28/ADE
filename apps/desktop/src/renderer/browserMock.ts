@@ -5568,6 +5568,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       uninstall: resolvedArg(undefined),
       setEnabled: resolvedArg(undefined),
+      // Stated rather than inferred, exactly as the real preload states it: the
+      // mock installs nowhere, least of all on another machine.
+      remoteInstall: false,
       getConfig: async () => ({}),
       setConfig: resolvedArg(undefined),
       setContributionEnabled: resolvedArg(undefined),

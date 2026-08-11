@@ -24,6 +24,9 @@
  * written by the machine that owns the data.
  */
 
+import { bounded, finite, isRecord, oneOf } from "./parse";
+import { normalizeVocabTone, type VocabTone } from "./vocabulary";
+
 export const PLUGIN_SOCKET_KINDS = [
   "toolbar-action",
   "row-badge",
@@ -46,8 +49,58 @@ export const PLUGIN_ENTITY_KINDS = ["lane", "pr", "session", "file", "automation
 
 export type PluginEntityKind = (typeof PLUGIN_ENTITY_KINDS)[number];
 
-/** Matches `AdeCardTone`: no red. Failure is amber. See `../adeCard.ts`. */
-export type PluginBadgeTone = "neutral" | "accent" | "success" | "warning";
+/** Narrow an untrusted string to a socket kind. Lives here, beside the list. */
+export function isPluginSocketKind(value: unknown): value is PluginSocketKind {
+  return oneOf(value, PLUGIN_SOCKET_KINDS) !== null;
+}
+
+/** Narrow an untrusted string to a core surface. Lives here, beside the list. */
+export function isPluginSurfaceId(value: unknown): value is PluginSurfaceId {
+  return oneOf(value, PLUGIN_SURFACE_IDS) !== null;
+}
+
+/**
+ * What each socket kind needs before it can render anything.
+ *
+ * Three layers used to encode this separately and disagree about it: the
+ * manifest parser required `panelId`/`actionId` but not `label`, the
+ * manifest→payload mapping assumed whatever the manifest happened to carry, and
+ * the payload validator dropped the result. A manifest declaring a badge with no
+ * label therefore parsed clean, installed clean, and contributed nothing — with
+ * nothing anywhere telling the author why.
+ *
+ * `manifest` names fields on a `sockets[]` entry; `payload` names fields on the
+ * per-kind payload. They differ (a badge's manifest `label` becomes the
+ * payload's `text`), which is exactly why one table has to state both.
+ */
+export type PluginSocketRequirementField = "label" | "actionId" | "panelId" | "extensions";
+
+export type PluginSocketRequirement = {
+  manifest: readonly PluginSocketRequirementField[];
+  payload: readonly string[];
+};
+
+export const PLUGIN_SOCKET_REQUIREMENTS: Record<PluginSocketKind, PluginSocketRequirement> = {
+  "toolbar-action": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
+  "row-badge": { manifest: ["label"], payload: ["text"] },
+  "row-menu-item": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
+  "detail-section": { manifest: ["panelId"], payload: ["panelId"] },
+  "empty-state": { manifest: ["label"], payload: ["title"] },
+  // `filterKey` falls back to the socket id, so the manifest need not carry it.
+  "filter-chip": { manifest: ["label"], payload: ["label", "filterKey"] },
+  "file-viewer": { manifest: ["panelId", "extensions"], payload: ["panelId", "extensions"] },
+};
+
+/**
+ * Matches `AdeCardTone`: no red. Failure is amber. See `../adeCard.ts`.
+ *
+ * The SAME type the panel vocabulary uses, and folded by the same function.
+ * They were separate, with separate normalizers, and they disagreed: a payload
+ * saying `"info"` or `"Warning"` rendered correctly inside a panel and fell
+ * through to neutral as a badge, so one plugin's amber warning was a grey label
+ * two pixels away from itself.
+ */
+export type PluginBadgeTone = VocabTone;
 
 /**
  * Visible badges per row before the rest collapse into a "+N" popover. Two is
@@ -129,24 +182,6 @@ export type PluginEntityContribution = PluginContribution & {
   updatedAt: string;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function text(value: unknown, max = 120): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
-}
-
-function normalizeTone(value: unknown): PluginBadgeTone {
-  // Mirrors `normalizeAdeCardTone`: any red-ish tone a plugin invents folds to
-  // warning so the house no-danger rule cannot be bypassed by a payload.
-  if (value === "accent" || value === "success" || value === "warning") return value;
-  if (value === "danger" || value === "error" || value === "critical") return "warning";
-  return "neutral";
-}
-
 /**
  * Validate a payload against its socket kind.
  *
@@ -162,72 +197,70 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
   const result = ((): PluginContributionPayloadByKind[PluginSocketKind] | null => {
     switch (socket) {
       case "toolbar-action": {
-        const label = text(raw.label, 40);
-        const actionId = text(raw.actionId, 64);
+        const label = bounded(raw.label, 40);
+        const actionId = bounded(raw.actionId, 64);
         if (!label || !actionId) return null;
         return {
           label,
           actionId,
-          ...(text(raw.icon, 40) ? { icon: text(raw.icon, 40)! } : {}),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
           ...(raw.disabled === true ? { disabled: true } : {}),
         };
       }
       case "row-badge": {
-        const badgeText = text(raw.text, 32);
+        const badgeText = bounded(raw.text, 32);
         if (!badgeText) return null;
         return {
           text: badgeText,
-          tone: normalizeTone(raw.tone),
-          ...(text(raw.icon, 40) ? { icon: text(raw.icon, 40)! } : {}),
-          ...(text(raw.tooltip, 200) ? { tooltip: text(raw.tooltip, 200)! } : {}),
+          tone: normalizeVocabTone(raw.tone),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.tooltip, 200) ? { tooltip: bounded(raw.tooltip, 200)! } : {}),
         };
       }
       case "row-menu-item": {
-        const label = text(raw.label, 60);
-        const actionId = text(raw.actionId, 64);
+        const label = bounded(raw.label, 60);
+        const actionId = bounded(raw.actionId, 64);
         if (!label || !actionId) return null;
         return {
           label,
           actionId,
-          ...(text(raw.icon, 40) ? { icon: text(raw.icon, 40)! } : {}),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
           ...(raw.danger === true ? { danger: true } : {}),
         };
       }
       case "detail-section": {
-        const panelId = text(raw.panelId, 64);
+        const panelId = bounded(raw.panelId, 64);
         if (!panelId) return null;
         return {
           panelId,
-          ...(text(raw.title, 60) ? { title: text(raw.title, 60)! } : {}),
+          ...(bounded(raw.title, 60) ? { title: bounded(raw.title, 60)! } : {}),
         };
       }
       case "empty-state": {
-        const title = text(raw.title, 80);
+        const title = bounded(raw.title, 80);
         if (!title) return null;
         return {
           title,
-          ...(text(raw.body, 240) ? { body: text(raw.body, 240)! } : {}),
-          ...(text(raw.actionId, 64) ? { actionId: text(raw.actionId, 64)! } : {}),
-          ...(text(raw.actionLabel, 40) ? { actionLabel: text(raw.actionLabel, 40)! } : {}),
+          ...(bounded(raw.body, 240) ? { body: bounded(raw.body, 240)! } : {}),
+          ...(bounded(raw.actionId, 64) ? { actionId: bounded(raw.actionId, 64)! } : {}),
+          ...(bounded(raw.actionLabel, 40) ? { actionLabel: bounded(raw.actionLabel, 40)! } : {}),
         };
       }
       case "filter-chip": {
-        const label = text(raw.label, 40);
-        const filterKey = text(raw.filterKey, 64);
+        const label = bounded(raw.label, 40);
+        const filterKey = bounded(raw.filterKey, 64);
         if (!label || !filterKey) return null;
         return {
           label,
           filterKey,
-          ...(typeof raw.count === "number" && Number.isFinite(raw.count) && raw.count >= 0
-            ? { count: Math.trunc(raw.count) }
-            : {}),
+          ...((finite(raw.count) ?? -1) >= 0 ? { count: Math.trunc(finite(raw.count)!) } : {}),
         };
       }
       case "file-viewer": {
-        const panelId = text(raw.panelId, 64);
+        const panelId = bounded(raw.panelId, 64);
         const extensions = Array.isArray(raw.extensions)
           ? raw.extensions
-            .map((value) => text(value, 16)?.toLowerCase() ?? null)
+            .map((value) => bounded(value, 16)?.toLowerCase() ?? null)
             .filter((value): value is string => Boolean(value) && value!.startsWith("."))
           : [];
         if (!panelId || extensions.length === 0) return null;
@@ -237,6 +270,19 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
         return null;
     }
   })();
+  if (!result) return null;
+  // The switch above and PLUGIN_SOCKET_REQUIREMENTS say the same thing, and the
+  // whole point of the table is that the other two layers can trust it. This
+  // is where the two are held to each other: a payload that satisfied the
+  // switch but is missing a field the table advertises means the table has
+  // drifted, and rendering it would make the manifest parser's warnings lie.
+  const required = PLUGIN_SOCKET_REQUIREMENTS[socket as PluginSocketKind].payload;
+  const record = result as Record<string, unknown>;
+  for (const field of required) {
+    const value = record[field];
+    const present = Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== "";
+    if (!present) return null;
+  }
   return result as PluginContributionPayloadByKind[K] | null;
 }
 

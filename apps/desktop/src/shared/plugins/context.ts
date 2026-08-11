@@ -16,13 +16,12 @@
  *    the same object from their own local models, so a plugin author reads one
  *    definition and a contribution behaves identically everywhere.
  *
- * Fields are optional-tolerant on read ({@link parsePluginSurfaceContext}
- * accepts a partial object and fills what it can) because contexts cross a
- * version boundary: a newer client may send fields this build has never heard
- * of, and an older one may omit fields this build would like.
+ * Fields are optional-tolerant by construction, because contexts cross a version
+ * boundary: a newer client may send fields this build has never heard of, and an
+ * older one may omit fields this build would like.
  */
 
-import { PLUGIN_SURFACE_IDS, type PluginEntityKind, type PluginSurfaceId } from "./sockets";
+import type { PluginEntityKind, PluginSurfaceId } from "./sockets";
 
 export type PluginPrContext = {
   kind: "pr";
@@ -86,106 +85,12 @@ export type PluginSurfaceContext =
   | PluginAutomationContext
   | PluginSurfaceOnlyContext;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function prState(value: unknown): PluginPrContext["state"] {
-  return value === "open" || value === "closed" || value === "merged" || value === "draft" ? value : "unknown";
-}
-
-function ciStatus(value: unknown): PluginPrContext["ciStatus"] {
-  return value === "passing" || value === "failing" || value === "pending" || value === "none" ? value : "unknown";
-}
-
 /** Lowercase extension including the dot, derived from a path. */
 export function pluginFileExtension(filePath: string): string | null {
   const base = filePath.split(/[\\/]/).pop() ?? "";
   const dot = base.lastIndexOf(".");
   if (dot <= 0 || dot === base.length - 1) return null;
   return base.slice(dot).toLowerCase();
-}
-
-/**
- * Narrow an untrusted context object arriving from a client or a plugin call.
- * Returns `null` only when `kind` itself is unrecognized — a context missing
- * optional fields still parses, because refusing it would blank a socket over
- * version skew.
- */
-export function parsePluginSurfaceContext(raw: unknown): PluginSurfaceContext | null {
-  if (!isRecord(raw)) return null;
-  switch (raw.kind) {
-    case "pr": {
-      const number = num(raw.number);
-      if (number === null) return null;
-      return {
-        kind: "pr",
-        number: Math.trunc(number),
-        title: str(raw.title) ?? "",
-        branch: str(raw.branch),
-        state: prState(raw.state),
-        ciStatus: ciStatus(raw.ciStatus),
-      };
-    }
-    case "lane": {
-      const id = str(raw.id);
-      if (!id) return null;
-      return {
-        kind: "lane",
-        id,
-        name: str(raw.name) ?? id,
-        branch: str(raw.branch),
-        machineKey: str(raw.machineKey),
-        dirty: raw.dirty === true,
-      };
-    }
-    case "session": {
-      const id = str(raw.id);
-      if (!id) return null;
-      return {
-        kind: "session",
-        id,
-        title: str(raw.title) ?? "",
-        provider: str(raw.provider),
-        status: str(raw.status),
-      };
-    }
-    case "file": {
-      const filePath = str(raw.path);
-      if (!filePath) return null;
-      return {
-        kind: "file",
-        path: filePath,
-        size: num(raw.size),
-        extension: str(raw.extension)?.toLowerCase() ?? pluginFileExtension(filePath),
-        workspaceId: str(raw.workspaceId),
-      };
-    }
-    case "automation": {
-      const automationId = str(raw.id);
-      if (!automationId) return null;
-      return {
-        kind: "automation",
-        id: automationId,
-        name: str(raw.name) ?? automationId,
-        enabled: raw.enabled !== false,
-      };
-    }
-    case "surface": {
-      const surface = PLUGIN_SURFACE_IDS.find((id) => id === raw.surface);
-      return surface ? { kind: "surface", surface } : null;
-    }
-    default:
-      return null;
-  }
 }
 
 /**

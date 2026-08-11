@@ -9,6 +9,7 @@ import type {
   PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
 import {
+  clearPluginManifestCache,
   invokePluginSocketAction,
   pluginSocketsAvailable,
   readPluginSocketSources,
@@ -19,6 +20,7 @@ import {
 import {
   buildContributionSet,
   pluginChangeAffects,
+  pluginContextMemoKey,
   pluginViewerRegistrations,
   selectContributions,
   SURFACE_ENTITY_KIND,
@@ -119,6 +121,10 @@ class SourcesStore extends Store<SourcesSnapshot> {
     if (this.unsubscribe) return;
     this.unsubscribe = subscribeToPluginChanges((event) => {
       if (!pluginChangeAffects("sources", event.kind)) return;
+      // `status` is child-process health, which moves several times per plugin
+      // start and cannot change a manifest. Anything else can, including a
+      // kind this build has not learned about yet.
+      if (event.kind !== "status") clearPluginManifestCache();
       this.stale = true;
       // Deliberately does NOT refetch here. A visible surface re-runs
       // `ensureLoaded` on its next render; a hidden one picks it up on reveal.
@@ -244,29 +250,12 @@ export function useSurfaceContributions<K extends PluginSocketKind>(
   const active = options.active ?? true;
   const set = usePluginSurfaceContributions(surface, active);
   const context = options.context ?? null;
-  // Contexts are rebuilt from row data on every render, so the memo keys on the
-  // entity identity rather than the object.
-  const contextKey = context ? `${context.kind}:${entityIdOf(context)}` : "";
+  const contextKey = pluginContextMemoKey(context);
   return React.useMemo(
     () => selectContributions(set, socket, context),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- contextKey stands in for `context`
     [set, socket, contextKey],
   );
-}
-
-function entityIdOf(context: PluginSurfaceContext): string {
-  switch (context.kind) {
-    case "pr":
-      return String(context.number);
-    case "lane":
-    case "session":
-    case "automation":
-      return context.id;
-    case "file":
-      return context.path;
-    case "surface":
-      return context.surface;
-  }
 }
 
 /** File-viewer registrations from every installed plugin. */
@@ -305,10 +294,4 @@ export function usePluginSocketInvoke(): (
       });
     });
   }, []);
-}
-
-/** Test seam: drops every cached read so a suite starts from a cold host. */
-export function resetPluginSocketCachesForTests(): void {
-  rowsStores.clear();
-  derivedSets.clear();
 }

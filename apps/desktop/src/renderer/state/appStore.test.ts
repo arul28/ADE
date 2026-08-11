@@ -2183,3 +2183,27 @@ describe("appStore", () => {
     });
   });
 });
+
+describe("normalizePluginViewState", () => {
+  it("keeps the plugins you used most recently when the map is over its cap", async () => {
+    const { normalizePluginViewState } = await import("./appStore");
+    // A newly opened panel is APPENDED, so trimming from the front kept the
+    // oldest entries — the ones most likely to be uninstalled — and dropped the
+    // panel that was just opened.
+    const lastPanelByPlugin: Record<string, string> = {};
+    for (let index = 0; index < 100; index += 1) lastPanelByPlugin[`plugin-${index}`] = "main";
+
+    const kept = normalizePluginViewState({ version: 1, lastPanelByPlugin }).lastPanelByPlugin;
+
+    expect(Object.keys(kept)).toHaveLength(64);
+    expect(kept["plugin-99"]).toBe("main");
+    expect(kept["plugin-0"]).toBeUndefined();
+  });
+
+  it("drops anything the shape does not name", async () => {
+    const { normalizePluginViewState } = await import("./appStore");
+    expect(normalizePluginViewState(null)).toEqual({ version: 1, lastPanelByPlugin: {} });
+    expect(normalizePluginViewState({ lastPanelByPlugin: { a: 7, "": "x", b: "panel" } }))
+      .toEqual({ version: 1, lastPanelByPlugin: { b: "panel" } });
+  });
+});

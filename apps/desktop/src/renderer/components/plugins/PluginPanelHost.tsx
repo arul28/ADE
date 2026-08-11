@@ -2,7 +2,7 @@ import React from "react";
 
 import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
 import { PluginFallbackCard, PluginPanelView } from "./VocabularyRenderer";
-import { bindingKey, type VocabActionArgs } from "./vocabularyComponents";
+import { type VocabActionArgs } from "./vocabularyComponents";
 import {
   invokePluginAction,
   readPluginCollection,
@@ -13,10 +13,9 @@ import {
 } from "../../lib/pluginRuntimeBridge";
 import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
-  collectVocabBindings,
-  parsePluginPanel,
+  bindingKey,
+  distinctBindings,
   type VocabAction,
-  type VocabBinding,
 } from "../../../shared/plugins/vocabulary";
 
 /**
@@ -54,23 +53,6 @@ const INITIAL_STATE: PanelState = {
   rows: EMPTY_ROWS,
   error: null,
 };
-
-/** Collections a schema reads, de-duplicated so one fetch serves every node. */
-function distinctBindings(schema: unknown): VocabBinding[] {
-  const parsed = parsePluginPanel(schema);
-  if (!parsed.ok) return [];
-  const seen = new Map<string, VocabBinding>();
-  for (const binding of collectVocabBindings(parsed.panel.body)) {
-    const key = bindingKey(binding);
-    const existing = seen.get(key);
-    // Two nodes may bind the same collection with different limits; fetch the
-    // larger so neither is starved.
-    if (!existing || (binding.limit ?? Infinity) > (existing.limit ?? Infinity)) {
-      seen.set(key, binding);
-    }
-  }
-  return [...seen.values()];
-}
 
 export function PluginPanelHost({
   pluginId,

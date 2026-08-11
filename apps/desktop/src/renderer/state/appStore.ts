@@ -829,9 +829,11 @@ export function normalizePluginViewState(value: unknown): PluginViewState {
   const record = value as Partial<PluginViewState>;
   const lastPanelByPlugin: Record<string, string> = {};
   if (record.lastPanelByPlugin && typeof record.lastPanelByPlugin === "object") {
+    // The LAST entries, not the first. A new plugin's entry is appended, so
+    // taking the head kept the oldest sixty-four — the ones most likely to be
+    // uninstalled — and threw away the panel you just opened.
     for (const [pluginId, panelId] of Object.entries(record.lastPanelByPlugin).slice(
-      0,
-      PLUGIN_VIEW_STATE_MAX_ENTRIES,
+      -PLUGIN_VIEW_STATE_MAX_ENTRIES,
     )) {
       if (typeof pluginId === "string" && typeof panelId === "string" && pluginId && panelId) {
         lastPanelByPlugin[pluginId] = panelId;

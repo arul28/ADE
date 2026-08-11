@@ -6,6 +6,7 @@ import {
   deriveMachineCoverage,
   deriveSurfaceFacets,
   describePluginAdds,
+  describePluginSource,
   installStateFor,
   listingFromInstalled,
   marketplaceRouteFromPath,
@@ -254,8 +255,8 @@ describe("describePluginAdds", () => {
       entry: "index.js",
       surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "main" }],
       sockets: [
-        { socket: "row-badge", surface: "prs", id: "a" },
-        { socket: "row-badge", surface: "prs", id: "b" },
+        { socket: "row-badge", surface: "prs", id: "a", label: "Risk" },
+        { socket: "row-badge", surface: "prs", id: "b", label: "Size" },
       ],
       cli: ["show"],
       skills: ["skills/x"],
@@ -409,5 +410,40 @@ describe("listingFromInstalled", () => {
 
     expect(entry.isTheme).toBe(true);
     expect(entry.themeTokens).toEqual({ dark: { "--color-accent": "#fff" } });
+  });
+});
+
+describe("marketplaceRouteFromPath", () => {
+  it("falls back to the gallery for a link it cannot decode", () => {
+    // `decodeURIComponent` throws on a malformed escape, and the route parser
+    // runs during render — an uncaught throw here takes the page, not the link.
+    expect(marketplaceRouteFromPath("/marketplace/%zz")).toEqual({ pluginId: null });
+    expect(marketplaceRouteFromPath("/marketplace/%E0%A4%A")).toEqual({ pluginId: null });
+    expect(marketplaceRouteFromPath("/marketplace/lane-graph")).toEqual({ pluginId: "lane-graph" });
+    expect(marketplaceRouteFromPath("/marketplace")).toEqual({ pluginId: null });
+  });
+});
+
+describe("describePluginSource", () => {
+  it("offers a link only for a source a browser can actually open", () => {
+    expect(describePluginSource("https://github.com/acme/lane-graph.git")).toEqual({
+      text: "github.com/acme/lane-graph",
+      url: "https://github.com/acme/lane-graph.git",
+    });
+    // An SSH remote and a local folder are real sources with no page behind
+    // them; a "View source" button on either would go nowhere.
+    expect(describePluginSource("git@github.com:acme/lane-graph.git")).toEqual({
+      text: "github.com/acme/lane-graph",
+      url: null,
+    });
+    expect(describePluginSource("/Users/sam/code/lane-graph")).toEqual({
+      text: "…/code/lane-graph",
+      url: null,
+    });
+    expect(describePluginSource("C:\\Users\\sam\\lane-graph")).toEqual({
+      text: "…/sam/lane-graph",
+      url: null,
+    });
+    expect(describePluginSource("   ")).toBeNull();
   });
 });

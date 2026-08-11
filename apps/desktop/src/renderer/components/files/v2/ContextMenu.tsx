@@ -4,6 +4,8 @@ import { useClampedFixedPosition } from "../../../hooks/useClampedFixedPosition"
 
 export type ContextMenuItem =
   | { type: "separator" }
+  /** A section heading. Not selectable — it says who the rows below belong to. */
+  | { type: "header"; label: string }
   | {
       type: "item";
       label: string;
@@ -16,11 +18,30 @@ export type ContextMenuItem =
 
 const ROW_H = 28;
 
+/**
+ * Drop separators that fence nothing: leading, trailing, or doubled.
+ *
+ * These menus are assembled from optional sections — a plugin section that
+ * turned out to be the whole menu, a section whose rows were all unavailable —
+ * and every caller would otherwise have to know what came before it to decide
+ * whether its own rule was earned.
+ */
+function withoutStraySeparators(items: ContextMenuItem[]): ContextMenuItem[] {
+  const kept: ContextMenuItem[] = [];
+  for (const item of items) {
+    const previous = kept[kept.length - 1];
+    if (item.type === "separator" && (!previous || previous.type === "separator")) continue;
+    kept.push(item);
+  }
+  while (kept[kept.length - 1]?.type === "separator") kept.pop();
+  return kept;
+}
+
 /** A lightweight right-click menu positioned at (x, y), clamped to the viewport. */
 export function ContextMenu({
   x,
   y,
-  items,
+  items: rawItems,
   onClose,
 }: {
   x: number;
@@ -28,7 +49,14 @@ export function ContextMenu({
   items: ContextMenuItem[];
   onClose: () => void;
 }) {
-  const itemsKey = items.map((item) => (item.type === "separator" ? "|" : `${item.label}:${item.disabled ? "0" : "1"}`)).join("\0");
+  const items = withoutStraySeparators(rawItems);
+  const itemsKey = items
+    .map((item) => {
+      if (item.type === "separator") return "|";
+      if (item.type === "header") return `#${item.label}`;
+      return `${item.label}:${item.disabled ? "0" : "1"}`;
+    })
+    .join("\0");
   const { ref, position } = useClampedFixedPosition({ x, y }, itemsKey);
 
   useEffect(() => {
@@ -69,6 +97,18 @@ export function ContextMenu({
       {items.map((item, i) => {
         if (item.type === "separator") {
           return <div key={`sep-${i}`} className="my-1 h-px" style={{ background: COLORS.border }} />;
+        }
+        if (item.type === "header") {
+          return (
+            <div
+              key={`header-${i}`}
+              role="presentation"
+              className="px-3 pb-0.5 pt-1.5 text-[9px] font-semibold uppercase tracking-[0.12em]"
+              style={{ color: COLORS.textDim }}
+            >
+              {item.label}
+            </div>
+          );
         }
         return (
           <button

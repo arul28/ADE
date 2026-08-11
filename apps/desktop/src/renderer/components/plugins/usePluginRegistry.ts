@@ -2,7 +2,12 @@ import React from "react";
 
 import { rootAppStoreApi, useRootAppStore } from "../../state/appStore";
 import { subscribeToPluginChanges, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
-import { applyPluginTheme, type PluginThemeDefinition } from "../../lib/pluginTheme";
+import {
+  appliedPluginTheme,
+  applyPluginTheme,
+  isPreviewingPluginTheme,
+  type PluginThemeDefinition,
+} from "../../lib/pluginTheme";
 
 /**
  * Keeps the root store's plugin registry in step with the host, and keeps the
@@ -50,8 +55,27 @@ export function usePluginRegistrySync(): void {
   }, []);
 
   React.useEffect(() => {
-    applyPluginTheme(themeDefinitionFor(plugins, pluginThemeId));
+    const next = themeDefinitionFor(plugins, pluginThemeId);
+    // The registry hands back a fresh array on every refresh, so this effect
+    // re-runs far more often than the applied theme changes. Re-applying an
+    // unchanged theme would be invisible but for one thing: applying ENDS a
+    // running preview, and the Marketplace's preview is deliberately sticky —
+    // it is meant to survive walking off to another tab, which is exactly when
+    // a background poll would have silently reverted it.
+    if (isPreviewingPluginTheme() && sameThemeDefinition(appliedPluginTheme(), next)) return;
+    applyPluginTheme(next);
   }, [plugins, pluginThemeId]);
+}
+
+function sameThemeDefinition(
+  a: PluginThemeDefinition | null,
+  b: PluginThemeDefinition | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.pluginId === b.pluginId
+    && a.displayName === b.displayName
+    && JSON.stringify(a.tokens) === JSON.stringify(b.tokens);
 }
 
 /** The applied theme's definition, or null. Shared by Appearance and the sync hook. */

@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  VOCAB_COMPONENTS_V1,
   VOCAB_LIMITS,
   VOCAB_VERSION,
+  bindingKey,
+  boundRowValues,
+  coerceBoundKeyValueRow,
+  coerceBoundListItem,
+  coerceBoundTableRow,
   collectVocabBindings,
   countVocabNodes,
+  distinctBindings,
   isKnownVocabComponent,
   normalizeVocabTone,
   parsePluginPanel,
@@ -263,5 +270,93 @@ describe("fallback helpers", () => {
   it("appends the deeplink for surfaces that render one line", () => {
     expect(vocabFallbackText(FALLBACK)).toBe("3 lanes, 1 conflict. · ade://lane/abc");
     expect(vocabFallbackText({ title: "T", text: "B" })).toBe("B");
+  });
+});
+
+describe("the component list", () => {
+  it("is derived from the parsers, so a name cannot be published without one", () => {
+    expect(VOCAB_COMPONENTS_V1).toContain("stack");
+    for (const name of VOCAB_COMPONENTS_V1) {
+      expect(isKnownVocabComponent(name), `${name} is published but unparseable`).toBe(true);
+    }
+  });
+
+  it("does not recognize a name that only exists on Object's prototype", () => {
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(isKnownVocabComponent(name), `${name} was treated as a component`).toBe(false);
+      const result = parsePluginPanel(panel([{ component: name, text: "x" }]));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.panel.body[0]).toEqual({ component: "__unknown", name });
+    }
+  });
+});
+
+describe("bindings a host must fetch", () => {
+  it("fetches the larger limit when two nodes read one collection", () => {
+    const bindings = distinctBindings(panel([
+      { component: "list", bind: { collection: "issues", limit: 10 } },
+      { component: "keyValue", bind: { collection: "issues", limit: 100 } },
+      { component: "table", columns: [{ key: "a", label: "A" }], bind: { collection: "issues", limit: 5 } },
+    ]));
+
+    // One fetch, sized for the hungriest reader. Last-wins would have left the
+    // 100-row list showing five rows with nothing on screen saying so.
+    expect(bindings).toEqual([{ collection: "issues", limit: 100 }]);
+  });
+
+  it("keeps a key prefix distinct from the collection name it follows", () => {
+    expect(bindingKey({ collection: "a", keyPrefix: "b:c" }))
+      .not.toBe(bindingKey({ collection: "a:b", keyPrefix: "c" }));
+    expect(distinctBindings(panel([
+      { component: "list", bind: { collection: "issues", keyPrefix: "open:" } },
+      { component: "list", bind: { collection: "issues", keyPrefix: "closed:" } },
+    ]))).toHaveLength(2);
+  });
+
+  it("returns nothing for a schema that will not parse", () => {
+    expect(distinctBindings("{not json")).toEqual([]);
+  });
+});
+
+describe("bound rows", () => {
+  it("reads a numeric cell the same way for every surface", () => {
+    // The divergence this replaced: desktop rendered `42`, the TUI rendered
+    // nothing, from two coercers each documented as mirroring the other.
+    expect(coerceBoundKeyValueRow({ key: "Open", value: 42 })).toEqual({ key: "Open", value: "42" });
+    expect(coerceBoundKeyValueRow({ key: "Passing", value: true })).toEqual({ key: "Passing", value: "Yes" });
+    expect(coerceBoundKeyValueRow({ key: "Note", value: { nested: 1 } })).toEqual({ key: "Note", value: "" });
+    expect(coerceBoundKeyValueRow({ value: "orphan" })).toBeNull();
+  });
+
+  it("keeps a list row's icon and refuses to mint an action from stored data", () => {
+    expect(coerceBoundListItem({
+      title: "  lane-a  ",
+      subtitle: "2 commits",
+      icon: "git-branch",
+      tone: "danger",
+      onPress: { action: "delete-everything" },
+    })).toEqual({
+      title: "lane-a",
+      subtitle: "2 commits",
+      icon: "git-branch",
+      tone: "warning",
+    });
+    expect(coerceBoundListItem({ subtitle: "no title" })).toBeNull();
+  });
+
+  it("shapes a table row to the declared columns and nothing else", () => {
+    const columns = [{ key: "name", label: "Name" }, { key: "n", label: "Count" }];
+    expect(coerceBoundTableRow({ name: "a", n: 2, secret: "x" }, columns))
+      .toEqual({ name: "a", n: "2" });
+    expect(coerceBoundTableRow("not a row", columns)).toBeNull();
+  });
+
+  it("tells a fetch that has not landed apart from a collection with no rows", () => {
+    const bind = { collection: "issues", limit: 2 };
+    expect(boundRowValues(bind, undefined)).toBeNull();
+    expect(boundRowValues(bind, [])).toEqual([]);
+    expect(boundRowValues(bind, [{ value: 1 }, { value: 2 }, { value: 3 }])).toEqual([1, 2]);
+    expect(boundRowValues({ collection: "issues" }, [{ value: 1 }, { value: 2 }])).toEqual([1, 2]);
   });
 });

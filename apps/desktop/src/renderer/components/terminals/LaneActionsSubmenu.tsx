@@ -50,10 +50,13 @@ export function LaneActionsSubmenu({
   }, [lanes]);
   const lane = lanesById.get(laneId) ?? null;
   const actions = useLaneMenuActions({ close: onClose, onManageLane });
+  // `includeExtend` for the same reason the lane divider's own menu carries it:
+  // these are the same lane's actions, and the row that explains how to add more
+  // of them cannot be present in one of the two menus and missing from the other.
   const pluginEntries = usePluginMenuEntries(
     "lanes",
     lane ? pluginLaneContext(lane) : null,
-    { onClose },
+    { onClose, includeExtend: true },
   );
 
   const groups = useMemo(

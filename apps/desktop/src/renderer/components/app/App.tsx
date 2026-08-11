@@ -119,9 +119,12 @@ const pluginTabRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../plugins/PluginTabPage").then((m) => ({ default: m.PluginTabPage }))
 );
 const PluginTabPage = pluginTabRoute.Component;
-const PluginsDevPage = React.lazy(() =>
-  import("../plugins/PluginsDevPage").then((m) => ({ default: m.PluginsDevPage }))
-);
+// The fixture page's route is DEV-only, but an unconditional `React.lazy` still
+// puts its chunk — and the fixture set behind it — in the production bundle.
+// Gating the declaration is what actually drops it.
+const PluginsDevPage = import.meta.env.DEV
+  ? React.lazy(() => import("../plugins/PluginsDevPage").then((m) => ({ default: m.PluginsDevPage })))
+  : () => null;
 import {
   AppStoreProvider,
   createProjectAppStore,

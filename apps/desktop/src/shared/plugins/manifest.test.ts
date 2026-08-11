@@ -22,7 +22,7 @@ function validManifest(overrides: Record<string, unknown> = {}): Record<string, 
     entry: "index.js",
     surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "main" }],
     panels: [{ id: "main", schemaFile: "panels/main.json" }],
-    sockets: [{ socket: "row-badge", surface: "lanes", id: "drift" }],
+    sockets: [{ socket: "row-badge", surface: "lanes", id: "drift", label: "Drift" }],
     collections: { issues: { sync: true }, scratch: {} },
     settings: [{ key: "defaultLane", kind: "select", label: "Default lane", optionsAction: "listLanes" }],
     cli: ["issues", "open"],
@@ -84,12 +84,30 @@ describe("parsePluginManifest", () => {
     expect(isSafePluginRelativePath("panels/../../main.json")).toBe(false);
   });
 
+  // A badge with no label renders nothing. It used to parse clean and then
+  // vanish downstream, which left an author with a manifest ADE said was fine
+  // and a surface that never showed their contribution.
+  it("refuses a socket that could not render, and says which field is missing", () => {
+    const result = parsePluginManifest(validManifest({
+      sockets: [
+        { socket: "row-badge", surface: "lanes", id: "unlabelled" },
+        { socket: "filter-chip", surface: "prs", id: "no-label" },
+        { socket: "row-badge", surface: "lanes", id: "drift", label: "Drift" },
+      ],
+    }));
+
+    expect(result.errors).toEqual([]);
+    expect(result.manifest?.sockets.map((socket) => socket.id)).toEqual(["drift"]);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings.every((warning) => warning.includes("requires label"))).toBe(true);
+  });
+
   // A malformed entry is dropped with a warning, not fatal: one bad socket must
   // not cost the user the other nine contributions.
   it("drops a malformed socket entry and keeps the rest of the manifest", () => {
     const result = parsePluginManifest(validManifest({
       sockets: [
-        { socket: "row-badge", surface: "lanes", id: "drift" },
+        { socket: "row-badge", surface: "lanes", id: "drift", label: "Drift" },
         { socket: "not-a-socket", surface: "lanes", id: "bogus" },
         { socket: "detail-section", surface: "prs", id: "missing-panel" },
       ],

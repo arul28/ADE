@@ -15,32 +15,11 @@ import {
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
-import {
-  PLUGIN_READ_ONLY_DOMAIN_ACTIONS,
-  type PluginCollectionRow as PluginHostCollectionRow,
-  type PluginContributionRecord,
-  type PluginDetail,
-  type PluginLogEntry,
-  type PluginMarketplaceIndex,
-  type PluginPresenceMachineRow,
-  type PluginRuntimeStatus as PluginHostRuntimeStatus,
-  type PluginSourceInspection,
-  type PluginSummary,
-  type PluginUsageSummary,
-} from "../shared/plugins/sdk";
-// The renderer's bridge module owns the shape `window.ade.plugins` must have.
-// Imported (type-only, so nothing crosses the bundle boundary) rather than
-// restated here: a second copy is how the namespace and the UI drifted apart.
-import type {
-  InstalledPlugin,
-  PluginChangeEvent,
-  PluginCollectionRow,
-  PluginInstallRequest,
-  PluginInstallResult,
-  PluginPanelRecord,
-  PluginRuntimeStatus,
-  PluginUsageRow,
-} from "../renderer/lib/pluginRuntimeBridge";
+import { PLUGIN_READ_ONLY_DOMAIN_ACTIONS } from "../shared/plugins/sdk";
+// The whole `window.ade.plugins` namespace lives in its own module, where it is
+// checked against the declared window shape — see the header there.
+import { createPluginBridge, toPluginChangeEvent } from "./pluginBridge";
+import type { PluginClientChangeEvent as PluginChangeEvent } from "../shared/plugins/sdk";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
   createPinnedRuntimeEvents,
@@ -3552,111 +3531,16 @@ const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 // Wired but silent for now: the plugin host lives in the daemon, and nothing on
 // either side publishes plugin change events yet. Subscribers get a working
 // unsubscribe and no deliveries rather than a subscription that cannot exist.
-const pluginChangeEventFanout = createIpcEventFanout<PluginChangeEvent>(
-  IPC.pluginChanged,
-);
-
 /**
  * Plugin-change subscribers, fed from the DAEMON's runtime event stream.
  *
- * The `IPC.pluginChanged` channel above exists for a main-process emitter, and
- * there is none: the plugin host lives in the daemon by design, so every real
- * change arrives as a `plugin_changed` runtime event on the stream this preload
- * already polls. Both paths feed the same subscriber set, so a caller registers
- * once and does not care which side noticed.
+ * That stream is the only source, and the only one there has ever been: the
+ * plugin host lives in the daemon by design (D2), so the Electron main process
+ * has nothing to report. A second `ade.plugin.changed` IPC channel was
+ * registered here for a main-process emitter that was never written, which made
+ * the subscription look like it had two delivery paths and one of them broken.
  */
 const remotePluginChangeCallbacks = new Set<(payload: PluginChangeEvent) => void>();
-
-/** Wire shape of the daemon's event. Kept local: this is a decode, not a model. */
-function toPluginChangeEvent(payload: unknown): PluginChangeEvent | null {
-  if (!payload || typeof payload !== "object") return null;
-  const raw = payload as Record<string, unknown>;
-  if (raw.type !== "plugin_changed") return null;
-  const kind = raw.kind;
-  if (typeof kind !== "string") return null;
-  return {
-    kind: kind as PluginChangeEvent["kind"],
-    ...(typeof raw.pluginId === "string" ? { pluginId: raw.pluginId } : {}),
-    ...(typeof raw.panelId === "string" ? { panelId: raw.panelId } : {}),
-    ...(typeof raw.collection === "string" ? { collection: raw.collection } : {}),
-  };
-}
-
-/**
- * The host reports lifecycle detail the plugin surfaces do not draw: a plugin
- * that never started and one that was stopped are the same dot, and a restart
- * reads as a start. `no-entry` is `none` — that plugin has no child at all.
- */
-function toBridgeRuntimeStatus(
-  status: PluginHostRuntimeStatus,
-): PluginRuntimeStatus {
-  switch (status) {
-    case "running":
-      return "running";
-    case "starting":
-    case "restarting":
-      return "starting";
-    case "crashed":
-      return "crashed";
-    case "no-entry":
-      return "none";
-    case "idle":
-    case "stopped":
-      return "stopped";
-    default:
-      return "none";
-  }
-}
-
-function toInstalledPlugin(summary: PluginSummary): InstalledPlugin {
-  return {
-    pluginId: summary.pluginId,
-    displayName: summary.displayName,
-    version: summary.version,
-    enabled: summary.enabled,
-    icon: summary.icon,
-    accent: summary.accent,
-    status: toBridgeRuntimeStatus(summary.status),
-    tabs: summary.surfaces
-      .filter((surface) => surface.kind === "tab")
-      .map((surface) => ({
-        id: surface.id,
-        title: surface.title,
-        panelId: surface.panelId,
-        icon: surface.icon ?? null,
-        // Which core tab this plugin replaces, when it replaces one. Carried
-        // explicitly rather than inferred: the extraction pilot gates a builtin
-        // tab on it, and inferring the owner from a name would be a guess about
-        // which of two tabs the user sees.
-        ...(surface.builtin ? { builtin: surface.builtin } : {}),
-      })),
-    theme: summary.theme,
-  };
-}
-
-function toPluginUsageRows(summary: PluginUsageSummary): PluginUsageRow[] {
-  return summary.entries.map((entry) => ({
-    pluginId: entry.pluginId,
-    collectionBytes: entry.collectionBytes,
-    collectionBudgetBytes: summary.budgets.collectionBytesPerPlugin,
-    rows: entry.collectionRows,
-    rowBudget: summary.budgets.collectionRowsPerPlugin,
-    // Cumulative, and named so. The host publishes no windowed number, and a
-    // field called `24h` carrying a lifetime total is a lie the UI then repeats.
-    syncBytesTotal: entry.syncBytesOut,
-  }));
-}
-
-/**
- * Installing or changing a plugin on another machine has no action behind it.
- * Dropping the field would act on THIS machine instead — the one failure mode
- * a machine picker must never have.
- */
-function rejectRemoteMachine(machineKey: string | undefined): void {
-  if (machineKey) {
-    throw new Error("Managing plugins on another machine isn’t supported yet.");
-  }
-}
 
 contextBridge.exposeInMainWorld("ade", {
   analytics: {
@@ -7708,192 +7592,17 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
   },
-  // Plugins route strictly: the Electron main process keeps a dormant
-  // AppContext whose services are null, so the silently-falling-back family
-  // would answer a routing failure with a crash or a wrong empty result.
-  //
-  // PLURAL, and typed against `renderer/lib/pluginRuntimeBridge` through
-  // type-only imports: the RPC DOMAIN is singular `plugin`, this renderer
-  // namespace is `plugins`, and the two are different things. One name each,
-  // no alias — the bridge's `plugin ?? plugins` read is compatibility for
-  // older hosts, not licence to publish both.
-  plugins: {
-    list: async (): Promise<InstalledPlugin[]> => {
-      // Disabled plugins are part of the list the UI draws — it renders the
-      // on/off state, so asking only for enabled ones would hide the switch.
-      const args = { includeDisabled: true };
-      const summaries = await callProjectRuntimeActionStrictOr<PluginSummary[]>(
-        "plugin",
-        "list",
-        { args },
-        () => ipcRenderer.invoke(IPC.pluginList, args),
-      );
-      return summaries.map(toInstalledPlugin);
-    },
-    getPanel: async (args: {
-      pluginId: string;
-      panelId: string;
-    }): Promise<PluginPanelRecord | null> =>
-      callProjectRuntimeActionStrictOr("plugin", "getPanel", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginGetPanel, args),
-      ),
-    getCollection: async (args: {
-      pluginId: string;
-      collection: string;
-      keyPrefix?: string;
-      limit?: number;
-    }): Promise<PluginCollectionRow[]> => {
-      const rows = await callProjectRuntimeActionStrictOr<PluginHostCollectionRow[]>(
-        "plugin",
-        "getCollection",
-        { args },
-        () => ipcRenderer.invoke(IPC.pluginGetCollection, args),
-      );
-      return rows.map((row) => ({ key: row.key, value: row.value }));
-    },
-    invoke: async (args: {
-      pluginId: string;
-      action: string;
-      args?: Record<string, unknown>;
-    }): Promise<unknown> =>
-      callProjectRuntimeActionStrictOr("plugin", "invoke", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginInvoke, args),
-      ),
-    restart: async (args: { pluginId: string }): Promise<void> => {
-      await callProjectRuntimeActionStrictOr("plugin", "reload", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginReload, args),
-      );
-    },
-    install: async (request: PluginInstallRequest): Promise<PluginInstallResult> => {
-      rejectRemoteMachine(request.machineKey);
-      const args = { source: request.source };
-      const summary = await callProjectRuntimeActionStrictOr<PluginSummary>(
-        "plugin",
-        "install",
-        { args },
-        () => ipcRenderer.invoke(IPC.pluginInstall, args),
-      );
-      return {
-        pluginId: summary.pluginId,
-        version: summary.version,
-        displayName: summary.displayName,
-      };
-    },
-    uninstall: async (input: { pluginId: string; machineKey?: string }): Promise<void> => {
-      rejectRemoteMachine(input.machineKey);
-      const args = { pluginId: input.pluginId };
-      await callProjectRuntimeActionStrictOr("plugin", "uninstall", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginUninstall, args),
-      );
-    },
-    setEnabled: async (input: {
-      pluginId: string;
-      enabled: boolean;
-      machineKey?: string;
-    }): Promise<void> => {
-      rejectRemoteMachine(input.machineKey);
-      const args = { pluginId: input.pluginId };
-      const action = input.enabled ? "enable" : "disable";
-      const channel = input.enabled ? IPC.pluginEnable : IPC.pluginDisable;
-      await callProjectRuntimeActionStrictOr("plugin", action, { args }, () =>
-        ipcRenderer.invoke(channel, args),
-      );
-    },
-    // Config rides the detail read and the domain's own writer rather than the
-    // bridge's `invoke("config.get"/"config.set")` fallback, which only answers
-    // for a plugin that happens to declare those two handlers itself.
-    getConfig: async (input: {
-      pluginId: string;
-    }): Promise<Record<string, string | number | boolean | null>> => {
-      const args = { pluginId: input.pluginId };
-      const detail = await callProjectRuntimeActionStrictOr<PluginDetail | null>(
-        "plugin",
-        "get",
-        { args },
-        () => ipcRenderer.invoke(IPC.pluginGet, args),
-      );
-      return detail?.config ?? {};
-    },
-    // ONE shape, the host's: `{pluginId, values}` where values is a patch. The
-    // renderer's bridge sends exactly this. An adapter here that read `key`
-    // and `value` instead would not fail — it would post `{undefined: undefined}`
-    // and report success for a setting that was never written.
-    setConfig: async (input: {
-      pluginId: string;
-      values: Record<string, string | number | boolean | null>;
-    }): Promise<void> => {
-      const args = { pluginId: input.pluginId, values: input.values ?? {} };
-      await callProjectRuntimeActionStrictOr("plugin", "setConfig", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginSetConfig, args),
-      );
-    },
-    setContributionEnabled: async (input: {
-      pluginId: string;
-      socketId: string;
-      enabled: boolean;
-    }): Promise<void> => {
-      await callProjectRuntimeActionStrictOr("plugin", "setContributionEnabled", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginSetContributionEnabled, input),
-      );
-    },
-    marketplaceIndex: async (input: { refresh?: boolean } = {}): Promise<PluginMarketplaceIndex | null> => {
-      const args = input.refresh ? { refresh: true } : {};
-      return callProjectRuntimeActionStrictOr("plugin", "marketplaceIndex", { args }, () =>
-        ipcRenderer.invoke(IPC.pluginMarketplaceIndex, args),
-      );
-    },
-    presence: async (): Promise<PluginPresenceMachineRow[]> =>
-      callProjectRuntimeActionStrictOr("plugin", "presence", { args: {} }, () =>
-        ipcRenderer.invoke(IPC.pluginPresence, {}),
-      ),
-    getReadme: async (input: { pluginId: string }): Promise<string | null> =>
-      callProjectRuntimeActionStrictOr("plugin", "getReadme", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginGetReadme, input),
-      ),
-    getManifest: async (input: { pluginId: string }): Promise<unknown | null> =>
-      callProjectRuntimeActionStrictOr("plugin", "getManifest", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginGetManifest, input),
-      ),
-    openLogs: async (input: { pluginId: string }): Promise<PluginLogEntry[]> =>
-      callProjectRuntimeActionStrictOr("plugin", "openLogs", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginOpenLogs, input),
-      ),
-    // The dynamic half of the socket taxonomy. Static manifest sockets say a
-    // plugin CAN badge a lane; these rows say what it says about lane 7 now.
-    listContributions: async (input: {
-      surface: string;
-      entityKind?: string;
-      entityIds?: string[];
-    }): Promise<PluginContributionRecord[]> =>
-      callProjectRuntimeActionStrictOr("plugin", "listContributions", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginListContributions, input),
-      ),
-    inspectSource: async (input: { source: string }): Promise<PluginSourceInspection | null> =>
-      callProjectRuntimeActionStrictOr("plugin", "inspectSource", { args: input }, () =>
-        ipcRenderer.invoke(IPC.pluginInspectSource, input),
-      ),
-    usageSummary: async (input: { pluginId?: string } = {}): Promise<PluginUsageRow[]> => {
-      const args = input.pluginId ? { pluginId: input.pluginId } : {};
-      const summary = await callProjectRuntimeActionStrictOr<PluginUsageSummary>(
-        "plugin",
-        "usageSummary",
-        { args },
-        () => ipcRenderer.invoke(IPC.pluginUsageSummary, args),
-      );
-      return toPluginUsageRows(summary);
-    },
-    onChanged: (cb: (event: PluginChangeEvent) => void): (() => void) => {
-      // Both sources, one registration: the main-process channel (unused today)
-      // and the daemon's runtime event stream, which is where every real change
-      // comes from.
-      const unsubscribeIpc = pluginChangeEventFanout(cb);
+  plugins: createPluginBridge({
+    callStrictOr: (action, args, local) =>
+      callProjectRuntimeActionStrictOr("plugin", action, { args }, local),
+    invoke: (channel, args) => ipcRenderer.invoke(channel, args),
+    subscribeChanges: (cb) => {
       remotePluginChangeCallbacks.add(cb);
       return () => {
         remotePluginChangeCallbacks.delete(cb);
-        unsubscribeIpc();
       };
     },
-  },
+  }),
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {
       if (pin) {

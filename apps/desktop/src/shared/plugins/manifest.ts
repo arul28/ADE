@@ -21,15 +21,20 @@
  *    Anything that would traverse, collide case-insensitively, or need quoting
  *    is refused at parse time rather than defended against at every use site.
  *
- * Version policy: {@link PLUGIN_MANIFEST_VERSION} is the shape of THIS file.
- * `vocabVersion` in the manifest is the panel-schema vocabulary version, which
- * moves independently (see `./vocabulary.ts`).
+ * Version policy: this file IS the manifest shape. `vocabVersion` in the manifest
+ * is the panel-schema vocabulary version, which moves independently (see
+ * `./vocabulary.ts`).
  */
 
-import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
-
-/** Shape version of the manifest contract implemented by this file. */
-export const PLUGIN_MANIFEST_VERSION = 1;
+import {
+  PLUGIN_SOCKET_KINDS,
+  PLUGIN_SOCKET_REQUIREMENTS,
+  PLUGIN_SURFACE_IDS,
+  type PluginSocketKind,
+  type PluginSocketRequirementField,
+  type PluginSurfaceId,
+} from "./sockets";
+import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
 
 /**
  * Plugin ids are lowercase-kebab and short: they become a directory name, a
@@ -52,7 +57,7 @@ const PLUGIN_ACCENT_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PLUGIN_RELATIVE_PATH_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\-/]+$/;
 
 /** Theme token allowlist — see D15. Only design-token namespaces are settable. */
-const PLUGIN_THEME_TOKEN_PREFIXES = [
+export const PLUGIN_THEME_TOKEN_PREFIXES = [
   "--color-",
   "--shell-",
   "--chat-",
@@ -61,6 +66,17 @@ const PLUGIN_THEME_TOKEN_PREFIXES = [
   "--pr-",
   "--gradient-",
 ] as const;
+
+/**
+ * The full shape of a settable token name, not just its namespace.
+ *
+ * A prefix check alone accepts anything after the prefix, and the name is
+ * interpolated into a stylesheet on the left of the colon — so a "name" like
+ * `--color-x: red } html * { display: none } .z{a` closes ADE's own rule and
+ * writes arbitrary CSS, and `--color-x: url(https://…)` reaches the network.
+ * Both halves are required: the namespace prefix AND this shape.
+ */
+export const PLUGIN_THEME_TOKEN_NAME_PATTERN = /^--[a-z0-9-]{1,60}$/;
 
 export type PluginSurfaceKind = "tab" | "pane";
 
@@ -186,14 +202,6 @@ export type PluginManifestParseResult = {
   warnings: string[];
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function trimmedString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
 export function isValidPluginId(value: unknown): value is string {
   return typeof value === "string" && PLUGIN_ID_PATTERN.test(value);
 }
@@ -214,13 +222,27 @@ export function isSafePluginRelativePath(value: unknown): value is string {
 }
 
 export function isAllowedPluginThemeToken(key: string): boolean {
-  return PLUGIN_THEME_TOKEN_PREFIXES.some((prefix) => key.startsWith(prefix));
+  return typeof key === "string"
+    && PLUGIN_THEME_TOKEN_NAME_PATTERN.test(key)
+    && PLUGIN_THEME_TOKEN_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
+
+const PLUGIN_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function parseIdentifier(value: unknown): string | null {
   const text = trimmedString(value);
   if (!text || text.length > 64) return null;
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(text) ? text : null;
+  return PLUGIN_IDENTIFIER_PATTERN.test(text) ? text : null;
+}
+
+/**
+ * The same rule {@link parseIdentifier} applies, for layers that need to judge
+ * a panel or socket id they did not parse. Exported so there is ONE spelling:
+ * a second regex at the IPC boundary disagreed with this one by a length cap,
+ * so an id this parser accepted that layer refused.
+ */
+export function isValidPluginManifestIdentifier(value: unknown): value is string {
+  return parseIdentifier(value) !== null;
 }
 
 /**
@@ -296,9 +318,9 @@ function parsePanels(raw: unknown, ctx: ParseContext): PluginManifestPanel[] {
 function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
   return parseArray(raw, "sockets", ctx, (entry, label) => {
     if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
-    const socket = PLUGIN_SOCKET_KINDS.find((kind) => kind === entry.socket);
+    const socket = oneOf(entry.socket, PLUGIN_SOCKET_KINDS);
     if (!socket) return ctx.drop(`${label}.socket is not a known socket kind`);
-    const surface = PLUGIN_SURFACE_IDS.find((id) => id === entry.surface);
+    const surface = oneOf(entry.surface, PLUGIN_SURFACE_IDS);
     if (!surface) return ctx.drop(`${label}.surface is not a core surface`);
     const id = parseIdentifier(entry.id);
     if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
@@ -316,23 +338,27 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
     if (entry.extensions !== undefined && extensions === null) {
       return ctx.drop(`${label}.extensions must be an array of ".ext" strings`);
     }
+    const declaredLabel = trimmedString(entry.label);
     // A socket that renders nothing and invokes nothing is a manifest typo, not
     // a contribution. Refusing it here is what keeps empty rows off the surface.
-    if ((socket === "detail-section" || socket === "file-viewer") && !panelId) {
-      return ctx.drop(`${label} requires panelId for socket "${socket}"`);
-    }
-    if ((socket === "toolbar-action" || socket === "row-menu-item") && !actionId) {
-      return ctx.drop(`${label} requires actionId for socket "${socket}"`);
-    }
-    if (socket === "file-viewer" && (!extensions || extensions.length === 0)) {
-      return ctx.drop(`${label} requires at least one extension for socket "file-viewer"`);
+    // The requirement table is shared with the payload validator and the
+    // renderer's manifest→payload mapping, so "parses clean but contributes
+    // nothing" — the old failure for a badge with no label — cannot recur.
+    const present: Record<PluginSocketRequirementField, boolean> = {
+      label: declaredLabel !== null,
+      actionId: actionId !== null,
+      panelId: panelId !== null,
+      extensions: Boolean(extensions && extensions.length > 0),
+    };
+    for (const field of PLUGIN_SOCKET_REQUIREMENTS[socket].manifest) {
+      if (!present[field]) return ctx.drop(`${label} requires ${field} for socket "${socket}"`);
     }
     return {
       socket,
       surface,
       id,
       ...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
-      ...(trimmedString(entry.label) ? { label: trimmedString(entry.label)! } : {}),
+      ...(declaredLabel ? { label: declaredLabel } : {}),
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
       ...(panelId ? { panelId } : {}),
       ...(actionId ? { actionId } : {}),

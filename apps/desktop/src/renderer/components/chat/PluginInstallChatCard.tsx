@@ -12,6 +12,7 @@ import {
   ChatCardTitle,
 } from "./chatCardPrimitives";
 import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { describePluginSource } from "../plugins/marketplaceModel";
 import { installPlugin, pluginMarketplaceCapabilities } from "../../lib/pluginRuntimeBridge";
 import { rootAppStoreApi } from "../../state/appStore";
 import type { AdeCardPluginInstall } from "../../../shared/adeCard";
@@ -68,6 +69,7 @@ export function PluginInstallChatCard({
   };
 
   const adds = install.adds ?? [];
+  const source = describePluginSource(install.source);
 
   return (
     <ChatCard skin="inset" tone={phase === "error" ? "warn" : "neutral"}>
@@ -91,7 +93,16 @@ export function PluginInstallChatCard({
         </ul>
       ) : null}
 
-      <div className={cn("ml-[26px] mt-2 text-fg/45", CHAT_CARD_MICRO_TEXT)}>
+      {/* The source, before the button that acts on it. Someone approving an
+          install is agreeing to run code from somewhere, and the card used to
+          name everything about the plugin except where it comes from. */}
+      {source ? (
+        <div className={cn("ml-[26px] mt-2 truncate text-fg/55", CHAT_CARD_MICRO_TEXT)} title={install.source}>
+          From {source.text}
+        </div>
+      ) : null}
+
+      <div className={cn("ml-[26px] mt-1 text-fg/45", CHAT_CARD_MICRO_TEXT)}>
         Runs with the same access as tools you install yourself.
       </div>
 
@@ -110,10 +121,12 @@ export function PluginInstallChatCard({
             {phase === "installing" ? "Installing…" : "Install"}
           </ChatCardButton>
         )}
-        <ChatCardButton onClick={() => openUrlInAdeBrowser(install.source)}>
-          <ArrowSquareOut size={10} weight="regular" aria-hidden />
-          View source
-        </ChatCardButton>
+        {source?.url ? (
+          <ChatCardButton onClick={() => openUrlInAdeBrowser(source.url!)}>
+            <ArrowSquareOut size={10} weight="regular" aria-hidden />
+            View source
+          </ChatCardButton>
+        ) : null}
       </div>
 
       {!capabilities.install ? (

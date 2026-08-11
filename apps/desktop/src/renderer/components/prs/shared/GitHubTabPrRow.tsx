@@ -14,8 +14,8 @@ import { branchNameFromRef } from "../tabs/githubPrBranch";
 import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 import {
   PluginRowBadges,
+  pluginContextMenuItems,
   pluginPrContext,
-  useExtendSurfaceEntry,
   usePluginMenuEntries,
 } from "../../plugins/sockets";
 import { ContextMenu, type ContextMenuItem } from "../../files/v2/ContextMenu";
@@ -353,19 +353,14 @@ export function GitHubTabPrRow({
     }),
     [item.githubPrNumber, item.headBranch, item.isDraft, item.state, item.title],
   );
-  const pluginEntries = usePluginMenuEntries("prs", prContext, { onClose: closeRowMenu });
-  const extendEntry = useExtendSurfaceEntry("prs", { onClose: closeRowMenu });
-  const rowMenuItems = React.useMemo<ContextMenuItem[]>(() => {
-    const entries: ContextMenuItem[] = pluginEntries.map((entry) => ({
-      type: "item",
-      label: entry.label,
-      onClick: entry.onSelect,
-      ...(entry.danger ? { danger: true } : {}),
-    }));
-    if (entries.length > 0) entries.push({ type: "separator" });
-    entries.push({ type: "item", label: extendEntry.label, onClick: extendEntry.onSelect });
-    return entries;
-  }, [extendEntry, pluginEntries]);
+  const pluginEntries = usePluginMenuEntries("prs", prContext, {
+    onClose: closeRowMenu,
+    includeExtend: true,
+  });
+  const rowMenuItems = React.useMemo<ContextMenuItem[]>(
+    () => pluginContextMenuItems(pluginEntries),
+    [pluginEntries],
+  );
 
   return (
     <div
@@ -375,10 +370,24 @@ export function GitHubTabPrRow({
         setRowMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      <button
-        type="button"
+      {/* A div carrying the button role rather than a real `<button>`: the row
+          hosts contributed plugin badges, and one of those can be a popover
+          trigger. A button inside a button is invalid markup, and the browsers
+          that recover from it do so by dropping the inner control — which is
+          exactly the one a keyboard user needs to reach. */}
+      <div
+        role="button"
+        tabIndex={0}
         data-tour="prs.listRow"
         onClick={() => onSelect(item)}
+        onKeyDown={(event) => {
+          // Only the row's own key presses; Enter on a badge's trigger belongs
+          // to that badge and must not also open the PR.
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          onSelect(item);
+        }}
         style={{
           display: "flex",
           width: "100%",
@@ -552,7 +561,7 @@ export function GitHubTabPrRow({
         ) : null}
         <PluginRowBadges surface="prs" context={prContext} />
       </div>
-      </button>
+      </div>
       <button
         type="button"
         aria-label="View on GitHub"

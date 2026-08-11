@@ -590,8 +590,57 @@ export function coverageSummary(rows: readonly MachineCoverageRow[]): {
 export function marketplaceRouteFromPath(pathname: string): { pluginId: string | null } {
   const match = /^\/marketplace\/([^/?#]+)/.exec(pathname);
   if (!match) return { pluginId: null };
-  const pluginId = decodeURIComponent(match[1]!);
+  let pluginId: string;
+  try {
+    pluginId = decodeURIComponent(match[1]!);
+  } catch {
+    // A malformed escape (`%zz`) throws. A bad link should land on the gallery,
+    // not take the route out from under the page that was about to render it.
+    return { pluginId: null };
+  }
   return { pluginId: isValidPluginId(pluginId) ? pluginId : null };
+}
+
+/* ── Source ─────────────────────────────────────────────────────────────── */
+
+export type PluginSourceDisplay = {
+  /** Short enough to sit on one line beside a plugin name. */
+  text: string;
+  /** Non-null only when a browser can actually open it. */
+  url: string | null;
+};
+
+/**
+ * Where a plugin comes from, in a form someone can read before approving it.
+ *
+ * The `url` half is what stops the dead "View source" button: a plugin
+ * installed from a folder on this machine has no page to open, so a control
+ * that says it will open one is a lie. Callers show the text either way and the
+ * link only when there is one.
+ */
+export function describePluginSource(source: string): PluginSourceDisplay | null {
+  const value = source.trim();
+  if (!value) return null;
+
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      const path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+      return { text: path ? `${url.host}/${path}` : url.host, url: value };
+    } catch {
+      return { text: value, url: null };
+    }
+  }
+
+  // `git@host:owner/repo.git` — a real source, but not one a browser opens.
+  const scp = /^[^@\s]+@([^:\s]+):(.+)$/.exec(value);
+  if (scp) return { text: `${scp[1]}/${scp[2]!.replace(/\.git$/i, "")}`, url: null };
+
+  // A local path. Both separators, because a Windows path is the common case
+  // for a plugin someone is building on their own machine.
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  const tail = parts.slice(-2).join("/");
+  return { text: parts.length > 2 ? `…/${tail}` : value, url: null };
 }
 
 /* ── Formatting ─────────────────────────────────────────────────────────── */

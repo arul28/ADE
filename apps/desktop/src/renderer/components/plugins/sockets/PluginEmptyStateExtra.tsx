@@ -5,6 +5,7 @@ import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
+import { SocketBoundary } from "./SocketBoundary";
 import { SocketButton } from "./socketUi";
 
 /**
@@ -43,43 +44,44 @@ export function PluginEmptyStateExtra({
       }}
     >
       {contributions.map((contribution) => (
-        <div
-          key={contributionKey(contribution)}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 6,
-            maxWidth: 280,
-            padding: 12,
-            background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
-            border: `1px solid ${COLORS.borderMuted}`,
-            borderRadius: RADII.md,
-          }}
-        >
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-            {contribution.payload.title}
-          </span>
-          {contribution.payload.body ? (
-            <span
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.5,
-                color: COLORS.textMuted,
-                textAlign: "center",
-              }}
-            >
-              {contribution.payload.body}
+        <SocketBoundary key={contributionKey(contribution)}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 6,
+              maxWidth: 280,
+              padding: 12,
+              background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+              border: `1px solid ${COLORS.borderMuted}`,
+              borderRadius: RADII.md,
+            }}
+          >
+            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
+              {contribution.payload.title}
             </span>
-          ) : null}
-          {contribution.payload.actionId ? (
-            <SocketButton
-              label={contribution.payload.actionLabel ?? contribution.payload.title}
-              onClick={() => invoke(contribution.pluginId, contribution.payload.actionId!, context)}
-            />
-          ) : null}
-        </div>
+            {contribution.payload.body ? (
+              <span
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: COLORS.textMuted,
+                  textAlign: "center",
+                }}
+              >
+                {contribution.payload.body}
+              </span>
+            ) : null}
+            {contribution.payload.actionId ? (
+              <SocketButton
+                label={contribution.payload.actionLabel ?? contribution.payload.title}
+                onClick={() => invoke(contribution.pluginId, contribution.payload.actionId!, context)}
+              />
+            ) : null}
+          </div>
+        </SocketBoundary>
       ))}
     </div>
   );

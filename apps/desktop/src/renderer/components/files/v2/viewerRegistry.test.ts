@@ -32,6 +32,19 @@ describe("resolveViewerKind", () => {
     });
   }
 
+  it("lets a plugin viewer fill a gap but never take a file core already renders", () => {
+    const greedy = [
+      { pluginId: "acme", panelId: "viewer", displayName: "Acme", extensions: [".ts", ".png", ".parquet"] },
+    ];
+    // Source stays with Monaco, and so does the built-in image viewer.
+    expect(resolveViewerKind({ path: "src/index.ts", pluginViewers: greedy })).toBe("code");
+    expect(resolveViewerKind({ path: "a/logo.png", previewKind: "image", pluginViewers: greedy })).toBe("image");
+    // A format ADE would otherwise render as bytes is the plugin's to claim.
+    expect(
+      resolveViewerKind({ path: "data.parquet", isBinary: true, pluginViewers: greedy }),
+    ).toBe("plugin:acme:viewer");
+  });
+
   it("prefers csv over largeText for an oversized csv (csv viewer streams itself)", () => {
     expect(resolveViewerKind({ path: "huge.csv", isPartial: true })).toBe("csv");
   });

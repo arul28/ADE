@@ -23,7 +23,6 @@ import {
   readPluginReadme,
   readPluginUsage,
   restartPlugin,
-  setPluginContributionEnabled,
   setPluginEnabled,
   uninstallPlugin,
   type PluginUsageRow,
@@ -32,11 +31,9 @@ import { pluginIcon } from "./pluginIcons";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
 import { PluginConfigForm } from "./PluginConfigForm";
 import { PluginThemePreview } from "./PluginThemePreview";
+import { ContributionsRail, MachineRail, UsageRail } from "./MarketplaceDetailRail";
 import { useMarketplaceCatalogue, usePluginPresence } from "./useMarketplace";
 import {
-  BudgetMeter,
-  CoverageGlyph,
-  COVERAGE_LABEL,
   InlineNotice,
   ListingStats,
   MarketplaceEmpty,
@@ -45,13 +42,11 @@ import {
   RailSection,
 } from "./marketplaceUi";
 import {
-  SURFACE_LABELS,
   deriveMachineCoverage,
   describePluginAdds,
-  formatBytes,
+  describePluginSource,
   installStateFor,
   type ListingInstallState,
-  type MachineCoverageRow,
   type MarketplaceListing,
 } from "./marketplaceModel";
 
@@ -65,11 +60,9 @@ import {
  * the rail, so a reader who trusts nothing in the prose still has a complete
  * picture.
  *
- * Every rail section is independently degradable. A host that publishes no
- * presence shows one machine; one that cannot read usage omits the meter; one
- * that cannot toggle contributions lists them read-only. None of those turn
- * into an error, because none of them stop the page from answering the question
- * it was opened for.
+ * The reporting sections of that rail live in `MarketplaceDetailRail.tsx`,
+ * together with the account of how each one degrades on a host that cannot
+ * answer for it.
  */
 
 export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
@@ -158,6 +151,9 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   const manifest = localManifest ?? listing.manifest;
   const state = installStateFor(listing, installed);
   const adds = describePluginAdds({ ...listing, manifest });
+  // A plugin installed from a folder on this machine has no page to open, so it
+  // gets a fact row instead of a button that would go nowhere.
+  const source = describePluginSource(listing.source);
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -220,12 +216,16 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
             canRemote={catalogue.capabilities.remoteInstall}
             supportsPresence={catalogue.capabilities.machines}
             loading={presence.loading}
-            onInstallOn={(machineKey) => void run(async () => {
+            onInstallOn={(machineKey, isThisMachine) => void run(async () => {
+              // No `machineKey` for this machine. The host reads its presence as
+              // "install somewhere else" and routes the whole thing down the
+              // remote path, which fails — so the very first install on a
+              // machine, the one people do most, was the one that never worked.
               await installPlugin({
                 source: listing.source,
                 pluginId: listing.pluginId,
                 version: listing.version,
-                machineKey,
+                ...(isThisMachine ? {} : { machineKey }),
               });
             })}
             onSetEnabled={(machineKey, enabled, isThisMachine) => void run(() =>
@@ -240,6 +240,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               {listing.publishedAt ? (
                 <FactRow label="Updated" value={new Date(listing.publishedAt).toLocaleDateString()} />
               ) : null}
+              {source && !source.url ? <FactRow label="From" value={source.text} /> : null}
             </dl>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <ListingStats installs={listing.installs} stars={listing.stars} />
@@ -248,7 +249,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               {listing.changelogUrl ? (
                 <LinkButton label="Changelog" url={listing.changelogUrl} />
               ) : null}
-              {listing.source ? <LinkButton label="Source" url={listing.source} /> : null}
+              {source?.url ? <LinkButton label="Source" url={source.url} /> : null}
             </div>
           </RailSection>
 
@@ -683,274 +684,6 @@ function LinkButton({ label, url }: { label: string; url: string }) {
       {label}
       <ArrowSquareOut size={11} weight="regular" aria-hidden />
     </button>
-  );
-}
-
-/**
- * The machine matrix.
- *
- * The one rail section that exists because ADE is multi-machine: a plugin is
- * installed per machine, so "is it installed" has no single answer and a single
- * Install button would be answering the wrong question. Each row carries the
- * action that machine can take, and a machine that could not be reached says so
- * instead of claiming the plugin is missing there.
- */
-function MachineRail({
-  rows,
-  listing,
-  busy,
-  canRemote,
-  supportsPresence,
-  loading,
-  onInstallOn,
-  onSetEnabled,
-}: {
-  rows: readonly MachineCoverageRow[];
-  listing: MarketplaceListing;
-  busy: boolean;
-  canRemote: boolean;
-  supportsPresence: boolean;
-  loading: boolean;
-  onInstallOn: (machineKey: string) => void;
-  onSetEnabled: (machineKey: string, enabled: boolean, isThisMachine: boolean) => void;
-}) {
-  const present = rows.filter((row) => row.state === "installed" || row.state === "outdated").length;
-  return (
-    <RailSection
-      title={supportsPresence && rows.length > 1 ? `Machines · ${present} of ${rows.length}` : "This machine"}
-    >
-      {loading && supportsPresence ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textDim }}>Checking…</span>
-      ) : (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 1 }}>
-          {rows.map((row) => {
-            const installedThere = row.state === "installed" || row.state === "outdated" || row.state === "disabled";
-            const canAct = row.isThisMachine || canRemote;
-            return (
-              <li
-                key={row.machineKey}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 8px",
-                  borderRadius: RADII.sm,
-                  background: row.isThisMachine ? COLORS.recessedBg : "transparent",
-                }}
-              >
-                <CoverageGlyph state={row.state} />
-                <span style={{ display: "grid", gap: 1, flex: 1, minWidth: 0 }}>
-                  <span
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 11.5,
-                      color: COLORS.textSecondary,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={row.machineName}
-                  >
-                    {row.machineName}
-                    {row.isThisMachine ? " · this machine" : ""}
-                  </span>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>
-                    {COVERAGE_LABEL[row.state]}
-                    {row.version ? ` · ${row.version}` : ""}
-                  </span>
-                </span>
-                {row.state === "unknown" || !canAct ? null : installedThere ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onSetEnabled(row.machineKey, row.state === "disabled", row.isThisMachine)}
-                    style={{
-                      ...outlineButton({ height: 22, padding: "0 8px", fontSize: 10.5 }),
-                      background: "transparent",
-                    }}
-                  >
-                    {row.state === "disabled" ? "Turn on" : "Turn off"}
-                  </button>
-                ) : listing.source ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onInstallOn(row.machineKey)}
-                    style={{
-                      ...outlineButton({ height: 22, padding: "0 8px", fontSize: 10.5 }),
-                      background: "transparent",
-                    }}
-                  >
-                    Install
-                  </button>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {!supportsPresence ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim, lineHeight: 1.5 }}>
-          Other machines report their plugins once they are on a build that publishes them.
-        </span>
-      ) : null}
-    </RailSection>
-  );
-}
-
-/**
- * What the plugin adds, and — when the host allows it — which of those are on.
- *
- * The list is derived from the manifest, so it is the same list the install
- * modal showed. Toggling is per contribution rather than per plugin because the
- * common complaint about an extension is one row badge, not the whole thing.
- */
-function ContributionsRail({
-  manifest,
-  adds,
-  pluginId,
-  disabledContributions,
-  canToggle,
-  onError,
-}: {
-  manifest: PluginManifest | null;
-  adds: string[];
-  pluginId: string;
-  disabledContributions: readonly string[];
-  canToggle: boolean;
-  onError: (message: string) => void;
-}) {
-  const sockets = manifest?.sockets ?? [];
-  if (adds.length === 0 && sockets.length === 0) return null;
-
-  return (
-    <RailSection title="What it adds">
-      {sockets.length > 0 && canToggle ? (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 1 }}>
-          {sockets.map((socket) => (
-            <ContributionToggle
-              key={socket.id}
-              pluginId={pluginId}
-              socketId={socket.id}
-              label={socket.label ?? socket.id}
-              surface={SURFACE_LABELS[socket.surface]}
-              initiallyEnabled={!disabledContributions.includes(socket.id)}
-              onError={onError}
-            />
-          ))}
-        </ul>
-      ) : (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 5 }}>
-          {adds.map((line) => (
-            <li
-              key={line}
-              style={{
-                display: "flex",
-                gap: 7,
-                fontFamily: SANS_FONT,
-                fontSize: 11.5,
-                color: COLORS.textSecondary,
-                lineHeight: 1.5,
-              }}
-            >
-              <span aria-hidden style={{ color: COLORS.textDim }}>—</span>
-              <span>{line}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </RailSection>
-  );
-}
-
-function ContributionToggle({
-  pluginId,
-  socketId,
-  label,
-  surface,
-  initiallyEnabled,
-  onError,
-}: {
-  pluginId: string;
-  socketId: string;
-  label: string;
-  surface: string;
-  initiallyEnabled: boolean;
-  onError: (message: string) => void;
-}) {
-  // Optimistic, and reverted on failure: a toggle whose state waits on a round
-  // trip reads as broken, and one that stays flipped after a rejection lies.
-  const [enabled, setEnabled] = React.useState(initiallyEnabled);
-
-  return (
-    <li style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
-      <span style={{ display: "grid", gap: 1, flex: 1, minWidth: 0 }}>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textSecondary }}>{label}</span>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>in {surface}</span>
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={enabled}
-        aria-label={`${label} in ${surface}`}
-        onClick={() => {
-          const next = !enabled;
-          setEnabled(next);
-          void setPluginContributionEnabled(pluginId, socketId, next).catch((cause: unknown) => {
-            setEnabled(!next);
-            onError(cause instanceof Error ? cause.message : "Could not change that.");
-          });
-        }}
-        style={{
-          position: "relative",
-          width: 30,
-          height: 17,
-          flexShrink: 0,
-          borderRadius: 10,
-          border: "none",
-          background: enabled ? COLORS.accent : COLORS.outlineBorder,
-          cursor: "pointer",
-          padding: 0,
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 2,
-            left: enabled ? 15 : 2,
-            width: 13,
-            height: 13,
-            borderRadius: 8,
-            background: enabled ? "var(--color-bg)" : COLORS.textMuted,
-            transition: "left 140ms ease",
-          }}
-        />
-      </button>
-    </li>
-  );
-}
-
-function UsageRail({ usage }: { usage: PluginUsageRow }) {
-  return (
-    <RailSection title="Storage and sync">
-      <BudgetMeter
-        label="Stored data"
-        used={usage.collectionBytes}
-        budget={usage.collectionBudgetBytes}
-        valueText={`${formatBytes(usage.collectionBytes)} of ${formatBytes(usage.collectionBudgetBytes)}`}
-      />
-      <BudgetMeter
-        label="Rows"
-        used={usage.rows}
-        budget={usage.rowBudget}
-        valueText={`${usage.rows} of ${usage.rowBudget}`}
-      />
-      {usage.syncBytesTotal !== null ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-          {formatBytes(usage.syncBytesTotal)} synced
-        </span>
-      ) : null}
-    </RailSection>
   );
 }
 

@@ -726,4 +726,184 @@ export function encodePluginJsonWithinBudget(value: unknown, budget: string, lim
   return json;
 }
 
-export type PluginSurfaceScope = { surface: PluginSurfaceId; entityKind: PluginEntityKind };
+// ---------------------------------------------------------------------------
+// Client wire types (renderer ⇄ preload ⇄ host)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the UI sees, as distinct from what the host holds.
+ *
+ * These are deliberately NOT the host types above. The client's runtime status
+ * is a five-value union where the host's is seven; a collection row on the wire
+ * carries `{key, value}` where the host's carries its collection and timestamp;
+ * an inspected source reaches the UI with an unparsed manifest because parsing
+ * it is the renderer's job. Folding either pair into one type would force one
+ * side to carry fields it cannot fill.
+ *
+ * They live here rather than in `renderer/lib/pluginRuntimeBridge` because the
+ * PRELOAD has to name them, and preload importing the renderer is a layering
+ * inversion that `contextBridge.exposeInMainWorld`'s `any` signature was hiding:
+ * nothing was checking that what preload publishes matches what the UI calls.
+ * The bridge re-exports every one of these under its own historical name, so the
+ * UI's imports are unchanged.
+ *
+ * `PluginClient` prefixes the ones whose host counterpart shares a name. The
+ * prefix is not decoration — it is what makes importing both into one file, as
+ * preload does, possible at all.
+ */
+
+/** Child-process health as the UI renders it. `none` = the plugin runs no code. */
+export type PluginClientRuntimeStatus = "running" | "starting" | "stopped" | "crashed" | "none";
+
+/** Token sets a theme plugin may set, per built-in base theme. */
+export type PluginClientThemeTokens = Partial<Record<"dark" | "light", Record<string, string>>>;
+
+/** One `{"kind":"tab"}` surface, flattened for the rail. */
+export type PluginClientTabDescriptor = {
+  id: string;
+  title: string;
+  panelId: string;
+  /** Phosphor icon name; resolved through `pluginIcons.ts`, never rendered raw. */
+  icon?: string | null;
+  /**
+   * Names a compiled-in tab this surface gates rather than renders — see
+   * `PLUGIN_BUILTIN_SURFACE_IDS` in `./manifest`. Absent on every ordinary
+   * plugin tab, and absent from a host too old to report it, so its absence
+   * means "not a gate" and never "hidden".
+   */
+  builtin?: string | null;
+};
+
+export type PluginClientInstalled = {
+  pluginId: string;
+  displayName: string;
+  version: string;
+  enabled: boolean;
+  icon: string | null;
+  /** Hex accent from the manifest. Applied as a CSS variable, never inlined as a class. */
+  accent: string | null;
+  status: PluginClientRuntimeStatus;
+  tabs: PluginClientTabDescriptor[];
+  /** Present only for theme plugins. */
+  theme: { displayName: string; tokens: PluginClientThemeTokens } | null;
+  /**
+   * Manifest socket ids the user has switched off. Absent means none are —
+   * which is why it is a list of what is OFF: contributions are on by default,
+   * and an absent field must not read as "everything is disabled".
+   */
+  disabledContributions?: readonly string[];
+  /** Drives the nav dot. Off unless the plugin asks for attention. */
+  attention?: boolean;
+};
+
+/** One collection row as the UI reads it. The host's own row carries more. */
+export type PluginClientCollectionRow = {
+  key: string;
+  value: unknown;
+};
+
+/** What changed, so a subscriber can decide whether it needs to refetch. */
+export type PluginClientChangeEvent = {
+  /**
+   * Mirrors `main/services/plugins/pluginEvents.ts`'s `PluginChangeKind`.
+   *
+   * The daemon may send a kind this build has never heard of — the union is
+   * open in practice and grows without a renderer release. Consumers must treat
+   * an unrecognized kind as "refetch everything for this plugin" rather than
+   * dropping it.
+   */
+  kind: "installs" | "panels" | "collections" | "contributions" | "status";
+  pluginId?: string;
+  panelId?: string;
+  collection?: string;
+};
+
+/** The directory as the Marketplace receives it; entries stay unparsed. */
+export type PluginClientMarketplaceIndex = {
+  entries: unknown[];
+  /** When the index was fetched. Null when it came from a cold cache. */
+  fetchedAt: string | null;
+  /** Whether these bytes came off the network or out of the etag cache. */
+  origin: "network" | "cache";
+};
+
+/** A plugin's install state on one machine, as the coverage rail draws it. */
+export type PluginClientPresenceRow = {
+  machineKey: string;
+  machineName: string;
+  pluginId: string;
+  version: string | null;
+  enabled: boolean;
+  /** False for a machine that is in the directory but not reachable now. */
+  online: boolean;
+  /**
+   * Set by the host on rows for the machine this client runs on. The client
+   * cannot work this out from the rows alone, and guessing wrong shows someone
+   * another machine's install state as their own.
+   */
+  isThisMachine: boolean;
+};
+
+/** Storage and wire usage for one plugin, against its writer-enforced budget. */
+export type PluginClientUsageRow = {
+  pluginId: string;
+  collectionBytes: number;
+  collectionBudgetBytes: number;
+  rows: number;
+  rowBudget: number;
+  /** Cumulative sync bytes attributed to this plugin. Null when unmetered. */
+  syncBytesTotal: number | null;
+};
+
+export type PluginClientInstallRequest = {
+  /** Git URL or directory path. The one field an install always has. */
+  source: string;
+  /** Known ahead of time for a directory entry; absent for install-from-URL. */
+  pluginId?: string;
+  /**
+   * The directory version the user chose. Carried all the way to the host,
+   * which is the only layer that knows how a version maps to a git ref.
+   */
+  version?: string;
+  /** Install on another machine instead of this one. */
+  machineKey?: string;
+};
+
+export type PluginClientInstallResult = {
+  pluginId: string;
+  version: string;
+  displayName: string;
+};
+
+/** What the host learned by reading a source before installing it. */
+export type PluginClientSourceInspection = {
+  source: string;
+  /** Raw manifest object — parsed by `./manifest`, never by the transport. */
+  manifest: unknown;
+};
+
+// ---------------------------------------------------------------------------
+// Service availability
+// ---------------------------------------------------------------------------
+
+/**
+ * The one code every layer answers with when plugins are not available here.
+ *
+ * A headless brain, a build without the plugin host, and a desktop main process
+ * whose `pluginHostService` was never assigned are all the same answer to the
+ * caller: this computer cannot do plugins. Saying so in one typed code is what
+ * lets a client degrade honestly — showing a machine-level Marketplace as
+ * read-only — instead of surfacing a project-runtime error for a request that
+ * has nothing to do with a project, or reporting a success that never happened.
+ */
+export const PLUGIN_SERVICE_UNAVAILABLE_CODE = "plugins_unavailable";
+
+/** True when `error` is that refusal, however it was relayed. */
+export function isPluginsUnavailable(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (code === PLUGIN_SERVICE_UNAVAILABLE_CODE) return true;
+  // Electron IPC strips custom Error properties, so the code arrives inside the
+  // message (see `shared/codedError.ts` — `"<code>: <message>"`).
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes(PLUGIN_SERVICE_UNAVAILABLE_CODE);
+}

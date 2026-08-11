@@ -4,6 +4,7 @@ import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
+import { SocketBoundary } from "./SocketBoundary";
 import { SocketButton, SocketMenuRow, SocketOverflow } from "./socketUi";
 
 /** Plugin buttons never crowd out the surface's own; beyond this they fold away. */
@@ -51,14 +52,15 @@ export function PluginToolbarActions({
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, ...style }}>
       {visible.map((contribution) => (
-        <SocketButton
-          key={contributionKey(contribution)}
-          dataTour={dataTour}
-          label={contribution.payload.label}
-          {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
-          {...(contribution.payload.disabled ? { disabled: true } : {})}
-          onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
-        />
+        <SocketBoundary key={contributionKey(contribution)}>
+          <SocketButton
+            dataTour={dataTour}
+            label={contribution.payload.label}
+            {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+            {...(contribution.payload.disabled ? { disabled: true } : {})}
+            onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
+          />
+        </SocketBoundary>
       ))}
       {hidden.length > 0 ? (
         <SocketOverflow
@@ -67,12 +69,13 @@ export function PluginToolbarActions({
           dataTour={`${dataTour}-overflow`}
         >
           {hidden.map((contribution) => (
-            <SocketMenuRow
-              key={contributionKey(contribution)}
-              label={contribution.payload.label}
-              {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
-              onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
-            />
+            <SocketBoundary key={contributionKey(contribution)}>
+              <SocketMenuRow
+                label={contribution.payload.label}
+                {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
+              />
+            </SocketBoundary>
           ))}
         </SocketOverflow>
       ) : null}

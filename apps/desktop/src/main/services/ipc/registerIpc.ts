@@ -694,14 +694,20 @@ import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { PluginHostService } from "../plugins/pluginHostService";
-import { isValidPluginId, type PluginManifest } from "../../../shared/plugins/manifest";
+import {
+  isValidPluginId,
+  isValidPluginManifestIdentifier,
+  type PluginManifest,
+} from "../../../shared/plugins/manifest";
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
 import { PLUGIN_ENTITY_KINDS, PLUGIN_SURFACE_IDS } from "../../../shared/plugins/sockets";
 import {
   assertPluginCollectionName,
+  PLUGIN_SERVICE_UNAVAILABLE_CODE,
   type PluginCollectionRow,
   type PluginContributionRecord,
   type PluginDetail,
+  type PluginDomainService,
   type PluginLogEntry,
   type PluginMarketplaceIndex,
   type PluginPanelRecord,
@@ -5755,6 +5761,36 @@ export function registerIpc({
     return ctx.externalSessionsService.importExternalSession(normalizeExternalSessionImportArgs(arg));
   });
 
+  /**
+   * The plugin domain service, or an honest refusal.
+   *
+   * Nothing assigns `pluginHostService` in the Electron main process — the
+   * plugin host lives in the daemon by design (D2). These handlers are still
+   * REACHABLE: the preload's strict router falls through to them whenever no
+   * project runtime is bound, and the Marketplace is a machine-level route that
+   * a reader can be sitting on with no project open at all.
+   *
+   * So they answer the typed `plugins_unavailable` the rest of the platform
+   * already speaks, rather than the generic "unavailable until ADE is connected
+   * to the project runtime" that `requireAppContextServices` throws. The
+   * difference is not cosmetic: the renderer's bridge maps this code to
+   * capability-false and shows a read-only Marketplace, while the generic
+   * string reaches the user as a project error for a request that has nothing
+   * to do with a project.
+   */
+  const requirePluginDomainService = (): PluginDomainService => {
+    const ctx = getCtx();
+    if (!ctx.pluginHostService) {
+      throw new Error(
+        encodeCodedErrorMessage(
+          PLUGIN_SERVICE_UNAVAILABLE_CODE,
+          "Plugins aren’t available on this computer.",
+        ),
+      );
+    }
+    return ctx.pluginHostService.domainService(ctx.projectId);
+  };
+
   const requirePluginId = (arg: unknown): string => {
     const pluginId = isRecord(arg) ? arg.pluginId : undefined;
     if (!isValidPluginId(pluginId)) throw new Error("plugin request pluginId is invalid.");
@@ -5788,11 +5824,23 @@ export function registerIpc({
     };
   };
 
+  /**
+   * `version` and `ref` are the same field one layer apart.
+   *
+   * The UI knows a directory VERSION and nothing about git; only the host knows
+   * that a version resolves to a tag. This handler is host-side, so it does the
+   * mapping — and it must do it rather than drop `version`, which is what left
+   * an install pulling the default branch while the UI reported the version the
+   * reader picked. An explicit `ref` still wins: install-from-URL has no
+   * version, and a caller that named a ref meant that ref.
+   */
   const normalizePluginInstallArgs = (arg: unknown): { source: string; ref?: string; enable?: boolean } => {
     if (!isRecord(arg)) throw new Error("plugin install expects an object payload.");
     const source = typeof arg.source === "string" ? arg.source.trim() : "";
     if (!source) throw new Error("plugin install source must be a non-empty string.");
-    const ref = typeof arg.ref === "string" ? arg.ref.trim() : "";
+    const explicitRef = typeof arg.ref === "string" ? arg.ref.trim() : "";
+    const version = typeof arg.version === "string" ? arg.version.trim() : "";
+    const ref = explicitRef || version;
     return {
       source,
       ...(ref ? { ref } : {}),
@@ -5800,14 +5848,13 @@ export function registerIpc({
     };
   };
 
-  // Panel ids are manifest identifiers; this mirrors `parseIdentifier` in
-  // shared/plugins/manifest.ts, which is where the ids come from.
-  const PLUGIN_PANEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
   const normalizePluginGetPanelArgs = (arg: unknown): { pluginId: string; panelId: string } => {
     if (!isRecord(arg)) throw new Error("plugin getPanel expects an object payload.");
-    const panelId = typeof arg.panelId === "string" ? arg.panelId.trim() : "";
-    if (!PLUGIN_PANEL_ID_PATTERN.test(panelId)) throw new Error("plugin getPanel panelId is invalid.");
+    // Panel ids come out of a manifest, so they are judged by the manifest
+    // parser's own rule. A second regex here disagreed with it by a length cap,
+    // which meant an id the parser accepted this layer refused.
+    const panelId = isValidPluginManifestIdentifier(arg.panelId) ? String(arg.panelId).trim() : "";
+    if (!panelId) throw new Error("plugin getPanel panelId is invalid.");
     return { pluginId: requirePluginId(arg), panelId };
   };
 
@@ -5866,91 +5913,61 @@ export function registerIpc({
   };
 
   ipcMain.handle(IPC.pluginList, async (_event, arg: unknown): Promise<PluginSummary[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).list(normalizePluginListArgs(arg));
+    return requirePluginDomainService().list(normalizePluginListArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginGet, async (_event, arg: unknown): Promise<PluginDetail | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).get({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().get({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginGetPanel, async (_event, arg: unknown): Promise<PluginPanelRecord | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).getPanel(normalizePluginGetPanelArgs(arg));
+    return requirePluginDomainService().getPanel(normalizePluginGetPanelArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginGetCollection, async (_event, arg: unknown): Promise<PluginCollectionRow[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService
-      .domainService(ctx.projectId)
-      .getCollection(normalizePluginGetCollectionArgs(arg));
+    return requirePluginDomainService().getCollection(normalizePluginGetCollectionArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginInvoke, async (_event, arg: unknown): Promise<unknown> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).invoke(normalizePluginInvokeArgs(arg));
+    return requirePluginDomainService().invoke(normalizePluginInvokeArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginInstall, async (_event, arg: unknown): Promise<PluginSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).install(normalizePluginInstallArgs(arg));
+    return requirePluginDomainService().install(normalizePluginInstallArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginUninstall, async (_event, arg: unknown): Promise<{ removed: boolean }> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).uninstall({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().uninstall({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginEnable, async (_event, arg: unknown): Promise<PluginSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).enable({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().enable({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginDisable, async (_event, arg: unknown): Promise<PluginSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).disable({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().disable({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginUsageSummary, async (_event, arg: unknown): Promise<PluginUsageSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService
-      .domainService(ctx.projectId)
-      .usageSummary(normalizePluginUsageSummaryArgs(arg));
+    return requirePluginDomainService().usageSummary(normalizePluginUsageSummaryArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginSetConfig, async (_event, arg: unknown): Promise<PluginDetail> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).setConfig(normalizePluginSetConfigArgs(arg));
+    return requirePluginDomainService().setConfig(normalizePluginSetConfigArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginReload, async (_event, arg: unknown): Promise<PluginSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).reload({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().reload({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginSetContributionEnabled, async (_event, arg: unknown): Promise<PluginSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
     if (!isRecord(arg)) throw new Error("plugin setContributionEnabled expects an object payload.");
     const socketId = typeof arg.socketId === "string" ? arg.socketId.trim() : "";
     if (!socketId) throw new Error("plugin setContributionEnabled socketId must be a non-empty string.");
     if (typeof arg.enabled !== "boolean") {
       throw new Error("plugin setContributionEnabled enabled must be a boolean.");
     }
-    return ctx.pluginHostService.domainService(ctx.projectId).setContributionEnabled({
+    return requirePluginDomainService().setContributionEnabled({
       pluginId: requirePluginId(arg),
       socketId,
       enabled: arg.enabled,
@@ -5958,39 +5975,27 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.pluginMarketplaceIndex, async (_event, arg: unknown): Promise<PluginMarketplaceIndex | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
     const refresh = isRecord(arg) && arg.refresh === true;
-    return ctx.pluginHostService.domainService(ctx.projectId).marketplaceIndex(refresh ? { refresh } : {});
+    return requirePluginDomainService().marketplaceIndex(refresh ? { refresh } : {});
   });
 
   ipcMain.handle(IPC.pluginPresence, async (): Promise<PluginPresenceMachineRow[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).presence();
+    return requirePluginDomainService().presence();
   });
 
   ipcMain.handle(IPC.pluginGetReadme, async (_event, arg: unknown): Promise<string | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).getReadme({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().getReadme({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginGetManifest, async (_event, arg: unknown): Promise<PluginManifest | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).getManifest({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().getManifest({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginOpenLogs, async (_event, arg: unknown): Promise<PluginLogEntry[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
-    return ctx.pluginHostService.domainService(ctx.projectId).openLogs({ pluginId: requirePluginId(arg) });
+    return requirePluginDomainService().openLogs({ pluginId: requirePluginId(arg) });
   });
 
   ipcMain.handle(IPC.pluginListContributions, async (_event, arg: unknown): Promise<PluginContributionRecord[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
     if (!isRecord(arg)) throw new Error("plugin listContributions expects an object payload.");
     const surface = PLUGIN_SURFACE_IDS.find((id) => id === arg.surface);
     if (!surface) throw new Error("plugin listContributions surface is not a core surface.");
@@ -5998,7 +6003,7 @@ export function registerIpc({
     const entityIds = Array.isArray(arg.entityIds)
       ? arg.entityIds.filter((id): id is string => typeof id === "string" && id.length > 0)
       : undefined;
-    return ctx.pluginHostService.domainService(ctx.projectId).listContributions({
+    return requirePluginDomainService().listContributions({
       surface,
       ...(entityKind ? { entityKind } : {}),
       ...(entityIds && entityIds.length > 0 ? { entityIds } : {}),
@@ -6006,12 +6011,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.pluginInspectSource, async (_event, arg: unknown): Promise<PluginSourceInspection | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["pluginHostService"]);
     if (!isRecord(arg)) throw new Error("plugin inspectSource expects an object payload.");
     const source = typeof arg.source === "string" ? arg.source.trim() : "";
     if (!source) throw new Error("plugin inspectSource source must be a non-empty string.");
-    return ctx.pluginHostService.domainService(ctx.projectId).inspectSource({ source });
+    return requirePluginDomainService().inspectSource({ source });
   });
 
 
