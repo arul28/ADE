@@ -8,6 +8,7 @@ import {
   describeAdeCard,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
+  readAdeCardPluginInstall,
   type AdeCardPayload,
 } from "./adeCard";
 
@@ -103,5 +104,35 @@ describe("adeCard", () => {
     expect(adeCardProgressTotal({ passed: 3, failed: 1, running: 2, queued: 4 })).toBe(10);
     expect(adeCardProgressTotal({ passed: -3, failed: 0, running: 0, queued: 0 })).toBe(0);
     expect(adeCardProgressTotal(null)).toBe(0);
+  });
+
+  describe("plugin_install", () => {
+    const install = (over: Record<string, unknown> = {}) => card({
+      variant: "plugin_install",
+      plugin: { pluginId: "graph", displayName: "Graph", source: "https://example.test/graph", ...over },
+    });
+
+    it("reads a complete payload", () => {
+      expect(readAdeCardPluginInstall(install({ version: "1.2.0", adds: ["Graph tab", ""] }))).toEqual({
+        pluginId: "graph",
+        displayName: "Graph",
+        source: "https://example.test/graph",
+        version: "1.2.0",
+        adds: ["Graph tab"],
+      });
+    });
+
+    it("refuses a payload that cannot name what it would install", () => {
+      // The card offers an Install button; without an id AND a source there is
+      // nothing for that button to act on, so it must fall back to the ordinary
+      // card rather than render a consent surface with a hole in it.
+      expect(readAdeCardPluginInstall(install({ source: "  " }))).toBeNull();
+      expect(readAdeCardPluginInstall(install({ pluginId: "" }))).toBeNull();
+      expect(readAdeCardPluginInstall(card({ variant: "plugin_install" }))).toBeNull();
+    });
+
+    it("falls back to the id when no display name is given", () => {
+      expect(readAdeCardPluginInstall(install({ displayName: "  " }))?.displayName).toBe("graph");
+    });
   });
 });

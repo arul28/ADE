@@ -26,12 +26,14 @@ import {
   ChatCardTitle,
   type ChatCardTone,
 } from "./chatCardPrimitives";
+import { PluginInstallChatCard } from "./PluginInstallChatCard";
 import {
   adeCardDeeplink,
   adeCardFallbackText,
   adeCardProgressTotal,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
+  readAdeCardPluginInstall,
   type AdeCardIcon,
   type AdeCardPayload,
 } from "../../../shared/adeCard";
@@ -182,6 +184,16 @@ export function AdeCard({
         ) : null}
       </div>
     );
+  }
+
+  // `plugin_install` is a consent surface, not a status card: it has its own
+  // shape (what it adds, where it came from, the access disclosure) and its own
+  // action. A payload missing the id or the source cannot support that, so it
+  // falls through to the ordinary card below rather than offering to install
+  // something it cannot name.
+  const pluginInstall = card.variant === "plugin_install" ? readAdeCardPluginInstall(card) : null;
+  if (pluginInstall) {
+    return <PluginInstallChatCard install={pluginInstall} subtitle={card.subtitle} />;
   }
 
   const metrics = card.metrics ?? [];

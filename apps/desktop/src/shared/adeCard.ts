@@ -42,7 +42,31 @@ export type AdeCardVariant =
   | "pr_merged"
   | "pr_merge_ready"
   | "pr_conflict"
+  | "plugin_install"
   | (string & {});
+
+/**
+ * Payload for the `plugin_install` variant.
+ *
+ * An agent that has just written or found a plugin emits this instead of
+ * telling the reader to go and find it in the Marketplace. The card is a
+ * consent surface, so it carries the same three things the install modal does —
+ * what it is called, where it came from, and what it adds — and a client that
+ * does not recognise the variant still renders `fallbackText`, which emitters
+ * build from exactly those facts.
+ *
+ * `adds` is derived by the EMITTER from the plugin's manifest, never written by
+ * hand: the list is the reader's only preview of what changes, and a prose
+ * summary of it would be the plugin describing itself.
+ */
+export type AdeCardPluginInstall = {
+  pluginId: string;
+  displayName: string;
+  /** Git URL or path the install will read. Shown before the reader agrees. */
+  source: string;
+  version?: string | null;
+  adds?: string[];
+};
 
 /** Semantic row glyph. Surfaces map these to their own icon vocabulary. */
 export type AdeCardIcon =
@@ -125,6 +149,12 @@ export type AdeCardPayload = {
   stale?: boolean;
   /** Rows the emitter dropped to keep the card short. Rendered as `+N more`. */
   rowsTruncated?: number;
+  /**
+   * Variant-specific detail for `plugin_install`. Optional on the base payload
+   * so adding a variant stays additive for every client — one that has never
+   * heard of plugins ignores the field and renders `fallbackText`.
+   */
+  plugin?: AdeCardPluginInstall | null;
 };
 
 export const ADE_CARD_TONES: readonly AdeCardTone[] = ["neutral", "accent", "success", "warning"];
@@ -140,11 +170,45 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_merged",
   "pr_merge_ready",
   "pr_conflict",
+  "plugin_install",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {
   if (!variant) return false;
   return KNOWN_ADE_CARD_VARIANTS.includes(variant.trim() as AdeCardVariant);
+}
+
+/**
+ * The `plugin_install` detail, or null when the payload cannot support the
+ * rich card.
+ *
+ * Validated rather than trusted because a card that offers to install
+ * something must know WHAT it is installing: a missing source or id would
+ * otherwise render an Install button whose target is undefined. Returning null
+ * sends the renderer down the ordinary card path, which is honest and still
+ * useful, instead of a consent surface with a hole in it.
+ */
+export function readAdeCardPluginInstall(card: AdeCardPayload): AdeCardPluginInstall | null {
+  const detail = card.plugin;
+  if (!detail || typeof detail !== "object") return null;
+  const pluginId = typeof detail.pluginId === "string" ? detail.pluginId.trim() : "";
+  const source = typeof detail.source === "string" ? detail.source.trim() : "";
+  if (!pluginId || !source) return null;
+  const displayName = typeof detail.displayName === "string" && detail.displayName.trim().length > 0
+    ? detail.displayName.trim()
+    : pluginId;
+  const adds = Array.isArray(detail.adds)
+    ? detail.adds.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+    : [];
+  return {
+    pluginId,
+    displayName,
+    source,
+    ...(typeof detail.version === "string" && detail.version.trim().length > 0
+      ? { version: detail.version.trim() }
+      : {}),
+    ...(adds.length > 0 ? { adds } : {}),
+  };
 }
 
 /**

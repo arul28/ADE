@@ -1,36 +1,221 @@
 import React from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { ArrowClockwise, LinkSimple, MagnifyingGlass } from "@phosphor-icons/react";
 
-import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
 import { pluginIcon } from "./pluginIcons";
+import { MarketplaceDetailPage } from "./MarketplaceDetailPage";
+import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
+import { useMarketplaceCatalogue, usePluginPresence } from "./useMarketplace";
+import {
+  CoverageDots,
+  FilterChip,
+  InlineNotice,
+  ListingSkeleton,
+  ListingStats,
+  MarketplaceEmpty,
+  OfficialBadge,
+  QuietTag,
+} from "./marketplaceUi";
+import {
+  DEFAULT_MARKETPLACE_QUERY,
+  SURFACE_LABELS,
+  deriveMachineCoverage,
+  deriveSurfaceFacets,
+  featuredListings,
+  installStateFor,
+  marketplaceRouteFromPath,
+  queryMarketplace,
+  type ListingInstallState,
+  type MarketplaceChip,
+  type MarketplaceIndexState,
+  type MarketplaceListing,
+  type MarketplaceQuery,
+  type MarketplaceSort,
+} from "./marketplaceModel";
+import type { PluginSurfaceId } from "../../../shared/plugins/sockets";
+import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
 /**
- * Route placeholder for the Marketplace.
+ * The Marketplace.
  *
- * The gallery, detail view, install flow and machine-coverage rail are a later
- * wave. This exists so `/marketplace` is a real route from the moment the nav
- * entry appears — a nav item that leads to a 404 is worse than no nav item —
- * and it says plainly what it is rather than pretending to be under
- * construction. It lists what is installed, which is the one thing it can
- * answer honestly today.
+ * Two views behind one mount. The app shell renders this page for every path
+ * under `/marketplace` (machine-level surfaces are conditionally rendered
+ * rather than routed — see `App.tsx`), so the gallery/detail switch is read
+ * from the path here rather than from `useParams`, which has no route to read.
+ *
+ * The gallery's shape is a deliberate borrow from a store people already know:
+ * a small curated hero row, one line of filters, then a dense list. What is NOT
+ * borrowed is the confidence — a store invents social proof, and half this
+ * catalogue ships inside the app with no measured installs at all. So every
+ * number that is not known renders as nothing, and the freshness of the
+ * directory is stated rather than implied.
  */
-export function MarketplacePage() {
-  const plugins = useRootAppStore((state) => state.installedPlugins);
-  const refreshInstalledPlugins = useRootAppStore((state) => state.refreshInstalledPlugins);
 
-  React.useEffect(() => {
-    void refreshInstalledPlugins();
-  }, [refreshInstalledPlugins]);
+const CHIPS: { id: MarketplaceChip; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "official", label: "Official" },
+  { id: "featured", label: "Featured" },
+  { id: "themes", label: "Themes" },
+];
+
+const SORTS: { id: MarketplaceSort; label: string }[] = [
+  { id: "installs", label: "Installs" },
+  { id: "stars", label: "Stars" },
+  { id: "new", label: "New" },
+];
+
+export function MarketplacePage() {
+  const location = useLocation();
+  const route = React.useMemo(() => marketplaceRouteFromPath(location.pathname), [location.pathname]);
+  if (route.pluginId) return <MarketplaceDetailPage pluginId={route.pluginId} />;
+  return <MarketplaceGallery />;
+}
+
+function MarketplaceGallery() {
+  const navigate = useNavigate();
+  const catalogue = useMarketplaceCatalogue();
+  const installed = useRootAppStore((state) => state.installedPlugins);
+  const presence = usePluginPresence(true);
+
+  const [query, setQuery] = React.useState<MarketplaceQuery>(DEFAULT_MARKETPLACE_QUERY);
+  const [installTarget, setInstallTarget] = React.useState<InstallDialogTarget | null>(null);
+
+  const thisMachineKey = React.useMemo(
+    () => presence.rows.find((row) => row.isThisMachine)?.machineKey ?? null,
+    [presence.rows],
+  );
+
+  const visible = React.useMemo(
+    () => queryMarketplace(catalogue.listings, query),
+    [catalogue.listings, query],
+  );
+  const facets = React.useMemo(
+    () => deriveSurfaceFacets(catalogue.listings, query),
+    [catalogue.listings, query],
+  );
+  const featured = React.useMemo(() => featuredListings(catalogue.listings), [catalogue.listings]);
+
+  const coverageFor = React.useCallback(
+    (listing: MarketplaceListing) => deriveMachineCoverage({
+      pluginId: listing.pluginId,
+      catalogueVersion: listing.version,
+      presence: presence.rows,
+      installed,
+      thisMachineKey,
+    }),
+    [installed, presence.rows, thisMachineKey],
+  );
+
+  const openListing = React.useCallback(
+    (listing: MarketplaceListing) => navigate(`/marketplace/${listing.pluginId}`),
+    [navigate],
+  );
+
+  const filtersActive = query.chip !== "all" || query.surfaces.length > 0 || query.search.trim().length > 0;
 
   return (
-    <div style={{ height: "100%", minHeight: 0, overflow: "auto" }} data-tour="plugin:marketplace.page">
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "28px 20px", display: "grid", gap: 20 }}>
-        <div style={{ display: "grid", gap: 6 }}>
+    <div
+      data-tour="plugin:marketplace.page"
+      style={{ height: "100%", minHeight: 0, overflow: "auto" }}
+    >
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "26px 24px 48px", display: "grid", gap: 20 }}>
+        <GalleryHeader
+          search={query.search}
+          onSearch={(search) => setQuery((previous) => ({ ...previous, search }))}
+          onInstallFromUrl={() => setInstallTarget({ kind: "url" })}
+          onRefresh={catalogue.refresh}
+          refreshing={catalogue.refreshing}
+          canRefresh={catalogue.capabilities.browse}
+        />
+
+        <IndexNotice state={catalogue.state} onRefresh={catalogue.refresh} />
+
+        {catalogue.loading ? (
+          <ListingSkeleton rows={5} />
+        ) : (
+          <>
+            {featured.length > 0 && !filtersActive ? (
+              <FeaturedRow listings={featured} onOpen={openListing} installed={installed} />
+            ) : null}
+
+            <FilterBar
+              query={query}
+              facets={facets}
+              onChange={setQuery}
+            />
+
+            {visible.length === 0 ? (
+              <MarketplaceEmpty
+                title="Nothing matches"
+                description="No plugin in the catalogue fits those filters. Clear them, or install one directly from its repository."
+                action={
+                  <button
+                    type="button"
+                    onClick={() => setQuery(DEFAULT_MARKETPLACE_QUERY)}
+                    style={outlineButton({ height: 28, fontSize: 11.5 })}
+                  >
+                    Clear filters
+                  </button>
+                }
+              />
+            ) : (
+              <ul
+                data-tour="plugin:marketplace.list"
+                style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 2 }}
+              >
+                {visible.map((listing) => (
+                  <ListingRow
+                    key={listing.pluginId}
+                    listing={listing}
+                    state={installStateFor(listing, installed)}
+                    coverage={coverageFor(listing)}
+                    onOpen={() => openListing(listing)}
+                    onInstall={() => setInstallTarget({ kind: "listing", listing })}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
+
+      <PluginInstallDialog
+        target={installTarget}
+        onOpenChange={(open) => { if (!open) setInstallTarget(null); }}
+        onInstalled={(pluginId) => navigate(`/marketplace/${pluginId}`)}
+      />
+    </div>
+  );
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+function GalleryHeader({
+  search,
+  onSearch,
+  onInstallFromUrl,
+  onRefresh,
+  refreshing,
+  canRefresh,
+}: {
+  search: string;
+  onSearch: (value: string) => void;
+  onInstallFromUrl: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+  canRefresh: boolean;
+}) {
+  return (
+    <header style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+        <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
           <h1
             style={{
               margin: 0,
               fontFamily: SANS_FONT,
-              fontSize: 18,
+              fontSize: 19,
               fontWeight: 600,
               letterSpacing: "-0.015em",
               color: COLORS.textPrimary,
@@ -39,56 +224,451 @@ export function MarketplacePage() {
             Marketplace
           </h1>
           <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-            Browsing and installing arrive with the plugin directory. Plugins already on this machine
-            are listed below.
+            Tabs, panels, themes and commands, installed per machine.
           </p>
         </div>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          {canRefresh ? (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={refreshing}
+              title="Check the directory for new plugins"
+              data-tour="plugin:marketplace.refresh"
+              style={{
+                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 11.5 }),
+                opacity: refreshing ? 0.6 : 1,
+              }}
+            >
+              <ArrowClockwise size={13} weight="regular" aria-hidden />
+              {refreshing ? "Checking…" : "Refresh"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onInstallFromUrl}
+            data-tour="plugin:marketplace.install-from-url"
+            style={primaryButton({ height: 30, fontSize: 11.5 })}
+          >
+            <LinkSimple size={13} weight="regular" aria-hidden />
+            Install from URL
+          </button>
+        </div>
+      </div>
 
-        {plugins.length === 0 ? (
-          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>
-            No plugins installed.
-          </p>
-        ) : (
-          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 2 }}>
-            {plugins.map((plugin) => {
-              const Icon = pluginIcon(plugin.icon);
-              return (
-                <li
-                  key={plugin.pluginId}
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          height: 34,
+          padding: "0 10px",
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.md,
+        }}
+      >
+        <MagnifyingGlass size={14} weight="regular" color={COLORS.textDim} aria-hidden />
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => onSearch(event.target.value)}
+          placeholder="Search plugins"
+          aria-label="Search plugins"
+          data-tour="plugin:marketplace.search"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: "100%",
+            fontFamily: SANS_FONT,
+            fontSize: 12.5,
+            color: COLORS.textPrimary,
+            background: "transparent",
+            border: "none",
+            outline: "none",
+          }}
+        />
+      </label>
+    </header>
+  );
+}
+
+/**
+ * The one place the page talks about the directory itself.
+ *
+ * Only rendered when there is something the reader would otherwise be misled
+ * about: a fetch that failed, or a build with no directory at all. A healthy
+ * fetch says nothing, because "up to date" is the assumption.
+ */
+function IndexNotice({
+  state,
+  onRefresh,
+}: {
+  state: MarketplaceIndexState;
+  onRefresh: () => void;
+}) {
+  if (state.kind === "live") return null;
+  if (state.kind === "unsupported") {
+    return (
+      <InlineNotice tone="muted">
+        This build browses the plugins that ship with ADE. The full directory needs a newer version.
+      </InlineNotice>
+    );
+  }
+  return (
+    <InlineNotice
+      action={
+        <button type="button" onClick={onRefresh} style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}>
+          Try again
+        </button>
+      }
+    >
+      Couldn’t reach the plugin directory — showing the plugins that ship with ADE.
+    </InlineNotice>
+  );
+}
+
+/* ── Featured ───────────────────────────────────────────────────────────── */
+
+function FeaturedRow({
+  listings,
+  onOpen,
+  installed,
+}: {
+  listings: readonly MarketplaceListing[];
+  onOpen: (listing: MarketplaceListing) => void;
+  installed: readonly InstalledPlugin[];
+}) {
+  return (
+    <section data-tour="plugin:marketplace.featured" style={{ display: "grid", gap: 10 }}>
+      <h2
+        style={{
+          margin: 0,
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          fontWeight: 600,
+          color: COLORS.textMuted,
+        }}
+      >
+        Featured
+      </h2>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(auto-fit, minmax(220px, 1fr))`,
+          gap: 10,
+        }}
+      >
+        {listings.map((listing) => {
+          const Icon = pluginIcon(listing.icon);
+          const state = installStateFor(listing, installed);
+          return (
+            <button
+              key={listing.pluginId}
+              type="button"
+              onClick={() => onOpen(listing)}
+              style={{
+                display: "grid",
+                gap: 8,
+                padding: 14,
+                textAlign: "left",
+                background: listing.accent
+                  ? `color-mix(in srgb, ${listing.accent} 9%, transparent)`
+                  : COLORS.recessedBg,
+                border: `1px solid ${listing.accent
+                  ? `color-mix(in srgb, ${listing.accent} 24%, transparent)`
+                  : COLORS.borderMuted}`,
+                borderRadius: RADII.lg,
+                cursor: "pointer",
+                minWidth: 0,
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <Icon size={17} weight="regular" color={listing.accent ?? COLORS.textMuted} aria-hidden />
+                <span
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "10px 12px",
-                    border: `1px solid ${COLORS.borderMuted}`,
-                    borderRadius: RADII.md,
-                    background: COLORS.recessedBg,
+                    fontFamily: SANS_FONT,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: COLORS.textPrimary,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  <Icon size={16} weight="regular" color={plugin.accent ?? COLORS.textMuted} aria-hidden />
-                  <span style={{ display: "grid", gap: 1, minWidth: 0 }}>
-                    <span
-                      style={{
-                        fontFamily: SANS_FONT,
-                        fontSize: 12.5,
-                        fontWeight: 500,
-                        color: COLORS.textPrimary,
-                      }}
-                    >
-                      {plugin.displayName}
-                    </span>
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-                      {plugin.version}
-                      {plugin.enabled ? "" : " · off"}
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                  {listing.displayName}
+                </span>
+                {state.kind !== "available" ? <QuietTag>Installed</QuietTag> : null}
+              </span>
+              <span
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11.5,
+                  color: COLORS.textSecondary,
+                  lineHeight: 1.5,
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }}
+              >
+                {listing.description}
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {listing.official ? <OfficialBadge /> : null}
+                <ListingStats installs={listing.installs} stars={listing.stars} />
+              </span>
+            </button>
+          );
+        })}
       </div>
+    </section>
+  );
+}
+
+/* ── Filters ────────────────────────────────────────────────────────────── */
+
+function FilterBar({
+  query,
+  facets,
+  onChange,
+}: {
+  query: MarketplaceQuery;
+  facets: { surface: PluginSurfaceId; label: string; total: number }[];
+  onChange: React.Dispatch<React.SetStateAction<MarketplaceQuery>>;
+}) {
+  const toggleSurface = (surface: PluginSurfaceId) => {
+    onChange((previous) => ({
+      ...previous,
+      surfaces: previous.surfaces.includes(surface)
+        ? previous.surfaces.filter((entry) => entry !== surface)
+        : [...previous.surfaces, surface],
+    }));
+  };
+
+  return (
+    <div
+      data-tour="plugin:marketplace.filters"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+        paddingBottom: 2,
+      }}
+    >
+      {CHIPS.map((chip) => (
+        <FilterChip
+          key={chip.id}
+          label={chip.label}
+          active={query.chip === chip.id}
+          onClick={() => onChange((previous) => ({ ...previous, chip: chip.id }))}
+          tour={`plugin:marketplace.chip-${chip.id}`}
+        />
+      ))}
+
+      {facets.length > 0 ? (
+        <span
+          aria-hidden
+          style={{ width: 1, height: 16, background: COLORS.borderMuted, margin: "0 2px" }}
+        />
+      ) : null}
+      {facets.map((facet) => (
+        <FilterChip
+          key={facet.surface}
+          label={`Extends ${SURFACE_LABELS[facet.surface]}`}
+          count={facet.total}
+          active={query.surfaces.includes(facet.surface)}
+          onClick={() => toggleSurface(facet.surface)}
+          tour={`plugin:marketplace.facet-${facet.surface}`}
+        />
+      ))}
+
+      <span style={{ flex: 1 }} />
+      <span
+        role="radiogroup"
+        aria-label="Sort plugins"
+        style={{
+          display: "inline-flex",
+          gap: 2,
+          padding: 2,
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: 9,
+        }}
+      >
+        {SORTS.map((sort) => {
+          const active = query.sort === sort.id;
+          return (
+            <button
+              key={sort.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange((previous) => ({ ...previous, sort: sort.id }))}
+              data-tour={`plugin:marketplace.sort-${sort.id}`}
+              style={{
+                height: 22,
+                padding: "0 9px",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                fontWeight: active ? 600 : 500,
+                color: active ? COLORS.textPrimary : COLORS.textMuted,
+                background: active ? "color-mix(in srgb, var(--color-fg) 8%, transparent)" : "transparent",
+                border: "none",
+                borderRadius: 7,
+                cursor: "pointer",
+              }}
+            >
+              {sort.label}
+            </button>
+          );
+        })}
+      </span>
     </div>
+  );
+}
+
+/* ── Row ────────────────────────────────────────────────────────────────── */
+
+function installActionLabel(state: ListingInstallState): string {
+  switch (state.kind) {
+    case "update":
+      return "Update";
+    case "installed":
+      return "Installed";
+    case "disabled":
+      return "Turned off";
+    case "available":
+    default:
+      return "Install";
+  }
+}
+
+function ListingRow({
+  listing,
+  state,
+  coverage,
+  onOpen,
+  onInstall,
+}: {
+  listing: MarketplaceListing;
+  state: ListingInstallState;
+  coverage: ReturnType<typeof deriveMachineCoverage>;
+  onOpen: () => void;
+  onInstall: () => void;
+}) {
+  const Icon = pluginIcon(listing.icon);
+  const actionable = state.kind === "available" || state.kind === "update";
+
+  return (
+    <li>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen();
+          }
+        }}
+        data-tour={`plugin:marketplace.row-${listing.pluginId}`}
+        className="hover:bg-fg/[0.03]"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "11px 12px",
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.md,
+          cursor: "pointer",
+          textAlign: "left",
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 30,
+            height: 30,
+            flexShrink: 0,
+            borderRadius: RADII.sm,
+            background: listing.accent
+              ? `color-mix(in srgb, ${listing.accent} 12%, transparent)`
+              : COLORS.recessedBg,
+          }}
+        >
+          <Icon size={16} weight="regular" color={listing.accent ?? COLORS.textMuted} aria-hidden />
+        </span>
+
+        <span style={{ display: "grid", gap: 2, flex: 1, minWidth: 0 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+            <span
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: COLORS.textPrimary,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {listing.displayName}
+            </span>
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
+              {listing.author}
+            </span>
+            {listing.official ? <OfficialBadge /> : null}
+            {listing.isTheme ? <QuietTag>Theme</QuietTag> : null}
+            {state.kind === "update" ? <QuietTag tone="warning">Update</QuietTag> : null}
+          </span>
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 11.5,
+              color: COLORS.textMuted,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {listing.description || "No description."}
+          </span>
+        </span>
+
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+          <ListingStats installs={listing.installs} stars={listing.stars} />
+          <CoverageDots rows={coverage} />
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (actionable) onInstall();
+              else onOpen();
+            }}
+            data-tour={`plugin:marketplace.action-${listing.pluginId}`}
+            style={{
+              ...(actionable
+                ? outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })
+                : {
+                  ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }),
+                  background: "transparent",
+                  border: "1px solid transparent",
+                  color: COLORS.textDim,
+                }),
+              minWidth: 70,
+            }}
+          >
+            {installActionLabel(state)}
+          </button>
+        </span>
+      </div>
+    </li>
   );
 }
 
