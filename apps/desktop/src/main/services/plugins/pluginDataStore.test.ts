@@ -122,7 +122,7 @@ describe("pluginDataStore", () => {
     const { store } = await openStore();
 
     expect(codeOf(() => store.putCollection("graph", "issues", "big", "x".repeat(70_000))))
-      .toBe("budget_exceeded");
+      .toBe("plugin_budget_exceeded");
     // Nothing landed: the ceiling is enforced before the row is written.
     expect(store.listCollection("graph", "issues")).toHaveLength(0);
   });
@@ -137,7 +137,7 @@ describe("pluginDataStore", () => {
       [PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN],
     );
 
-    expect(codeOf(() => store.putCollection("graph", "issues", "one-too-many", 1))).toBe("budget_exceeded");
+    expect(codeOf(() => store.putCollection("graph", "issues", "one-too-many", 1))).toBe("plugin_budget_exceeded");
     // Replacing a row the plugin already owns must not count as a new row.
     expect(() => store.putCollection("graph", "issues", "k1", 2)).not.toThrow();
     expect(store.getCollection("graph", "issues", "k1")).toBe(2);
@@ -178,5 +178,39 @@ describe("pluginDataStore", () => {
 
     store.removePluginData("graph");
     expect(store.usage().entries.map((entry) => entry.pluginId)).toEqual(["player"]);
+  });
+
+  it("reads back a materialized panel, and survives one whose schema is corrupt", async () => {
+    const { db, store } = await openStore();
+
+    store.updatePanel("graph", "main", { title: "Graph", schema: { type: "stack" }, vocabVersion: 2 });
+    const panel = store.readPanel("graph", "main");
+    expect(panel).toMatchObject({ pluginId: "graph", panelId: "main", title: "Graph", vocabVersion: 2 });
+    expect(panel?.schema).toEqual({ type: "stack" });
+    expect(panel?.updatedAt).toBeTruthy();
+
+    expect(store.readPanel("graph", "missing")).toBeNull();
+
+    // A row whose JSON cannot be parsed still resolves to a panel: blanking the
+    // whole surface would hide every other panel the plugin publishes.
+    db.run("update plugin_panels set schema_json = ? where plugin_id = ? and panel_id = ?", ["{oops", "graph", "main"]);
+    expect(store.readPanel("graph", "main")).toMatchObject({ title: "Graph", schema: null });
+  });
+
+  it("notifies on collection writes so panels update without waiting for the poll", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-notify-"));
+    tempRoots.push(root);
+    const db = await openKvDb(path.join(root, ".ade", "ade.db"), silentLogger());
+    openDatabases.push(db);
+    let notifications = 0;
+    const store = createPluginDataStore({ db, onCollectionChanged: () => { notifications += 1; } });
+
+    store.putCollection("graph", "issues", "a", { title: "A" });
+    store.deleteCollection("graph", "issues", "a");
+    expect(notifications).toBe(2);
+
+    // Contributions render from their own tables and do not drive the panel push.
+    store.publishContribution("graph", "pr", "1042", "row-badge", { text: "3 refs", tone: "accent" });
+    expect(notifications).toBe(2);
   });
 });

@@ -695,10 +695,13 @@ import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { PluginHostService } from "../plugins/pluginHostService";
 import { isValidPluginId } from "../../../shared/plugins/manifest";
-import type {
-  PluginDetail,
-  PluginSummary,
-  PluginUsageSummary,
+import {
+  assertPluginCollectionName,
+  type PluginCollectionRow,
+  type PluginDetail,
+  type PluginPanelRecord,
+  type PluginSummary,
+  type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
@@ -5790,6 +5793,64 @@ export function registerIpc({
     };
   };
 
+  // Panel ids are manifest identifiers; this mirrors `parseIdentifier` in
+  // shared/plugins/manifest.ts, which is where the ids come from.
+  const PLUGIN_PANEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+  const normalizePluginGetPanelArgs = (arg: unknown): { pluginId: string; panelId: string } => {
+    if (!isRecord(arg)) throw new Error("plugin getPanel expects an object payload.");
+    const panelId = typeof arg.panelId === "string" ? arg.panelId.trim() : "";
+    if (!PLUGIN_PANEL_ID_PATTERN.test(panelId)) throw new Error("plugin getPanel panelId is invalid.");
+    return { pluginId: requirePluginId(arg), panelId };
+  };
+
+  const normalizePluginGetCollectionArgs = (arg: unknown): {
+    pluginId: string;
+    collection: string;
+    keyPrefix?: string;
+    limit?: number;
+  } => {
+    if (!isRecord(arg)) throw new Error("plugin getCollection expects an object payload.");
+    const collection = assertPluginCollectionName(
+      typeof arg.collection === "string" ? arg.collection.trim() : arg.collection,
+    );
+    const keyPrefix = typeof arg.keyPrefix === "string" ? arg.keyPrefix.trim() : "";
+    const limit =
+      typeof arg.limit === "number" && Number.isFinite(arg.limit)
+        ? Math.max(1, Math.floor(arg.limit))
+        : null;
+    return {
+      pluginId: requirePluginId(arg),
+      collection,
+      ...(keyPrefix ? { keyPrefix } : {}),
+      ...(limit ? { limit } : {}),
+    };
+  };
+
+  const normalizePluginSetConfigArgs = (arg: unknown): {
+    pluginId: string;
+    values: Record<string, string | number | boolean | null>;
+  } => {
+    if (!isRecord(arg)) throw new Error("plugin setConfig expects an object payload.");
+    if (!isRecord(arg.values)) throw new Error("plugin setConfig values must be an object.");
+    const values: Record<string, string | number | boolean | null> = {};
+    for (const [key, value] of Object.entries(arg.values)) {
+      // The service checks each key against the manifest; this only keeps the
+      // renderer from handing it a value type the settings store cannot hold.
+      if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      ) {
+        values[key] = value;
+        continue;
+      }
+      throw new Error(`plugin setConfig value for "${key}" is not a settings value.`);
+    }
+    return { pluginId: requirePluginId(arg), values };
+  };
+
   const normalizePluginUsageSummaryArgs = (arg: unknown): { pluginId?: string } => {
     const pluginId = isRecord(arg) ? arg.pluginId : undefined;
     if (pluginId === undefined || pluginId === null) return {};
@@ -5807,6 +5868,20 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["pluginHostService"]);
     return ctx.pluginHostService.domainService(ctx.projectId).get({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginGetPanel, async (_event, arg: unknown): Promise<PluginPanelRecord | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).getPanel(normalizePluginGetPanelArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginGetCollection, async (_event, arg: unknown): Promise<PluginCollectionRow[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService
+      .domainService(ctx.projectId)
+      .getCollection(normalizePluginGetCollectionArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginInvoke, async (_event, arg: unknown): Promise<unknown> => {
@@ -5845,6 +5920,12 @@ export function registerIpc({
     return ctx.pluginHostService
       .domainService(ctx.projectId)
       .usageSummary(normalizePluginUsageSummaryArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginSetConfig, async (_event, arg: unknown): Promise<PluginDetail> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).setConfig(normalizePluginSetConfigArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginReload, async (_event, arg: unknown): Promise<PluginSummary> => {

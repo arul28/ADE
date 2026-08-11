@@ -40,6 +40,13 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   usage: {
     refreshHistory: IPC.usageRefreshHistory,
   },
+  // A plugin installed on a remote machine clones on that machine and its
+  // handlers run there, so both need the local budgets rather than the 30s
+  // remote default.
+  plugin: {
+    install: IPC.pluginInstall,
+    invoke: IPC.pluginInvoke,
+  },
 };
 
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
@@ -138,6 +145,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // the page — while the daemon kept scanning for another nine minutes.
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
+    // Installing a plugin is a `git clone`; invoking one runs third-party code
+    // behind the child supervisor's own 20s spawn + 60s handler budgets. Both
+    // must outlive the daemon work or the renderer reports a failure for an
+    // install that lands anyway. See localRuntimeTimeoutPolicy for the pair.
+    case IPC.pluginInstall:
+      return 4 * 60_000;
+    case IPC.pluginInvoke:
+      return 90_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.transcriptionTranscribe:

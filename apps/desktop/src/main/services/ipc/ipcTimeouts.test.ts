@@ -173,6 +173,40 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(10 * 60_000);
   });
 
+  it("gives a plugin install its clone budget and an invoke its child budget, on every transport", () => {
+    // An install is a `git clone`; an invoke pays child spawn (20s to `ready`)
+    // before the handler's own 60s. On the 30s default the renderer reported a
+    // failure for work the daemon then completed — the install shows up in the
+    // roster anyway, and the plugin's typed `plugin_timeout` never reaches the
+    // user.
+    expect(longRunningLocalRuntimeActionTimeoutMs("plugin.install")).toBe(4 * 60_000);
+    expect(longRunningLocalRuntimeActionTimeoutMs("plugin.invoke")).toBeGreaterThan(20_000 + 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.pluginInstall)).toBe(4 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.pluginInvoke)).toBe(90_000);
+
+    for (const [action, innerTimeoutMs] of [["install", 4 * 60_000], ["invoke", 90_000]] as const) {
+      expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+        request: { domain: "plugin", action, args: {} },
+      }])).toBe(
+        LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + innerTimeoutMs + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+      );
+      // A plugin installed on a remote machine clones and runs there, so the
+      // remote route must not fall back to its 30s default.
+      expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+        id: "target-1",
+        projectId: "project-1",
+        request: { domain: "plugin", action, args: {} },
+      }])).toBe(innerTimeoutMs);
+    }
+  });
+
+  it("leaves the rest of the plugin domain on the default action budget", () => {
+    // Only the two slow ones are exceptions; list/get/usageSummary are reads.
+    for (const action of ["list", "get", "usageSummary", "setConfig"]) {
+      expect(longRunningLocalRuntimeActionTimeoutMs(`plugin.${action}`)).toBeNull();
+    }
+  });
+
   it("lets transcription run longer than the default invoke ceiling", () => {
     expect(ipcInvokeTimeoutMs(IPC.transcriptionTranscribe)).toBe(6 * 60_000);
   });

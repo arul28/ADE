@@ -50,6 +50,7 @@ import type { createSessionDeltaService } from "../../../../desktop/src/main/ser
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import type { PluginSyncMeter } from "../plugins/pluginSyncMeter";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 import {
   createSyncHostService,
@@ -182,6 +183,13 @@ type SyncServiceArgs = {
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
+  /**
+   * Per-plugin wire accounting, forwarded to whichever host this service
+   * starts. The meter is owned by the runtime (one per project scope) because
+   * `plugin.usageSummary` reads the same instance the host writes into; a host
+   * restart must not hand it a different one.
+   */
+  pluginSyncMeter?: PluginSyncMeter;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
@@ -863,6 +871,7 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
       rosterProvider: args.rosterProvider,
+      ...(args.pluginSyncMeter ? { pluginSyncMeter: args.pluginSyncMeter } : {}),
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,
       remoteCommandService,

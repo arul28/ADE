@@ -1226,6 +1226,21 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { pluginId: string }",
       example: "ade actions run plugin.get --input-json '{\"pluginId\":\"graph\"}'",
     },
+    getPanel: {
+      description: "Read a plugin's materialized panel schema — what the plugin published, not what its manifest names.",
+      input: "object { pluginId: string, panelId: string }",
+      example: "ade actions run plugin.getPanel --input-json '{\"pluginId\":\"graph\",\"panelId\":\"main\"}'",
+    },
+    getCollection: {
+      description: "Read rows from one of a plugin's synced collections, optionally filtered by key prefix.",
+      input: "object { pluginId: string, collection: string, keyPrefix?: string, limit?: number }",
+      example: "ade actions run plugin.getCollection --input-json '{\"pluginId\":\"graph\",\"collection\":\"issues\"}' --text",
+    },
+    setConfig: {
+      description: "Write a plugin's settings values. A patch: absent keys keep their value, null resets to the manifest default, unknown keys are refused. Configuring an installed plugin is not installing code, so this is not operator-only.",
+      input: "object { pluginId: string, values: object }",
+      example: "ade actions run plugin.setConfig --input-json '{\"pluginId\":\"graph\",\"values\":{\"defaultLane\":\"main\"}}'",
+    },
     install: {
       description: "Install a plugin from a git URL or a local directory. Operator-only: this puts third-party code on the machine.",
       input: "object { source: string, ref?: string, enable?: boolean }",

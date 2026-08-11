@@ -76,6 +76,18 @@ export const PLUGIN_LOG_LINE_MAX_BYTES = 2_000;
 // Errors
 // ---------------------------------------------------------------------------
 
+/**
+ * The one string a budget refusal ever carries.
+ *
+ * Declared here rather than beside the budget-pruning constants in
+ * `dbMaintenanceApi.ts` (which re-exports it) because both the SDK path and the
+ * wire path have to agree, and only this module is importable from all of
+ * them — daemon, child runtime, renderer and `apps/ade-cli`. A second spelling
+ * would mean a caller branches correctly on one route and falls through to
+ * "internal error" on the other.
+ */
+export const PLUGIN_BUDGET_EXCEEDED_CODE = "plugin_budget_exceeded";
+
 export type PluginSdkErrorCode =
   | "plugin_not_found"
   | "plugin_disabled"
@@ -83,7 +95,7 @@ export type PluginSdkErrorCode =
   | "plugin_crashed"
   | "plugin_timeout"
   | "invalid_args"
-  | "budget_exceeded"
+  | typeof PLUGIN_BUDGET_EXCEEDED_CODE
   | "not_permitted"
   | "unsupported_method"
   | "internal_error";
@@ -143,10 +155,23 @@ export function fromPluginStructuralError(payload: PluginStructuralError | undef
 
 export function budgetExceeded(budget: string, limit: number, actual: number): PluginSdkError {
   return new PluginSdkError(
-    "budget_exceeded",
+    PLUGIN_BUDGET_EXCEEDED_CODE,
     `Plugin ${budget} budget exceeded: ${actual} of ${limit}.`,
     { budget, limit, actual },
   );
+}
+
+/**
+ * True when `error` is a budget refusal, however it was relayed.
+ *
+ * Reads `code` off any shape rather than testing `instanceof PluginSdkError`:
+ * the same refusal reaches callers as a `PluginSdkError` in-process, as a
+ * `codedError` from a sync-side writer, and as a rehydrated
+ * {@link PluginStructuralError} after crossing the child boundary. All three
+ * carry the one code, and all three have to answer this question the same way.
+ */
+export function isPluginBudgetExceeded(error: unknown): boolean {
+  return (error as { code?: unknown } | null | undefined)?.code === PLUGIN_BUDGET_EXCEEDED_CODE;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,10 +374,28 @@ export type PluginSummary = {
   source: PluginInstallSource;
   installedAt: string;
   hasEntry: boolean;
-  surfaces: { kind: string; id: string; title: string; panelId: string }[];
+  surfaces: { kind: string; id: string; title: string; panelId: string; icon?: string }[];
+  /** Present only for theme plugins; the renderer's theme engine consumes it. */
+  theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
   cli: string[];
   restartCount: number;
   lastCrashAt: string | null;
+};
+
+/**
+ * A materialized `plugin_panels` row.
+ *
+ * `schema` is opaque here on purpose: this module never parses vocabulary, and
+ * a client too old to understand `vocabVersion` renders the panel's declared
+ * fallback rather than guessing at the body.
+ */
+export type PluginPanelRecord = {
+  pluginId: string;
+  panelId: string;
+  title: string | null;
+  schema: unknown;
+  vocabVersion: number;
+  updatedAt: string | null;
 };
 
 export type PluginDetail = PluginSummary & {
@@ -404,11 +447,37 @@ export type PluginDomainService = {
   invoke(args: { pluginId: string; action: string; args?: Record<string, unknown>; argv?: string[] }): Promise<unknown>;
   list(args?: { includeDisabled?: boolean }): Promise<PluginSummary[]>;
   get(args: { pluginId: string }): Promise<PluginDetail | null>;
+  /**
+   * Read a materialized panel schema. Every surface that renders a plugin panel
+   * goes through here — a manifest only names a `schemaFile`, and the row is
+   * what the plugin actually published.
+   */
+  getPanel(args: { pluginId: string; panelId: string }): Promise<PluginPanelRecord | null>;
+  getCollection(
+    args: { pluginId: string; collection: string; keyPrefix?: string; limit?: number },
+  ): Promise<PluginCollectionRow[]>;
   install(args: { source: string; ref?: string; enable?: boolean }): Promise<PluginSummary>;
   uninstall(args: { pluginId: string }): Promise<{ removed: boolean }>;
   enable(args: { pluginId: string }): Promise<PluginSummary>;
   disable(args: { pluginId: string }): Promise<PluginSummary>;
   usageSummary(args?: { pluginId?: string }): Promise<PluginUsageSummary>;
+  /**
+   * Write settings values for one plugin and return the plugin as it now reads.
+   *
+   * `values` is a PATCH: keys absent from it keep their stored value, and a key
+   * set to `null` returns to the manifest's declared default. Every key is
+   * checked against `manifest.settings` and an unknown one is refused rather
+   * than stored — a typo that silently persists would read back as a setting
+   * the plugin never sees, which is indistinguishable from a broken plugin.
+   *
+   * Deliberately NOT operator-gated: configuring an installed plugin is not
+   * installing code. Denial (when it happens) is policy, so it surfaces as
+   * `policyDenied`, never as a missing method.
+   */
+  setConfig(args: {
+    pluginId: string;
+    values: Record<string, string | number | boolean | null>;
+  }): Promise<PluginDetail>;
   /** Re-read the manifest and restart the child. The `ade plugin dev` loop. */
   reload(args: { pluginId: string }): Promise<PluginSummary>;
 };
@@ -418,10 +487,13 @@ export const PLUGIN_DOMAIN_ACTIONS = [
   "disable",
   "enable",
   "get",
+  "getCollection",
+  "getPanel",
   "install",
   "invoke",
   "list",
   "reload",
+  "setConfig",
   "uninstall",
   "usageSummary",
 ] as const;
@@ -433,7 +505,13 @@ export type PluginDomainAction = (typeof PLUGIN_DOMAIN_ACTIONS)[number];
  * `invoke` is deliberately absent: a plugin handler may write anything, so the
  * safe default is MUTATING.
  */
-export const PLUGIN_READ_ONLY_DOMAIN_ACTIONS: readonly PluginDomainAction[] = ["list", "get", "usageSummary"];
+export const PLUGIN_READ_ONLY_DOMAIN_ACTIONS: readonly PluginDomainAction[] = [
+  "list",
+  "get",
+  "getPanel",
+  "getCollection",
+  "usageSummary",
+];
 
 // ---------------------------------------------------------------------------
 // Shared validation helpers (host and child agree by importing, not by copying)

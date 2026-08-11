@@ -715,7 +715,15 @@ import type {
   ProductAnalyticsCaptureResult,
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
-import type { PluginDomainService } from "../shared/plugins/sdk";
+import type {
+  InstalledPlugin,
+  PluginChangeEvent,
+  PluginCollectionRow,
+  PluginInstallRequest,
+  PluginInstallResult,
+  PluginPanelRecord,
+  PluginUsageRow,
+} from "../renderer/lib/pluginRuntimeBridge";
 
 export {};
 
@@ -2148,7 +2156,43 @@ declare global {
         list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
-      plugin: PluginDomainService;
+      /**
+       * Members with no action behind them yet (the marketplace half, and
+       * `openLogs`) are absent rather than stubbed: the renderer's bridge treats
+       * a missing member as "unavailable", and a stub would read as "supported".
+       */
+      plugins: {
+        list: () => Promise<InstalledPlugin[]>;
+        getPanel: (args: {
+          pluginId: string;
+          panelId: string;
+        }) => Promise<PluginPanelRecord | null>;
+        getCollection: (args: {
+          pluginId: string;
+          collection: string;
+          keyPrefix?: string;
+          limit?: number;
+        }) => Promise<PluginCollectionRow[]>;
+        invoke: (args: {
+          pluginId: string;
+          action: string;
+          args?: Record<string, unknown>;
+        }) => Promise<unknown>;
+        restart: (args: { pluginId: string }) => Promise<void>;
+        install: (args: PluginInstallRequest) => Promise<PluginInstallResult>;
+        uninstall: (args: { pluginId: string; machineKey?: string }) => Promise<void>;
+        setEnabled: (args: {
+          pluginId: string;
+          enabled: boolean;
+          machineKey?: string;
+        }) => Promise<void>;
+        getConfig: (args: {
+          pluginId: string;
+        }) => Promise<Record<string, string | number | boolean | null>>;
+        setConfig: (args: { pluginId: string; key: string; value: unknown }) => Promise<void>;
+        usageSummary: (args?: { pluginId?: string }) => Promise<PluginUsageRow[]>;
+        onChanged: (cb: (event: PluginChangeEvent) => void) => () => void;
+      };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (

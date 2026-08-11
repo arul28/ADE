@@ -126,8 +126,14 @@ export const PLUGIN_PANEL_SCHEMA_MAX_BYTES = 64 * 1024;
 /** Per-plugin wire-meter rollups older than this are deleted. */
 export const PLUGIN_WIRE_METER_RETENTION_DAYS = 45;
 
-/** Error code every budget rejection carries, on both the SDK and wire paths. */
-export const PLUGIN_BUDGET_EXCEEDED_CODE = "plugin_budget_exceeded";
+/**
+ * Error code every budget rejection carries, on both the SDK and wire paths.
+ *
+ * Re-exported rather than declared: it is one string, and the SDK module is the
+ * one place every consumer of it can already import from. Sync-side callers
+ * that reach the budgets through this module keep reaching the code here too.
+ */
+export { PLUGIN_BUDGET_EXCEEDED_CODE } from "../../../shared/plugins/sdk";
 
 /**
  * Delete rows belonging to plugins that are no longer present in

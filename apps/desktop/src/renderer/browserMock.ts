@@ -66,13 +66,6 @@ import {
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import {
-  PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
-  PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
-  PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
-  PLUGIN_PANELS_MAX_PER_PLUGIN,
-  type PluginSummary,
-} from "../shared/plugins/sdk";
-import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
@@ -2887,26 +2880,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     platform: "darwin",
   };
 
-  const browserMockPluginSummary: PluginSummary = {
-    pluginId: "mock-plugin",
-    version: "0.0.0",
-    displayName: "Mock plugin",
-    description: "Plugins are unavailable in the browser preview.",
-    icon: null,
-    accent: null,
-    enabled: false,
-    status: "idle",
-    warnings: [],
-    errors: [],
-    source: { kind: "builtin" },
-    installedAt: now,
-    hasEntry: false,
-    surfaces: [],
-    cli: [],
-    restartCount: 0,
-    lastCrashAt: null,
-  };
-
   const browserMockPersonalChats: any[] = [];
   const browserMockPromptStashes: PromptStashEntry[] = [];
   const browserMockPersonalChatEvents = new Map<string, any[]>();
@@ -5577,24 +5550,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       list: async () => [],
       import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
     },
-    plugin: {
+    plugins: {
       list: async () => [],
-      get: async () => null,
+      getPanel: async () => null,
+      getCollection: async () => [],
       invoke: async () => null,
-      install: resolvedArg(browserMockPluginSummary),
-      uninstall: resolvedArg({ removed: false }),
-      enable: resolvedArg(browserMockPluginSummary),
-      disable: resolvedArg(browserMockPluginSummary),
-      usageSummary: async () => ({
-        entries: [],
-        budgets: {
-          collectionBytesPerPlugin: PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
-          collectionRowsPerPlugin: PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
-          contributionsPerPlugin: PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
-          panelsPerPlugin: PLUGIN_PANELS_MAX_PER_PLUGIN,
-        },
+      restart: resolvedArg(undefined),
+      install: resolvedArg({
+        pluginId: "mock-plugin",
+        version: "0.0.0",
+        displayName: "Mock plugin",
       }),
-      reload: resolvedArg(browserMockPluginSummary),
+      uninstall: resolvedArg(undefined),
+      setEnabled: resolvedArg(undefined),
+      getConfig: async () => ({}),
+      setConfig: resolvedArg(undefined),
+      usageSummary: async () => [],
+      onChanged: () => () => {},
     },
     pty: {
       create: resolvedArg({

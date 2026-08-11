@@ -1,19 +1,23 @@
+import {
+  deletePluginCollectionValue,
+  isPluginBudgetExceeded,
+  publishPluginContribution,
+  putPluginCollectionValue,
+  putPluginPanel,
+  readPluginCollectionUsage,
+} from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
 import { parsePluginContributionPayload, type PluginEntityKind, type PluginSocketKind } from "../../../shared/plugins/sockets";
 import {
   assertPluginCollectionKey,
   assertPluginCollectionName,
-  budgetExceeded,
-  encodePluginJsonWithinBudget,
   PluginSdkError,
-  pluginUtf8ByteLength,
+  PLUGIN_BUDGET_EXCEEDED_CODE,
   PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
   PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
-  PLUGIN_COLLECTION_VALUE_MAX_BYTES,
   PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
-  PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
   PLUGIN_PANELS_MAX_PER_PLUGIN,
-  PLUGIN_PANEL_SCHEMA_MAX_BYTES,
   type PluginCollectionRow,
+  type PluginPanelRecord,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
 import type { AdeDb } from "../state/kvDb";
@@ -95,6 +99,8 @@ export type PluginDataStore = {
     panelId: string,
     args: { title?: string; icon?: string; surface?: string; schema: unknown; vocabVersion: number },
   ): void;
+  /** The materialized panel row, which is what every client actually renders. */
+  readPanel(pluginId: string, panelId: string): PluginPanelRecord | null;
   usage(pluginId?: string): PluginUsageSummary;
   removePluginData(pluginId: string): void;
 };
@@ -114,13 +120,58 @@ function assertEntityId(entityId: unknown): string {
 }
 
 /**
+ * Serialize a value for storage. Size is NOT checked here: the writers in
+ * `pluginTableWriters` own every ceiling and enforce it inside the same
+ * transaction as the insert, so a check on this side could only disagree.
+ */
+function encodePluginJson(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? null) ?? "null";
+  } catch (error) {
+    throw new PluginSdkError(
+      "invalid_args",
+      `Value is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Run a writer, translating its `codedError` budget rejection into the SDK's
+ * typed error. Both carry the same `plugin_budget_exceeded` code — this only
+ * changes the CLASS, so an SDK caller that branches on `PluginSdkError` sees a
+ * refusal rather than an anonymous internal failure.
+ */
+function withBudgetErrors<T>(budget: string, run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    if (!isPluginBudgetExceeded(error)) throw error;
+    throw new PluginSdkError(
+      PLUGIN_BUDGET_EXCEEDED_CODE,
+      error instanceof Error ? error.message : String(error),
+      { budget },
+    );
+  }
+}
+
+/**
  * Byte length in SQL. `length()` on a TEXT column counts characters, which
  * would under-report every non-ASCII value and let a plugin past its byte
  * budget by storing emoji; casting to BLOB counts the stored UTF-8 bytes.
  */
 const VALUE_BYTES_SQL = "length(cast(value_json as blob))";
 
-export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean }): PluginDataStore {
+export function createPluginDataStore(deps: {
+  db: AdeDb;
+  ensureTables?: boolean;
+  /**
+   * Called after a collection write lands. The sync host pushes plugin panels
+   * on this rather than waiting for its poll; it is a no-op when nobody has a
+   * panel open, so it is safe to fire on every write. Injected so this module
+   * keeps no dependency on the sync layer.
+   */
+  onCollectionChanged?: () => void;
+}): PluginDataStore {
   const { db } = deps;
   if (deps.ensureTables !== false) {
     for (const statement of PLUGIN_TABLE_DDL) db.run(statement);
@@ -128,29 +179,8 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
 
   const nowIso = (): string => new Date().toISOString();
 
-  const collectionTotals = (pluginId: string): { rows: number; bytes: number } => {
-    const row = db.get<{ rows: number | null; bytes: number | null }>(
-      `select count(*) as rows, coalesce(sum(${VALUE_BYTES_SQL}), 0) as bytes
-         from plugin_collections where plugin_id = ?`,
-      [pluginId],
-    );
-    return { rows: Number(row?.rows ?? 0), bytes: Number(row?.bytes ?? 0) };
-  };
-
-  const contributionCount = (pluginId: string): number => {
-    const row = db.get<{ rows: number | null }>(
-      "select count(*) as rows from plugin_contributions where plugin_id = ?",
-      [pluginId],
-    );
-    return Number(row?.rows ?? 0);
-  };
-
-  const panelCount = (pluginId: string): number => {
-    const row = db.get<{ rows: number | null }>(
-      "select count(*) as rows from plugin_panels where plugin_id = ?",
-      [pluginId],
-    );
-    return Number(row?.rows ?? 0);
+  const notifyCollectionChanged = (): void => {
+    deps.onCollectionChanged?.();
   };
 
   return {
@@ -170,43 +200,25 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
     putCollection(pluginId, collection, key, value) {
       const name = assertPluginCollectionName(collection);
       const rowKey = assertPluginCollectionKey(key);
-      const json = encodePluginJsonWithinBudget(value, "collection_value", PLUGIN_COLLECTION_VALUE_MAX_BYTES);
-      const bytes = pluginUtf8ByteLength(json);
-
-      // Both per-plugin ceilings are checked against the totals MINUS the row
-      // this write replaces, so an in-place update of an existing key never
-      // fails on a budget it already occupies.
-      const totals = collectionTotals(pluginId);
-      const existing = db.get<{ bytes: number | null }>(
-        `select ${VALUE_BYTES_SQL} as bytes from plugin_collections
-           where plugin_id = ? and collection = ? and key = ?`,
-        [pluginId, name, rowKey],
-      );
-      const nextRows = totals.rows + (existing ? 0 : 1);
-      if (nextRows > PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN) {
-        throw budgetExceeded("collection_rows", PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN, nextRows);
-      }
-      const nextBytes = totals.bytes - Number(existing?.bytes ?? 0) + bytes;
-      if (nextBytes > PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN) {
-        throw budgetExceeded("collection_bytes", PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN, nextBytes);
-      }
-
-      // Upsert, never `insert or replace`: replace is a DELETE plus an INSERT,
-      // and the delete would publish a tombstone every peer has to apply.
-      db.run(
-        `insert into plugin_collections (plugin_id, collection, key, value_json, updated_at)
-           values (?, ?, ?, ?, ?)
-         on conflict(plugin_id, collection, key)
-           do update set value_json = excluded.value_json, updated_at = excluded.updated_at`,
-        [pluginId, name, rowKey, json, nowIso()],
-      );
+      withBudgetErrors("collections", () => {
+        putPluginCollectionValue(db, {
+          pluginId,
+          collection: name,
+          key: rowKey,
+          valueJson: encodePluginJson(value),
+          nowIso: nowIso(),
+        });
+      });
+      notifyCollectionChanged();
     },
 
     deleteCollection(pluginId, collection, key) {
-      db.run(
-        "delete from plugin_collections where plugin_id = ? and collection = ? and key = ?",
-        [pluginId, assertPluginCollectionName(collection), assertPluginCollectionKey(key)],
-      );
+      deletePluginCollectionValue(db, {
+        pluginId,
+        collection: assertPluginCollectionName(collection),
+        key: assertPluginCollectionKey(key),
+      });
+      notifyCollectionChanged();
     },
 
     listCollection(pluginId, collection, options) {
@@ -244,86 +256,93 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
     publishContribution(pluginId, entityKind, entityId, socket, payload) {
       const id = assertEntityId(entityId);
       if (payload === null) {
-        db.run(
-          `delete from plugin_contributions
-             where entity_kind = ? and entity_id = ? and plugin_id = ? and socket = ?`,
-          [entityKind, id, pluginId, socket],
-        );
+        publishPluginContribution(db, {
+          entityKind,
+          entityId: id,
+          pluginId,
+          socket,
+          payloadJson: null,
+          nowIso: nowIso(),
+        });
         return;
       }
       const parsed = parsePluginContributionPayload(socket, payload);
       if (!parsed) {
         throw new PluginSdkError("invalid_args", `Contribution payload does not match socket "${socket}".`);
       }
-      const json = encodePluginJsonWithinBudget(
-        parsed,
-        "contribution_payload",
-        PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
-      );
-      const existing = db.get<{ one: number }>(
-        `select 1 as one from plugin_contributions
-           where entity_kind = ? and entity_id = ? and plugin_id = ? and socket = ?`,
-        [entityKind, id, pluginId, socket],
-      );
-      if (!existing) {
-        const next = contributionCount(pluginId) + 1;
-        if (next > PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN) {
-          throw budgetExceeded("contributions", PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN, next);
-        }
-      }
-      db.run(
-        `insert into plugin_contributions (entity_kind, entity_id, plugin_id, socket, payload_json, updated_at)
-           values (?, ?, ?, ?, ?, ?)
-         on conflict(entity_kind, entity_id, plugin_id, socket)
-           do update set payload_json = excluded.payload_json, updated_at = excluded.updated_at`,
-        [entityKind, id, pluginId, socket, json, nowIso()],
-      );
+      withBudgetErrors("contributions", () => {
+        publishPluginContribution(db, {
+          entityKind,
+          entityId: id,
+          pluginId,
+          socket,
+          payloadJson: encodePluginJson(parsed),
+          nowIso: nowIso(),
+        });
+      });
     },
 
     updatePanel(pluginId, panelId, args) {
-      const json = encodePluginJsonWithinBudget(args.schema, "panel_schema", PLUGIN_PANEL_SCHEMA_MAX_BYTES);
-      const existing = db.get<{ one: number }>(
-        "select 1 as one from plugin_panels where plugin_id = ? and panel_id = ?",
-        [pluginId, panelId],
-      );
-      if (!existing) {
-        const next = panelCount(pluginId) + 1;
-        if (next > PLUGIN_PANELS_MAX_PER_PLUGIN) {
-          throw budgetExceeded("panels", PLUGIN_PANELS_MAX_PER_PLUGIN, next);
-        }
-      }
-      db.run(
-        `insert into plugin_panels (plugin_id, panel_id, title, icon, surface, schema_json, vocab_version, updated_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?)
-         on conflict(plugin_id, panel_id)
-           do update set
-             title = excluded.title,
-             icon = excluded.icon,
-             surface = excluded.surface,
-             schema_json = excluded.schema_json,
-             vocab_version = excluded.vocab_version,
-             updated_at = excluded.updated_at`,
-        [
+      withBudgetErrors("panels", () => {
+        putPluginPanel(db, {
           pluginId,
           panelId,
-          args.title ?? "",
-          args.icon ?? "",
-          args.surface ?? "",
-          json,
-          Math.trunc(args.vocabVersion),
-          nowIso(),
-        ],
+          title: args.title ?? "",
+          icon: args.icon ?? "",
+          surface: args.surface ?? "",
+          schemaJson: encodePluginJson(args.schema),
+          vocabVersion: Math.trunc(args.vocabVersion),
+          nowIso: nowIso(),
+        });
+      });
+    },
+
+    readPanel(pluginId, panelId) {
+      const row = db.get<{
+        title: string;
+        schema_json: string;
+        vocab_version: number;
+        updated_at: string;
+      }>(
+        `select title, schema_json, vocab_version, updated_at
+           from plugin_panels where plugin_id = ? and panel_id = ?`,
+        [pluginId, panelId],
       );
+      if (!row) return null;
+      let schema: unknown = null;
+      try {
+        schema = JSON.parse(row.schema_json) as unknown;
+      } catch {
+        // One corrupt row must not blank the whole panel surface: the record is
+        // still returned so the client renders the panel's declared fallback.
+        schema = null;
+      }
+      return {
+        pluginId,
+        panelId,
+        title: row.title || null,
+        schema,
+        vocabVersion: Number(row.vocab_version ?? 1),
+        updatedAt: row.updated_at || null,
+      };
     },
 
     usage(pluginId) {
       const where = pluginId ? " where plugin_id = ?" : "";
       const params = pluginId ? [pluginId] : [];
-      const collections = db.all<{ plugin_id: string; rows: number; bytes: number }>(
-        `select plugin_id, count(*) as rows, coalesce(sum(${VALUE_BYTES_SQL}), 0) as bytes
-           from plugin_collections${where} group by plugin_id`,
-        params,
-      );
+      // One plugin is measured by the writers' own accounting, so "how big is
+      // this plugin" has a single definition on the read and write paths.
+      const collections = pluginId
+        ? (() => {
+          const totals = readPluginCollectionUsage(db, pluginId);
+          return totals.rows > 0
+            ? [{ plugin_id: pluginId, rows: totals.rows, bytes: totals.bytes }]
+            : [];
+        })()
+        : db.all<{ plugin_id: string; rows: number; bytes: number }>(
+          `select plugin_id, count(*) as rows, coalesce(sum(${VALUE_BYTES_SQL}), 0) as bytes
+             from plugin_collections group by plugin_id`,
+        );
       const contributions = db.all<{ plugin_id: string; rows: number }>(
         `select plugin_id, count(*) as rows from plugin_contributions${where} group by plugin_id`,
         params,
@@ -332,19 +351,6 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
         `select plugin_id, count(*) as rows from plugin_panels${where} group by plugin_id`,
         params,
       );
-      // Per-plugin wire accounting is written by the sync host into a
-      // local-only table that may not exist yet on an unmigrated database, so
-      // its absence degrades to zeros rather than failing the whole summary.
-      let meter: { plugin_id: string; direction: string; bytes: number }[] = [];
-      try {
-        meter = db.all<{ plugin_id: string; direction: string; bytes: number }>(
-          `select plugin_id, direction, coalesce(sum(bytes), 0) as bytes
-             from plugin_wire_meter_daily${where} group by plugin_id, direction`,
-          params,
-        );
-      } catch {
-        meter = [];
-      }
 
       const entries = new Map<string, PluginUsageSummary["entries"][number]>();
       const entryFor = (id: string) => {
@@ -356,6 +362,9 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
             collectionBytes: 0,
             contributionRows: 0,
             panelRows: 0,
+            // Wire bytes are the sync meter's to report — it holds counters
+            // this database has not seen a flush of yet, so the host merges
+            // them in rather than this reading the meter table behind its back.
             syncBytesOut: 0,
             syncBytesIn: 0,
           };
@@ -370,13 +379,6 @@ export function createPluginDataStore(deps: { db: AdeDb; ensureTables?: boolean 
       }
       for (const row of contributions) entryFor(row.plugin_id).contributionRows = Number(row.rows ?? 0);
       for (const row of panels) entryFor(row.plugin_id).panelRows = Number(row.rows ?? 0);
-      for (const row of meter) {
-        const entry = entryFor(row.plugin_id);
-        // Matched on the first letter so this keeps working whether the meter
-        // writes "in"/"out" or "inbound"/"outbound".
-        if (row.direction.startsWith("o")) entry.syncBytesOut = Number(row.bytes ?? 0);
-        else if (row.direction.startsWith("i")) entry.syncBytesIn = Number(row.bytes ?? 0);
-      }
       return {
         entries: [...entries.values()].sort((left, right) => left.pluginId.localeCompare(right.pluginId)),
         budgets: {

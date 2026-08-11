@@ -2392,7 +2392,7 @@ function pluginActionError(error: unknown): unknown {
     case "plugin_not_found":
     case "plugin_no_entry":
     case "invalid_args":
-    case "budget_exceeded":
+    case "plugin_budget_exceeded":
     case "unsupported_method":
       return new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, data);
     default:

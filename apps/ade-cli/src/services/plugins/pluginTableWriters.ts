@@ -14,6 +14,14 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 /**
  * The only writers for the `plugin_*` tables.
  *
+ * "Only" is literal, and it is the whole point: the SDK-facing store the plugin
+ * host hands to child processes
+ * (`apps/desktop/src/main/services/plugins/pluginDataStore.ts`) validates and
+ * serializes, then calls straight through to these functions. It enforces no
+ * ceiling of its own. Two writers each enforcing their own copy of the budgets
+ * is how a plugin ends up over one of them — whichever path forgets a check is
+ * the path a plugin will find.
+ *
  * Every cap from `dbMaintenanceApi` is enforced HERE, inside the same
  * `begin immediate` transaction as the insert, because plugin rows are the one
  * part of ADE's schema written by third-party code. The guarantee has to live
@@ -34,10 +42,15 @@ function budgetExceeded(message: string): Error & { code: typeof PLUGIN_BUDGET_E
   return codedError(message, PLUGIN_BUDGET_EXCEEDED_CODE);
 }
 
-/** True when `error` is this module's typed rejection, however it was relayed. */
-export function isPluginBudgetExceeded(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === PLUGIN_BUDGET_EXCEEDED_CODE;
-}
+/**
+ * True when `error` is this module's typed rejection, however it was relayed.
+ *
+ * Re-exported from the SDK rather than written twice: the SDK path raises the
+ * same refusal as a `PluginSdkError`, and one predicate that reads `code` off
+ * any shape is what lets a caller branch identically whichever writer it went
+ * through.
+ */
+export { isPluginBudgetExceeded } from "../../../../desktop/src/shared/plugins/sdk";
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");

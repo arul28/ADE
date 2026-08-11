@@ -81,6 +81,19 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
+  // Installing a plugin is a `git clone` over the network followed by a
+  // manifest read, on the same reasoning as `lane.delete`: the daemon runs it
+  // to completion regardless, so a client budget shorter than the work reports
+  // a failure for an install that then appears in the roster anyway. A cold
+  // clone of a repository with history is minutes, not seconds.
+  ["plugin.install", 4 * 60_000],
+  // A plugin handler is third-party code, and the child supervisor already
+  // bounds it: 20s waiting for a cold child's `ready` frame plus 60s on the
+  // handler itself. This budget has to outlive BOTH, or a first invoke — the
+  // one that pays for the spawn — reports an opaque IPC timeout instead of the
+  // supervisor's own typed `plugin_timeout`, and the user learns nothing about
+  // which half was slow.
+  ["plugin.invoke", 90_000],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

@@ -1,0 +1,127 @@
+import { describe, expect, it } from "vitest";
+
+import type { PluginManifest } from "../../../shared/plugins/manifest";
+import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
+import type { PluginInstalledPlugin, PluginInstallService } from "./pluginInstallService";
+
+function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+  return {
+    name: "graph",
+    version: "1.2.0",
+    displayName: "Graph",
+    description: "",
+    icon: "network",
+    accent: "#5b8def",
+    vocabVersion: 1,
+    surfaces: [],
+    panels: [],
+    sockets: [],
+    collections: {},
+    settings: [],
+    cli: [],
+    skills: [],
+    official: false,
+    ...overrides,
+  };
+}
+
+function installed(overrides: Partial<PluginInstalledPlugin> = {}): PluginInstalledPlugin {
+  return {
+    record: {
+      pluginId: "graph",
+      version: "1.2.0",
+      enabled: true,
+      source: { kind: "git", url: "https://example.com/graph.git", ref: "main" },
+      installedAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    },
+    manifest: manifest(),
+    root: "/plugins/graph",
+    errors: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function stubInstallService(overrides: Partial<PluginInstallService> = {}): {
+  service: PluginInstallService;
+  calls: { source: string; ref?: string }[];
+} {
+  const calls: { source: string; ref?: string }[] = [];
+  const service: PluginInstallService = {
+    root: "/plugins",
+    list: () => [installed()],
+    get: () => installed(),
+    install: async (args) => {
+      calls.push({ source: args.source, ...(args.ref ? { ref: args.ref } : {}) });
+      return installed();
+    },
+    uninstall: () => ({ removed: true }),
+    setEnabled: (_pluginId, enabled) => installed({
+      record: { ...installed().record, enabled },
+    }),
+    reload: () => installed(),
+    skillRoots: () => [],
+    ...overrides,
+  };
+  return { service, calls };
+}
+
+describe("pluginInstallServiceAdapter", () => {
+  it("maps a path source to this machine's single-string install argument", async () => {
+    const { service, calls } = stubInstallService();
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const record = await adapter.install({ kind: "path", path: "/tmp/graph" });
+
+    expect(calls).toEqual([{ source: "/tmp/graph" }]);
+    expect(record).toMatchObject({ pluginId: "graph", version: "1.2.0", displayName: "Graph", icon: "network" });
+  });
+
+  it("carries a git ref through and renders the source for a peer", async () => {
+    const { service, calls } = stubInstallService();
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const record = await adapter.install({ kind: "git", url: "https://example.com/graph.git", ref: "v2" });
+
+    expect(calls).toEqual([{ source: "https://example.com/graph.git", ref: "v2" }]);
+    // The record's source is the INSTALLED one, not the request: a peer renders
+    // what this machine actually has.
+    expect(record.source).toBe("https://example.com/graph.git#main");
+  });
+
+  it("refuses a registry install rather than reporting one that never ran", async () => {
+    const { service, calls } = stubInstallService();
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    await expect(adapter.install({ kind: "registry", pluginId: "graph" })).rejects.toThrow(/registry id/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fires onChanged for every install-state change but not for a read", async () => {
+    const { service } = stubInstallService();
+    let changes = 0;
+    const adapter = createPluginInstallServiceAdapter({ install: service, onChanged: () => { changes += 1; } });
+
+    await adapter.install({ kind: "path", path: "/tmp/graph" });
+    await adapter.uninstall("graph");
+    await adapter.setEnabled("graph", false);
+    expect(changes).toBe(3);
+
+    await adapter.list();
+    expect(changes).toBe(3);
+  });
+
+  it("falls back to the registry record when the manifest cannot be read", () => {
+    const row = toPluginPresenceRow(installed({ manifest: null }));
+
+    expect(row).toEqual({
+      pluginId: "graph",
+      version: "1.2.0",
+      enabled: true,
+      displayName: "graph",
+      icon: "",
+      accent: "",
+    });
+  });
+});

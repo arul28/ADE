@@ -14,7 +14,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
-import { budgetExceeded, PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
+import { budgetExceeded, PluginSdkError, PLUGIN_BUDGET_EXCEEDED_CODE } from "../../desktop/src/shared/plugins/sdk";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -6462,7 +6462,7 @@ describe("run_ade_action plugin domain", () => {
     expect(denied?.isError).toBe(true);
     expect(denied.error).toMatchObject({
       code: JsonRpcErrorCode.invalidParams,
-      data: { pluginErrorCode: "budget_exceeded", detail: { limit: 2048, actual: 4096 } },
+      data: { pluginErrorCode: PLUGIN_BUDGET_EXCEEDED_CODE, detail: { limit: 2048, actual: 4096 } },
     });
   });
 

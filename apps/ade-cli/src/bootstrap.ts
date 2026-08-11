@@ -96,7 +96,16 @@ import {
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
-import { listPluginAgentSkillRoots } from "../../desktop/src/main/services/plugins/pluginInstallService";
+import {
+  listPluginAgentSkillRoots,
+  resolvePluginsRoot,
+} from "../../desktop/src/main/services/plugins/pluginInstallService";
+import {
+  createPluginPresenceService,
+  getPluginPresenceService,
+  setPluginPresenceService,
+} from "./services/plugins/pluginPresenceService";
+import { createPluginSyncMeter } from "./services/plugins/pluginSyncMeter";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import {
@@ -680,6 +689,36 @@ export async function createAdeRuntime(args: {
     adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
   });
   let detachPluginHostBinding: (() => void) | null = null;
+  // ONE meter per project scope: the sync host records frames into it and
+  // `plugin.usageSummary` reads its rollup, so a second instance would split
+  // the counters between a writer and a reader that never see each other.
+  const pluginSyncMeter = createPluginSyncMeter({ db, logger });
+
+  /**
+   * Plugin ids installed on this machine, for the storage doctor's plugin prune.
+   *
+   * CRITICAL: `[]` and `null` are NOT interchangeable. `[]` is the real answer
+   * "this machine has no plugins" and DELETES every plugin row in this project;
+   * `null` means "could not read the registry" and makes the pruner SKIP.
+   * Getting them backwards silently destroys a user's plugin data. The install
+   * registry's own reader cannot tell the two apart — it returns an empty
+   * registry for a missing file AND for an unreadable one — so the state file
+   * (`state.json`, written by pluginInstallService) is probed here first.
+   */
+  const listInstalledPluginIds = (): readonly string[] | null => {
+    try {
+      JSON.parse(fs.readFileSync(path.join(resolvePluginsRoot(), "state.json"), "utf8"));
+    } catch (error) {
+      // No registry at all: nothing has ever been installed on this machine.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      return null;
+    }
+    try {
+      return pluginHostService.listPresenceRows().map((row) => row.pluginId);
+    } catch {
+      return null;
+    }
+  };
 
   const operationService = createOperationService({ db, projectId });
   const keybindingsService = createKeybindingsService({ db });
@@ -1527,6 +1566,42 @@ export async function createAdeRuntime(args: {
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
     "sync-device-id",
   );
+
+  /**
+   * Which plugins each machine on the account has installed.
+   *
+   * Bound even though this process cannot run the directory fan-out: the
+   * `plugins.presenceList` remote command answers `{plugins: []}` when nothing
+   * is bound, and a caller files that under this machine's key — "this computer
+   * has no plugins" — which DELETES its stored rows on every peer. Publishing
+   * this machine's own rows and answering that pull honestly is the whole job
+   * here.
+   *
+   * The pull half is deliberately inert: `resolveTargetIdForMachineKey` and
+   * `callMachineMethod` need the paired-target registry and the machine-to-
+   * machine call path, both of which live in the desktop main process
+   * (`remoteConnectionService`). The brain has neither, so the directory is
+   * reported as unavailable — the contract's own "don't know" — rather than
+   * faked. Peers still converge: each one pulls FROM this machine.
+   */
+  const pluginPresenceService = createPluginPresenceService({
+    db,
+    localMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    listLocalPlugins: () => pluginHostService.listPresenceRows(),
+    listMachines: async () => null,
+    resolveTargetIdForMachineKey: () => null,
+    callMachineMethod: () =>
+      Promise.reject(new Error("This computer cannot call other machines directly.")),
+    logger,
+  });
+  setPluginPresenceService(pluginPresenceService);
+  // Seed this machine's rows so presence has a floor before the first install.
+  void pluginPresenceService.publishLocalPresence().catch((error: unknown) => {
+    logger.debug("plugin.presence_seed_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
   const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
     const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
@@ -1691,6 +1766,7 @@ export async function createAdeRuntime(args: {
   purgeProofRecordsUnder: (removedPath) => {
     computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
   },
+    listInstalledPluginIds,
   });
   const budgetCapService = createBudgetCapService({
     db,
@@ -1777,6 +1853,9 @@ export async function createAdeRuntime(args: {
       personalChatScope: resolvedArgs.syncRuntime.personalChatScope,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
+      // The same instance `plugin.usageSummary` reads: the host writes frame
+      // counts into it, and a host restart must not swap it for another.
+      pluginSyncMeter,
       cloudRelayStore,
       syncTunnelClientService,
       onStatusChanged: (snapshot) => {
@@ -1945,6 +2024,14 @@ export async function createAdeRuntime(args: {
       // Drops only THIS scope's plugin binding. The host itself is machine-
       // scoped and outlives the project; the daemon disposes it at shutdown.
       swallow(() => detachPluginHostBinding?.());
+      // Only unbind the presence ref if it is still OURS: another project scope
+      // in this process may have bound its own after this one did.
+      swallow(() => {
+        if (getPluginPresenceService() === pluginPresenceService) setPluginPresenceService(null);
+        pluginPresenceService.dispose();
+      });
+      // Flushes the last window of wire counters on the way out.
+      swallow(() => pluginSyncMeter.dispose());
       void configReloadService.dispose().catch(() => {});
       swallow(() => prPollingService.dispose());
       // Detach only this scope's signals; the shared publisher outlives the scope.
@@ -1990,6 +2077,12 @@ export async function createAdeRuntime(args: {
       projectId,
       projectRoot,
       db,
+      syncMeter: pluginSyncMeter,
+      // Panels on a phone or another computer otherwise wait out the host's
+      // poll; this is a no-op when nobody has one open.
+      onPluginDataChanged: () => {
+        syncService?.getHostService()?.notifyPluginDataChanged();
+      },
       invokeAdeAction: async (domain, action, args) => {
         const actionDomain = domain as AdeActionDomain;
         if (!isAutomationAllowedAdeAction(actionDomain, action)) {
