@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
@@ -65,6 +65,9 @@ function stubInstallService(overrides: Partial<PluginInstallService> = {}): {
     }),
     reload: () => installed(),
     skillRoots: () => [],
+    // Ships nothing by default: the machine most installs land on carries no
+    // bundled copy of the plugin being asked for.
+    bundledPackageVersion: () => null,
     ...overrides,
   };
   return { service, calls };
@@ -109,6 +112,34 @@ describe("pluginInstallServiceAdapter", () => {
     });
     await expect(withEmptyResolver.install({ kind: "registry", pluginId: "graph" }))
       .rejects.toThrow(/plugin directory/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("installs a bundled package from this disk instead of asking the directory", async () => {
+    const { service, calls } = stubInstallService({ bundledPackageVersion: () => "1.0.0" });
+    const resolveRegistrySource = vi.fn(async () => ({ source: "https://example.com/x.git" }));
+    const adapter = createPluginInstallServiceAdapter({ install: service, resolveRegistrySource });
+
+    // The starter themes ship inside ADE and are deliberately not seeded, so an
+    // id is all a phone or the web client can send — and the directory does not
+    // list them, which used to make them uninstallable from anywhere but the
+    // machine's own desktop.
+    const record = await adapter.install({ kind: "registry", pluginId: "ade-theme-ink" });
+
+    expect(calls).toEqual([{ source: "ade-theme-ink" }]);
+    expect(resolveRegistrySource).not.toHaveBeenCalled();
+    expect(record).toMatchObject({ pluginId: "graph" });
+  });
+
+  it("asks the directory when a version other than the bundled one is wanted", async () => {
+    const { service, calls } = stubInstallService({ bundledPackageVersion: () => "1.0.0" });
+    const withoutResolver = createPluginInstallServiceAdapter({ install: service });
+
+    // The bundled copy is not the version asked for, so the bundle cannot
+    // answer — and the refusal says which version this computer does ship
+    // rather than claiming the plugin is unknown.
+    await expect(withoutResolver.install({ kind: "registry", pluginId: "graph", version: "2.0.0" }))
+      .rejects.toThrow(/ships "graph" 1\.0\.0/);
     expect(calls).toHaveLength(0);
   });
 

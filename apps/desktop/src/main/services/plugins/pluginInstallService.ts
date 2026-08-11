@@ -100,6 +100,13 @@ export type PluginInstallService = {
   setContributionEnabled(pluginId: string, socketId: string, enabled: boolean): PluginInstalledPlugin;
   /** Re-read the manifest from disk (the `ade plugin dev` loop). */
   reload(pluginId: string): PluginInstalledPlugin;
+  /**
+   * The version of the package this ADE SHIPS for an id, or null if it ships
+   * none. Callers that only have an id — a phone, the web client, another
+   * machine's Marketplace — ask this to find out whether "install it" can be
+   * answered from this disk instead of from a repository.
+   */
+  bundledPackageVersion(pluginId: string): string | null;
   /** Absolute skill directories that exist, enabled plugins only. */
   skillRoots(): string[];
 };
@@ -844,7 +851,21 @@ export function createPluginInstallService(deps: {
 
   const skillRoots = (): string[] => collectSkillRoots(root, list());
 
-  return { root, list, get, install, uninstall, setEnabled, setContributionEnabled, reload, skillRoots };
+  const bundledPackageVersion = (pluginId: string): string | null =>
+    findBuiltinPackage(pluginId)?.manifest.version ?? null;
+
+  return {
+    root,
+    list,
+    get,
+    install,
+    uninstall,
+    setEnabled,
+    setContributionEnabled,
+    reload,
+    skillRoots,
+    bundledPackageVersion,
+  };
 }
 
 function collectSkillRoots(root: string, installed: readonly PluginInstalledPlugin[]): string[] {

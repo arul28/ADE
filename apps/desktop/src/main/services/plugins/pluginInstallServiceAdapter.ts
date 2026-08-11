@@ -126,14 +126,34 @@ export function createPluginInstallServiceAdapter(deps: {
   return {
     async install(source: SyncPluginInstallSource): Promise<SyncPluginInstallRecord> {
       if (source.kind === "registry") {
-        // A registry id names an entry, not a place to clone from. The
-        // directory is the only thing that maps one to the other, and a machine
-        // that cannot reach it refuses rather than guessing a URL from the id —
-        // a guessed source is an arbitrary repository running as this plugin.
+        // A package ADE SHIPS needs no repository: the copy is already on this
+        // disk. This is the path the starter themes arrive by — they are
+        // bundled and deliberately not seeded, so an id is the only thing a
+        // phone, the web client or another machine's Marketplace can send, and
+        // before this the directory answered "not listed" and the install
+        // refused for something sitting right there.
+        const bundledVersion = deps.install.bundledPackageVersion(source.pluginId);
+        const wantsAnotherVersion = Boolean(
+          source.version && bundledVersion && source.version !== bundledVersion,
+        );
+        if (bundledVersion && !wantsAnotherVersion) {
+          const installed = await deps.install.install({ source: source.pluginId });
+          changed();
+          return record(installed);
+        }
+        // Otherwise a registry id names an entry, not a place to clone from.
+        // The directory is the only thing that maps one to the other, and a
+        // machine that cannot reach it refuses rather than guessing a URL from
+        // the id — a guessed source is an arbitrary repository running as this
+        // plugin.
         const resolved = await deps.resolveRegistrySource?.(source.pluginId, source.version ?? null);
         if (!resolved) {
           throw new Error(
-            `"${source.pluginId}" is not in the plugin directory this computer can see, so there is nothing to install from.`,
+            bundledVersion
+              ? `This computer ships "${source.pluginId}" ${bundledVersion}, not ${String(source.version)}, `
+                + "and the plugin directory it can see does not list the version you asked for."
+              : `"${source.pluginId}" is not in the plugin directory this computer can see, and this ADE does `
+                + "not ship it, so there is nothing to install from.",
           );
         }
         const installed = await deps.install.install({
