@@ -39,7 +39,9 @@ is a PostHog event.
 Spawned-child turn completions record the local structured line
 `agent_chat.spawn_completion_routed` with `childSessionId`, `parentSessionId`,
 `childTurnId`, `spawnKind`, `status`, and `routedTo` (`wake` or
-`quiet_notice`). Write it for every completion, including the quiet ones: a
+`quiet_notice`). It is written after the delivery succeeds, so it records the
+outcome rather than the intent and a retried attempt never reads as a second
+wake. Write it for every completion, including the quiet ones: a
 parent that was never woken is otherwise indistinguishable in the logs from a
 child that never finished, which is how the original mis-attribution went
 unnoticed. A final delivery failure keeps its own

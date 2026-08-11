@@ -29701,17 +29701,6 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
-          // One local line per child turn completion. A parent that never got
-          // woken is otherwise indistinguishable from a child that never
-          // finished, which is exactly how the original incident went unnoticed.
-          logger.info("agent_chat.spawn_completion_routed", {
-            childSessionId,
-            parentSessionId,
-            childTurnId: resolvedTurnId,
-            spawnKind,
-            status: resultStatus,
-            routedTo: parentShouldWake ? "wake" : "quiet_notice",
-          });
           if (parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,
@@ -29728,6 +29717,19 @@ export function createAgentChatService(args: {
               detail: { spawnCompletion },
             });
           }
+          // One line per child turn completion, written after the delivery
+          // succeeded so it records the outcome rather than the intent — a
+          // retried attempt must not read as a second wake. A parent that was
+          // never woken is otherwise indistinguishable from a child that never
+          // finished, which is how the original incident went unnoticed.
+          logger.info("agent_chat.spawn_completion_routed", {
+            childSessionId,
+            parentSessionId,
+            childTurnId: resolvedTurnId,
+            spawnKind,
+            status: resultStatus,
+            routedTo: parentShouldWake ? "wake" : "quiet_notice",
+          });
           return;
         } catch (error) {
           lastError = error;
