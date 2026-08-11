@@ -170,8 +170,8 @@ finishes:
 - `spawnCompletion` — a result returning from the child's own grandchild.
 - `agentRelay` — any other bound agent messaging the child (a grandchild
   reporting in, a sibling coordinating, the child writing to itself).
-- `hostContinuation` and legacy `kind: "continuity_recovery"` — ADE prompting
-  the chat to resume or repair its own work.
+- `hostContinuation` — ADE prompting the chat to resume or repair its own work
+  (`kind: "continuity_recovery"` is still matched for older transcripts).
 - `deliveryState: "queued"` — superseded by the delivered copy, which carries
   the authoritative metadata (the queue path strips `scheduledWake`).
 
@@ -181,8 +181,8 @@ also a directive — it carries a human's continuation intent. Ownership is read
 at completion time; ADE keeps no per-schedule provenance. Peer turns are always
 quiet notes.
 
-All of this provenance is host-authored. `withTrustedSpawnDispatchMetadata` runs
-on `chat.messageSession`, `chat.sendMessage` and `chat.steer` before any
+All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
+`chat.messageSession`, `chat.sendMessage` and `chat.steer` before any
 role-specific branch: it deletes every caller-supplied marker, then re-derives
 `spawnDispatch` (caller is the target's persisted parent) or `agentRelay` (any
 other bound caller) from observed identity. Positional invocation of those three

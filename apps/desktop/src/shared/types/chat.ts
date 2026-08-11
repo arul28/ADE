@@ -203,7 +203,11 @@ export type AgentChatAgentRelayMetadata = {
 };
 
 export type AgentChatHostContinuationMetadata = {
-  reason: "provider_schedule_cleanup" | "plan_followup" | "interrupted_turn_recovery";
+  reason:
+    | "provider_schedule_cleanup"
+    | "plan_followup"
+    | "interrupted_turn_recovery"
+    | "continuity_recovery";
 };
 
 export type AgentChatContinuityRecovery = {

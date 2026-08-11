@@ -2523,17 +2523,12 @@ export function createAutomationService({
     // Automation config is not a trusted author of chat-message provenance:
     // `spawnDispatch` and its siblings decide whether an agent completion wakes
     // another agent, and the host derives them from observed identity.
-    if (
-      domain === "chat"
-      && typeof resolvedArgs === "object"
-      && resolvedArgs !== null
-      && !Array.isArray(resolvedArgs)
-      && typeof (resolvedArgs as Record<string, unknown>).metadata === "object"
-      && (resolvedArgs as Record<string, unknown>).metadata !== null
-    ) {
-      stripHostAuthoredMessageProvenance(
-        (resolvedArgs as { metadata: Record<string, unknown> }).metadata,
-      );
+    if (domain === "chat") {
+      for (const candidate of Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs]) {
+        if (isRecord(candidate) && isRecord(candidate.metadata)) {
+          stripHostAuthoredMessageProvenance(candidate.metadata);
+        }
+      }
     }
 
     try {

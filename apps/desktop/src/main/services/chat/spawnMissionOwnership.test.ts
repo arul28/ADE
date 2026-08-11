@@ -18,9 +18,9 @@ const userMessage = (
   return {
     sessionId: CHILD,
     sequence,
-    at: new Date(Date.UTC(2026, 7, 11, 0, sequence)).toISOString(),
+    timestamp: new Date(Date.UTC(2026, 7, 11, 0, sequence)).toISOString(),
     event: { type: "user_message", text: "…", ...event },
-  } as AgentChatEventEnvelope;
+  };
 };
 
 const parentDispatch = (turnId: string) => userMessage({
@@ -47,6 +47,13 @@ describe("isMissionDirective", () => {
   ])("does not count %s as a directive", (_label, metadata) => {
     expect(isMissionDirective({ type: "user_message", text: "…", metadata })).toBe(false);
   });
+
+  it.each([["handoff"], ["cross_machine_handoff"]])(
+    "counts a %s prompt as a directive — it carries a human's continuation intent",
+    (kind) => {
+      expect(isMissionDirective({ type: "user_message", text: "…", metadata: { kind } })).toBe(true);
+    },
+  );
 
   it("does not count a queued message, whose delivered twin carries the real metadata", () => {
     expect(isMissionDirective({ type: "user_message", text: "…", deliveryState: "queued" })).toBe(false);
@@ -107,6 +114,13 @@ describe("parentShouldWakeForChildTurn", () => {
     expect(shouldWake(history, "t1")).toBe(true);
   });
 
+  it("still wakes when a human steers inline into the parent-dispatched turn", () => {
+    // An inline steer joins the running turn and reuses its id, so the turn's
+    // last user message is the human's — the parent dispatch is still in there.
+    const history = [parentDispatch("t1"), humanMessage("t1")];
+    expect(shouldWake(history, "t1")).toBe(true);
+  });
+
   it("stays quiet for a child with no parent-dispatched history at all", () => {
     expect(shouldWake([humanMessage("t1")], "t1")).toBe(false);
     expect(shouldWake([], "t1")).toBe(false);
@@ -131,6 +145,7 @@ describe("stripHostAuthoredMessageProvenance", () => {
       scheduledWake: { scheduleId: "s", kind: "wakeup", firedAt: "x" },
       spawnCompletion: { childSessionId: "c", childTitle: "c", spawnKind: "subagent", status: "completed" },
     };
-    expect(stripHostAuthoredMessageProvenance(metadata)).toEqual({ requestId: "req-1" });
+    stripHostAuthoredMessageProvenance(metadata);
+    expect(metadata).toEqual({ requestId: "req-1" });
   });
 });

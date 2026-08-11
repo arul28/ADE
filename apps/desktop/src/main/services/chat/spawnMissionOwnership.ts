@@ -21,8 +21,8 @@ import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } f
  *   coordinating, or the child messaging itself. None of them own the mission,
  *   so none of them may take it from the parent.
  * - `hostContinuation` — ADE prompting the child to resume/repair its own work.
- * - legacy `kind: "continuity_recovery"` — the same thing on transcripts
- *   written before `hostContinuation` existed.
+ * - `kind: "continuity_recovery"` — the same thing on transcripts written
+ *   before `hostContinuation` existed. Current writers set both.
  * - `deliveryState: "queued"` — not yet delivered, and the queued copy is
  *   lossy (the queue path strips `scheduledWake`). The delivered twin carries
  *   the authoritative metadata; a queued message that is never delivered was
@@ -42,17 +42,20 @@ export const isMissionDirective = (
   if (event.deliveryState === "queued") return false;
   const metadata: AgentChatEventMetadata | null | undefined = event.metadata;
   if (!metadata) return true;
-  if (
-    metadata.scheduledWake
-    || metadata.spawnCompletion
-    || metadata.agentRelay
-    || metadata.hostContinuation
-  ) {
-    return false;
-  }
+  if (NON_DIRECTIVE_METADATA_KEYS.some((key) => metadata[key])) return false;
   if (metadata.kind === "continuity_recovery") return false;
   return true;
 };
+
+/** Host-authored markers that say "this message continues the mission" rather
+ * than "this message assigns one". The single source for both the predicate
+ * above and the untrusted-caller strip below. */
+const NON_DIRECTIVE_METADATA_KEYS = [
+  "scheduledWake",
+  "spawnCompletion",
+  "agentRelay",
+  "hostContinuation",
+] as const;
 
 /**
  * Provenance ADE authors itself and never accepts from a caller. Untrusted
@@ -62,26 +65,19 @@ export const isMissionDirective = (
  */
 export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   "spawnDispatch",
-  "agentRelay",
-  "hostContinuation",
-  "scheduledWake",
-  "spawnCompletion",
+  ...NON_DIRECTIVE_METADATA_KEYS,
 ] as const;
 
-export const stripHostAuthoredMessageProvenance = (
-  metadata: Record<string, unknown>,
-): Record<string, unknown> => {
+export const stripHostAuthoredMessageProvenance = (metadata: Record<string, unknown>): void => {
   for (const key of HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS) delete metadata[key];
-  return metadata;
 };
 
-const findLastUserMessage = (
+const lastDirective = (
   history: readonly AgentChatEventEnvelope[],
-  matches: (event: Extract<AgentChatEvent, { type: "user_message" }>) => boolean,
 ): Extract<AgentChatEvent, { type: "user_message" }> | null => {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const event = history[index]?.event;
-    if (event?.type !== "user_message" || !matches(event)) continue;
+    if (event?.type !== "user_message" || !isMissionDirective(event)) continue;
     return event;
   }
   return null;
@@ -98,7 +94,9 @@ const stampedByParent = (
  * Two independent reasons, either of which is enough:
  * - the parent dispatched *this* turn (the original contract — kept so a turn
  *   the parent started still reports back even if a human messaged the child
- *   while it ran), or
+ *   while it ran; an inline steer joins the running turn and reuses its id, so
+ *   this asks whether the turn contains a parent dispatch, not whether the
+ *   parent wrote its last message), or
  * - the parent owns the mission at completion time.
  *
  * Ownership is read at completion time; ADE keeps no per-schedule provenance.
@@ -112,7 +110,12 @@ export const parentShouldWakeForChildTurn = (args: {
   turnId: string;
 }): boolean => {
   const { history, parentSessionId, turnId } = args;
-  const dispatchedThisTurn = findLastUserMessage(history, (event) => event.turnId === turnId);
-  if (stampedByParent(dispatchedThisTurn, parentSessionId)) return true;
-  return stampedByParent(findLastUserMessage(history, isMissionDirective), parentSessionId);
+  const dispatchedThisTurn = history.some((envelope) => {
+    const event = envelope.event;
+    return event.type === "user_message"
+      && event.turnId === turnId
+      && stampedByParent(event, parentSessionId);
+  });
+  if (dispatchedThisTurn) return true;
+  return stampedByParent(lastDirective(history), parentSessionId);
 };

@@ -29625,8 +29625,10 @@ export function createAgentChatService(args: {
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
     // Wake decision lives in `spawnMissionOwnership` so the policy — which
-    // inputs count as a directive — is stated and tested in one place.
-    const parentShouldWake = parentShouldWakeForChildTurn({
+    // inputs count as a directive — is stated and tested in one place. Peers
+    // never wake, so they never pay for the transcript read. Read once, before
+    // the delivery retries: a retry must not re-decide ownership.
+    const parentShouldWake = spawnKind === "subagent" && parentShouldWakeForChildTurn({
       history: mergeEnvelopeStreams(
         readTranscriptEnvelopes(child),
         eventHistoryBySession.get(childSessionId) ?? [],
@@ -29699,7 +29701,7 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
-          if (spawnKind === "subagent" && parentShouldWake) {
+          if (parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,
               kind: "wake",
@@ -38256,7 +38258,11 @@ export function createAgentChatService(args: {
         sessionId,
         text: capsule,
         displayText: "Rebuilt this chat's AI thread from ADE history.",
-        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        metadata: {
+          kind: "continuity_recovery",
+          hostContinuation: { reason: "continuity_recovery" },
+          hideFullPrompt: true,
+        },
         allowContinuityRecovery: true,
       });
     } catch (error) {
@@ -38289,7 +38295,11 @@ export function createAgentChatService(args: {
           sessionId,
           text: capsule,
           displayText: "Rebuilt this chat's AI thread from ADE history.",
-          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+          metadata: {
+            kind: "continuity_recovery",
+            hostContinuation: { reason: "continuity_recovery" },
+            hideFullPrompt: true,
+          },
         }, {
           awaitDispatch: true,
           preparedMessage: preparedCapsule,
@@ -38336,7 +38346,11 @@ export function createAgentChatService(args: {
           sessionId,
           text: capsule,
           displayText: "Rebuilt this chat's AI thread from ADE history.",
-          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+          metadata: {
+            kind: "continuity_recovery",
+            hostContinuation: { reason: "continuity_recovery" },
+            hideFullPrompt: true,
+          },
         }, {
           awaitDispatch: true,
           preparedMessage: preparedCapsule,

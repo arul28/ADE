@@ -2697,9 +2697,9 @@ function scopeChatAdeActionArgs(
 
 /** Chat actions whose caller-supplied metadata is persisted on a `user_message`,
  * where this provenance decides whether a completion may wake another agent. */
-const SPAWN_DISPATCH_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
+const HOST_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
 
-function withTrustedSpawnDispatchMetadata(
+function withTrustedAgentProvenance(
   runtime: AdeRuntime,
   session: SessionState,
   chatArgs: Record<string, unknown>,
@@ -3761,7 +3761,7 @@ async function runTool(args: {
     // role- or scope-specific branch. That stamp decides whether a child's
     // completion may wake another agent — and now decides it for the whole
     // mission, not one turn — so no caller, elevated or not, gets to supply it.
-    const stampedChatAction = domain === "chat" && SPAWN_DISPATCH_STAMPED_CHAT_ACTIONS.has(action);
+    const stampedChatAction = domain === "chat" && HOST_STAMPED_CHAT_ACTIONS.has(action);
     if (stampedChatAction && (argsList || hasScalarArg)) {
       // Positional invocation would carry caller metadata straight past the
       // re-derivation below. These actions take object arguments anyway.
@@ -3771,7 +3771,7 @@ async function runTool(args: {
       );
     }
     const rawObjectArgs = stampedChatAction
-      ? withTrustedSpawnDispatchMetadata(runtime, session, safeObject(toolArgs.args))
+      ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
@@ -3815,8 +3815,6 @@ async function runTool(args: {
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
-    } else if (domain === "chat" && action === "messageSession") {
-      scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
     } else if (!callerIsCto && domain === "pty") {
       scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
