@@ -1156,66 +1156,6 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
-  /**
-   * The abort signal is edge-triggered: a turn that is STILL running will not
-   * trip it again. So an unconditional retry would, once step 3 attaches real
-   * teardown, stop the very work that beat the first attempt — once per poll.
-   * The revision is the "something changed since" signal that gates it.
-   */
-  it("holds the retry until the session is at rest, then re-arms", async () => {
-    const db = createMemoryDb();
-    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
-      settled: [] as string[],
-      aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
-    }));
-    // The turn that won the race is still running until the test says otherwise.
-    let sessionRuntimeState = "running";
-    const service = createPrMergeAutoSettlementService({
-      db: db as any,
-      sessionService: withSessionLookup({
-        list: vi.fn(() => [
-          {
-            laneId: "lane-1",
-            id: "chat-owned",
-            toolType: "codex-chat",
-            archivedAt: null,
-            settledAt: null,
-            status: "running",
-            runtimeState: sessionRuntimeState,
-          },
-        ]),
-        settleSessionsReportingAborts,
-      }) as any,
-      emitEvent: vi.fn(),
-    });
-
-    const openPr = createSummary({ state: "open" });
-    await service.processSnapshot({ prs: [openPr], polledAt: "2026-03-24T12:00:00.000Z" });
-    const mergedPr = createSummary({
-      state: "merged",
-      mergedAt: "2026-03-24T12:01:00.000Z",
-      chatSessionIds: ["chat-owned"],
-    });
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
-
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:02:00.000Z" });
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:03:00.000Z" });
-
-    expect(
-      settleSessionsReportingAborts,
-      "teardown must not be re-run against still-active work on every poll",
-    ).toHaveBeenCalledTimes(1);
-
-    // The turn ends: the runtime goes idle and the retry re-arms.
-    sessionRuntimeState = "idle";
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:04:00.000Z" });
-    expect(
-      settleSessionsReportingAborts,
-      "the retry must re-arm once the session is at rest",
-    ).toHaveBeenCalledTimes(2);
-  });
-
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
     // machine reconciles, backfilling rows for PRs it had never stored. Every

@@ -65,21 +65,7 @@ export function createPrMergeAutoSettlementService(args: {
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
-  /**
-   * Sessions whose auto-settle aborted and that have not been seen at rest
-   * since.
-   *
-   * Two earlier gates were wrong. A revision check never re-arms: a turn
-   * COMPLETING does not move the settle lifecycle, so the PR would be skipped
-   * forever. A time-based cooldown expires while a long turn is still running,
-   * so in step 3 the retry would stop the very work that won the race.
-   *
-   * "At rest" is the actual signal, and it is the same one the canonical settle
-   * tier uses: a session is eligible again once it is no longer running, or its
-   * runtime has gone idle. It re-arms exactly when the activity ends.
-   * Instance-scoped, so it lives as long as the poller.
-   */
-  const abortedSessionIds = new Set<string>();
+
 
   /**
    * The currently open or draft PRs in the previous snapshot, so a merge we
@@ -210,22 +196,22 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        // Wait for the activity that won the race to finish. The abort signal is
-        // edge-triggered, so a turn that is STILL running never re-trips it;
-        // retrying regardless would, in step 3, stop the very work that beat the
-        // first attempt. Gating on "at rest" defers the merge without ever
-        // abandoning it.
-        if (abortedSessionIds.has(session.id)) {
-          const current = args.sessionService.get(session.id);
-          const status = (current?.status ?? "").toLowerCase();
-          const runtime = (current?.runtimeState ?? "").toLowerCase();
-          const atRest = status !== "running" || runtime === "idle";
-          if (!atRest) {
-            abandonedThisPr = true;
-            continue;
-          }
-          abortedSessionIds.delete(session.id);
-        }
+        // NOTE for step 3: this retries on the next poll, unconditionally.
+        //
+        // That is harmless while teardown is a no-op, and it is what this code
+        // did before the settling window existed — but once real teardown
+        // attaches, a retry against work that is still running would stop the
+        // very work that won the race, once per poll. Three gates were tried
+        // here and each was wrong in a different way: a lifecycle-revision check
+        // never re-arms (a turn COMPLETING does not move the settle tuple), a
+        // timer re-arms while a long turn is still running, and a raw
+        // `runtimeState` check never observes turn completion at all, because
+        // chat rows deliberately keep `status = "running"` between turns and
+        // only `chatSessionProjection` resolves an idle chat to `idle`.
+        //
+        // The correct gate therefore needs PROJECTED chat state, which means a
+        // dependency this poller does not have. Bounding it belongs with
+        // teardown, not before it.
         const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
           settledAt: polledAt,
@@ -235,10 +221,8 @@ export function createPrMergeAutoSettlementService(args: {
         if (settleResult.aborted.length) {
           // The session became active while the settle was in flight. Leaving
           // the PR unhandled is the point: a later pass retries, instead of this
-          // merge being consumed by a settle that never landed. Hold the retry
-          // until the session is seen at rest.
+          // merge being consumed by a settle that never landed.
           abandonedThisPr = true;
-          abortedSessionIds.add(session.id);
         }
       }
 

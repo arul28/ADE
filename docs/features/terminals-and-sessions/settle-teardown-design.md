@@ -414,6 +414,29 @@ of per-statement fsync and does not describe ADE. The persisted table therefore
 stays, with the in-process counter alongside it — see §3a, where that counter
 turned out to be load-bearing for monotonicity rather than merely a fallback.
 
+### 3c-iii. Step 3 must bound the PR-merge retry (open requirement)
+
+When `settleSessions` reports an abort, `prMergeAutoSettlementService` leaves the
+merged PR unhandled so a later poll retries it — otherwise the merge is consumed
+by a settle that never landed. Step 2 ships that retry **unconditional**, which
+is correct while teardown is a no-op and is what the code did before the settling
+window existed.
+
+It stops being correct the moment teardown is real: a retry fired against work
+that is still running would stop the very work that won the race, once per poll.
+Step 3 owns the bound. Three gates were tried in step 2 and each was wrong in a
+different way, so the next attempt should start from why:
+
+| Gate | Why it fails |
+| --- | --- |
+| Lifecycle revision moved | Never re-arms. A turn *completing* does not touch the settle tuple, so the revision is unchanged and the retry is skipped forever. |
+| Elapsed timer | Re-arms while a long turn is still running — exactly the case the bound exists to prevent. |
+| `session.runtimeState !== "running"` on the persisted row | Never observes turn completion for chat at all. Chat rows deliberately hold `status = "running"` between turns; only `chatSessionProjection` resolves an idle chat to `idle`. |
+
+The workable signal is therefore **projected** chat state, which this poller has
+no dependency on today. Wiring that dependency is step-3 scope; do not re-attempt
+a gate that reads the raw persisted row.
+
 ### 3d. When teardown cannot confirm
 
 R5 is a product decision, not a mechanism. If a provider stop is unavailable,
