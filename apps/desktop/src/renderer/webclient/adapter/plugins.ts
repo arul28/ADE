@@ -220,7 +220,11 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
    */
   const panelRows = new Map<string, { rows: SyncPluginCollectionRow[]; at: number }>();
 
-  const stashKey = (pluginId: string, panelId: string): string => `${pluginId} ${panelId}`;
+  // The separator is written as an ESCAPE, never as the byte itself: a literal
+  // NUL in a source file makes git treat the whole file as binary, so it stops
+  // diffing and every review of it becomes an opaque blob. Same convention, and
+  // the same reason, as the cache keys in `infra/commandCaller.ts`.
+  const stashKey = (pluginId: string, panelId: string): string => `${pluginId}\u0000${panelId}`;
 
   const stashRows = (pluginId: string, panelId: string, rows: SyncPluginCollectionRow[]): void => {
     const now = Date.now();
@@ -239,7 +243,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   /** Rows for one collection, newest panel read first. */
   const stashedRows = (pluginId: string, collection: string): SyncPluginCollectionRow[] => {
     const now = Date.now();
-    const prefix = `${pluginId} `;
+    const prefix = `${pluginId}\u0000`;
     const fresh = [...panelRows.entries()]
       .filter(([key, value]) => key.startsWith(prefix) && now - value.at <= PANEL_ROWS_TTL_MS)
       .reverse();
