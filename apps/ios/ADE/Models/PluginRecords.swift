@@ -246,7 +246,7 @@ enum PluginContributionParser {
       entityId: entityId,
       pluginId: pluginId,
       socketRaw: socket,
-      order: PluginPanelParser.numberValue(object["order"]).map { Int($0) },
+      order: PluginPanelParser.intValue(object["order"]),
       payload: payload,
       updatedAt: updatedAt
     )
@@ -270,7 +270,7 @@ enum PluginContributionParser {
     return PluginRowMenuItemPayload(
       label: label,
       icon: PluginPanelParser.cleanString(object["icon"], max: 40),
-      danger: object["danger"] as? Bool ?? false,
+      danger: PluginPanelParser.boolValue(object["danger"]) ?? false,
       actionId: actionId
     )
   }

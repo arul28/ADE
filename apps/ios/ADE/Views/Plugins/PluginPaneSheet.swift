@@ -17,7 +17,6 @@ struct PluginPaneSheet: View {
     self.request = request
     _store = StateObject(wrappedValue: PluginPaneStore(
       pluginId: request.pluginId,
-      panelId: request.panelId,
       sync: syncService
     ))
   }
@@ -187,9 +186,9 @@ struct PluginPanelFallbackCard: View {
 
   var body: some View {
     ADEEmptyStateView(symbol: symbol, title: title, message: message) {
-      if let deeplink, let url = URL(string: deeplink) {
+      if let url = PluginDeeplinkURL.resolve(deeplink) {
         // An `ade://` link routes back through `DeepLinkRouter` and lands on
-        // the nearest thing the phone CAN show; anything else leaves the app.
+        // the nearest thing the phone CAN show; `https` leaves the app.
         ADEGlassActionButton(title: "Open", symbol: "arrow.up.forward", tint: ADEColor.accent) {
           openURL(url)
         }

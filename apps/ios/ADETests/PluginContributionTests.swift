@@ -70,6 +70,39 @@ final class PluginContributionTests: XCTestCase {
     }
   }
 
+  func testAstronomicalOrderReadsAsUnorderedRatherThanTrapping() throws {
+    // Regression. `Int(_:)` traps outside `Int`'s range, and `order` comes off
+    // a synced row written by another machine.
+    let huge = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "pr", entityId: "42", pluginId: "a", socket: "row-badge",
+      payloadJSON: #"{ "order": 1e300, "text": "huge" }"#, updatedAt: ""
+    ))
+    XCTAssertNil(huge.order, "An order this build cannot hold sorts as unordered, not as a crash.")
+
+    // And it still sorts: unordered entries fall to the back, then by plugin id.
+    let index = PluginContributionIndex(contributions: [
+      huge,
+      try XCTUnwrap(badge(plugin: "b", text: "first", order: 1)),
+    ])
+    XCTAssertEqual(index.badges(.pr, "42").visible.compactMap { $0.badge?.text }, ["first", "huge"])
+  }
+
+  func testNumericOneIsNotADangerousMenuItem() throws {
+    // `as? Bool` bridges any `NSNumber` holding 0 or 1, so `"danger": 1` used
+    // to style an entry as destructive without the payload ever saying so.
+    let numeric = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "graph", socket: "row-menu-item",
+      payloadJSON: #"{ "label": "Rebuild", "actionId": "a", "danger": 1 }"#, updatedAt: ""
+    ))
+    XCTAssertEqual(numeric.menuItem?.danger, false)
+
+    let real = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "graph", socket: "row-menu-item",
+      payloadJSON: #"{ "label": "Rebuild", "actionId": "a", "danger": true }"#, updatedAt: ""
+    ))
+    XCTAssertEqual(real.menuItem?.danger, true)
+  }
+
   func testUnknownEntityKindIsSkipped() {
     XCTAssertNil(badge(plugin: "p", text: "x", kind: "spaceship"))
   }

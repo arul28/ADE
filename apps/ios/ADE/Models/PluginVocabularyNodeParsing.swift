@@ -24,7 +24,7 @@ extension PluginPanelParser {
     if let raw = object["align"] as? String, let value = PluginVocabStack.Align(rawValue: raw) {
       stack.align = value
     }
-    stack.wrap = object["wrap"] as? Bool ?? false
+    stack.wrap = boolValue(object["wrap"]) ?? false
     for (index, child) in (object["children"] as? [Any] ?? []).enumerated() {
       guard let node = parseNode(child, path: "\(path).children[\(index)]", depth: depth + 1, context: &context) else {
         break
@@ -81,7 +81,7 @@ extension PluginPanelParser {
       node.kind = kind
     }
     node.icon = cleanString(object["icon"], max: PluginVocabLimits.maxIdChars)
-    node.disabled = object["disabled"] as? Bool ?? false
+    node.disabled = boolValue(object["disabled"]) ?? false
     return .button(node)
   }
 
@@ -171,10 +171,14 @@ extension PluginPanelParser {
       let value = row[column.key]
       if let text = value as? String {
         out[column.key] = String(text.prefix(PluginVocabLimits.maxValueChars))
-      } else if let flag = value as? Bool {
-        out[column.key] = flag ? "Yes" : "No"
       } else if let number = numberValue(value) {
+        // Numbers are read before booleans, and through the CoreFoundation
+        // type check rather than `as? Bool`: that cast bridges any `NSNumber`
+        // holding 0 or 1, so a cell whose value is the number 1 used to render
+        // as "Yes".
         out[column.key] = formatNumber(number)
+      } else if let flag = boolValue(value) {
+        out[column.key] = flag ? "Yes" : "No"
       } else {
         out[column.key] = ""
       }
@@ -254,7 +258,7 @@ extension PluginPanelParser {
       field.step = step
       field.initialNumber = numberValue(object["value"])
     case .toggle:
-      field.initialFlag = object["value"] as? Bool
+      field.initialFlag = boolValue(object["value"])
     case .text:
       field.initialText = cleanString(object["value"], max: PluginVocabLimits.maxValueChars)
     case .secret:

@@ -28,6 +28,19 @@ enum PluginVocabulary {
   static let version = 1
 }
 
+/// Narrow a schema-supplied `Double` to an `Int`, or nothing.
+///
+/// `Int(_:)` traps — not throws — on a value outside `Int`'s range, and every
+/// number reaching this file arrived as JSON written by another machine. A
+/// panel declaring `"v": 1e300` would crash the app on the first schema read,
+/// before the version check that exists to reject it. `9.2e18` sits just inside
+/// `Int64.max` (≈9.223e18) with room for the double's own imprecision; anything
+/// past it reads as absent, which every caller already handles.
+func pluginVocabInt(_ value: Double) -> Int? {
+  guard value.isFinite, value >= -9.2e18, value <= 9.2e18 else { return nil }
+  return Int(value)
+}
+
 enum PluginVocabLimits {
   static let maxNodes = 200
   static let maxDepth = 8
@@ -79,7 +92,11 @@ enum PluginVocabScalar: Equatable {
   var jsonValue: Any {
     switch self {
     case let .text(value): return value
-    case let .number(value): return value == value.rounded() ? Int(value) : value
+    case let .number(value):
+      // Whole numbers go back out as integers so a plugin sees `3`, not `3.0` —
+      // but only when they fit, since `Int(_:)` traps rather than saturating.
+      guard value == value.rounded(), let whole = pluginVocabInt(value) else { return value }
+      return whole
     case let .flag(value): return value
     }
   }

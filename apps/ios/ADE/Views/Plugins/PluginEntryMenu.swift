@@ -7,7 +7,6 @@ struct PluginEntry: Identifiable, Equatable {
   var pluginId: String
   var label: String
   var icon: String?
-  var panelCount: Int
 }
 
 /// Resolves which plugins this phone can open right now.
@@ -64,8 +63,7 @@ final class PluginEntryListModel: ObservableObject {
         return PluginEntry(
           pluginId: plugin.pluginId,
           label: plugin.label,
-          icon: icon.flatMap { $0.isEmpty ? nil : $0 },
-          panelCount: panelCount
+          icon: icon.flatMap { $0.isEmpty ? nil : $0 }
         )
       }
       .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }

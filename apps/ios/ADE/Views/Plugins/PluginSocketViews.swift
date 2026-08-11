@@ -55,24 +55,33 @@ struct PluginRowBadgeCluster: View {
 /// The renderer owns gestures here, not the schema: menu entries only. A swipe
 /// action would need a `List` (`.swipeActions` works nowhere else) and would
 /// race the row's own long-press recognizer.
+///
+/// The section is drawn whole here — filter, empty guard and leading divider —
+/// so a surface only has to say where the group goes. Left to the call sites,
+/// Lanes and Work disagreed about the divider and about which contributions
+/// count as menu items.
 struct PluginRowMenuItems: View {
   let contributions: [PluginContribution]
   let isEnabled: Bool
   let onInvoke: (PluginContribution) -> Void
 
   var body: some View {
-    ForEach(contributions) { contribution in
-      if let item = contribution.menuItem {
-        Button {
-          onInvoke(contribution)
-        } label: {
-          if let icon = item.icon, PluginSymbol.exists(icon) {
-            Label(item.label, systemImage: icon)
-          } else {
-            Text(item.label)
+    let items = contributions.filter { $0.menuItem != nil }
+    if !items.isEmpty {
+      Divider()
+      ForEach(items) { contribution in
+        if let item = contribution.menuItem {
+          Button {
+            onInvoke(contribution)
+          } label: {
+            if let icon = item.icon, PluginSymbol.exists(icon) {
+              Label(item.label, systemImage: icon)
+            } else {
+              Text(item.label)
+            }
           }
+          .disabled(!isEnabled)
         }
-        .disabled(!isEnabled)
       }
     }
   }

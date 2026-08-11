@@ -275,6 +275,143 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(stack.children.count, 2)
   }
 
+  // MARK: - Numbers too large for `Int`
+
+  func testAstronomicalVersionIsRejectedRatherThanTrapping() {
+    // Regression. `Int(_:)` traps on anything outside `Int`'s range, and `v` is
+    // read before any validation, on the main thread, from a schema another
+    // machine wrote — so `1e300` here used to crash the app at the first read
+    // of the very field that exists to reject it.
+    for declared in ["1e300", "9.3e18", "-9.3e18"] {
+      let result = parse(#"""
+      { "v": \#(declared), "fallback": { "title": "T", "text": "t" }, "body": [] }
+      """#)
+      guard case let .failed(failure, fallback) = result else {
+        return XCTFail("\(declared) must fail the panel")
+      }
+      XCTAssertEqual(failure, .versionUnsupported(declared: -1), "\(declared) reads as no version at all")
+      XCTAssertEqual(fallback?.title, "T", "The author's own sentence still survives.")
+    }
+  }
+
+  func testAstronomicalBindingLimitReadsAsNoLimit() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{ "component": "list", "bind": { "collection": "rows", "limit": 1e300 } }]
+    }
+    """#))
+    guard case let .list(list) = schema.body[0] else { return XCTFail("expected a list") }
+    XCTAssertNil(list.bind?.limit)
+    XCTAssertEqual(list.bind?.collection, "rows")
+  }
+
+  func testAstronomicalActionArgStaysADoubleWhenSentBack() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "button", "label": "Run",
+        "onPress": { "action": "a", "args": { "big": 1e300, "small": 3 } }
+      }]
+    }
+    """#))
+    guard case let .button(button) = schema.body[0] else { return XCTFail("expected a button") }
+    // Whole numbers go out as integers; one too large to be an `Int` goes out
+    // as the double it already was, rather than trapping on the way.
+    XCTAssertEqual(button.onPress.argsJSON["small"] as? Int, 3)
+    XCTAssertEqual(button.onPress.argsJSON["big"] as? Double, 1e300)
+  }
+
+  // MARK: - Booleans that are not booleans
+
+  func testNumericCellsRenderAsNumbersRatherThanYesNo() throws {
+    // `as? Bool` bridges any `NSNumber` holding 0 or 1, so a table cell whose
+    // value was the number 1 drew as "Yes".
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "table",
+        "columns": [
+          { "key": "count", "label": "Count" },
+          { "key": "zero", "label": "Zero" },
+          { "key": "flag", "label": "Flag" }
+        ],
+        "rows": [{ "count": 1, "zero": 0, "flag": true }]
+      }]
+    }
+    """#))
+    guard case let .table(table) = schema.body[0], let row = table.rows?.first else {
+      return XCTFail("expected a table row")
+    }
+    XCTAssertEqual(row["count"], "1")
+    XCTAssertEqual(row["zero"], "0")
+    XCTAssertEqual(row["flag"], "Yes", "A real boolean still reads as Yes/No.")
+  }
+
+  func testNumericOneDoesNotSetBooleanNodeFields() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [
+        { "component": "stack", "wrap": 1, "children": [] },
+        { "component": "stack", "wrap": true, "children": [] },
+        { "component": "button", "label": "A", "disabled": 1, "onPress": { "action": "a" } },
+        { "component": "button", "label": "B", "disabled": true, "onPress": { "action": "a" } }
+      ]
+    }
+    """#))
+    guard case let .stack(numeric) = schema.body[0], case let .stack(real) = schema.body[1] else {
+      return XCTFail("expected two stacks")
+    }
+    XCTAssertFalse(numeric.wrap, "The number 1 is not the boolean true.")
+    XCTAssertTrue(real.wrap)
+    guard case let .button(numericButton) = schema.body[2], case let .button(realButton) = schema.body[3] else {
+      return XCTFail("expected two buttons")
+    }
+    XCTAssertFalse(numericButton.disabled)
+    XCTAssertTrue(realButton.disabled)
+  }
+
+  func testNumericOneDoesNotPreArmAToggleField() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "form",
+        "fields": [
+          { "kind": "toggle", "id": "numeric", "label": "Numeric", "value": 1 },
+          { "kind": "toggle", "id": "real", "label": "Real", "value": true }
+        ],
+        "submit": { "label": "Save", "onPress": { "action": "save" } }
+      }]
+    }
+    """#))
+    guard case let .form(form) = schema.body[0] else { return XCTFail("expected a form") }
+    XCTAssertNil(form.fields[0].initialFlag)
+    XCTAssertEqual(form.fields[1].initialFlag, true)
+  }
+
+  // MARK: - Fallback deeplinks
+
+  func testOnlyAdeAndHttpsDeeplinksResolve() {
+    XCTAssertNotNil(PluginDeeplinkURL.resolve("ade://lane/abc"))
+    XCTAssertNotNil(PluginDeeplinkURL.resolve("https://example.com/report"))
+    // A plugin's fallback card is the one link it can put under the user's
+    // thumb; every other scheme is a way to make the phone act for it.
+    XCTAssertNil(PluginDeeplinkURL.resolve("javascript:alert(1)"))
+    XCTAssertNil(PluginDeeplinkURL.resolve("file:///etc/passwd"))
+    XCTAssertNil(PluginDeeplinkURL.resolve("someapp://pay"))
+    XCTAssertNil(PluginDeeplinkURL.resolve("/lane/abc"))
+    XCTAssertNil(PluginDeeplinkURL.resolve(nil))
+  }
+
   func testOverDeepNestingFailsThePanel() {
     var json = #"{ "component": "text", "text": "bottom" }"#
     for _ in 0...(PluginVocabLimits.maxDepth + 1) {

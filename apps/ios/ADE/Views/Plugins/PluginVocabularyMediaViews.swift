@@ -84,6 +84,18 @@ enum PluginMediaURL {
   }
 }
 
+/// The same rule for the one link a plugin can put in front of the user: a
+/// fallback card's `deeplink`. `ade://` routes back through `DeepLinkRouter`
+/// and `https` leaves the app through the browser; anything else — `file:`,
+/// another app's custom scheme — would hand a plugin a tap-to-launch primitive
+/// it was never granted.
+enum PluginDeeplinkURL {
+  static func resolve(_ raw: String?) -> URL? {
+    guard let raw, let url = URL(string: raw), let scheme = url.scheme?.lowercased() else { return nil }
+    return ["ade", "https"].contains(scheme) ? url : nil
+  }
+}
+
 // MARK: - Actions
 
 struct PluginVocabButtonView: View {

@@ -105,19 +105,13 @@ struct PluginInvokeResult: Decodable, Equatable {
   }
 }
 
-/// What the root sheet is showing. `panelId` nil means "this plugin's panel
-/// list", which is where an entry with several panels lands.
+/// What the root sheet is showing. One plugin, opened whole: the sheet picks
+/// the first of its panels and offers the rest in its own picker, so nothing
+/// here names a panel.
 struct PluginPaneRequest: Identifiable, Equatable {
-  var id: String { "\(pluginId)|\(panelId ?? "")" }
+  var id: String { pluginId }
   var pluginId: String
-  var panelId: String?
   /// Label carried from the entry point so the sheet has a title before its
   /// first read finishes.
   var title: String
-
-  init(pluginId: String, panelId: String? = nil, title: String) {
-    self.pluginId = pluginId
-    self.panelId = panelId
-    self.title = title
-  }
 }

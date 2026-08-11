@@ -189,7 +189,7 @@ enum PluginPanelParser {
       ))
       return nil
     }
-    let limit = numberValue(object["limit"]).map { Int($0) }
+    let limit = intValue(object["limit"])
     return PluginVocabBinding(
       collection: collection,
       keyPrefix: cleanString(object["keyPrefix"], max: PluginVocabLimits.maxIdChars),
@@ -236,8 +236,10 @@ enum PluginPanelParser {
     return value.isFinite ? value : nil
   }
 
-  private static func intValue(_ raw: Any?) -> Int? {
-    numberValue(raw).map { Int($0) }
+  /// A JSON number narrowed to `Int`, dropping anything `Int` cannot hold. See
+  /// ``pluginVocabInt`` for why the range check is not optional.
+  static func intValue(_ raw: Any?) -> Int? {
+    numberValue(raw).flatMap(pluginVocabInt)
   }
 
   static func formatNumber(_ value: Double) -> String {
