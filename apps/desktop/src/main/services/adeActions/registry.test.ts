@@ -1624,6 +1624,7 @@ describe("runtime session actions", () => {
     const requestAttention = vi.fn(() => true);
     const setStatusNote = vi.fn(() => true);
     const settleSession = vi.fn(() => true);
+    const settleSessionReportingAbort = vi.fn(() => ({ found: true, settled: true }));
     const unsettleSession = vi.fn(() => true);
     const markSessionAttentionRequested = vi.fn();
     const setSessionRuntimeState = vi.fn(() => true);
@@ -1642,6 +1643,7 @@ describe("runtime session actions", () => {
         requestAttention,
         setStatusNote,
         settleSession,
+        settleSessionReportingAbort,
         unsettleSession,
       },
       ptyService: {
@@ -1853,11 +1855,13 @@ describe("runtime session actions", () => {
   it("dismisses pending chat input before settling through the session action", async () => {
     const dismissPendingInputForSettlement = vi.fn(async () => undefined);
     const settleSession = vi.fn(() => true);
+    const settleSessionReportingAbort = vi.fn(() => ({ found: true, settled: true }));
     const runtime = {
       sessionService: {
         get: vi.fn(() => ({ id: "chat-1", toolType: "codex-chat" })),
         list: vi.fn(),
         settleSession,
+        settleSessionReportingAbort,
       },
       agentChatService: {
         dismissPendingInputForSettlement,
@@ -1875,14 +1879,15 @@ describe("runtime session actions", () => {
       dismissPendingInput: true,
     })).resolves.toEqual({ ok: true, sessionId: "chat-1" });
     expect(dismissPendingInputForSettlement).toHaveBeenCalledWith({ sessionId: "chat-1" });
-    expect(settleSession).toHaveBeenCalledWith("chat-1", { source: "user" });
+    expect(settleSessionReportingAbort).toHaveBeenCalledWith("chat-1", { source: "user" });
     expect(dismissPendingInputForSettlement.mock.invocationCallOrder[0]).toBeLessThan(
-      settleSession.mock.invocationCallOrder[0]!,
+      settleSessionReportingAbort.mock.invocationCallOrder[0]!,
     );
   });
 
   it("does not pretend a native CLI prompt was dismissed while its process is still blocked", async () => {
     const settleSession = vi.fn(() => true);
+    const settleSessionReportingAbort = vi.fn(() => ({ found: true, settled: true }));
     const setSessionRuntimeState = vi.fn(() => true);
     const runtime = {
       sessionService: {

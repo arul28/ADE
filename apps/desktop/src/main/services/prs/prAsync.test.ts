@@ -833,9 +833,9 @@ describe("prMergeAutoSettlementService", () => {
   it("settles lane agent sessions even when a merge has settlement blockers", async () => {
     const db = createMemoryDb();
     const settledSessionIds = new Set<string>();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => {
       ids.forEach((id) => settledSessionIds.add(id));
-      return ids;
+      return { settled: ids, aborted: [] };
     });
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
@@ -865,7 +865,7 @@ describe("prMergeAutoSettlementService", () => {
           },
         ]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent,
     });
@@ -875,7 +875,7 @@ describe("prMergeAutoSettlementService", () => {
       prs: [openPr],
       polledAt: "2026-03-24T12:00:00.000Z",
     });
-    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
 
     const mergedPr = createSummary({
       state: "merged",
@@ -886,17 +886,13 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-ready"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["cli-blocked"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
     expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr-sessions-auto-settled",
@@ -909,16 +905,16 @@ describe("prMergeAutoSettlementService", () => {
       prs: [mergedPr],
       polledAt: "2026-03-24T12:02:00.000Z",
     });
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
   });
 
 
   it("does not re-settle after reactivation, but settles for a later PR", async () => {
     const db = createMemoryDb();
     let settled = false;
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => {
       settled = true;
-      return ids;
+      return { settled: ids, aborted: [] };
     });
     const service = createPrMergeAutoSettlementService({
       db: db as any,
@@ -931,7 +927,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: settled ? "2026-03-24T12:01:05.000Z" : null,
         }]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -966,12 +962,10 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
-    expect(settleSessionsWithOutcome).toHaveBeenLastCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    expect(settleSessionsReportingAborts).toHaveBeenLastCalledWith(
       ["chat-waiting"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
     expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1"]);
 
@@ -982,7 +976,7 @@ describe("prMergeAutoSettlementService", () => {
       prs: [mergedPr, openSecondPr],
       polledAt: "2026-03-24T12:02:00.000Z",
     });
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
 
     // A distinct PR on the same lane gets its own one-shot settlement.
     await service.processSnapshot({
@@ -990,19 +984,17 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:03:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenLastCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenLastCalledWith(
       ["chat-waiting"],
-      "PR #202 merged",
-      "2026-03-24T12:03:05.000Z",
-      "pr_merge",
+      { outcome: "PR #202 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
     );
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
     expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1", "pr-2"]);
   });
 
   it("baselines old merges and only settles merges observed after re-enabling", async () => {
     const db = createMemoryDb();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: withSessionLookup({
@@ -1013,7 +1005,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1029,7 +1021,7 @@ describe("prMergeAutoSettlementService", () => {
       prs: [oldMerge],
       polledAt: "2026-03-24T12:00:00.000Z",
     });
-    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
     expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1"]);
 
     setSessionLifecycleSettings({
@@ -1067,17 +1059,15 @@ describe("prMergeAutoSettlementService", () => {
       prs: [oldMerge, futureMerge],
       polledAt: "2026-03-24T12:03:05.000Z",
     });
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-ready"],
-      "PR #202 merged",
-      "2026-03-24T12:03:05.000Z",
-      "pr_merge",
+      { outcome: "PR #202 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
     );
   });
 
   it("settles only the chats explicitly linked to a merged PR", async () => {
     const db = createMemoryDb();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: withSessionLookup({
@@ -1086,7 +1076,7 @@ describe("prMergeAutoSettlementService", () => {
           { laneId: "lane-1", id: "chat-other", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1100,14 +1090,173 @@ describe("prMergeAutoSettlementService", () => {
     });
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-owned"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
   });
 
+  /**
+   * The merge must survive an abandoned settle.
+   *
+   * `handledPrIds` is the only thing stopping a later pass retrying, so marking
+   * a PR handled after a settle that never landed consumes the merge forever —
+   * the session stays unsettled and nothing ever files it again. This is the
+   * durable consequence that made the typed outcome worth having: the old
+   * changed-id list left an aborted id simply absent, indistinguishable from a
+   * session that was never eligible.
+   */
+  it("does not mark a PR handled when its settle was abandoned by activity", async () => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: [] as string[],
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
+    }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get: vi.fn(() => null),
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+    });
+
+    const openPr = createSummary({ state: "open" });
+    await service.processSnapshot({ prs: [openPr], polledAt: "2026-03-24T12:00:00.000Z" });
+
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+
+    // The user's turn ended; a later pass must get another go.
+    settleSessionsReportingAborts.mockImplementation((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    // Past the cooling-off window: the merge is deferred, never abandoned.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+
+    expect(
+      settleSessionsReportingAborts,
+      "an abandoned settle must not consume the merge",
+    ).toHaveBeenCalledTimes(2);
+    // ...and the retry must still announce. A merged PR falls out of the
+    // watchable set every pass, so without keeping it alive the user would get
+    // the settle and never the toast.
+    expect(emitEvent, "the retry must still announce the merge").toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pr-sessions-auto-settled" }),
+    );
+  });
+
+  it("retries a teardown failure immediately instead of waiting for the work to stop", async () => {
+    const db = createMemoryDb();
+    // The stop failed and the work is still running — which is precisely why an
+    // inactivity gate must not apply: it would wait on the thing it must stop.
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: [] as string[],
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "teardown_failed" })),
+    }));
+    const getChatLiveness = vi.fn(async () => ({ status: "active" as const, awaitingInput: false }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get: vi.fn(() => null),
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+
+    expect(
+      settleSessionsReportingAborts,
+      "a failed stop must be attempted again, not parked behind the running work",
+    ).toHaveBeenCalledTimes(2);
+    expect(getChatLiveness, "a teardown failure must not consult the activity gate").not.toHaveBeenCalled();
+  });
+
+  it("holds the retry while the chat is mid-turn, and reads chat liveness not the row", async () => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: [] as string[],
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
+    }));
+    // The persisted row of a chat holds `running` between turns on purpose. Any
+    // gate that reads it never sees the turn end — that is the bug this pins.
+    const get = vi.fn(() => ({ id: "chat-owned", status: "running", runtimeState: "running" }));
+    let chatStatus: "active" | "idle" = "active";
+    const getChatLiveness = vi.fn(async () => ({ status: chatStatus, awaitingInput: false }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get,
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+    });
+
+    const openPr = createSummary({ state: "open" });
+    await service.processSnapshot({ prs: [openPr], polledAt: "2026-03-24T12:00:00.000Z" });
+
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+    // The merge loses the race to a turn that just started.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+
+    // Still mid-turn: the retry must not fire. With real teardown attached this
+    // is what would otherwise stop the work that won the race, once per poll.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "a retry during an active turn would stop the work that won the race",
+    ).toHaveBeenCalledTimes(1);
+
+    // The turn ends. The ROW still says running — only chat liveness moves — so
+    // a row-reading gate would stay stuck here forever.
+    chatStatus = "idle";
+    settleSessionsReportingAborts.mockImplementation((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T13:01:00.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "the merge must still be filed once the turn is genuinely over",
+    ).toHaveBeenCalledTimes(2);
+    expect(get, "chat liveness must not come from the persisted row").not.toHaveBeenCalled();
+  });
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
     // machine reconciles, backfilling rows for PRs it had never stored. Every
@@ -1118,7 +1267,7 @@ describe("prMergeAutoSettlementService", () => {
     //
     // Filing the sessions is still right; announcing is not.
     const db = createMemoryDb();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
@@ -1130,7 +1279,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent,
     });
@@ -1157,7 +1306,7 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:05:00.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
     expect(emitEvent).not.toHaveBeenCalled();
 
     // And a merge we actually watch still announces itself, so the fix does not
@@ -1183,7 +1332,7 @@ describe("prMergeAutoSettlementService", () => {
 
   it("honors disabling auto-settle before a merged PR is processed", async () => {
     const db = createMemoryDb();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: withSessionLookup({
@@ -1194,7 +1343,7 @@ describe("prMergeAutoSettlementService", () => {
           settledAt: null,
         }]),
         get: vi.fn(() => null),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1218,7 +1367,7 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
     expect(getSessionLifecycleSettings(db as any).autoSettleLaneSessionsOnPrMerge).toBe(false);
     expect(getPrMergeAutoSettlementState(db as any)).toEqual({
       enabledSince: null,
@@ -1238,9 +1387,9 @@ describe("prMergeAutoSettlementService", () => {
   }) {
     const db = createMemoryDb();
     const settledSessionIds = new Set<string>();
-    const settleSessionsWithOutcome = vi.fn((ids: string[]) => {
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => {
       ids.forEach((id) => settledSessionIds.add(id));
-      return ids;
+      return { settled: ids, aborted: [] };
     });
     const rowFor = (session: { id: string; toolType: string; laneId?: string }) => ({
       laneId: "lane-1",
@@ -1260,15 +1409,15 @@ describe("prMergeAutoSettlementService", () => {
         list: vi.fn(() => overrides.sessions
           .filter((session) => !(overrides.omitFromListing ?? []).includes(session.id))
           .map(rowFor)),
-        settleSessionsWithOutcome,
+        settleSessionsReportingAborts,
       } as any,
       emitEvent: vi.fn(),
     });
-    return { service, settleSessionsWithOutcome };
+    return { service, settleSessionsReportingAborts };
   }
 
   it("does not settle sessions another open PR in the lane claims", async () => {
-    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+    const { service, settleSessionsReportingAborts } = createLaneSweepService({
       sessions: [
         { laneId: "lane-1", id: "chat-merged-work", toolType: "codex-chat" },
         { laneId: "lane-1", id: "chat-other-pr", toolType: "codex-chat" },
@@ -1297,13 +1446,11 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-merged-work"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
-    expect(settleSessionsWithOutcome).not.toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
       ["chat-other-pr"],
       expect.anything(),
       expect.anything(),
@@ -1312,7 +1459,7 @@ describe("prMergeAutoSettlementService", () => {
   });
 
   it("settles nothing on an unlinked merge while another PR in the lane is still live", async () => {
-    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+    const { service, settleSessionsReportingAborts } = createLaneSweepService({
       sessions: [{ laneId: "lane-1", id: "chat-ambiguous", toolType: "codex-chat" }],
     });
     const unlinkedPr = createSummary({ id: "pr-unlinked", state: "open" });
@@ -1331,13 +1478,13 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     // Ownership is genuinely ambiguous: the open PR's own merge files the lane.
-    expect(settleSessionsWithOutcome).not.toHaveBeenCalled();
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
   });
 
   it("settles declared sessions beyond the lane listing limit", async () => {
     // The lane listing is paged. A session the PR explicitly named must not be
     // dropped just because a long-lived lane pushed it past that page.
-    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+    const { service, settleSessionsReportingAborts } = createLaneSweepService({
       sessions: [{ laneId: "lane-1", id: "chat-past-page", toolType: "codex-chat" }],
       omitFromListing: ["chat-past-page"],
     });
@@ -1349,16 +1496,14 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-past-page"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
   });
 
   it("still settles exactly the declared sessions when a PR links its chats", async () => {
-    const { service, settleSessionsWithOutcome } = createLaneSweepService({
+    const { service, settleSessionsReportingAborts } = createLaneSweepService({
       sessions: [
         { laneId: "lane-1", id: "chat-linked", toolType: "codex-chat" },
         { laneId: "lane-1", id: "chat-unrelated", toolType: "codex-chat" },
@@ -1380,12 +1525,10 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     // A declaration is explicit, so a live sibling PR does not suppress it.
-    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(1);
-    expect(settleSessionsWithOutcome).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-linked"],
-      "PR #101 merged",
-      "2026-03-24T12:01:05.000Z",
-      "pr_merge",
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
   });
 });

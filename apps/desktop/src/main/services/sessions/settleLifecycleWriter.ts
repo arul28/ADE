@@ -1,4 +1,5 @@
 import type { AdeDb, SqlValue } from "../state/kvDb";
+import { SettlingStateRegistry, type SettleAbortReason } from "./settlingStateRegistry";
 import type { SessionSettleOverride, SessionSettleSource } from "../../../shared/types/sessions";
 
 /**
@@ -12,8 +13,17 @@ import type { SessionSettleOverride, SessionSettleSource } from "../../../shared
 /** What a settle-lifecycle mutation is asking for. */
 export type SettleLifecycleIntent =
   | { kind: "settle"; settledAt: string; source: SessionSettleSource }
-  /** Real activity: drop the whole declaration, keep-active pin included. */
-  | { kind: "clearOnActivity" }
+  /**
+   * Real activity: drop the whole declaration, keep-active pin included.
+   *
+   * `cause` is what makes teardown possible at all. Stopping a process EMITS
+   * OUTPUT, so C4 fires *because* teardown is running — if that cleared the
+   * settle or tripped abort, every real teardown would self-abort and a settle
+   * could never land. Mechanical exhaust is therefore swallowed during the
+   * settling window; a human decision aborts it. Outside the window both behave
+   * identically, exactly as before.
+   */
+  | { kind: "clearOnActivity"; cause: SettleClearCause }
   /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
   | { kind: "unsettleDeclared" }
   | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource };
@@ -23,6 +33,16 @@ export type SettleLifecycleIntent =
  * routing a tuple column through `extraSet` is a compile error rather than
  * something only the source-scan test would catch.
  */
+/**
+ * Who asked for the clear.
+ *
+ * - `mechanical` — C4 `setLastOutputPreview`, C5 `touchSessionActivity`. Output
+ *   and activity bookkeeping, largely produced by the teardown itself.
+ * - `turn_start` / `turn_failed` / `attention_requested` — C3, C6, C7. Durable
+ *   signals of intent that outrank a settle in canonical precedence.
+ */
+export type SettleClearCause = "mechanical" | SettleAbortReason;
+
 export type SettleExtraColumn =
   | "status_note"
   | "attention_requested_at"
@@ -41,6 +61,8 @@ export type SettleLifecycleWriter = {
     guard?: string;
   }) => void;
   readRevision: (sessionId: string) => number;
+  /** The in-flight settle windows. See `settlingStateRegistry.ts`. */
+  settling: SettlingStateRegistry;
   /** Drop a deleted session's token so the local table and map do not grow forever. */
   forget: (sessionId: string) => void;
 };
@@ -180,6 +202,68 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
    * one (its "still unsettled" check, which another ADE process could otherwise
    * invalidate between the select and the update).
    */
+  const settling = new SettlingStateRegistry();
+
+  /**
+   * What the settling window does to this write.
+   *
+   * "Swallowed" means precisely three things, and all three matter: the tuple is
+   * NOT cleared, the revision is NOT bumped, and abort is NOT tripped. The
+   * caller's own columns still land, so the row keeps showing live output while
+   * it settles — which is what a visible `Settling…` state should look like.
+   */
+  /**
+   * Land ONLY the caller's own columns, for a session whose settle window is
+   * open and whose write is mechanical exhaust.
+   *
+   * "Swallowed" means precisely three things and all three matter: the tuple is
+   * not cleared, the revision is not bumped, and abort is not tripped. The
+   * preview and activity columns still update, so the row keeps showing live
+   * output while it settles.
+   */
+  const writeExtraColumnsOnly = (
+    sessionIds: readonly string[],
+    extraSet: Partial<Record<SettleExtraColumn, SqlValue>> | undefined,
+  ): void => {
+    const extraEntries = Object.entries(extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
+    if (!extraEntries.length || !sessionIds.length) return;
+    db.run(
+      `update terminal_sessions set ${extraEntries.map(([column]) => `${column} = ?`).join(", ")}`
+        + ` where id in (${sessionIds.map(() => "?").join(", ")})`,
+      [...extraEntries.map(([, value]) => value), ...sessionIds],
+    );
+  };
+
+  /**
+   * Split a clear into the sessions whose window swallows it and the sessions
+   * that clear normally.
+   *
+   * Every `clearOnActivity` caller is single-session — C3-C7 all go through
+   * `mutateSessionMeta`, which takes one id — so this is asserted rather than
+   * handled. Deciding one disposition for a whole array would silently stop a
+   * NON-settling session's own output from clearing its settle, and that is a
+   * failure nobody would see; a thrown error is the honest alternative to
+   * defensive code no test can reach.
+   */
+  const partitionForSettlingWindow = (
+    intent: SettleLifecycleIntent,
+    sessionIds: readonly string[],
+  ): { swallowed: string[]; normal: string[] } => {
+    if (intent.kind !== "clearOnActivity") return { swallowed: [], normal: [...sessionIds] };
+    if (sessionIds.length > 1) {
+      throw new Error(
+        "clearOnActivity is single-session by construction; a multi-id clear would need a per-session settling disposition.",
+      );
+    }
+    const [sessionId] = sessionIds;
+    if (!settling.isSettling(sessionId)) return { swallowed: [], normal: [...sessionIds] };
+    if (intent.cause === "mechanical") return { swallowed: [...sessionIds], normal: [] };
+    // A human decision: trip abort, then let the clear proceed — the clear
+    // itself is never suppressed.
+    settling.abort(sessionId, intent.cause);
+    return { swallowed: [], normal: [...sessionIds] };
+  };
+
   const writeSettleLifecycle = (args: {
     intent: SettleLifecycleIntent;
     sessionIds: readonly string[];
@@ -188,18 +272,23 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
   }): void => {
     const ids = args.sessionIds.map((id) => id.trim()).filter(Boolean);
     if (!ids.length) return;
+
+    const { swallowed, normal } = partitionForSettlingWindow(args.intent, ids);
+    writeExtraColumnsOnly(swallowed, args.extraSet);
+    if (!normal.length) return;
+
     const tuple = settleTupleAssignment(args.intent);
     const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
     const setClauses = [...extraEntries.map(([column]) => `${column} = ?`), tuple.sql];
     const setParams = [...extraEntries.map(([, value]) => value), ...tuple.params];
-    const idPlaceholders = ids.map(() => "?").join(", ");
+    const idPlaceholders = normal.map(() => "?").join(", ");
     const where = args.guard
       ? `${args.guard} and id in (${idPlaceholders})`
       : `id in (${idPlaceholders})`;
 
     const changed = db.runChanged(
       `update terminal_sessions set ${setClauses.join(", ")} where ${where}`,
-      [...setParams, ...ids],
+      [...setParams, ...normal],
     );
     // Only a write that MATCHED A ROW bumps — that is what this gate buys, and
     // it is what stops a deleted or absent session inserting an orphan token.
@@ -220,13 +309,14 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     // support several processes against one database, so a sibling process could
     // observe the pair mid-flight; that window is microseconds and closing it
     // needs a transaction helper `AdeDb` does not have.
-    bumpLifecycleRevisions(ids);
+    bumpLifecycleRevisions(normal);
   };
 
 
   return {
     write: writeSettleLifecycle,
     readRevision: readLifecycleRevision,
+    settling,
     forget: (sessionId: string) => {
       const trimmed = sessionId.trim();
       if (!trimmed) return;
@@ -236,6 +326,10 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
         // The token is advisory; failing to reap it must not fail the delete.
       }
       inProcessLifecycleRevisions.delete(trimmed);
+      // The third map. A window left open for a deleted id would report a
+      // nonexistent session as settling forever, and if the id were ever reused
+      // its mechanical clears would be permanently swallowed.
+      settling.end(trimmed);
     },
   };
 }

@@ -29,6 +29,7 @@ import type { createCtoStateService } from "../../cto/ctoStateService";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
+import { settleAbortMessage } from "../../sessions/settleTerminalSession";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -49,6 +50,7 @@ export interface CtoOperatorToolDeps {
     | "updateMeta"
     | "get"
     | "settleSession"
+    | "settleSessionReportingAbort"
     | "unsettleSession"
     | "setSettleOverride"
     | "snoozeSession"
@@ -552,11 +554,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ sessionId, outcome }) => {
       try {
-        const ok = deps.sessionService.settleSession(sessionId, {
+        const result = deps.sessionService.settleSessionReportingAbort(sessionId, {
           ...(outcome ? { outcome } : {}),
           source: "operator",
         });
-        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        if (!result.found) return { success: false, error: `Session not found: ${sessionId}` };
+        if (!result.settled) {
+          // The reason matters: `teardown_failed` and `joined_in_flight` do not
+          // mean the session went active, and saying so misdirects the operator.
+          return { success: false, error: settleAbortMessage(sessionId, result.abortedBy) };
+        }
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

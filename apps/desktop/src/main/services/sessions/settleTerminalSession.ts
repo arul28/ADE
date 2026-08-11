@@ -4,6 +4,32 @@ import type { createSessionService } from "./sessionService";
 import type { SessionSettleSource } from "../../../shared/types";
 import { isChatToolType } from "./chatSessionProjection";
 
+/** A settle that reached the row but was refused by the settling window. */
+export class SettleAbortedError extends Error {
+  constructor(readonly sessionId: string, readonly abortedBy?: string) {
+    super(settleAbortMessage(sessionId, abortedBy));
+    this.name = "SettleAbortedError";
+  }
+}
+
+/** One sentence a user can act on, per abort reason. */
+export function settleAbortMessage(sessionId: string, abortedBy?: string): string {
+  switch (abortedBy) {
+    case "turn_start":
+      return `Session '${sessionId}' started working again, so it was not settled.`;
+    case "turn_failed":
+      return `Session '${sessionId}' reported a failed turn, so it was not settled.`;
+    case "attention_requested":
+      return `Session '${sessionId}' asked for attention, so it was not settled.`;
+    case "teardown_failed":
+      return `Session '${sessionId}' could not be stopped cleanly, so it was not settled.`;
+    case "joined_in_flight":
+      return `Session '${sessionId}' is already being settled.`;
+    default:
+      return `Session '${sessionId}' changed while it was being settled, so it was not settled.`;
+  }
+}
+
 export type SettleTerminalSessionOptions = {
   outcome?: string;
   dismissPendingInput?: boolean;
@@ -62,11 +88,17 @@ export async function settleTerminalSession(args: {
     if (!dismissed) return false;
   }
 
-  return args.sessionService.settleSession(
+  const result = args.sessionService.settleSessionReportingAbort(
     args.sessionId,
     {
       ...(args.opts?.outcome ? { outcome: args.opts.outcome } : {}),
       ...(args.opts?.source ? { source: args.opts.source } : {}),
     },
   );
+  if (result.settled) return true;
+  // An abort is NOT "no such session". Callers turned a bare `false` into
+  // "Session was not found", which sends the user looking for a row that is
+  // sitting right there, working.
+  if (result.found) throw new SettleAbortedError(args.sessionId, result.abortedBy);
+  return false;
 }

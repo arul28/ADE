@@ -4,7 +4,7 @@
 to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
 and the race-matrix tests have been seen to pass.
 
-**Steps 0 and 1 are implemented.** Step 0's host-side half is "Host enforcement
+**Steps 0, 1 and 2 are implemented.** Step 0's host-side half is "Host enforcement
 for pre-fix clients" in §3c-i; step 1 is the chokepoint and revision in §3a,
 whose implemented shape is recorded at the end of that section.
 
@@ -106,6 +106,14 @@ bounds a single call, and a fleet is serial — seconds, not milliseconds).
 | R4 | **Concurrent settle sources** — PR-merge auto-settle (W1) races a user settle (W2) or the CTO tool (W2) | Two teardowns run against one session; the second sees a partially-drained roster and reports differently. `settled_at = coalesce(settled_at, ?)` makes the *write* idempotent, but the teardown is not | medium |
 | R5 | **Settle vs. unconfirmed stop** — a provider stop times out or is unavailable | The row settles over work that may still be running. Keeping the task live in `liveBackgroundTaskIds` does not help: `settled` outranks it in the phase | **high** — this is the original bug, unfixed |
 | R6 | **Settle vs. C4 output chunk** — any output during `T` | C4 clears the settle mid-teardown; the settle write re-lands after | same shape as R1, at much higher frequency |
+| R7 | **Settle vs. a peer write that bypasses the writer** — a paired desktop's settle arrives via `crsql_changes` | The revision does not move, so the guard is blind; `settleMany`'s own guard then finds nothing to do and the settle silently no-ops. The id comes back in **neither** the settled nor the aborted list | medium — benign for a peer *settle*, unresolved for a peer *unsettle*; step 3 must account for it |
+
+R7 is not from the original matrix — it surfaced while implementing step 1 and is
+tested in `settleRaceMatrix.test.ts` so its blast radius is visible before
+teardown exists. The reporting gap is the part that matters: a caller asked to
+settle a session and got an id that is neither settled nor abandoned, which is
+exactly the silent absence the typed outcome exists to remove, reappearing
+through a path the writer never sees.
 
 **R1/R2/R6 share one root:** the settle decision is made at time `t₀`, the write
 lands at `t₀ + T`, and the world is free to change in between with no way to
@@ -232,6 +240,20 @@ abort trigger — an accepted turn is the durable signal of user intent, and raw
 output is not. For a plain (non-chat) terminal with no turn concept, the settling
 window is the whole exposure; it is bounded by `T` and by the fact that settling
 is visible while it runs.
+
+**As implemented (step 2).** The window lives in `settlingStateRegistry.ts`, in
+memory. That is not a shortcut: the design requires a `settling` row found at
+startup to resolve to not-settled, and in-memory gives exactly that with no
+recovery code to get wrong. It also keeps the marker off `terminal_sessions`,
+which is a CRR — a replicated "settling" flag would be a lie on every other
+device the moment this host died.
+
+The clearer split is carried by a `cause` on the clear intent
+(`mechanical` for C4/C5, `turn_start` / `turn_failed` / `attention_requested`
+for C3/C6/C7), so the writer decides the disposition rather than each call site
+remembering to. Teardown is injected at service construction
+(`createSessionService({ runSettleTeardown })`), absent in step 2 — which is what
+lets the race matrix drive the seam by hand before any work exists to lose.
 
 ### 3c. The rule for a turn arriving mid-teardown
 
@@ -392,6 +414,32 @@ of per-statement fsync and does not describe ADE. The persisted table therefore
 stays, with the in-process counter alongside it — see §3a, where that counter
 turned out to be load-bearing for monotonicity rather than merely a fallback.
 
+### 3c-iii. Step 3 must bound the PR-merge retry (open requirement)
+
+When `settleSessions` reports an abort, `prMergeAutoSettlementService` leaves the
+merged PR unhandled so a later poll retries it — otherwise the merge is consumed
+by a settle that never landed. Step 2 ships that retry **unconditional**, which
+is correct while teardown is a no-op and is what the code did before the settling
+window existed.
+
+It stops being correct the moment teardown is real: a retry fired against work
+that is still running would stop the very work that won the race, once per poll.
+Step 3 owns the bound. Three gates were tried in step 2 and each was wrong in a
+different way, so the next attempt should start from why:
+
+| Gate | Why it fails |
+| --- | --- |
+| Lifecycle revision moved | Never re-arms. A turn *completing* does not touch the settle tuple, so the revision is unchanged and the retry is skipped forever. |
+| Elapsed timer | Re-arms while a long turn is still running — exactly the case the bound exists to prevent. |
+| `session.runtimeState !== "running"` on the persisted row | Never observes turn completion for chat at all. Chat rows deliberately hold `status = "running"` between turns; only `chatSessionProjection` resolves an idle chat to `idle`. |
+
+The workable signal is therefore **projected** chat state. Step 2 wires it as a
+narrow injected callback (`getChatLiveness`, matching
+`chatMentionService.listChatSessions`): the chat service answers `status` and
+`awaitingInput`, and only a tracked CLI session — whose row does not lie — falls
+back to the persisted row. Do not re-attempt a gate that reads the raw row for a
+chat.
+
 ### 3d. When teardown cannot confirm
 
 R5 is a product decision, not a mechanism. If a provider stop is unavailable,
@@ -472,10 +520,11 @@ three, and that is why it produced a defect every round.
    It is pure refactor with a testable invariant: no `settled_at` mutation
    outside one function, and every mutation bumps the revision. The revision
    goes in a local-only table (§3c-ii).
-2. Add the `settling` state, the per-clearer behavior table (3b-i), and the
-   abort rule (3c) — still with a **no-op teardown** — and test the race matrix
-   directly against the revision. The C4/C5 swallow is the case to test hardest:
-   it is what makes a real teardown able to finish at all.
+2. **Landed.** The `settling` state, the per-clearer behavior table (3b-i), and
+   the abort rule (3c), with a **no-op teardown**. The race matrix is tested
+   directly against the revision in `settleRaceMatrix.test.ts`, including the
+   C4/C5 swallow on all three axes — the case that decides whether a real
+   teardown can finish at all.
 3. Only then attach real teardown, reusing `stopLaneRuntimeWork`'s shape.
 4. Resolve 3d by decision before step 3.
 
