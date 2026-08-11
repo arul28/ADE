@@ -715,6 +715,7 @@ import type {
   ProductAnalyticsCaptureResult,
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
+import type { PluginDomainService } from "../shared/plugins/sdk";
 
 export {};
 
@@ -2147,6 +2148,7 @@ declare global {
         list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
+      plugin: PluginDomainService;
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (

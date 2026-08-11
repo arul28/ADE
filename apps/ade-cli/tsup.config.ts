@@ -41,6 +41,7 @@ export default defineConfig([
       bootstrap: "src/bootstrap.ts",
       adeRpcServer: "src/adeRpcServer.ts",
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
+      pluginChildBootstrap: "../desktop/src/main/services/plugins/childRuntime/pluginChildBootstrap.ts",
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
       usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"

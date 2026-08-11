@@ -8,6 +8,7 @@ import {
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
+import { listPluginAgentSkillRoots } from "../plugins/pluginInstallService";
 import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
@@ -85,6 +86,17 @@ function pathExistsDirectory(dir: string | null | undefined): boolean {
 function prependAgentSkillsRoot(existing: string | undefined, root: string | null): string | undefined {
   if (!root || !pathExistsDirectory(root)) return existing;
   return joinAdeAgentSkillRoots([root, ...splitAdeAgentSkillRoots(existing)]);
+}
+
+/**
+ * Plugin skill roots go LAST: the bundled ADE catalog and the user's own
+ * ancestor roots keep first-root-wins precedence, so a plugin can add skills
+ * but never shadow one ADE ships.
+ */
+function appendPluginAgentSkillRoots(existing: string | undefined): string | undefined {
+  const pluginRoots = listPluginAgentSkillRoots();
+  if (!pluginRoots.length) return existing;
+  return joinAdeAgentSkillRoots([...splitAdeAgentSkillRoots(existing), ...pluginRoots]);
 }
 
 function canonicalDirectoryWithin(root: string | null, boundary: string | null): string | null {
@@ -615,6 +627,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
     next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
+    next[ADE_AGENT_SKILLS_DIRS_ENV] = appendPluginAgentSkillRoots(next[ADE_AGENT_SKILLS_DIRS_ENV]);
     if (bundledAgentSkillsRoot) {
       next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = bundledAgentSkillsRoot;
     } else {

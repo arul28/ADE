@@ -1,0 +1,28 @@
+{
+  "name": "hello-plugin",
+  "version": "0.1.0",
+  "displayName": "Hello",
+  "description": "Fixture plugin: exercises the SDK, a CLI word, a collection and a socket contribution.",
+  "icon": "sparkle",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [
+    { "kind": "tab", "id": "hello", "title": "Hello", "panelId": "main" }
+  ],
+  "panels": [
+    { "id": "main", "schemaFile": "panels/main.json", "title": "Hello" }
+  ],
+  "sockets": [
+    { "socket": "row-badge", "surface": "lanes", "id": "greeting" }
+  ],
+  "collections": {
+    "greetings": { "sync": true }
+  },
+  "settings": [
+    { "key": "greeting", "kind": "text", "label": "Greeting", "default": "Hello" }
+  ],
+  "cli": ["greet"],
+  "skills": ["skills/using-hello"],
+  "official": false
+}

@@ -693,6 +693,13 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
+import type { PluginHostService } from "../plugins/pluginHostService";
+import { isValidPluginId } from "../../../shared/plugins/manifest";
+import type {
+  PluginDetail,
+  PluginSummary,
+  PluginUsageSummary,
+} from "../../../shared/plugins/sdk";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
@@ -795,7 +802,10 @@ function getAppProcessMetricRowsCollector(): ProcessMetricRowsCollector {
   return appProcessMetricRowsCollector;
 }
 
-type AppResourceUsageContext = Pick<AppContext, "processRegistry" | "ptyService" | "sessionService">;
+type AppResourceUsageContext = Pick<
+  AppContext,
+  "processRegistry" | "ptyService" | "sessionService" | "pluginHostService"
+>;
 
 function collectRuntimeOwnedPtyRoots(
   sessionService?: ReturnType<typeof createSessionService> | null,
@@ -856,6 +866,7 @@ function collectAppResourceAttributionSources(
   let activePtyCount = 0;
   const desktopPtyRoots: ResourceAttributionRoot[] = [];
   const adePtyHostPids = new Set<number>();
+  const pluginHostPids = new Set<number>();
   for (const ctx of contexts) {
     const attribution = ctx.ptyService?.getResourceAttribution?.();
     if (attribution) {
@@ -865,6 +876,9 @@ function collectAppResourceAttributionSources(
     const runtimeOwned = collectRuntimeOwnedPtyRoots(ctx.sessionService, ctx.processRegistry);
     activePtyCount += runtimeOwned.activePtyCount;
     for (const pid of runtimeOwned.ownerPids) adePtyHostPids.add(pid);
+    // The plugin host is machine-scoped and every context sees the same one, so
+    // the Set is doing real deduplication work here, not tidying.
+    for (const pid of ctx.pluginHostService?.listChildPids() ?? []) pluginHostPids.add(pid);
   }
   const adeRuntimePids = new Set<number>();
   for (const pid of localRuntimeConnectionPool?.getRuntimeProcessIds?.() ?? []) {
@@ -876,6 +890,7 @@ function collectAppResourceAttributionSources(
   return {
     adeRuntimePids: Array.from(adeRuntimePids),
     adePtyHostPids: Array.from(adePtyHostPids),
+    pluginHostPids: Array.from(pluginHostPids),
     desktopPtyRoots,
     activePtyCount,
   };
@@ -985,6 +1000,7 @@ export type AppContext = {
   reviewService: ReturnType<typeof createReviewService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
+  pluginHostService?: PluginHostService | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
   automationService: ReturnType<typeof createAutomationService> | null;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
@@ -5727,6 +5743,114 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["externalSessionsService"]);
     return ctx.externalSessionsService.importExternalSession(normalizeExternalSessionImportArgs(arg));
+  });
+
+  const requirePluginId = (arg: unknown): string => {
+    const pluginId = isRecord(arg) ? arg.pluginId : undefined;
+    if (!isValidPluginId(pluginId)) throw new Error("plugin request pluginId is invalid.");
+    return pluginId;
+  };
+
+  const normalizePluginListArgs = (arg: unknown): { includeDisabled?: boolean } => {
+    const record = isRecord(arg) ? arg : {};
+    return typeof record.includeDisabled === "boolean"
+      ? { includeDisabled: record.includeDisabled }
+      : {};
+  };
+
+  const normalizePluginInvokeArgs = (arg: unknown): {
+    pluginId: string;
+    action: string;
+    args?: Record<string, unknown>;
+    argv?: string[];
+  } => {
+    if (!isRecord(arg)) throw new Error("plugin invoke expects an object payload.");
+    const action = typeof arg.action === "string" ? arg.action.trim() : "";
+    if (!action) throw new Error("plugin invoke action must be a non-empty string.");
+    const argv = Array.isArray(arg.argv)
+      ? arg.argv.filter((entry): entry is string => typeof entry === "string")
+      : null;
+    return {
+      pluginId: requirePluginId(arg),
+      action,
+      ...(isRecord(arg.args) ? { args: arg.args } : {}),
+      ...(argv ? { argv } : {}),
+    };
+  };
+
+  const normalizePluginInstallArgs = (arg: unknown): { source: string; ref?: string; enable?: boolean } => {
+    if (!isRecord(arg)) throw new Error("plugin install expects an object payload.");
+    const source = typeof arg.source === "string" ? arg.source.trim() : "";
+    if (!source) throw new Error("plugin install source must be a non-empty string.");
+    const ref = typeof arg.ref === "string" ? arg.ref.trim() : "";
+    return {
+      source,
+      ...(ref ? { ref } : {}),
+      ...(typeof arg.enable === "boolean" ? { enable: arg.enable } : {}),
+    };
+  };
+
+  const normalizePluginUsageSummaryArgs = (arg: unknown): { pluginId?: string } => {
+    const pluginId = isRecord(arg) ? arg.pluginId : undefined;
+    if (pluginId === undefined || pluginId === null) return {};
+    if (!isValidPluginId(pluginId)) throw new Error("plugin usage summary pluginId is invalid.");
+    return { pluginId };
+  };
+
+  ipcMain.handle(IPC.pluginList, async (_event, arg: unknown): Promise<PluginSummary[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).list(normalizePluginListArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginGet, async (_event, arg: unknown): Promise<PluginDetail | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).get({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginInvoke, async (_event, arg: unknown): Promise<unknown> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).invoke(normalizePluginInvokeArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginInstall, async (_event, arg: unknown): Promise<PluginSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).install(normalizePluginInstallArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginUninstall, async (_event, arg: unknown): Promise<{ removed: boolean }> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).uninstall({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginEnable, async (_event, arg: unknown): Promise<PluginSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).enable({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginDisable, async (_event, arg: unknown): Promise<PluginSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).disable({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginUsageSummary, async (_event, arg: unknown): Promise<PluginUsageSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService
+      .domainService(ctx.projectId)
+      .usageSummary(normalizePluginUsageSummaryArgs(arg));
+  });
+
+  ipcMain.handle(IPC.pluginReload, async (_event, arg: unknown): Promise<PluginSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).reload({ pluginId: requirePluginId(arg) });
   });
 
 

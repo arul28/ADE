@@ -134,6 +134,7 @@ import {
   getSessionWithChatProjection,
   listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
+import { PLUGIN_DOMAIN_ACTIONS } from "../../../shared/plugins/sdk";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
@@ -184,6 +185,11 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "orchestration",
   "search",
   "external-sessions",
+  // ONE domain for every plugin. The envelope's `domain` enum is closed at the
+  // RPC schema (adeRpcServer.ts) and again in iOS's compile-time action
+  // allowlist, so a per-plugin domain could never reach the dispatcher —
+  // `{pluginId, action}` travels inside the args instead.
+  "plugin",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -278,6 +284,13 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "recoverArtifact",
     "updateArtifactReview",
   ],
+  // Installing a plugin puts third-party code on the machine and enabling one
+  // starts a child process, so the whole install lifecycle is an operator act:
+  // reachable from the surfaces the user drives (desktop renderer, `ade code`,
+  // a plain terminal) and refused to a session-bound agent. Agents may still
+  // read the roster and invoke an already-installed plugin's handlers —
+  // in-chat authoring proposes an install, the user accepts it.
+  plugin: ["install", "uninstall", "enable", "disable"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -922,6 +935,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   search: ["query", "indexStatus", "rebuildIndex"],
   "external-sessions": ["list", "import"],
+  plugin: [...PLUGIN_DOMAIN_ACTIONS],
 };
 
 export type AdeActionInputContract = {
@@ -1194,6 +1208,53 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
       input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
       example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
+    },
+  },
+  plugin: {
+    invoke: {
+      description: "Call a named handler exposed by an installed plugin. Treated as mutating: a handler may write anything.",
+      input: "object { pluginId: string, action: string, args?: object, argv?: string[] }",
+      example: "ade actions run plugin.invoke --input-json '{\"pluginId\":\"graph\",\"action\":\"refresh\"}'",
+    },
+    list: {
+      description: "List plugins installed on this machine, with runtime status and manifest problems.",
+      input: "object { includeDisabled?: boolean }",
+      example: "ade plugin list --text",
+    },
+    get: {
+      description: "Read one plugin's manifest, settings, effective config and recent log lines.",
+      input: "object { pluginId: string }",
+      example: "ade actions run plugin.get --input-json '{\"pluginId\":\"graph\"}'",
+    },
+    install: {
+      description: "Install a plugin from a git URL or a local directory. Operator-only: this puts third-party code on the machine.",
+      input: "object { source: string, ref?: string, enable?: boolean }",
+      example: "ade plugin install https://github.com/owner/ade-plugin-graph",
+    },
+    uninstall: {
+      description: "Remove an installed plugin and its machine registry entry. Operator-only.",
+      input: "object { pluginId: string }",
+      example: "ade plugin remove graph",
+    },
+    enable: {
+      description: "Enable an installed plugin and start its child process. Operator-only.",
+      input: "object { pluginId: string }",
+      example: "ade plugin enable graph",
+    },
+    disable: {
+      description: "Disable an installed plugin and stop its child process. Operator-only.",
+      input: "object { pluginId: string }",
+      example: "ade plugin disable graph",
+    },
+    usageSummary: {
+      description: "Per-plugin storage and sync usage against the writer-enforced budgets.",
+      input: "object { pluginId?: string }",
+      example: "ade actions run plugin.usageSummary --text",
+    },
+    reload: {
+      description: "Re-read a plugin's manifest from disk and restart its child. The `ade plugin dev` loop.",
+      input: "object { pluginId: string }",
+      example: "ade plugin reload graph",
     },
   },
 };
@@ -4038,6 +4099,14 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
+function buildPluginDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const pluginHostService = runtime.pluginHostService;
+  if (!pluginHostService) return null;
+  // The host is machine-scoped and outlives any one project, so the project
+  // binding is applied per call rather than captured at construction.
+  return toService(pluginHostService.domainService(runtime.projectId));
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -4094,6 +4163,7 @@ export function getAdeActionDomainServices(
     orchestration: toService(buildOrchestrationDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
+    plugin: buildPluginDomainService(runtime),
   };
 }
 

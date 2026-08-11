@@ -28,6 +28,11 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import {
+  CliPluginUsageError,
+  resolvePluginCliRoute,
+  runPluginCommandAsync,
+} from "./commands/plugin";
+import {
   readInstalledDesktopVersion,
   resolveDefaultDesktopAppName,
   runDoctorCommand,
@@ -392,6 +397,7 @@ type CliPlan =
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
   | { kind: "skill"; rest: string[] }
+  | { kind: "plugin"; rest: string[] }
   | {
       kind: "chat-wait";
       sessionId: string;
@@ -673,6 +679,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -1405,6 +1412,30 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade skill show <name> --text                  Print just the skill's markdown body
 
   Flags:
+    --text          Human-readable output.
+    --json          Structured JSON output (default).
+`,
+  plugin: `${ADE_BANNER}
+  ADE Plugins
+
+  Install, run, and author the plugins registered on this machine. Plugin code
+  runs only here, in a supervised child process; panels are declarative JSON
+  rendered natively on every ADE surface.
+
+    $ ade plugin list                               List installed plugins (local, no brain required)
+    $ ade plugin list --text                        One "id version — name (state)" line per plugin
+    $ ade plugin create <name> [--dir <path>]       Scaffold plugin.json, index.js, panels/main.json
+    $ ade plugin install <source> [--ref <ref>]     Install from a git URL or a local directory
+    $ ade plugin remove <id>                        Uninstall a plugin
+    $ ade plugin enable <id> | disable <id>         Turn a plugin on or off
+    $ ade plugin reload <id>                        Re-read the manifest and restart the plugin
+    $ ade plugin logs <id> [--limit <n>]            Show a plugin's recent log lines
+    $ ade plugin dev [<id>|<path>]                  Watch a plugin directory and reload on change
+    $ ade <plugin-id> <command>                     Run a command the plugin declares in its manifest
+
+  Flags:
+    --no-enable     Install without enabling the plugin.
+    --limit <n>     Log lines to show (default 50).
     --text          Human-readable output.
     --json          Structured JSON output (default).
 `,
@@ -12365,6 +12396,7 @@ function buildCliPlan(
     quotas: "usage",
     disk: "storage",
     skills: "skill",
+    plugins: "plugin",
     gh: "github",
     create: "new",
     login: "auth",
@@ -12453,6 +12485,11 @@ function buildCliPlan(
   if (primary === "skill" || primary === "skills") {
     // Local (non-RPC) bundled-agent-skill browser; no runtime required.
     return { kind: "skill", rest: args };
+  }
+  if (primary === "plugin" || primary === "plugins") {
+    // `list`/`create` read ~/.ade/plugins directly; the mutating subcommands
+    // ride the single `plugin` action domain from the executor.
+    return { kind: "plugin", rest: args };
   }
   if (primary === "linear") {
     // `ade linear install` is the deeplink installer; every other `ade linear`
@@ -12679,6 +12716,16 @@ function buildCliPlan(
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
+  // `ade <pluginId> <cmd>` (D18). Only an installed, enabled plugin that
+  // declares this word claims the command; anything else must still read as the
+  // typo it is, so `ade lnes` says "Unknown command" and not a plugin error.
+  if (resolvePluginCliRoute(primary, args)) {
+    return {
+      kind: "execute",
+      label: `plugin ${primary}`,
+      steps: [actionStep("result", "plugin", "invoke", { pluginId: primary, argv: args })],
+    };
+  }
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }
 
@@ -21755,6 +21802,30 @@ async function runCli(
         return { output: result.output, exitCode: result.exitCode };
       } catch (error) {
         if (error instanceof CliSkillUsageError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
+    }
+    if (plan.kind === "plugin") {
+      try {
+        const rest = [...plan.rest, parsed.options.text ? "--text" : "--json"];
+        const result = await runPluginCommandAsync(rest, {
+          // Each call opens and closes its own connection, so `ade plugin dev`
+          // keeps working across an ADE restart instead of holding a dead socket.
+          invokeAction: (action, args) =>
+            executePlan(
+              {
+                kind: "execute",
+                label: `plugin ${action}`,
+                steps: [actionStep("result", "plugin", action, args as JsonObject)],
+              },
+              parsed.options,
+            ),
+        });
+        return { output: result.output, exitCode: result.exitCode };
+      } catch (error) {
+        if (error instanceof CliPluginUsageError) {
           throw new CliUsageError(error.message);
         }
         throw error;

@@ -499,12 +499,13 @@ describe("classifyProcessRoles", () => {
     const allowedRoles = new Set([
       "ade-runtime",
       "ade-pty-host",
+      "plugin-host",
       "provider-agent",
       "shell",
       "unknown",
     ]);
 
-    expect(result.roleUsage).toHaveLength(5);
+    expect(result.roleUsage).toHaveLength(6);
     expect(result.roleUsage.every((usage) => allowedRoles.has(usage.role))).toBe(true);
     expect(result.roleUsage.reduce((sum, usage) => sum + usage.processCount, 0))
       .toBe(result.ptyUsage.ptyProcessCount);

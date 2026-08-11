@@ -1,0 +1,117 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { Logger } from "../logging/logger";
+import { parsePluginPanel } from "../../../shared/plugins/vocabulary";
+import { createPluginInstallService, listPluginAgentSkillRoots } from "./pluginInstallService";
+
+/**
+ * End-to-end acceptance for the install half of the platform, driven by the
+ * `hello-plugin` fixture: a real directory with a real manifest, a real panel
+ * schema and a real skills root. The child-process half is covered by
+ * `pluginChildSupervisor.test.ts`, which needs the bundled bootstrap.
+ */
+
+const fixtureRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../test/fixtures/hello-plugin",
+);
+
+const scratchDirs: string[] = [];
+
+function scratchPluginsRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugins-"));
+  scratchDirs.push(dir);
+  return path.join(dir, "plugins");
+}
+
+function testLogger(): Logger {
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+}
+
+afterEach(() => {
+  while (scratchDirs.length) {
+    fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
+  }
+});
+
+describe("hello-plugin fixture", () => {
+  it("ships a manifest and a panel schema both halves of the contract accept", () => {
+    const manifestText = fs.readFileSync(path.join(fixtureRoot, "plugin.json"), "utf8");
+    const parsed = JSON.parse(manifestText) as Record<string, unknown>;
+    expect(parsed.name).toBe("hello-plugin");
+
+    const panel = parsePluginPanel(
+      JSON.parse(fs.readFileSync(path.join(fixtureRoot, "panels", "main.json"), "utf8")),
+    );
+    expect(panel.ok).toBe(true);
+  });
+
+  it("installs from a local directory and registers its manifest surface", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({ logger: testLogger(), pluginsRoot });
+
+    const installed = await install.install({ source: fixtureRoot });
+
+    expect(installed.errors).toEqual([]);
+    expect(installed.record.pluginId).toBe("hello-plugin");
+    expect(installed.record.enabled).toBe(true);
+    expect(installed.manifest?.cli).toEqual(["greet"]);
+    expect(installed.manifest?.surfaces[0]).toMatchObject({ kind: "tab", panelId: "main" });
+    expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin", "index.js"))).toBe(true);
+
+    const listed = install.list();
+    expect(listed.map((entry) => entry.record.pluginId)).toEqual(["hello-plugin"]);
+  });
+
+  // Registry-vs-cache discipline: a directory nobody installed is not a plugin,
+  // no matter how complete it looks on disk.
+  it("ignores a plugin directory that is not in the registry", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({ logger: testLogger(), pluginsRoot });
+    await install.install({ source: fixtureRoot });
+
+    fs.cpSync(fixtureRoot, path.join(pluginsRoot, "stowaway"), { recursive: true });
+
+    expect(install.list().map((entry) => entry.record.pluginId)).toEqual(["hello-plugin"]);
+    expect(install.get("stowaway")).toBeNull();
+  });
+
+  it("contributes its skills directory only while it is enabled", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({ logger: testLogger(), pluginsRoot });
+    await install.install({ source: fixtureRoot });
+
+    const expectedRoot = path.join(pluginsRoot, "hello-plugin", "skills", "using-hello");
+    expect(install.skillRoots()).toContain(expectedRoot);
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).toContain(expectedRoot);
+
+    install.setEnabled("hello-plugin", false);
+    expect(install.skillRoots()).not.toContain(expectedRoot);
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).not.toContain(expectedRoot);
+  });
+
+  it("removes the directory and the registry entry on uninstall", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({ logger: testLogger(), pluginsRoot });
+    await install.install({ source: fixtureRoot });
+
+    expect(install.uninstall("hello-plugin")).toEqual({ removed: true });
+    expect(install.list()).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin"))).toBe(false);
+  });
+
+  it("refuses a source whose manifest fails validation", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const broken = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bad-plugin-"));
+    scratchDirs.push(broken);
+    fs.writeFileSync(path.join(broken, "plugin.json"), JSON.stringify({ name: "Bad Name", version: "1" }));
+
+    const install = createPluginInstallService({ logger: testLogger(), pluginsRoot });
+    await expect(install.install({ source: broken })).rejects.toThrow();
+    expect(install.list()).toEqual([]);
+  });
+});

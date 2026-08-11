@@ -26,6 +26,7 @@ import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistr
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
+import { PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -2372,6 +2373,33 @@ function scopeAccessDenied(
   });
 }
 
+/**
+ * Translate a plugin host refusal into the wire error it actually is.
+ *
+ * Plugin denials are policy, never missing capability — see the
+ * `scopeAccessDenied` docblock above for why that distinction is load-bearing.
+ * `unsupported_method` maps to `invalidParams` for the same reason: the
+ * `methodNotFound` wording is what legacy-host fallbacks match on, and a plugin
+ * that lacks a handler must not look like a runtime that lacks the bridge.
+ */
+function pluginActionError(error: unknown): unknown {
+  if (!(error instanceof PluginSdkError)) return error;
+  const data = { kind: "plugin_error", pluginErrorCode: error.code, ...(error.detail ? { detail: error.detail } : {}) };
+  switch (error.code) {
+    case "not_permitted":
+    case "plugin_disabled":
+      return new JsonRpcError(JsonRpcErrorCode.policyDenied, error.message, data);
+    case "plugin_not_found":
+    case "plugin_no_entry":
+    case "invalid_args":
+    case "budget_exceeded":
+    case "unsupported_method":
+      return new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, data);
+    default:
+      return new JsonRpcError(JsonRpcErrorCode.internalError, error.message, data);
+  }
+}
+
 function ptyAccessDenied(method: string): never {
   scopeAccessDenied("PTY access is limited to the caller's own terminal session and lane", method);
 }
@@ -3752,6 +3780,18 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
     }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+      if (domain === "plugin") {
+        // The plugin bridge is new, so it starts out obeying the rule the
+        // generic branch below still breaks: a role refusal is policy, not a
+        // missing method. Widening the fix to every domain would change the
+        // error code clients already assert on (accountUsage.test.ts), so it is
+        // a deliberate follow-up rather than a drive-by here.
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          `Action '${domain}.${action}' is limited to the machine operator. Run it from ADE, \`ade code\`, or your own terminal.`,
+          { kind: "plugin_role_denied", method: `${domain}.${action}`, requiredRole: "cto" },
+        );
+      }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
@@ -3950,15 +3990,19 @@ async function runTool(args: {
       }
     }
     if (!scopedResultHandled) {
-      if (argsList) {
-        result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
-      } else if (hasScalarArg) {
-        result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
-      } else {
-        result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
-          service,
-          Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
-        );
+      try {
+        if (argsList) {
+          result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
+        } else if (hasScalarArg) {
+          result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
+        } else {
+          result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
+            Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
+          );
+        }
+      } catch (error) {
+        throw domain === "plugin" ? pluginActionError(error) : error;
       }
     }
     if (domain === "account" && action === "status") {

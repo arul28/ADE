@@ -14,6 +14,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
+import { budgetExceeded, PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -6335,5 +6336,157 @@ describe("run_ade_action search scope", () => {
     });
     expect(status?.isError).toBeUndefined();
     expect(search.indexStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("run_ade_action plugin domain", () => {
+  function pluginHostMock(overrides: Record<string, unknown> = {}) {
+    const service = {
+      invoke: vi.fn(async () => ({ ok: true })),
+      list: vi.fn(async () => []),
+      get: vi.fn(async () => null),
+      install: vi.fn(async () => ({ pluginId: "hello" })),
+      uninstall: vi.fn(async () => ({ removed: true })),
+      enable: vi.fn(async () => ({ pluginId: "hello" })),
+      disable: vi.fn(async () => ({ pluginId: "hello" })),
+      usageSummary: vi.fn(async () => ({ entries: [], budgets: {} })),
+      reload: vi.fn(async () => ({ pluginId: "hello" })),
+      ...overrides,
+    };
+    return { service, host: { domainService: vi.fn(() => service) } };
+  }
+
+  function withPluginHost(host: unknown) {
+    const fixture = createRuntime();
+    (fixture.runtime as Record<string, unknown>).pluginHostService = host;
+    return fixture;
+  }
+
+  it("routes an agent-role invoke to the plugin domain service", async () => {
+    const { service, host } = pluginHostMock();
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const result = await callTool(handler, "run_ade_action", {
+      domain: "plugin",
+      action: "invoke",
+      args: { pluginId: "hello", action: "greet", args: { name: "ada" } },
+    });
+
+    expect(result?.isError).toBeUndefined();
+    expect(service.invoke).toHaveBeenCalledWith({
+      pluginId: "hello",
+      action: "greet",
+      args: { name: "ada" },
+    });
+  });
+
+  // D1: a denial must be policy-denied, never methodNotFound. `adeApi` treats
+  // the methodNotFound wording as a version-skew signal and silently takes a
+  // legacy path, so a refused install would look like "this host has no plugin
+  // bridge" instead of "you are not the operator".
+  it("refuses an operator-only install for an agent caller with policyDenied", async () => {
+    const { service, host } = pluginHostMock();
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "plugin",
+      action: "install",
+      args: { source: "https://example.invalid/plugin.git" },
+    });
+
+    expect(denied?.isError).toBe(true);
+    expect(denied.error).toMatchObject({ code: JsonRpcErrorCode.policyDenied });
+    expect(denied.error?.message).not.toMatch(/Unsupported/i);
+    expect(service.install).not.toHaveBeenCalled();
+  });
+
+  it("lets the machine operator install", async () => {
+    const { service, host } = pluginHostMock();
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "operator", role: "cto" });
+
+    const result = await callTool(handler, "run_ade_action", {
+      domain: "plugin",
+      action: "install",
+      args: { source: "https://example.invalid/plugin.git" },
+    });
+
+    expect(result?.isError).toBeUndefined();
+    expect(service.install).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a plugin host refusal onto policyDenied and keeps the plugin error code", async () => {
+    const { host } = pluginHostMock({
+      invoke: vi.fn(async () => {
+        throw new PluginSdkError("plugin_disabled", "Plugin 'hello' is disabled.");
+      }),
+    });
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "plugin",
+      action: "invoke",
+      args: { pluginId: "hello", action: "greet" },
+    });
+
+    expect(denied?.isError).toBe(true);
+    expect(denied.error).toMatchObject({
+      code: JsonRpcErrorCode.policyDenied,
+      data: { kind: "plugin_error", pluginErrorCode: "plugin_disabled" },
+    });
+  });
+
+  it("reports a budget refusal as invalid params rather than an internal error", async () => {
+    const { host } = pluginHostMock({
+      invoke: vi.fn(async () => {
+        throw budgetExceeded("collection bytes", 2048, 4096);
+      }),
+    });
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "plugin",
+      action: "invoke",
+      args: { pluginId: "hello", action: "grow" },
+    });
+
+    expect(denied?.isError).toBe(true);
+    expect(denied.error).toMatchObject({
+      code: JsonRpcErrorCode.invalidParams,
+      data: { pluginErrorCode: "budget_exceeded", detail: { limit: 2048, actual: 4096 } },
+    });
+  });
+
+  it("hides the domain entirely when no plugin host is wired", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const inventory = await callTool(handler, "list_ade_actions", { domain: "plugin" });
+    expect(inventory.structuredContent?.actions ?? []).toHaveLength(0);
+  });
+
+  it("lists the read actions an agent may reach, and hides the operator-only ones", async () => {
+    const { host } = pluginHostMock();
+    const fixture = withPluginHost(host);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+    const inventory = await callTool(handler, "list_ade_actions", { domain: "plugin" });
+    const names = (inventory.structuredContent?.actions ?? []).map((action: { name?: string }) => action.name);
+    expect(names).toContain("plugin.list");
+    expect(names).toContain("plugin.invoke");
+    expect(names).toContain("plugin.usageSummary");
+    expect(names).not.toContain("plugin.install");
+    expect(names).not.toContain("plugin.uninstall");
   });
 });

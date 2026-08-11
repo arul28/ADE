@@ -238,6 +238,8 @@ export type ProcessRoleClassificationInput = {
   adeRuntimePids: number[];
   /** Live PTY-owning ADE peer processes (session owners that are not the runtime pool roots). */
   adePtyHostPids: number[];
+  /** Supervised plugin child processes. Third-party code, so its own bucket. */
+  pluginHostPids?: number[];
   /** Desktop-owned PTY roots with their explicit spawn metadata. */
   desktopPtyRoots: ResourceAttributionRoot[];
   activePtyCount: number;
@@ -269,6 +271,7 @@ type RoleAccumulator = { processCount: number; cpuPercent: number; rssKB: number
 const NON_ELECTRON_ROLES: AppResourceProcessRole[] = [
   "ade-runtime",
   "ade-pty-host",
+  "plugin-host",
   "provider-agent",
   "shell",
   "unknown",
@@ -284,6 +287,7 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
   }));
   const hasRoots = input.adeRuntimePids.length > 0
     || input.adePtyHostPids.length > 0
+    || (input.pluginHostPids?.length ?? 0) > 0
     || input.desktopPtyRoots.length > 0;
 
   if (!input.rows) {
@@ -338,12 +342,14 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
   // over descendant inference, regardless of process topology.
   const runtimePids = normalizePids(input.adeRuntimePids).filter((pid) => !electronPids.has(pid));
   const ptyHostPids = normalizePids(input.adePtyHostPids).filter((pid) => !electronPids.has(pid));
+  const pluginHostPids = normalizePids(input.pluginHostPids ?? []).filter((pid) => !electronPids.has(pid));
   const desktopRoots = input.desktopPtyRoots
     .map((root) => ({ pid: Math.trunc(root.pid), kind: root.kind }))
     .filter((root) => Number.isFinite(root.pid) && root.pid > 0 && !electronPids.has(root.pid));
 
   const claimedRuntime = runtimePids.filter((pid) => claim(pid, "ade-runtime"));
   const claimedPtyHosts = ptyHostPids.filter((pid) => claim(pid, "ade-pty-host"));
+  const claimedPluginHosts = pluginHostPids.filter((pid) => claim(pid, "plugin-host"));
   const claimedDesktopRoots = desktopRoots.filter((root) => claim(root.pid, root.kind));
 
   // Descendant inference: provider trees stay provider (helpers belong to the
@@ -353,6 +359,9 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
     walkDescendants(root.pid, root.kind === "provider-agent" ? "provider-agent" : "unknown");
   }
   for (const pid of claimedPtyHosts) walkDescendants(pid, "unknown");
+  // A plugin's own subprocesses are the plugin's cost, the same way a provider
+  // agent owns its helpers — otherwise a plugin that shells out looks free.
+  for (const pid of claimedPluginHosts) walkDescendants(pid, "plugin-host");
   for (const pid of claimedRuntime) walkDescendants(pid, "unknown");
 
   const accumulators = new Map<AppResourceProcessRole, RoleAccumulator>();
@@ -409,6 +418,7 @@ export type ElectronProcessMetricLike = {
 export type AppResourceUsageAttributionSources = {
   adeRuntimePids: number[];
   adePtyHostPids: number[];
+  pluginHostPids?: number[];
   desktopPtyRoots: ResourceAttributionRoot[];
   activePtyCount: number;
 };
@@ -485,6 +495,7 @@ export async function computeAppResourceUsageSnapshot(
 ): Promise<AppResourceUsageSnapshot> {
   const hasRoots = sources.adeRuntimePids.length > 0
     || sources.adePtyHostPids.length > 0
+    || (sources.pluginHostPids?.length ?? 0) > 0
     || sources.desktopPtyRoots.length > 0;
   const shouldSample = hasRoots || sources.activePtyCount > 0;
 
@@ -503,6 +514,7 @@ export async function computeAppResourceUsageSnapshot(
       .concat(process.pid),
     adeRuntimePids: sources.adeRuntimePids,
     adePtyHostPids: sources.adePtyHostPids,
+    pluginHostPids: sources.pluginHostPids,
     desktopPtyRoots: sources.desktopPtyRoots,
     activePtyCount: sources.activePtyCount,
   });

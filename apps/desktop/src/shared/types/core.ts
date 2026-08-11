@@ -126,6 +126,7 @@ export type AppResourceProcessRole =
   | "electron-helper"
   | "ade-runtime"
   | "ade-pty-host"
+  | "plugin-host"
   | "shell"
   | "provider-agent"
   | "unknown";

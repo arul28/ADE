@@ -92,10 +92,11 @@ import { createFeedbackReporterService } from "../../desktop/src/main/services/f
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
-  getAdeAgentSkillRootsForPrompt,
+  getAdeAgentSkillRootCandidates,
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { listPluginAgentSkillRoots } from "../../desktop/src/main/services/plugins/pluginInstallService";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import {
@@ -154,6 +155,10 @@ import {
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
+import {
+  getSharedPluginHostService,
+  type PluginHostService,
+} from "../../desktop/src/main/services/plugins/pluginHostService";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -317,6 +322,12 @@ export type AdeRuntime = {
   reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
+  /**
+   * Machine-scoped: one plugin host serves every project scope in this process,
+   * so switching projects never restarts a plugin child. The runtime holds a
+   * reference; only its own project binding is torn down in `dispose()`.
+   */
+  pluginHostService?: PluginHostService | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   appNavigationService?: {
     navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
@@ -556,10 +567,14 @@ export function createHeadlessAdeCliAgentEnv(
     next[ADE_AGENT_SKILLS_DIRS_ENV],
     inferredSkillRoots.catalogRoot,
   );
-  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
-    env: next,
-    cwd: options.cwd ?? process.cwd(),
-  }));
+  // The env var carries the FULL root list; only the prompt text is capped
+  // (getAdeAgentSkillRootsForPrompt). This line used to write the capped list
+  // here too, which silently dropped every root past the fourth — including the
+  // plugin roots appended below, which sort last by construction.
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots([
+    ...getAdeAgentSkillRootCandidates({ env: next, cwd: options.cwd ?? process.cwd() }),
+    ...listPluginAgentSkillRoots(),
+  ]);
   if (inferredSkillRoots.bundledRoot) {
     next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = inferredSkillRoots.bundledRoot;
   } else {
@@ -656,6 +671,15 @@ export async function createAdeRuntime(args: {
     logger,
   });
   usageProductAnalyticsExporter.start();
+
+  // Machine-scoped, like product analytics: plugin children belong to the
+  // machine, not to whichever project happens to be open. This scope's binding
+  // is attached once `runtime` exists and detached in `dispose()`.
+  const pluginHostService = getSharedPluginHostService({
+    logger,
+    adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+  });
+  let detachPluginHostBinding: (() => void) | null = null;
 
   const operationService = createOperationService({ db, projectId });
   const keybindingsService = createKeybindingsService({ db });
@@ -1912,11 +1936,15 @@ export async function createAdeRuntime(args: {
     },
     eventBuffer,
     isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
+    pluginHostService,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       if (staleSessionReconcileTimer) {
         clearTimeout(staleSessionReconcileTimer);
       }
+      // Drops only THIS scope's plugin binding. The host itself is machine-
+      // scoped and outlives the project; the daemon disposes it at shutdown.
+      swallow(() => detachPluginHostBinding?.());
       void configReloadService.dispose().catch(() => {});
       swallow(() => prPollingService.dispose());
       // Detach only this scope's signals; the shared publisher outlives the scope.
@@ -1953,6 +1981,30 @@ export async function createAdeRuntime(args: {
       swallow(() => db.close());
     }
   };
+
+  // Plugin code authenticates at agent role: it may reach every allowlisted
+  // action that is not operator-only, and nothing else. Reusing the automation
+  // predicate keeps that ceiling defined in exactly one place.
+  detachPluginHostBinding = (() => {
+    const attachment = pluginHostService.attachProject({
+      projectId,
+      projectRoot,
+      db,
+      invokeAdeAction: async (domain, action, args) => {
+        const actionDomain = domain as AdeActionDomain;
+        if (!isAutomationAllowedAdeAction(actionDomain, action)) {
+          throw new Error(`Action '${domain}.${action}' is not available to plugins.`);
+        }
+        const service = getAdeActionDomainServices(runtime)[actionDomain];
+        const callable = service?.[action];
+        if (typeof callable !== "function") {
+          throw new Error(`Action '${domain}.${action}' is unavailable in this runtime.`);
+        }
+        return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(service, args);
+      },
+    });
+    return () => attachment.detach();
+  })();
 
   const adeActionLookup: AutomationAdeActionRegistry = {
     isAllowed(domain: string, action: string): boolean {

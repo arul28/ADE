@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "title": "Hello",
+  "fallback": {
+    "title": "Hello",
+    "text": "This surface needs a newer ADE to render."
+  },
+  "body": [
+    {
+      "component": "stack",
+      "direction": "vertical",
+      "gap": "md",
+      "children": [
+        { "component": "text", "text": "Greetings recorded by this plugin.", "variant": "body" },
+        { "component": "badge", "text": "fixture", "tone": "accent" }
+      ]
+    }
+  ]
+}

@@ -15,6 +15,13 @@ import {
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
+import {
+  PLUGIN_READ_ONLY_DOMAIN_ACTIONS,
+  type PluginDetail,
+  type PluginDomainService,
+  type PluginSummary,
+  type PluginUsageSummary,
+} from "../shared/plugins/sdk";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
   createPinnedRuntimeEvents,
@@ -1414,6 +1421,9 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.resolveSmartLinkPreview",
   "file.quickOpen",
   "ios_simulator.resolvePreviewMatch",
+  // `plugin.invoke` is absent on purpose: a plugin handler may write anything,
+  // so every other plugin action stays mutating.
+  ...PLUGIN_READ_ONLY_DOMAIN_ACTIONS.map((action) => `plugin.${action}`),
   "terminal.activeForChat",
   "terminal.preview",
 ]);
@@ -7560,6 +7570,52 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
   },
+  // Plugins route strictly: the Electron main process keeps a dormant
+  // AppContext whose services are null, so the silently-falling-back family
+  // would answer a routing failure with a crash or a wrong empty result.
+  plugin: {
+    list: async (args: { includeDisabled?: boolean } = {}): Promise<PluginSummary[]> =>
+      callProjectRuntimeActionStrictOr("plugin", "list", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginList, args),
+      ),
+    get: async (args: { pluginId: string }): Promise<PluginDetail | null> =>
+      callProjectRuntimeActionStrictOr("plugin", "get", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginGet, args),
+      ),
+    invoke: async (args: {
+      pluginId: string;
+      action: string;
+      args?: Record<string, unknown>;
+      argv?: string[];
+    }): Promise<unknown> =>
+      callProjectRuntimeActionStrictOr("plugin", "invoke", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginInvoke, args),
+      ),
+    install: async (args: { source: string; ref?: string; enable?: boolean }): Promise<PluginSummary> =>
+      callProjectRuntimeActionStrictOr("plugin", "install", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginInstall, args),
+      ),
+    uninstall: async (args: { pluginId: string }): Promise<{ removed: boolean }> =>
+      callProjectRuntimeActionStrictOr("plugin", "uninstall", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginUninstall, args),
+      ),
+    enable: async (args: { pluginId: string }): Promise<PluginSummary> =>
+      callProjectRuntimeActionStrictOr("plugin", "enable", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginEnable, args),
+      ),
+    disable: async (args: { pluginId: string }): Promise<PluginSummary> =>
+      callProjectRuntimeActionStrictOr("plugin", "disable", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginDisable, args),
+      ),
+    usageSummary: async (args: { pluginId?: string } = {}): Promise<PluginUsageSummary> =>
+      callProjectRuntimeActionStrictOr("plugin", "usageSummary", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginUsageSummary, args),
+      ),
+    reload: async (args: { pluginId: string }): Promise<PluginSummary> =>
+      callProjectRuntimeActionStrictOr("plugin", "reload", { args }, () =>
+        ipcRenderer.invoke(IPC.pluginReload, args),
+      ),
+  } satisfies PluginDomainService,
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {
       if (pin) {

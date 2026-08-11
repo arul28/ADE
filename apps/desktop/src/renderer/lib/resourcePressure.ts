@@ -129,11 +129,17 @@ function roleUsageDetails(usage: AppResourceUsageSnapshot): string[] | null {
     "ade-pty-host",
   ]);
   const agents = sumRoleGroup(roleUsage, ["provider-agent"]);
+  // Plugins are third-party code, so their cost is named rather than folded
+  // into "ADE app" — otherwise a heavy plugin reads as ADE being heavy.
+  const plugins = sumRoleGroup(roleUsage, ["plugin-host"]);
   const other = sumRoleGroup(roleUsage, ["shell", "unknown"]);
   const details = [
     roleGroupDetail("ADE app", adeInfra),
     agents.processCount > 0
       ? roleGroupDetail(`${agents.processCount} agent process${agents.processCount === 1 ? "" : "es"}`, agents)
+      : null,
+    plugins.processCount > 0
+      ? roleGroupDetail(`${plugins.processCount} plugin${plugins.processCount === 1 ? "" : "s"}`, plugins)
       : null,
     other.processCount > 0 ? roleGroupDetail("other terminal processes", other) : null,
   ].filter((part): part is string => Boolean(part));

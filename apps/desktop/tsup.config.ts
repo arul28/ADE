@@ -14,6 +14,7 @@ export default defineConfig({
     "main/droidSdkWorker": "src/main/services/chat/droidSdkWorker.ts",
     "main/piSdkWorker": "src/main/services/chat/piSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
+    "main/pluginChildBootstrap": "src/main/services/plugins/childRuntime/pluginChildBootstrap.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
