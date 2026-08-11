@@ -1145,10 +1145,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: tables the phone
   never reads from a changeset — `attempt_transcripts`, `operations`,
   `ai_usage_log`, `budget_usage_records`, `automation_runs`,
-  `automation_action_results`, `pull_request_snapshots`, and the seven
+  `automation_action_results`, `pull_request_snapshots`, the seven
   event logs `linear_ingress_events`, `linear_sync_events`,
   `linear_workflow_run_events`, `worker_agent_runs`,
-  `worker_agent_cost_events`, `pack_events`, and `cto_session_logs` — are
+  `worker_agent_cost_events`, `pack_events`, and `cto_session_logs`, and the
+  cross-machine usage rollups `usage_machine_rollups` /
+  `usage_machine_rollup_meta` plus the deleted-lane aggregates
+  `lane_usage_tombstones`, all three of which must replicate desktop-to-desktop
+  but reach the phone through `usage.getAdeStats` instead (the tombstone table
+  is not even in the phone's `DatabaseBootstrap.sql`, so iOS drops its rows on
+  arrival) — are
   filtered from phone changesets while ack watermarks still advance; the event
   logs exist in the phone's `DatabaseBootstrap.sql` so an inbound row would
   still apply, but there is no Swift read path for any of them), compact reseeding for replica phones
@@ -1376,7 +1382,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `AbortError` instead of each call site re-implementing the wiring.
 - `syncRemoteCommandService.ts` (~4,600 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
-  `usage.getAdeStats`, `usage.getQuotaSnapshot`, `usage.refreshQuota`,
+  `usage.getAdeStats`, `usage.getUsageRollup`, `usage.getQuotaSnapshot`,
+  `usage.refreshQuota`,
   `prs.getMobileSnapshot`, `lanes.presence.*`,
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
@@ -1417,6 +1424,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `usage.getAdeStats` is a viewer-allowed project read backed by the runtime's
   usage tracker; it serves cached provider/GitHub data plus live DB aggregates
   to iOS and web without replicating the local-only raw interaction ledger.
+  Its `scope` accepts `account`, `machine`, or `project`, and `force` (set only
+  by an explicit user Refresh) bypasses the account fan-out's rate floor.
+  `usage.getUsageRollup` is the account scope's fan-out call: a viewer-allowed
+  runtime read that returns this machine's day × provider × model aggregates
+  and nothing else — no transcript record, session id, or path crosses the
+  machine boundary. It is a separate command rather than a scope on
+  `usage.getAdeStats` because that one returns a full page payload the merger
+  would mostly discard. A `null` result means "not ready yet" (the machine has
+  not finished its first ledger scan); the caller records a retryable failure
+  rather than storing an empty rollup, which its reconcile pass would read as
+  history having been removed.
   `usage.getQuotaSnapshot` reads the cached live Claude/Codex limit snapshot,
   while `usage.refreshQuota` runs the bounded quota-only provider path with
   interactive auth disabled. Neither remote quota action starts local provider

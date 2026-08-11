@@ -119,6 +119,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "machine_reconnect",
   "mention_expanded",
   "transaction_failed",
+  "scope_selected",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -177,6 +178,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   feature: new Set([
     "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
     "automations", "command_palette", "storage_doctor", "attention", "updates", "connections",
+    "usage",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -185,6 +187,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // deliberately absent: the app half is already reported by
     // `ade_update_install_did_not_land`, so only the brain half is new signal.
     "service", "restart", "health",
+    // Which usage scope an installation actually looked at. Reuses `outcome`
+    // rather than adding a parallel `scope` key, the same way the update
+    // transaction reuses it for its failed step. These are the three values of
+    // `AdeUsageScope` and nothing else: a fourth spelling is dropped, not
+    // widened, so the scope control can never carry free text.
+    "machine", "project", "account",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "local", "other"]),
   model_family: new Set([

@@ -5674,7 +5674,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     const scope = asTrimmedString(payload.scope);
     if (scope && !isAdeUsageScope(scope)) {
-      throw new Error("usage.getAdeStats scope must be machine or project.");
+      throw new Error("usage.getAdeStats scope must be account, machine, or project.");
     }
     const since = asTrimmedString(payload.since);
     if (since && Number.isNaN(Date.parse(since))) {
@@ -5689,8 +5689,26 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       ...(isAdeUsageScope(scope) ? { scope } : {}),
       ...(since ? { since } : {}),
       ...(until ? { until } : {}),
+      // Only an explicit user Refresh sets this; it bypasses the account
+      // fan-out's rate floor, so it is passed through strictly by identity
+      // rather than by truthiness.
+      ...(payload.force === true ? { force: true } : {}),
     });
   });
+
+  // Account-wide usage pulls this from every reachable machine and merges the
+  // results. It returns day × provider × model aggregates only — no transcript
+  // record, session id, or path leaves the machine that scanned it — which is
+  // why it is a separate command rather than a scope on `usage.getAdeStats`:
+  // that one returns a full page payload, most of which the merger discards.
+  // `null` here is deliberate and means "not ready yet": this machine has not
+  // finished its first ledger scan, so it has no authoritative history to
+  // report. The caller records a retryable failure rather than storing an empty
+  // rollup, which its reconcile pass would read as "this history was removed".
+  register("usage.getUsageRollup", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    return args.usageTrackingService.getUsageRollup();
+  }, "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");

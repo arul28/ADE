@@ -23,6 +23,7 @@ import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
+import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
 import type {
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
@@ -2530,8 +2531,11 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
-    // Everything else lane-scoped on the duplicate cascades away.
-    cleanupLaneDatabaseRows(duplicateId);
+    // Everything else lane-scoped on the duplicate cascades away. The duplicate
+    // is a create/recover race artifact, not a lane the user made, and its
+    // sessions now belong to the keeper — so its tombstone preserves whatever
+    // code movement did not migrate without counting a second lane created.
+    cleanupLaneDatabaseRows(duplicateId, { tombstoneMode: "absorbed" });
   };
 
   /**
@@ -3587,7 +3591,41 @@ export function createLaneService({
     return removed;
   };
 
-  const cleanupLaneDatabaseRows = (laneId: string): void => {
+  /**
+   * Cascade a lane's rows away.
+   *
+   * `tombstoneMode` decides how the removal is counted for stats. It defaults
+   * to `deleted` because that is what every real removal is; the create-failure
+   * rollback passes `none`, and the duplicate-absorb passes `absorbed`. The
+   * tombstone is written first, while the rows it counts still exist, and the
+   * caller's `begin immediate` is what binds it to the deletes.
+   */
+  const cleanupLaneDatabaseRows = (
+    laneId: string,
+    options?: { tombstoneMode?: LaneUsageTombstoneMode },
+  ): void => {
+    const tombstoneMode = options?.tombstoneMode ?? "deleted";
+    if (tombstoneMode !== "none") {
+      // Counted with the same predicate the delete below uses, so captures
+      // shared with a surviving lane are not counted as lost here.
+      const ownedArtifacts = (() => {
+        try {
+          return db.get<{ count: number }>(
+            `select count(*) count from (${LANE_OWNED_ARTIFACT_IDS_SQL})`,
+            [projectId, laneId, laneId, laneId],
+          )?.count ?? 0;
+        } catch {
+          return 0;
+        }
+      })();
+      writeLaneUsageTombstone(db, {
+        projectId,
+        laneId,
+        mode: tombstoneMode,
+        artifactsCaptured: ownedArtifacts,
+      });
+    }
+
     db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
@@ -3765,7 +3803,9 @@ export function createLaneService({
     }
 
     try {
-      cleanupLaneDatabaseRows(args.laneId);
+      // A lane that never finished being created never counted as created, and
+      // nothing ran inside it. Tombstoning it would invent a lane.
+      cleanupLaneDatabaseRows(args.laneId, { tombstoneMode: "none" });
       invalidateLaneListCache();
     } catch (error) {
       cleanupErrors.push(`database cleanup failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -38,6 +38,10 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
+import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { USAGE_REFRESH_HISTORY_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
+import { IPC } from "../../../shared/ipc";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -1347,6 +1351,40 @@ describe("RemoteConnectionPool", () => {
         }),
       }),
     );
+  });
+
+  it("gives a remote usage.refreshHistory a transport budget that outlives the ledger worker", async () => {
+    const client = createClient();
+    client.call.mockResolvedValue({
+      ok: true,
+      domain: "usage",
+      action: "refreshHistory",
+      result: null,
+      statusHints: {},
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await pool.callActionForTarget(target, "project-1", {
+      domain: "usage",
+      action: "refreshHistory",
+      args: {},
+    });
+
+    const callOptions = client.call.mock.calls[0]?.[2] as { timeoutMs?: number } | undefined;
+    // Innermost budget on the remote path. Below the worker's own ceiling the
+    // transport reports failure for a scan the remote daemon is still running;
+    // at or above the renderer's IPC budget the two race and the user sees an
+    // opaque IPC timeout instead.
+    expect(callOptions?.timeoutMs).toBeGreaterThanOrEqual(LEDGER_WORKER_TIMEOUT_MS);
+    expect(callOptions?.timeoutMs).toBeLessThan(USAGE_REFRESH_HISTORY_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      request: { domain: "usage", action: "refreshHistory" },
+    }])).toBeGreaterThan(callOptions?.timeoutMs ?? 0);
   });
 
   it("retries read-only project actions once after ECONNRESET", async () => {

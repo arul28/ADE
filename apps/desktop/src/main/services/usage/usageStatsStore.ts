@@ -14,6 +14,10 @@ import type {
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import { localDayKey, localDayOffset, localDayOrdinal } from "./localDay";
+import {
+  decodeActiveDayKeys,
+  type LaneUsageTombstoneRow,
+} from "../lanes/laneUsageTombstone";
 
 const DAILY_BUCKET_SCAN_MAX_ROWS = 250_000;
 
@@ -34,6 +38,7 @@ export type AdeDatabaseUsageStats = {
     activeLanes: number;
     lanesCreated: number;
     lanesArchived: number;
+    lanesDeleted: number;
     commitsCreated: number;
     pushOperations: number;
     prLandings: number;
@@ -371,6 +376,28 @@ function calculateStreaks(activeDateValues: Iterable<string>, until: string): { 
   return { activeDays: activeDates.size, current, longest };
 }
 
+/**
+ * The lifetime active-day set, memoized.
+ *
+ * The streak union below carries no range predicate — that is the whole point
+ * of it, since a streak that shrinks when you narrow the filter is not a
+ * streak — but it therefore rescans and de-duplicates all five tables on every
+ * single stats call, and this page reads on mount, on every scope or preset
+ * change, and on every usage update.
+ *
+ * Three things bust the entry, and between them they cover everything a streak
+ * can actually notice: a different database, the calendar day rolling over, and
+ * a short TTL for activity recorded inside the current day. A streak is a count
+ * of days, so a value up to `STREAK_CACHE_TTL_MS` old cannot be wrong by more
+ * than the moment the day's first activity lands.
+ *
+ * Keyed on the database handle rather than on a module-level singleton: ADE
+ * opens one per project, and a shared entry would show one project's streak on
+ * another's page. A `WeakMap` also lets a closed database's entry go with it.
+ */
+const STREAK_CACHE_TTL_MS = 60_000;
+const streakCaches = new WeakMap<AdeDb, { key: string; expiresAtMs: number; dates: string[] }>();
+
 export function collectAdeDatabaseUsageStats(
   db: AdeDb | null | undefined,
   range: AdeUsageStatsRange,
@@ -384,6 +411,58 @@ export function collectAdeDatabaseUsageStats(
   const operationRange = rangeClause("started_at", range);
   const deltaRange = rangeClause("d.started_at", range);
   const artifactRange = rangeClause("created_at", range);
+
+  /**
+   * What a deleted lane left behind.
+   *
+   * Deleting a lane cascades away its `lanes`, session, delta and `operations`
+   * rows, so every count below used to be survivor-only — "lifetime" stats that
+   * fell whenever someone tidied up. The tombstone holds that lane's totals as
+   * integers plus a day bitmap; nothing here can name the lane or say what it
+   * was doing.
+   */
+  const tombstones = safeAll<LaneUsageTombstoneRow>(db, "select * from lane_usage_tombstones");
+  const untilDay = localDayKey(range.until);
+  const sinceDay = range.since ? localDayKey(range.since) : null;
+  /**
+   * A tombstone's counters cover the lane's whole life with no per-day
+   * breakdown, so they can only be attributed to a window that contains that
+   * whole life. On the lifetime preset that is every one of them; on a 7-day
+   * window it is only lanes that both started and finished inside it. Counting
+   * a partially-overlapping lane in full would be worse than omitting it.
+   */
+  const spannedTombstones = tombstones.filter((tombstone) => {
+    const last = tombstone.last_active_day ?? tombstone.deleted_day;
+    const first = tombstone.first_active_day ?? tombstone.created_day ?? tombstone.deleted_day;
+    return last <= untilDay && (!sinceDay || first >= sinceDay);
+  });
+  const tombstoneSum = (pick: (tombstone: LaneUsageTombstoneRow) => number): number =>
+    spannedTombstones.reduce((sum, tombstone) => sum + int(pick(tombstone)), 0);
+  const tombstonesCreatedInRange = tombstones.filter((tombstone) => {
+    const created = tombstone.created_day;
+    return created != null && created <= untilDay && (!sinceDay || created >= sinceDay);
+  });
+  /**
+   * Absorbed tombstones are excluded, not just from creations.
+   *
+   * The duplicate-lane dedupe writes a tombstone with `mode: "absorbed"` and
+   * `lanes_created: 0`, because folding a duplicate row onto its keeper was
+   * never a lane the user made. It was never a lane the user *deleted* either —
+   * counting it here gave "4 created / 5 deleted" for four real lanes and one
+   * race. `lanes_created` is the mode discriminator this file already relies on.
+   */
+  const tombstonesDeletedInRange = tombstones.filter(
+    (tombstone) => int(tombstone.lanes_created) > 0
+      && tombstone.deleted_day <= untilDay
+      && (!sinceDay || tombstone.deleted_day >= sinceDay),
+  );
+  /**
+   * A day is atomic, so it needs no span rule: a deleted lane's active day was
+   * a day this account worked, whatever else happened around it. Fed into both
+   * `activeDays` and the streak set.
+   */
+  const tombstoneActiveDays = tombstones.flatMap((tombstone) =>
+    decodeActiveDayKeys(tombstone.first_active_day, tombstone.active_day_bits));
 
   const aiRows = safeAll<{
     feature: string;
@@ -508,6 +587,52 @@ export function collectAdeDatabaseUsageStats(
     ...operationRange.params,
   ]);
 
+  // Streaks are a lifetime property of the account, not of the selected
+  // window. Deriving them from the range-filtered rows above capped them at
+  // the preset width, so a genuine 22-day streak read as "7-day streak" on the
+  // 7d preset and "1-day" on today — the number changed when you changed the
+  // filter, which a streak by definition must not. Same union as
+  // `activeDateRows` with every range predicate dropped; it still returns at
+  // most one row per calendar day.
+  const streakCacheKey = localDayKey(range.until) || "unknown";
+  const nowMs = Date.now();
+  const streakCache = streakCaches.get(db);
+  let streakDates: string[];
+  if (streakCache && streakCache.key === streakCacheKey && streakCache.expiresAtMs > nowMs) {
+    streakDates = streakCache.dates;
+  } else {
+    streakDates = safeAll<{ active_date: string }>(db, `
+      select active_date
+        from (
+          select date(timestamp, 'localtime') active_date
+            from ai_usage_log
+           where (coalesce(input_tokens, 0) > 0 or coalesce(output_tokens, 0) > 0)
+          union
+          select date(started_at, 'localtime') active_date
+            from terminal_sessions
+          union
+          select date(d.started_at, 'localtime') active_date
+            from session_deltas d
+           where (coalesce(d.insertions, 0) > 0 or coalesce(d.deletions, 0) > 0 or coalesce(d.files_changed, 0) > 0)
+          union
+          select date(occurred_at, 'localtime') active_date
+            from usage_events
+          union
+          select date(started_at, 'localtime') active_date
+            from operations
+           where status = 'succeeded'
+             and kind in ('git_commit', 'pr_land')
+        )
+       where active_date is not null
+       order by active_date
+    `).map((row) => row.active_date);
+    // Unfiltered, and inside the value that gets memoized: streaks are a
+    // lifetime property, and a day added after the cache was written would be
+    // dropped on the very next read.
+    streakDates = [...streakDates, ...tombstoneActiveDays];
+    streakCaches.set(db, { key: streakCacheKey, expiresAtMs: nowMs + STREAK_CACHE_TTL_MS, dates: streakDates });
+  }
+
   const interactionRows = safeAll<{ action: string; count: number }>(db, `
     select action, count(*) count
       from usage_events
@@ -520,7 +645,7 @@ export function collectAdeDatabaseUsageStats(
       from operations
      where ${operationRange.sql}
        and status = 'succeeded'
-       and kind in ('git_commit', 'git_push', 'pr_land', 'git_pull', 'git_sync_merge', 'git_sync_rebase')
+       and kind in ('git_commit', 'git_push', 'pr_land', 'git_pull', 'git_sync_merge', 'git_sync_rebase', 'lane_delete')
      group by kind
   `, operationRange.params);
   const operationDailyRows = safeAll<{
@@ -551,10 +676,43 @@ export function collectAdeDatabaseUsageStats(
     git_pull: "git.pull",
     git_sync_merge: "git.sync",
     git_sync_rebase: "git.sync",
+    // Queried alongside the others above but absent here, so it fell through to
+    // its raw `lane_delete` kind and never met the `lanes.delete` interaction
+    // rows in the reconciliation below — the one operation kind that skipped it.
+    lane_delete: "lanes.delete",
   };
+  // Sum the operation kinds that share an activity name BEFORE reconciling with
+  // the interaction counts. `git_sync_merge` and `git_sync_rebase` both land on
+  // "git.sync"; taking Math.max per row would report only the larger of the two
+  // and silently drop the other kind's operations.
+  const operationActivityTotals = new Map<string, number>();
   for (const row of operationRows) {
     const kind = operationActivityNames[row.kind] ?? row.kind;
-    activityCounts.set(kind, Math.max(activityCounts.get(kind) ?? 0, int(row.count)));
+    operationActivityTotals.set(kind, (operationActivityTotals.get(kind) ?? 0) + int(row.count));
+  }
+  // Folded in before the reconcile below, for the same reason the summary
+  // counts them: the `operations` rows behind these went with the lane, so the
+  // tombstone is the only surviving record and summing cannot double-count.
+  for (const [kind, count] of [
+    ["git.commit", tombstoneSum((tombstone) => tombstone.commits_created)],
+    ["git.push", tombstoneSum((tombstone) => tombstone.push_operations)],
+    ["prs.land", tombstoneSum((tombstone) => tombstone.pr_landings)],
+  ] as const) {
+    if (count > 0) operationActivityTotals.set(kind, (operationActivityTotals.get(kind) ?? 0) + count);
+  }
+  // `lanes.delete` is the exception: its `operations` row is written with a
+  // null `lane_id` (laneService `lane_delete`), so the lane cleanup's
+  // `delete from operations where lane_id = ?` leaves it behind alongside the
+  // tombstone for the very same delete. Reconciled rather than summed — the
+  // same rule the summary applies — or a fresh delete reads as two.
+  if (tombstonesDeletedInRange.length > 0) {
+    operationActivityTotals.set(
+      "lanes.delete",
+      Math.max(operationActivityTotals.get("lanes.delete") ?? 0, tombstonesDeletedInRange.length),
+    );
+  }
+  for (const [kind, count] of operationActivityTotals) {
+    activityCounts.set(kind, Math.max(activityCounts.get(kind) ?? 0, count));
   }
 
   const activeLaneRow = safeGet<{ count: number }>(db, "select count(*) count from lanes where archived_at is null");
@@ -677,26 +835,32 @@ export function collectAdeDatabaseUsageStats(
     daily.set(date, existing);
     return existing;
   };
+  // Grouped by provider as well as day. The daily chart plots one series per
+  // provider, and these rows are what fills a day the provider ledgers could
+  // not see; without the provider column that fill would raise the day's total
+  // while contributing to no series, so the bars would not add up to the line.
   const aiDailyRows = safeAll<{
     active_date: string | null;
+    provider: string | null;
     input_tokens: number;
     output_tokens: number;
     duration_ms: number;
     calls: number;
   }>(db, `
     select date(timestamp, 'localtime') active_date,
+           provider,
            sum(max(0, cast(coalesce(input_tokens, 0) as integer))) input_tokens,
            sum(max(0, cast(coalesce(output_tokens, 0) as integer))) output_tokens,
            sum(max(0, cast(coalesce(duration_ms, 0) as integer))) duration_ms,
            count(*) calls
       from (
-        select timestamp, input_tokens, output_tokens, duration_ms
+        select timestamp, provider, input_tokens, output_tokens, duration_ms
           from ai_usage_log
          where ${aiRange.sql}
          order by timestamp desc
          limit ?
       )
-     group by active_date
+     group by active_date, provider
   `, [...aiRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
   const clientDailyScanCount = clientDailyRows.reduce(
     (sum, row) => sum + int(row.interactions),
@@ -725,10 +889,21 @@ export function collectAdeDatabaseUsageStats(
     const date = isoDate(row.active_date);
     if (!date) continue;
     const day = ensureDay(date);
-    day.inputTokens = int(day.inputTokens) + int(row.input_tokens);
-    day.outputTokens = int(day.outputTokens) + int(row.output_tokens);
-    day.totalTokens = int(day.totalTokens) + int(row.input_tokens) + int(row.output_tokens);
+    const inputTokens = int(row.input_tokens);
+    const outputTokens = int(row.output_tokens);
+    day.inputTokens = int(day.inputTokens) + inputTokens;
+    day.outputTokens = int(day.outputTokens) + outputTokens;
+    day.totalTokens = int(day.totalTokens) + inputTokens + outputTokens;
     day.durationMs = int(day.durationMs) + int(row.duration_ms);
+    if (inputTokens + outputTokens > 0) {
+      const provider = row.provider?.trim() || "unknown";
+      const byProvider = day.byProvider ?? (day.byProvider = {});
+      const existing = byProvider[provider];
+      if (existing) existing.totalTokens += inputTokens + outputTokens;
+      // ADE's own log records tokens, never a price, so cost stays 0 here and
+      // the provider ledgers remain the only source of a dollar figure.
+      else byProvider[provider] = { totalTokens: inputTokens + outputTokens, costUsd: 0 };
+    }
   }
   for (const row of sessionRows) {
     const date = isoDate(row.started_at);
@@ -763,21 +938,48 @@ export function collectAdeDatabaseUsageStats(
     if (row.kind === "pr_land") day.prs = int(day.prs) + int(row.operations);
   }
 
-  const streaks = calculateStreaks(activeDateRows.map((row) => row.active_date), range.until);
-  const longestSessionMs = sessionRows.reduce((max, row) => {
-    const start = Date.parse(row.started_at);
-    const end = Date.parse(row.ended_at ?? range.until);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return max;
-    return Math.max(max, Math.max(0, end - start));
-  }, 0);
+  // `activeDays` counts days inside the selected range; `current`/`longest`
+  // come from the unfiltered, memoized set built above.
+  const { activeDays } = calculateStreaks(
+    [
+      ...activeDateRows.map((row) => row.active_date),
+      // A deleted lane's days count too — filtered to the window here, because
+      // unlike the tombstone's totals a single day belongs to exactly one.
+      ...tombstoneActiveDays.filter((day) => day <= untilDay && (!sinceDay || day >= sinceDay)),
+    ],
+    range.until,
+  );
+  const { current, longest } = calculateStreaks(streakDates, range.until);
+  const streaks = { activeDays, current, longest };
+  // Only sessions that actually ended. Substituting the range end for a
+  // missing `ended_at` measured "how long ago this session was opened", which
+  // for the 18-of-19 rows here that never recorded an end turned a 1-second
+  // session into a 15-day one — and made the number grow purely because the
+  // selected range was wider.
+  const longestSessionMs = Math.max(
+    sessionRows.reduce((max, row) => {
+      if (!row.ended_at) return max;
+      const start = Date.parse(row.started_at);
+      const end = Date.parse(row.ended_at);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return max;
+      return Math.max(max, Math.max(0, end - start));
+    }, 0),
+    // A record set in a lane that has since been deleted is still a record.
+    ...spannedTombstones.map((tombstone) => int(tombstone.longest_session_ms)),
+  );
 
   const trackedInput = aiRows.reduce((sum, row) => sum + int(row.input_tokens), 0);
   const trackedOutput = aiRows.reduce((sum, row) => sum + int(row.output_tokens), 0);
   const trackedCalls = aiRows.reduce((sum, row) => sum + int(row.calls), 0);
   const trackedDuration = aiRows.reduce((sum, row) => sum + int(row.duration_ms), 0);
-  const filesChanged = deltaRows.reduce((sum, row) => sum + int(row.files_changed), 0);
-  const insertions = deltaRows.reduce((sum, row) => sum + int(row.insertions), 0);
-  const deletions = deltaRows.reduce((sum, row) => sum + int(row.deletions), 0);
+  // Code movement that happened in a lane someone has since deleted still
+  // happened. `session_deltas` went with the lane; the tombstone did not.
+  const filesChanged = deltaRows.reduce((sum, row) => sum + int(row.files_changed), 0)
+    + tombstoneSum((tombstone) => tombstone.files_changed);
+  const insertions = deltaRows.reduce((sum, row) => sum + int(row.insertions), 0)
+    + tombstoneSum((tombstone) => tombstone.insertions);
+  const deletions = deltaRows.reduce((sum, row) => sum + int(row.deletions), 0)
+    + tombstoneSum((tombstone) => tombstone.deletions);
   const clients: AdeUsageClientSummary[] = clientRows
     .map((row) => ({
       client: row.client_surface,
@@ -795,18 +997,32 @@ export function collectAdeDatabaseUsageStats(
       trackedAdeOutputTokens: trackedOutput,
       trackedAdeCalls: trackedCalls,
       trackedAdeDurationMs: trackedDuration,
-      chatSessions: sessionRows.filter(isChatSession).length,
-      terminalSessions: sessionRows.filter((row) => !isChatSession(row)).length,
+      chatSessions: sessionRows.filter(isChatSession).length
+        + tombstoneSum((tombstone) => tombstone.chat_sessions),
+      terminalSessions: sessionRows.filter((row) => !isChatSession(row)).length
+        + tombstoneSum((tombstone) => tombstone.terminal_sessions),
       activeLanes: int(activeLaneRow?.count),
-      lanesCreated: int(laneCreatedRow?.count),
+      // Counted on the lane's *creation* day, matching the `lanes.created_at`
+      // predicate above rather than the whole-life span rule — a lane created
+      // in this window was created in this window whenever it later died.
+      lanesCreated: int(laneCreatedRow?.count)
+        + tombstonesCreatedInRange.reduce((sum, tombstone) => sum + int(tombstone.lanes_created), 0),
       lanesArchived: int(laneArchivedRow?.count),
-      commitsCreated: operationCounts.get("git_commit") ?? 0,
-      pushOperations: operationCounts.get("git_push") ?? 0,
-      prLandings: operationCounts.get("pr_land") ?? 0,
+      // The `operations` row that recorded a delete is pruned after 60 days;
+      // the tombstone is exact and permanent. Reconciled rather than summed,
+      // because for a recent delete both sources describe the same event.
+      lanesDeleted: Math.max(operationCounts.get("lane_delete") ?? 0, tombstonesDeletedInRange.length),
+      commitsCreated: (operationCounts.get("git_commit") ?? 0)
+        + tombstoneSum((tombstone) => tombstone.commits_created),
+      pushOperations: (operationCounts.get("git_push") ?? 0)
+        + tombstoneSum((tombstone) => tombstone.push_operations),
+      prLandings: (operationCounts.get("pr_land") ?? 0)
+        + tombstoneSum((tombstone) => tombstone.pr_landings),
       filesChanged,
       insertions,
       deletions,
-      artifactsCaptured: int(artifactRow?.count),
+      artifactsCaptured: int(artifactRow?.count)
+        + tombstoneSum((tombstone) => tombstone.artifacts_captured),
       automationRuns: int(automationRow?.count),
       workerRuns: int(workerRow?.count),
       totalInteractions: clients.reduce((sum, row) => sum + row.interactions, 0),

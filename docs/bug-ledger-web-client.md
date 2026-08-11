@@ -208,7 +208,8 @@ The entire signed-out → machine → project funnel is a custom `WebWorkspaceHu
   silently resolves them to null.** `createUsageStubs` (`webclient/adapter/misc.ts:672-678`) implements only
   `getAdeStats` (plus dead `getSummary`/`listSessions` that aren't even in the contract). `withFallbackProxy`
   (`adapter/infra/proxy.ts:24-40`) turns every missing method into `console.debug` + `Promise.resolve(null)` (no-op
-  unsubscribe for `on*`), so `UsageQuotaPanel` (`UsageQuotaPanel.tsx:215/:255/:384`) keeps `snapshot === null`
+  unsubscribe for `on*`), so the quota panel (then `UsageQuotaPanel.tsx:215/:255/:384`, now
+  `UsageLimitsBand.tsx`) keeps `snapshot === null`
   forever → `"Waiting"` + `"not updated"` (:181/:187/:623) + skeletons (:702). `bridgeMissing` never trips because
   the stub object exists, so the honest "Usage isn't available" message never shows. Refresh spins and resolves null.
   **Host descriptors already exist and iOS uses them:** `usage.getQuotaSnapshot` / `usage.refreshQuota`

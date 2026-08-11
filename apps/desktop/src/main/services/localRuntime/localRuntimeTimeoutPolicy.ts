@@ -1,4 +1,28 @@
+import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
+
+/**
+ * A user pressing Refresh on the Usage page runs the isolated ledger worker,
+ * whose own ceiling is `LEDGER_WORKER_TIMEOUT_MS`. Every budget in front of it
+ * must outlive it, or the renderer reports a failure for a scan the daemon is
+ * still running to a successful finish — and the page discards the numbers it
+ * already had. The margin covers result serialisation on top of the worker.
+ */
+export const USAGE_REFRESH_HISTORY_TIMEOUT_MS = LEDGER_WORKER_TIMEOUT_MS + 30_000;
+
+/**
+ * The innermost budget on the remote path: the JSON-RPC transport carrying
+ * `usage.refreshHistory` to a paired/SSH runtime, whose daemon runs the very
+ * same ledger worker. It must outlive `LEDGER_WORKER_TIMEOUT_MS` and still
+ * expire before the renderer's IPC budget above it, so the chain stays
+ * monotonically increasing outward (transport < IPC) rather than racing.
+ * Without an entry here the transport falls back to `RuntimeRpcClient`'s
+ * 600s default — a clock that starts before the daemon dispatches, so it
+ * expired at or before the worker's own ceiling.
+ */
+export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
+  LEDGER_WORKER_TIMEOUT_MS + 15_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
@@ -54,6 +78,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // success (ADE-122).
   ["chat.handoffSession", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
+  // the Usage page's Refresh reaches the ledger worker through this action.
+  ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

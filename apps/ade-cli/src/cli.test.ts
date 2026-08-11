@@ -10853,6 +10853,61 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("usage stats forwards preset, scope, range, and force to usage.getAdeUsageStats", () => {
+    const plan = buildCliPlan(["usage", "stats", "--preset", "7d", "--scope", "account", "--force"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage stats");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "usage",
+        action: "getAdeUsageStats",
+        args: { preset: "7d", scope: "account", force: true },
+      },
+    });
+
+    const ranged = buildCliPlan([
+      "usage",
+      "stats",
+      "--since",
+      "2026-08-01T00:00:00.000Z",
+      "--until",
+      "2026-08-08T00:00:00.000Z",
+    ]);
+    expect(ranged.kind).toBe("execute");
+    if (ranged.kind !== "execute") return;
+    expect(ranged.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "usage",
+        action: "getAdeUsageStats",
+        args: { since: "2026-08-01T00:00:00.000Z", until: "2026-08-08T00:00:00.000Z" },
+      },
+    });
+
+    // A bare `usage stats` must not invent a preset or scope; the service owns
+    // both defaults.
+    const bare = buildCliPlan(["usage", "stats"]);
+    expect(bare.kind).toBe("execute");
+    if (bare.kind !== "execute") return;
+    expect(bare.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getAdeUsageStats", args: {} },
+    });
+
+    expect(() => buildCliPlan(["usage", "stats", "--scope", "galaxy"])).toThrow(
+      /--scope must be one of account, machine, project/i,
+    );
+    expect(() => buildCliPlan(["usage", "stats", "--preset", "decade"])).toThrow(
+      /--preset must be one of today, 7d, 30d, year, all/i,
+    );
+    expect(() => buildCliPlan(["usage", "stats", "--since", "yesterday"])).toThrow(
+      /--since must be an ISO timestamp/i,
+    );
+  });
+
   it("usage budget get routes to the budget.getConfig action", () => {
     const plan = buildCliPlan(["usage", "budget", "get"]);
     expect(plan.kind).toBe("execute");

@@ -179,9 +179,18 @@ over the wire. A controller only invokes an action the host advertises in
 **Usage** (`usage.*`)
 - `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
   or all time. Returns the same stale-while-revalidate aggregate used by
-  desktop Stats: provider tokens, project-DB activity, daily points, and
+  the desktop Usage page: provider tokens, project-DB activity, daily points
+  (including the per-provider split the daily chart plots), and
   `desktop` / `mobile` / `tui` / `web` / `api` client attribution. It does
-  not replicate or return raw `usage_events` rows.
+  not replicate or return raw `usage_events` rows. `scope` is `account`,
+  `machine`, or `project`; `force` bypasses the account fan-out's rate floor
+  and is set only by an explicit user Refresh.
+- `getUsageRollup` — viewer-allowed runtime read returning this machine's
+  day × provider × model aggregates plus its transcript-source identity, for
+  the account scope's merge. Aggregates only: no transcript record, session id,
+  or absolute path crosses the machine boundary (source roots travel as
+  digests). `null` means the machine has not finished its first ledger scan, so
+  the caller retries rather than storing an empty rollup.
 - `getQuotaSnapshot` — viewer-allowed project read of the runtime's cached
   Claude/Codex quota snapshot. It returns provider windows plus source,
   freshness, retry, and stale/error state without starting provider or ledger

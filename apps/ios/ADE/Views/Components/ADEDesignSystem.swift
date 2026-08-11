@@ -70,6 +70,28 @@ enum ADEColor {
   static let danger = adaptiveColor(light: hex(0xdc2626), dark: hex(0xef4444))
   static let info = adaptiveColor(light: hex(0x2563eb), dark: hex(0x3b82f6))
   static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
+
+  /// Token-cache series. Was `textMuted`, the same grey the merged/GitHub
+  /// underlay uses, which made a three-part stacked token bar read as two parts
+  /// and a shadow. Teal keeps input/output/cache separable and stays out of the
+  /// additions green. Mirrors desktop `SERIES_COLORS.cache` in ActivityModule.tsx.
+  static let seriesTokenCache = adaptiveColor(light: hex(0x0F766E), dark: hex(0x2DD4BF))
+
+  /// Activity-heatmap intensity ramp, as light/dark pairs — the mirror of
+  /// desktop's `HEATMAP_RAMP` in ActivityHeatmap.tsx, and the reasoning there
+  /// applies verbatim: one hue at five opacities is only a lightness ramp, and
+  /// against a card of nearly the same lightness it reads as five greys. This
+  /// ramp moves along two channels at once — hue turns cool → warm, and
+  /// contrast against the card rises at every step — so the order survives
+  /// greyscale, colour-vision deficiency, and forced-contrast displays.
+  ///
+  /// Nothing here borrows the theme accent (violet on dark, green on light):
+  /// a ramp built on it would swap hue families between appearances and land on
+  /// exactly the generic violet this product avoids.
+  static let heatmapLevel1 = adaptiveColor(light: hex(0xBCCEDA), dark: hex(0x3A4E63))
+  static let heatmapLevel2 = adaptiveColor(light: hex(0x79ABA5), dark: hex(0x2F7A80))
+  static let heatmapLevel3 = adaptiveColor(light: hex(0xC96C1E), dark: hex(0xDE6039))
+  static let heatmapLevel4 = adaptiveColor(light: hex(0xB23A20), dark: hex(0xFF9A3D))
   static let purpleGlow = purpleAccent.opacity(0.35)
   static let ctoAccent = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)  // #A78BFA
 

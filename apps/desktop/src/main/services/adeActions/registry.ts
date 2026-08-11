@@ -1055,6 +1055,21 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run analytics.getStatus --text",
     },
   },
+  usage: {
+    getAdeUsageStats: {
+      description:
+        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this computer only, \"project\" is the open project's share of it.",
+      input:
+        "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
+      example: "ade usage stats --preset 30d --scope account --text",
+    },
+    getUsageSnapshot: {
+      description:
+        "Read provider rate-limit windows and spend controls. Account-tied, so it takes no scope.",
+      input: "no input",
+      example: "ade actions run usage.getUsageSnapshot --text",
+    },
+  },
   lane: {
     getReclaimRisk: {
       description: "Preview what ADE can safely remove for one lane, including estimated bytes and any blocked reasons.",

@@ -2461,6 +2461,44 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
   db.run("create index if not exists idx_usage_events_analytics_pending on usage_events(analytics_exported_at, occurred_at)");
 
+  // Deleting a lane cascades away `terminal_sessions`, `claude_sessions`,
+  // `session_deltas` and the lane's `operations` rows, so ADE's "lifetime"
+  // counters were really survivor counters. This is the one row that outlives
+  // the cascade: integer counters, two calendar-day keys, and a day bitmap that
+  // makes active days and streaks reconstructible. Deliberately no lane name,
+  // branch, path, transcript or per-day counts — nothing here can describe what
+  // the lane was working on.
+  //
+  // A CRR table, on purpose. The deletes it replaces replicate, so a
+  // non-replicating tombstone would leave every other machine short by exactly
+  // the rows it lost. The composite primary key is the only unique index —
+  // `crsql_as_crr` rejects a second one — and it doubles as the idempotency
+  // key: a repeated or retried delete rewrites the same row instead of adding.
+  db.run(`
+    create table if not exists lane_usage_tombstones (
+      project_id text not null,
+      lane_id text not null,
+      created_day text,
+      deleted_day text not null,
+      lanes_created integer not null default 0,
+      chat_sessions integer not null default 0,
+      terminal_sessions integer not null default 0,
+      files_changed integer not null default 0,
+      insertions integer not null default 0,
+      deletions integer not null default 0,
+      commits_created integer not null default 0,
+      push_operations integer not null default 0,
+      pr_landings integer not null default 0,
+      artifacts_captured integer not null default 0,
+      longest_session_ms integer not null default 0,
+      first_active_day text,
+      last_active_day text,
+      active_day_bits text,
+      primary key (project_id, lane_id)
+    )
+  `);
+  db.run("create index if not exists idx_lane_usage_tombstones_days on lane_usage_tombstones(project_id, first_active_day, last_active_day)");
+
   // Phase 7 GitHub PR tracking (lane -> PR mapping).
   db.run(`
     create table if not exists pull_requests (
@@ -3834,6 +3872,67 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       used_at text not null
     )
   `);
+
+  // Account-wide usage rollups. Each machine publishes its own day × provider ×
+  // model aggregate here and CRR replication carries it to the others, so the
+  // Usage page can total the account even while half the machines are asleep —
+  // the rollup is the durable floor, and a live refresh of whoever is reachable
+  // only sharpens it.
+  //
+  // Aggregates only: no transcript record, session id, prompt, or file path is
+  // ever written to these tables. A year of heavy use is a few thousand small
+  // rows per machine.
+  //
+  // Uniqueness lives entirely in the composite primary key
+  // (machine_key, day, provider, model). That is deliberate and required: a
+  // CRR-converted table may not carry any UNIQUE index besides its primary key
+  // — `crsql_as_crr` rejects it outright — so the key must itself be the
+  // uniqueness constraint rather than a rowid with a unique index bolted on.
+  // Writers upsert on that key and skip no-op updates, so a republish of
+  // unchanged history does not churn the CRR clock.
+  db.run(`
+    create table if not exists usage_machine_rollups (
+      machine_key text not null,
+      day text not null,
+      provider text not null,
+      model text not null,
+      input_tokens integer not null default 0,
+      output_tokens integer not null default 0,
+      cached_tokens integer not null default 0,
+      total_tokens integer not null default 0,
+      cost_usd real not null default 0,
+      calls integer not null default 0,
+      primary key (machine_key, day, provider, model)
+    )
+  `);
+  // Non-unique lookup index. Safe on a CRR (only UNIQUE indices are rejected)
+  // and needed because the read path always filters by day range.
+  db.run("create index if not exists idx_usage_machine_rollups_day on usage_machine_rollups(day)");
+  // One row per machine: who it is, when it last scanned, and which transcript
+  // source it read — the last of which is what lets the merge notice that two
+  // machines share a synced home directory and count those tokens once.
+  db.run(`
+    create table if not exists usage_machine_rollup_meta (
+      machine_key text primary key,
+      label text not null default '',
+      platform text,
+      captured_at text not null default '',
+      source_id text,
+      source_roots text not null default '[]',
+      content_digest text not null default '',
+      source_window text not null default ''
+    )
+  `);
+  // `content_digest` and `source_window` are retired: they fed a token-level
+  // comparison of two machines' recent history that `isSameTranscriptSource` no
+  // longer runs (dedupe is marker-then-roots, nothing else). The columns stay in
+  // the schema rather than being dropped — a `not null default ''` column costs
+  // an empty string per machine, while dropping one from a cr-sqlite CRR table
+  // means rewriting the table and its clocks under every peer on the account.
+  // The `add column`s are kept so a database created before either column still
+  // matches the `create table` above.
+  safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
+  safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

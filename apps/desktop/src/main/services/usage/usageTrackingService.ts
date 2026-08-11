@@ -15,11 +15,14 @@ import type { AdeDb } from "../state/kvDb";
 import type {
   AdeUsageDailyPoint,
   AdeUsageEstimationKind,
+  AdeUsagePricingSource,
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
+  AdeUsageRollup,
   AdeUsageScope,
   AdeUsageStats,
+  AdeUsageTranscriptSource,
   GetAdeUsageStatsArgs,
   UsageProvider,
   UsageWindow,
@@ -56,11 +59,13 @@ import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
+  dynamicTokenPricingUpdatedAt,
   ONE_HOUR_CACHE_WRITE_MULTIPLIER,
   refreshDynamicTokenPricing,
   resetDynamicTokenPricingForTest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
+  tokenPriceSource,
   WEB_SEARCH_COST_USD,
 } from "./usagePricing";
 import {
@@ -80,9 +85,24 @@ import {
   scanGeminiLogs,
   scanOpenClawLogs,
   scanOpenCodeLogs,
+  runLedgerScanWithCompleteness,
   sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
 import { isPathInside, pathComparisonKey } from "../shared/pathCompare";
+import {
+  buildRollupRows,
+  mergeAccountUsageStats,
+  type AccountUsageContribution,
+} from "./accountUsageRollup";
+import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
+import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
+import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
+import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
+import {
+  createAccountUsageRollupStore,
+  ROLLUP_RETAINED_DAYS,
+  type AccountUsageRollupStore,
+} from "./accountUsageRollupStore";
 import {
   collectAdeDatabaseUsageStats,
   type AdeDatabaseUsageStats,
@@ -99,6 +119,13 @@ import type {
   UsageRefreshReason,
 } from "./usageProviderStrategies";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
+import {
+  EMPTY_GITHUB_STATS,
+  makeEmptyGithubStats,
+  scanGithubActivityStats,
+  scanGithubPullRequestPages,
+  type GitHubActivityStats,
+} from "./githubActivityStats";
 import {
   computeResetsInMs,
   parseClaudeWindows,
@@ -122,13 +149,28 @@ const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
-const USAGE_SNAPSHOT_CACHE_VERSION = 3;
+/**
+ * Schema *and computation* version of the persisted usage snapshot.
+ *
+ * BUMP THIS whenever you change how tokens or costs are computed — not only
+ * when the snapshot's shape changes. The persisted snapshot is loaded straight
+ * into `cachedCosts` at construction, and `COST_CACHE_TTL_MS` only gates
+ * *re-scanning*; it never invalidates numbers a previous build wrote. Without a
+ * bump, a build that fixes the math silently keeps serving the old build's
+ * figures until the TTL happens to expire, and any field the new math added
+ * (e.g. `dailyTokenBreakdownByPreset` → `AdeUsageDailyPoint.byProvider`) is
+ * missing from the cached costs, so the daily chart collapses to a single
+ * "All providers" series.
+ *
+ * v4: Codex token accounting was corrected (lifetime Codex tokens moved from
+ * 251.3B to ~91.7B, cross-checked against an independent counter), so every v3
+ * snapshot on disk carries obsolete totals and must be discarded.
+ */
+const USAGE_SNAPSHOT_CACHE_VERSION = 4;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
-const GITHUB_STATS_COMMAND_TIMEOUT_MS = 60_000;
 const GITHUB_STATS_FAST_RESPONSE_TIMEOUT_MS = 2_500;
-const GITHUB_STATS_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 let usageSnapshotCacheWriteTail: Promise<void> = Promise.resolve();
 let usageSnapshotCacheWriteSequence = 0;
 
@@ -919,7 +961,6 @@ export function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
     bucketByDay.set(localDayKey(day), index);
   }
   for (const entry of entries) {
-    if (entry.lifetimeOnly) continue;
     if (entry.timestamp > nowMs) continue;
     const bucketIndex = bucketByDay.get(localDayKey(entry.timestamp));
     if (bucketIndex == null) continue;
@@ -1025,12 +1066,6 @@ function aggregateCosts(
 
   for (const entry of entries) {
     const cost = calculateTokenEntryCost(entry);
-    if (entry.lifetimeOnly) {
-      const allTime = accumulators.all;
-      allTime.costUsd += cost;
-      addTokenBreakdownEntry(allTime.tokenBreakdown, entry);
-      continue;
-    }
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;
@@ -1062,6 +1097,16 @@ function aggregateCosts(
   const estimation = options.estimation
     ?? (entryEstimations.size === 1 ? [...entryEstimations][0] : entryEstimations.size > 1 ? "mixed" : undefined);
 
+  // Which rate card actually priced these tokens. Computed over the distinct
+  // models rather than per entry: the answer only varies by model, and there
+  // are a handful of models behind millions of entries.
+  const pricingSources = new Set(
+    [...new Set(entries.map((entry) => entry.model))].map((model) => tokenPriceSource(model)),
+  );
+  const pricingSource: AdeUsagePricingSource | undefined = pricingSources.size === 1
+    ? [...pricingSources][0]
+    : pricingSources.size > 1 ? "mixed" : undefined;
+
   return {
     provider,
     last30dCostUsd: roundedCost("30d"),
@@ -1072,6 +1117,7 @@ function aggregateCosts(
     dailyTokenBreakdownByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyModelTokens])),
     dailyTokensByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyTokens])),
     ...(estimation ? { estimation } : {}),
+    ...(pricingSource ? { pricingSource } : {}),
     ...(options.scopeSupported != null ? { scopeSupported: options.scopeSupported } : {}),
     adeOriginatedTokensByPreset: Object.fromEntries(
       ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedTokens]),
@@ -1082,16 +1128,33 @@ function aggregateCosts(
   };
 }
 
+/**
+ * Whether a provider's ledger can be narrowed to one project.
+ *
+ * `false` is a claim about the data on disk, not about effort: it means the
+ * ledger records no working directory anywhere, so every token it holds is
+ * machine-wide by construction and the page must say so rather than quietly
+ * drop it from a project total. Cursor's IDE ledger is the only one that
+ * qualifies — its per-turn `bubbleId:` rows in the global state DB carry a
+ * model and a token count and nothing that identifies a workspace.
+ *
+ * Every other agent CLI does record its cwd, and the ledger readers now
+ * capture it: Claude/Codex from the transcript `cwd`, Droid and OpenClaw from
+ * their `session_start`/`session` records, Copilot from `session.start`
+ * context or VS Code's `workspace.json`, Gemini from `.project_root`,
+ * OpenCode from `session.directory`, Cursor Agent from its per-project
+ * transcript directory name.
+ */
 const PROVIDER_SCOPE_SUPPORT: Readonly<Record<string, boolean>> = {
   claude: true,
   codex: true,
   cursor: false,
-  "cursor-agent": false,
-  openclaw: false,
-  opencode: false,
-  droid: false,
-  copilot: false,
-  gemini: false,
+  "cursor-agent": true,
+  openclaw: true,
+  opencode: true,
+  droid: true,
+  copilot: true,
+  gemini: true,
 };
 
 const PROVIDER_ESTIMATION: Readonly<Partial<Record<string, AdeUsageEstimationKind>>> = {
@@ -1119,6 +1182,22 @@ function canonicalProjectRoot(projectRoot: string): string {
  * `c:\users`); `projectKey` inherits the same problem because
  * `sanitizeClaudeProjectPath` preserves case.
  */
+/**
+ * Every tool that names a directory after a path dashes out its separators,
+ * but no two agree on how many dashes a `/.ade/` produces: Claude writes
+ * `--ade-worktrees-`, Droid `-.ade-worktrees-`, Cursor Agent `-ade-worktrees-`
+ * with no leading dash at all. Comparing those literally makes the match a
+ * per-vendor special case that silently fails for the next tool added.
+ *
+ * Collapsing every run of non-alphanumerics to a single dash puts all three
+ * conventions into one form. The worktree marker stays part of the comparison
+ * rather than a bare prefix test, so a sibling project (`.../ADE-old`) cannot
+ * be swallowed by its neighbour's key.
+ */
+function collapsedProjectKey(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").toLowerCase();
+}
+
 function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
   if (!projectRoot) return false;
   const root = canonicalProjectRoot(projectRoot);
@@ -1129,6 +1208,10 @@ function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null 
     const rootKey = pathComparisonKey(sanitizeClaudeProjectPath(root));
     const entryKey = pathComparisonKey(entry.projectKey);
     if (entryKey === rootKey || entryKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
+    const collapsedRoot = collapsedProjectKey(root);
+    const collapsedEntry = collapsedProjectKey(entry.projectKey);
+    if (collapsedEntry === collapsedRoot) return true;
+    if (collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
   }
   return false;
 }
@@ -1329,9 +1412,14 @@ function addProviderModelUsage(
   providerSummary.outputTokens += outputTokens;
   providerSummary.cachedTokens += cachedTokens;
   providerSummary.totalTokens += totalTokens;
-  providerSummary.rangeCostUsd = Math.round((providerSummary.rangeCostUsd + rangeCostUsd) * 100) / 100;
-  providerSummary.todayCostUsd = Math.round((providerSummary.todayCostUsd + todayCostUsd) * 100) / 100;
-  providerSummary.last30dCostUsd = Math.round((providerSummary.last30dCostUsd + last30dCostUsd + costUsd) * 100) / 100;
+  // Accumulated unrounded and rounded once, in `sortedProviderModelSummaries`.
+  // Rounding on every add made a provider's total the sum of *its* rounding
+  // steps and each model row the sum of a different set, so the model rows
+  // stopped adding up to the provider they belong to (and the providers to the
+  // range total) by up to a cent per row.
+  providerSummary.rangeCostUsd += rangeCostUsd;
+  providerSummary.todayCostUsd += todayCostUsd;
+  providerSummary.last30dCostUsd += last30dCostUsd + costUsd;
 
   const model = normalizeUsageLabel(args.model, "");
   if (!model) return;
@@ -1356,7 +1444,11 @@ function addProviderModelUsage(
   modelSummary.outputTokens += outputTokens;
   modelSummary.cachedTokens += cachedTokens;
   modelSummary.totalTokens += totalTokens;
-  modelSummary.costUsd = Math.round((modelSummary.costUsd + rangeCostUsd) * 100) / 100;
+  modelSummary.costUsd += rangeCostUsd;
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
@@ -1367,6 +1459,12 @@ function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
     .sort((a, b) => (b.totalTokens - a.totalTokens) || (b.last30dCostUsd - a.last30dCostUsd) || a.provider.localeCompare(b.provider));
   const models = Array.from(aggregation.models.values())
     .sort((a, b) => (b.totalTokens - a.totalTokens) || (b.costUsd - a.costUsd) || a.model.localeCompare(b.model));
+  for (const provider of providers) {
+    provider.rangeCostUsd = roundUsd(provider.rangeCostUsd);
+    provider.todayCostUsd = roundUsd(provider.todayCostUsd);
+    provider.last30dCostUsd = roundUsd(provider.last30dCostUsd);
+  }
+  for (const model of models) model.costUsd = roundUsd(model.costUsd);
   return { providers, models };
 }
 
@@ -1413,6 +1511,12 @@ function addCostSnapshotsProviderUsage(
       aggregation.providers.set(cost.provider, providerSummary);
     }
     if (cost.estimation) providerSummary.estimation = cost.estimation;
+    if (cost.pricingSource) {
+      providerSummary.pricingSource = providerSummary.pricingSource
+        && providerSummary.pricingSource !== cost.pricingSource
+        ? "mixed"
+        : cost.pricingSource;
+    }
     if (cost.scopeSupported != null) providerSummary.scopeSupported = cost.scopeSupported;
     const adeOriginatedTokens = exactRange
       ? adeOriginatedTokensForExactRange(cost, range)
@@ -1538,6 +1642,33 @@ function makeDailySkeleton(range: ResolvedAdeUsageRange, nowMs: number): AdeUsag
   return points;
 }
 
+/**
+ * Records one provider's contribution to a day. Called once per (provider, day)
+ * — never per ledger row — so the daily fold stays allocation-free in the hot
+ * loop. Days with no provider attribution keep `byProvider` undefined rather
+ * than carrying an empty object.
+ */
+function addDailyProviderPoint(
+  point: AdeUsageDailyPoint,
+  provider: string,
+  totalTokens: number,
+  costUsd: number,
+): void {
+  if (totalTokens <= 0 && costUsd <= 0) return;
+  let byProvider = point.byProvider;
+  if (!byProvider) {
+    byProvider = {};
+    point.byProvider = byProvider;
+  }
+  const existing = byProvider[provider];
+  if (existing) {
+    existing.totalTokens += totalTokens;
+    existing.costUsd += costUsd;
+    return;
+  }
+  byProvider[provider] = { totalTokens, costUsd };
+}
+
 function mergeSnapshotDailyTokens(
   points: AdeUsageDailyPoint[],
   costs: CostSnapshot[],
@@ -1553,6 +1684,8 @@ function mergeSnapshotDailyTokens(
       for (const [date, models] of Object.entries(dailyBreakdown)) {
         if (exactRange && !dateIntersectsRange(date, range)) continue;
         const point = ensureDailyPoint(points, byDate, date);
+        let dayTokens = 0;
+        let dayCostUsd = 0;
         for (const tokens of Object.values(models)) {
           const input = toNonNegativeInt(tokens.input);
           const output = toNonNegativeInt(tokens.output);
@@ -1561,19 +1694,50 @@ function mergeSnapshotDailyTokens(
           point.outputTokens += output;
           point.cachedTokens = toNonNegativeInt(point.cachedTokens) + cached;
           point.totalTokens += input + output + cached;
+          dayTokens += input + output + cached;
+          // Same per-model `costUsd` the provider summary sums for
+          // `rangeCostUsd` (see `tokenBreakdownForExactRange` /
+          // `costUsdByPreset`), so the two can never drift apart. Left
+          // unrounded: the summary rounds once at range level, and rounding
+          // each day would make the days stop adding up to it.
+          dayCostUsd += Math.max(0, toFiniteNumber(tokens.costUsd));
         }
+        addDailyProviderPoint(point, cost.provider, dayTokens, dayCostUsd);
       }
       continue;
     }
 
+    // Legacy hosts report flat daily totals with no per-model cost. The
+    // provider summary derives `rangeCostUsd` for these the same way — 0 when
+    // the range is exact (no per-day cost to sum), otherwise the preset total —
+    // so apportion that one number by token share instead of pricing again.
     const legacyDailyTokens = exactRange
       ? cost.dailyTokensByPreset?.all ?? {}
       : cost.dailyTokensByPreset?.[range.preset] ?? {};
+    const legacyRangeCostUsd = exactRange
+      ? 0
+      : Math.max(0, toFiniteNumber(
+        cost.costUsdByPreset?.[range.preset]
+          ?? (range.preset === "today" ? cost.todayCostUsd : cost.last30dCostUsd),
+      ));
+    let legacyRangeTokens = 0;
+    if (legacyRangeCostUsd > 0) {
+      for (const [date, value] of Object.entries(legacyDailyTokens)) {
+        if (exactRange && !dateIntersectsRange(date, range)) continue;
+        legacyRangeTokens += toNonNegativeInt(value);
+      }
+    }
     for (const [date, value] of Object.entries(legacyDailyTokens)) {
       if (exactRange && !dateIntersectsRange(date, range)) continue;
       const point = ensureDailyPoint(points, byDate, date);
       const tokens = toNonNegativeInt(value);
       point.totalTokens += tokens;
+      addDailyProviderPoint(
+        point,
+        cost.provider,
+        tokens,
+        legacyRangeTokens > 0 ? legacyRangeCostUsd * (tokens / legacyRangeTokens) : 0,
+      );
     }
   }
   points.sort((a, b) => a.date.localeCompare(b.date));
@@ -1602,353 +1766,6 @@ function summarizeObservedProviderUsage(providers: AdeUsageProviderSummary[]): {
   };
 }
 
-type GitHubDailyPoint = {
-  date: string;
-  commits: number;
-  prs: number;
-  insertions: number;
-  deletions: number;
-  filesChanged: number;
-};
-
-type GitHubActivityStats = {
-  repo: string | null;
-  available: boolean;
-  fetchedAt: string | null;
-  error: string | null;
-  commitsCreated: number;
-  prsTracked: number;
-  prsOpen: number;
-  prsMerged: number;
-  prsClosed: number;
-  prAdditions: number;
-  prDeletions: number;
-  filesChanged: number;
-  daily: GitHubDailyPoint[];
-};
-
-type GitHubPullRequestRow = {
-  number?: number;
-  state?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  closedAt?: string | null;
-  mergedAt?: string | null;
-  additions?: number | null;
-  deletions?: number | null;
-  changedFiles?: number | null;
-  author?: { login?: string | null } | null;
-};
-
-const EMPTY_GITHUB_STATS: GitHubActivityStats = {
-  repo: null,
-  available: false,
-  fetchedAt: null,
-  error: null,
-  commitsCreated: 0,
-  prsTracked: 0,
-  prsOpen: 0,
-  prsMerged: 0,
-  prsClosed: 0,
-  prAdditions: 0,
-  prDeletions: 0,
-  filesChanged: 0,
-  daily: [],
-};
-
-function makeEmptyGithubStats(error: string | null = null, repo: string | null = null): GitHubActivityStats {
-  return {
-    ...EMPTY_GITHUB_STATS,
-    repo,
-    error,
-  };
-}
-
-function runBufferedCommand(
-  command: string,
-  args: string[],
-  options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {},
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let stdout = "";
-    let stderr = "";
-    const maxOutputBytes = options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES;
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      fn();
-    };
-    timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(() => reject(new Error(`${command} timed out`)));
-    }, options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS);
-    timeout.unref?.();
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      if (Buffer.byteLength(stdout, "utf8") > maxOutputBytes) {
-        child.kill("SIGTERM");
-        finish(() => reject(new Error(`${command} produced too much output`)));
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => finish(() => reject(error)));
-    child.on("close", (code) => {
-      finish(() => {
-        if (code === 0) {
-          resolve(stdout);
-          return;
-        }
-        reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}`));
-      });
-    });
-  });
-}
-
-function parseGithubRepoJson(raw: string): string | null {
-  const parsed = safeJsonParse<unknown>(raw.trim(), null);
-  if (!isRecord(parsed)) return null;
-  const owner = isRecord(parsed.owner) ? parsed.owner.login : parsed.owner;
-  const name = parsed.name;
-  if (typeof owner !== "string" || typeof name !== "string" || !owner || !name) return null;
-  return `${owner}/${name}`;
-}
-
-function parseGithubViewerLogin(raw: string): string | null {
-  const parsed = safeJsonParse<unknown>(raw.trim(), null);
-  if (!isRecord(parsed) || typeof parsed.login !== "string" || !parsed.login.trim()) return null;
-  return parsed.login.trim();
-}
-
-function parseGithubCommitDates(raw: string): string[] {
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.split("\t")[1] ?? "")
-    .filter((date) => Number.isFinite(Date.parse(date)));
-}
-
-function timestampInRange(value: string | null | undefined, range: ResolvedAdeUsageRange): boolean {
-  if (!value) return false;
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return false;
-  if (range.since && timestamp < Date.parse(range.since)) return false;
-  return timestamp <= Date.parse(range.until);
-}
-
-function githubCommitDateArgs(range: ResolvedAdeUsageRange): string[] {
-  const args: string[] = [];
-  if (range.since) args.push("-F", `since=${range.since}`);
-  args.push("-F", `until=${range.until}`);
-  return args;
-}
-
-function githubRepoParts(repo: string): { owner: string; name: string } | null {
-  const [owner, name] = repo.split("/", 2);
-  if (!owner || !name) return null;
-  return { owner, name };
-}
-
-function githubPullRequestGraphqlQuery(): string {
-  return [
-    "query($owner: String!, $name: String!, $endCursor: String) {",
-    "  repository(owner: $owner, name: $name) {",
-    "    pullRequests(first: 100, after: $endCursor, orderBy: { field: UPDATED_AT, direction: DESC }) {",
-    "      pageInfo { hasNextPage endCursor }",
-    "      nodes {",
-    "        number state createdAt updatedAt closedAt mergedAt additions deletions changedFiles",
-    "        author { login }",
-    "      }",
-    "    }",
-    "  }",
-    "}",
-  ].join("\n");
-}
-
-function dateKeyFromIso(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return null;
-  return localDayKey(timestamp) || null;
-}
-
-type GithubCommandRunner = typeof runBufferedCommand;
-
-async function scanGithubPullRequestPages({
-  projectRoot,
-  repoParts,
-  viewer,
-  range,
-  runCommand = runBufferedCommand,
-}: {
-  projectRoot: string;
-  repoParts: { owner: string; name: string };
-  viewer: string;
-  range: ResolvedAdeUsageRange;
-  runCommand?: GithubCommandRunner;
-}): Promise<GitHubPullRequestRow[]> {
-  const rows: GitHubPullRequestRow[] = [];
-  let endCursor: string | null = null;
-  do {
-    const raw = await runCommand(
-      "gh",
-      [
-        "api",
-        "graphql",
-        "-F",
-        `owner=${repoParts.owner}`,
-        "-F",
-        `name=${repoParts.name}`,
-        ...(endCursor ? ["-F", `endCursor=${endCursor}`] : []),
-        "-f",
-        `query=${githubPullRequestGraphqlQuery()}`,
-        "--jq",
-        ".data.repository.pullRequests",
-      ],
-      { cwd: projectRoot },
-    );
-    const page = safeJsonParse<unknown>(raw.trim(), null);
-    if (!isRecord(page)) break;
-    const nodes = Array.isArray(page.nodes)
-      ? page.nodes.filter(isRecord) as GitHubPullRequestRow[]
-      : [];
-    rows.push(...nodes.filter((row) => isRecord(row.author) && row.author.login === viewer));
-
-    const oldestUpdatedAt = nodes
-      .map((row) => typeof row.updatedAt === "string" ? Date.parse(row.updatedAt) : Number.NaN)
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b)[0];
-    if (range.since && oldestUpdatedAt != null && oldestUpdatedAt < Date.parse(range.since)) break;
-
-    const pageInfo = isRecord(page.pageInfo) ? page.pageInfo : null;
-    const hasNextPage = pageInfo?.hasNextPage === true;
-    endCursor = hasNextPage && typeof pageInfo?.endCursor === "string" && pageInfo.endCursor
-      ? pageInfo.endCursor
-      : null;
-  } while (endCursor);
-  return rows;
-}
-
-function addGithubDaily(
-  byDate: Map<string, GitHubDailyPoint>,
-  date: string | null,
-  patch: Partial<Omit<GitHubDailyPoint, "date">>,
-): void {
-  if (!date) return;
-  const point = byDate.get(date) ?? {
-    date,
-    commits: 0,
-    prs: 0,
-    insertions: 0,
-    deletions: 0,
-    filesChanged: 0,
-  };
-  point.commits += toNonNegativeInt(patch.commits);
-  point.prs += toNonNegativeInt(patch.prs);
-  point.insertions += toNonNegativeInt(patch.insertions);
-  point.deletions += toNonNegativeInt(patch.deletions);
-  point.filesChanged += toNonNegativeInt(patch.filesChanged);
-  byDate.set(date, point);
-}
-
-async function scanGithubActivityStats(projectRoot: string | null | undefined, range: ResolvedAdeUsageRange): Promise<GitHubActivityStats> {
-  if (!projectRoot) return makeEmptyGithubStats("No project root is available.");
-  try {
-    const repoRaw = await runBufferedCommand("gh", ["repo", "view", "--json", "owner,name"], {
-      cwd: projectRoot,
-      timeoutMs: 10_000,
-    });
-    const repo = parseGithubRepoJson(repoRaw);
-    if (!repo) return makeEmptyGithubStats("Unable to resolve the GitHub repository.", null);
-
-    const viewerRaw = await runBufferedCommand("gh", ["api", "user", "--cache", "10m"], {
-      cwd: projectRoot,
-      timeoutMs: 10_000,
-    });
-    const viewer = parseGithubViewerLogin(viewerRaw);
-    if (!viewer) return makeEmptyGithubStats("Unable to resolve the GitHub user.", repo);
-    const repoParts = githubRepoParts(repo);
-    if (!repoParts) return makeEmptyGithubStats("Unable to resolve the GitHub repository.", repo);
-
-    const [prs, commitRaw] = await Promise.all([
-      scanGithubPullRequestPages({ projectRoot, repoParts, viewer, range }),
-      runBufferedCommand(
-        "gh",
-        [
-          "api",
-          `repos/${repo}/commits`,
-          "--method",
-          "GET",
-          "--cache",
-          "10m",
-          "-F",
-          `author=${viewer}`,
-          ...githubCommitDateArgs(range),
-          "--paginate",
-          "--jq",
-          ".[] | [.sha, .commit.author.date] | @tsv",
-        ],
-        { cwd: projectRoot },
-      ),
-    ]);
-
-    const dailyByDate = new Map<string, GitHubDailyPoint>();
-    const mergedPrs = prs.filter((pr) => timestampInRange(pr.mergedAt, range));
-    const closedPrs = prs.filter((pr) => timestampInRange(pr.closedAt, range));
-    const prsCreatedInRange = prs.filter((pr) => timestampInRange(pr.createdAt, range));
-    const commitsInRange = parseGithubCommitDates(commitRaw).filter((date) => timestampInRange(date, range));
-    for (const date of commitsInRange) {
-      addGithubDaily(dailyByDate, dateKeyFromIso(date), { commits: 1 });
-    }
-
-    for (const pr of prsCreatedInRange) {
-      addGithubDaily(dailyByDate, dateKeyFromIso(pr.createdAt), {
-        prs: 1,
-      });
-    }
-
-    for (const pr of mergedPrs) {
-      addGithubDaily(dailyByDate, dateKeyFromIso(pr.mergedAt), {
-        insertions: pr.additions ?? 0,
-        deletions: pr.deletions ?? 0,
-        filesChanged: pr.changedFiles ?? 0,
-      });
-    }
-
-    const prsMerged = mergedPrs.length;
-    const prsClosed = closedPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "CLOSED").length;
-    return {
-      repo,
-      available: true,
-      fetchedAt: nowIso(),
-      error: null,
-      commitsCreated: commitsInRange.length,
-      prsTracked: prsCreatedInRange.length,
-      prsOpen: prsCreatedInRange.filter((pr) => String(pr.state ?? "").toUpperCase() === "OPEN").length,
-      prsMerged,
-      prsClosed,
-      prAdditions: mergedPrs.reduce((sum, pr) => sum + toNonNegativeInt(pr.additions), 0),
-      prDeletions: mergedPrs.reduce((sum, pr) => sum + toNonNegativeInt(pr.deletions), 0),
-      filesChanged: mergedPrs.reduce((sum, pr) => sum + toNonNegativeInt(pr.changedFiles), 0),
-      daily: Array.from(dailyByDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
-    };
-  } catch (error) {
-    return makeEmptyGithubStats(getErrorMessage(error), null);
-  }
-}
-
 function mergeGithubDaily(points: AdeUsageDailyPoint[], githubStats: GitHubActivityStats | null | undefined): void {
   if (!githubStats) return;
   const byDate = new Map(points.map((point) => [point.date, point]));
@@ -1973,6 +1790,18 @@ function mergeDatabaseDaily(points: AdeUsageDailyPoint[], databaseStats: AdeData
       point.inputTokens = toNonNegativeInt(row.inputTokens);
       point.outputTokens = toNonNegativeInt(row.outputTokens);
       point.totalTokens = toNonNegativeInt(row.totalTokens);
+      // Carry the per-provider split with the total. A gap-filled day that
+      // raised `totalTokens` but left `byProvider` empty made the chart's
+      // stacked series stop summing to the day's own total — the fill would
+      // show up in the headline number and in no series at all.
+      for (const [provider, contribution] of Object.entries(row.byProvider ?? {})) {
+        addDailyProviderPoint(
+          point,
+          provider,
+          toNonNegativeInt(contribution?.totalTokens),
+          Math.max(0, toFiniteNumber(contribution?.costUsd)),
+        );
+      }
     }
     point.sessions += toNonNegativeInt(row.sessions);
     point.durationMs = toNonNegativeInt(point.durationMs) + toNonNegativeInt(row.durationMs);
@@ -2015,10 +1844,12 @@ function collectAdeUsageStats({
   const dbSummary = databaseStats?.summary;
   const trackedAdeTokens = toNonNegativeInt(dbSummary?.trackedAdeTokens);
   const totalTokens = fallbackObserved.totalTokens > 0 ? fallbackObserved.totalTokens : trackedAdeTokens;
+  const pricingUpdatedAtMs = dynamicTokenPricingUpdatedAt();
   const fallback: AdeUsageStats = {
     generatedAt: new Date(nowMs).toISOString(),
     scope,
     range,
+    pricingUpdatedAt: pricingUpdatedAtMs ? new Date(pricingUpdatedAtMs).toISOString() : null,
     summary: {
       totalTokens,
       tokenTotalSource: fallbackObserved.totalTokens > 0 ? "provider_logs" : "ade_db",
@@ -2050,7 +1881,7 @@ function collectAdeUsageStats({
       activeLanes: toNonNegativeInt(dbSummary?.activeLanes),
       lanesCreated: toNonNegativeInt(dbSummary?.lanesCreated),
       lanesArchived: toNonNegativeInt(dbSummary?.lanesArchived),
-      lanesDeleted: 0,
+      lanesDeleted: toNonNegativeInt(dbSummary?.lanesDeleted),
       // Legacy code-movement fields are local ADE DB values only. GitHub
       // activity is exposed through githubActivity and the github* daily fields.
       commitsCreated: toNonNegativeInt(dbSummary?.commitsCreated),
@@ -2243,6 +2074,29 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   cursor: "Cursor",
 };
 
+/**
+ * Names for the nine ledger providers, which are a superset of the three that
+ * report quota windows above. Used only in prose the user reads.
+ */
+const LEDGER_PROVIDER_DISPLAY_NAME: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  "cursor-agent": "Cursor Agent",
+  openclaw: "OpenClaw",
+  opencode: "OpenCode",
+  droid: "Droid",
+  copilot: "Copilot",
+  gemini: "Gemini",
+};
+
+function formatProviderList(providers: readonly string[]): string {
+  const names = providers.map((provider) => LEDGER_PROVIDER_DISPLAY_NAME[provider] ?? provider);
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: string): UsageWindow[] {
   const nowMs = Date.parse(polledAt);
   if (!Number.isFinite(nowMs)) return prevWindows;
@@ -2361,6 +2215,9 @@ function buildProviderWindows(
 
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
+/** Who this machine is, for the account directory. */
+type LocalMachineIdentity = { machineKey: string; label: string; platform: string | null };
+
 type UsageTrackingDependencies = {
   pollClaudeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollCodexUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
@@ -2376,7 +2233,132 @@ type UsageTrackingDependencies = {
   scanGitHubStats?: (range: ResolvedAdeUsageRange) => Promise<GitHubActivityStats>;
   collectDatabaseStats?: (range: ResolvedAdeUsageRange) => AdeDatabaseUsageStats | null;
   scanUsageLedgers?: (projectRoot: string | null | undefined, signal: AbortSignal) => Promise<UsageLedgerScanResult>;
+  /** Durable per-machine rollup storage. Omitted = account scope has only this machine. */
+  accountRollupStore?: AccountUsageRollupStore;
+  /** Identity/label this machine publishes under. Null = not resolvable yet. */
+  localMachineIdentity?: () => LocalMachineIdentity | null;
+  /** Transcript roots to fingerprint for cross-machine dedupe. */
+  transcriptRoots?: () => string[];
+  /** Home directory holding the shared-source marker (injected for tests). */
+  transcriptHome?: string;
+  /** Filesystem seam for the shared-source marker (injected for tests). */
+  transcriptSourceFs?: UsageSourceFsApi;
+  /**
+   * Product-analytics sink for the one coarse fact this service owns: which
+   * usage scope an installation actually looked at. Omitted = no capture, which
+   * is what every non-desktop host and every test does.
+   */
+  captureAnalytics?: (input: ProductAnalyticsCapture) => void;
 };
+
+/**
+ * Opportunistic live refresh of other machines' rollups.
+ *
+ * Wired after construction because the account directory and the remote
+ * connection pool are built downstream of the usage service. Resolving to a
+ * partial list is normal and expected — this is an accuracy improvement layered
+ * on the durable rollups, never a precondition for rendering.
+ */
+export type AccountRollupFetcher = (options: { timeoutMs: number; signal: AbortSignal }) => Promise<{
+  rollups: AdeUsageRollup[];
+  failures: Array<{ machineKey: string; label: string; platform: string | null; message: string }>;
+}>;
+
+/** How long the opportunistic live pull may run before the stored rollups stand alone. */
+const ACCOUNT_LIVE_REFRESH_TIMEOUT_MS = 4_000;
+
+/**
+ * Floor on how often this machine may fan out to the account's machines.
+ *
+ * Account scope closes a feedback loop by construction: the read starts a
+ * refresh, the refresh emits a usage update, every subscriber re-reads, and the
+ * re-read is another account-scoped read. The in-flight collapse only covers
+ * concurrent calls — it is cleared before the renderer's follow-up arrives — so
+ * without a floor the page would fan out to up to `MAX_LIVE_MACHINES` peers on
+ * a cycle bounded by nothing but RPC latency, for as long as it was open.
+ *
+ * One floor, not one per cache key. `fetchAccountRollups` takes no range and
+ * asks every machine for its whole rollup, so the work is identical whatever
+ * the reader is looking at: keying the floor by range let a user walk
+ * day → week → month → year → all and fire five full fan-outs in as many
+ * seconds, and rotated the key at local midnight for good measure.
+ *
+ * Thirty seconds is well under the rate at which a machine's own ledger scan
+ * produces new numbers, so nothing visible is delayed by it — and an explicit
+ * Refresh bypasses it outright, because a user pressing a button is not part of
+ * the loop this defends against.
+ */
+const ACCOUNT_LIVE_REFRESH_MIN_INTERVAL_MS = 30_000;
+
+let cachedLocalMachineKey: string | null = null;
+
+/**
+ * Identity this machine publishes its rollup under.
+ *
+ * It must be the *account directory's* machine key, because that is the key
+ * every peer files this machine's numbers under: the live refresh stamps the
+ * directory key onto whatever a peer returns, and the fetcher's self-filter
+ * compares against it. Publishing under anything else (a hostname, say) creates
+ * a second, phantom computer that no peer ever reconciles with the real one —
+ * and, when neither copy carries a source marker, double-counts its tokens.
+ *
+ * Resolved lazily and memoized: the key is stable for the life of the install,
+ * but reading it touches the secrets directory, which must not happen at import
+ * time.
+ *
+ * A failure returns null rather than substituting a hostname. A hostname is a
+ * *different* key, and publishing under it is exactly the phantom machine this
+ * comment warns about — replicated account-wide, reconciled with nothing, never
+ * cleaned up. Not knowing who we are is a retryable failure: the publish is
+ * skipped, `getUsageRollup` answers null, and the next scan tries again because
+ * the failure is not memoized.
+ */
+function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
+  if (!cachedLocalMachineKey) {
+    try {
+      cachedLocalMachineKey = getOrCreateLocalAccountMachineIdentity().machineKey.trim() || null;
+    } catch {
+      cachedLocalMachineKey = null;
+    }
+  }
+  if (!cachedLocalMachineKey) return null;
+  return {
+    machineKey: cachedLocalMachineKey,
+    label: os.hostname(),
+    platform: process.platform,
+  };
+}
+
+/**
+ * Where each provider keeps its transcripts on this machine.
+ *
+ * Only providers that actually produced usage are fingerprinted, so a machine
+ * with Claude alone is never judged "different source" from a shared home just
+ * because the other side also has Codex installed. Paths are folded through
+ * `pathKey` at comparison time, so separators and case are handled per platform.
+ */
+function defaultTranscriptRoots(costs: readonly CostSnapshot[]): string[] {
+  const home = os.homedir();
+  const byProvider: Record<string, string> = {
+    claude: path.join(home, ".claude"),
+    codex: process.env.CODEX_HOME || path.join(home, ".codex"),
+    cursor: path.join(home, ".cursor"),
+    "cursor-agent": path.join(home, ".cursor"),
+    droid: process.env.FACTORY_DIR || path.join(home, ".factory"),
+    copilot: path.join(home, ".copilot"),
+    gemini: path.join(home, ".gemini"),
+    openclaw: path.join(home, ".openclaw"),
+    opencode: process.env.XDG_DATA_HOME
+      ? path.join(process.env.XDG_DATA_HOME, "opencode")
+      : path.join(home, ".local", "share", "opencode"),
+  };
+  const roots = new Set<string>();
+  for (const cost of costs) {
+    const root = byProvider[cost.provider];
+    if (root) roots.add(root);
+  }
+  return [...roots];
+}
 
 type PollOptions = {
   reason?: UsageRefreshReason;
@@ -2424,6 +2406,33 @@ export function createUsageTrackingService({
   let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
   let cachedProjectCosts: CostSnapshot[] = [];
   let projectCostsReady = false;
+  /**
+   * Providers whose scan threw on the last round.
+   *
+   * Load-bearing for the rollup store: those providers contributed no rows, and
+   * the store must not read that silence as "these days were removed" and
+   * delete this machine's replicated history for them.
+   */
+  let cachedFailedProviders: string[] = [];
+  /**
+   * Providers this round could not read in full — a directory that refused to
+   * list, a locked ledger, a root that exists and produced nothing.
+   *
+   * Held separately from `cachedFailedProviders` only because the two are
+   * discovered differently; every consumer treats them identically. A partial
+   * read leaves days short of rows they should have had, which is the same
+   * "absence is not a deletion" problem one granularity finer.
+   */
+  let cachedIncompleteProviders: string[] = [];
+  /**
+   * Providers whose last scan was partial and whose numbers on screen are
+   * therefore carried forward from an earlier, complete round.
+   *
+   * Separate from `cachedIncompleteProviders` because that set is "could not be
+   * read this round" while this one is "and so what you are reading is older
+   * than the rest of the page" — the part a user has to be told about.
+   */
+  let cachedIncompleteScanProviders: string[] = [];
   const cachedCostTimestampIso = lastSnapshot?.costsLastPolledAt
     ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? lastSnapshot?.lastPolledAt : null);
   const cachedCostTimestampMs = cachedCostTimestampIso ? Date.parse(cachedCostTimestampIso) : Number.NaN;
@@ -2487,6 +2496,274 @@ export function createUsageTrackingService({
   const ledgerAbortController = new AbortController();
   let disposed = false;
 
+  // ── Account scope ──────────────────────────────────────────────
+  const accountRollupStore = dependencies?.accountRollupStore
+    ?? createAccountUsageRollupStore({ db, logger });
+  const readLocalMachineIdentity = dependencies?.localMachineIdentity
+    ?? defaultLocalMachineIdentity;
+  const readTranscriptRoots = dependencies?.transcriptRoots
+    ?? (() => defaultTranscriptRoots(cachedCosts));
+  const transcriptHome = dependencies?.transcriptHome ?? os.homedir();
+  let fetchAccountRollups: AccountRollupFetcher | null = null;
+  /** The one fan-out that may be running. The work is range-independent. */
+  let accountLiveRefreshInFlight: Promise<void> | null = null;
+  /** When the last fan-out started. See `ACCOUNT_LIVE_REFRESH_MIN_INTERVAL_MS`. */
+  let accountLiveRefreshStartedAtMs = 0;
+  /**
+   * Machines the last live refresh could not reach, keyed by machine key.
+   *
+   * A machine that answers neither live nor from the durable store must still
+   * appear on the page. Dropping it silently would read as a genuine fall in
+   * usage — the account total would simply be smaller, with nothing to say why.
+   */
+  const accountRollupFailures = new Map<
+    string,
+    { label: string; platform: string | null; message: string }
+  >();
+
+  /**
+   * The transcript-source marker, resolved once per ledger scan.
+   *
+   * `buildTranscriptSource` reads — and on a fresh machine creates — a dot file
+   * in the transcript home. `buildLocalRollup` runs on *every* account-scoped
+   * read, so without this the marker was stat'd and read on every render of the
+   * Usage page. It only ever changes when the roots change, which only happens
+   * when a scan runs, so `pollCosts` clears it just before it republishes. The
+   * marker's create-once semantics are untouched: this caches the answer, not
+   * the decision to write.
+   */
+  let cachedTranscriptSource: AdeUsageTranscriptSource | null = null;
+
+  function resolveTranscriptSource(): AdeUsageTranscriptSource {
+    if (cachedTranscriptSource) return cachedTranscriptSource;
+    cachedTranscriptSource = buildTranscriptSource({
+      roots: readTranscriptRoots(),
+      home: transcriptHome,
+      ...(dependencies?.transcriptSourceFs ? { io: dependencies.transcriptSourceFs } : {}),
+    });
+    return cachedTranscriptSource;
+  }
+
+  /**
+   * The store's retention edge as a day key: rows on or after it are kept.
+   *
+   * One definition, used by `prune` (`day < oldestDay` is deleted) and by
+   * `buildRollupRows` (`date < oldestDay` is never built). They must agree, or
+   * every publish re-inserts exactly what the preceding prune removed.
+   */
+  function rollupOldestDay(nowMs: number): string | null {
+    const oldest = localDayOffset(nowMs, -ROLLUP_RETAINED_DAYS);
+    return oldest ? localDayKey(oldest) || null : null;
+  }
+
+  /**
+   * This machine's rollup: aggregates only, derived from the last ledger scan,
+   * bounded at the retention edge.
+   *
+   * Bounded here rather than at the publish site because the same rollup is
+   * also what `getUsageRollup` hands a peer — an unbounded payload would simply
+   * move the delete/re-insert churn onto the machine that fetched it.
+   *
+   * Null while this machine's account identity cannot be resolved: a rollup
+   * needs the key every peer files this machine under, and any other key is a
+   * phantom computer. See `defaultLocalMachineIdentity`.
+   */
+  function buildLocalRollup(nowMs: number): AdeUsageRollup | null {
+    const identity = readLocalMachineIdentity();
+    if (!identity) return null;
+    const rows = buildRollupRows(cachedCosts, { oldestDay: rollupOldestDay(nowMs) });
+    return {
+      version: 1,
+      machineKey: identity.machineKey,
+      label: identity.label,
+      platform: identity.platform,
+      capturedAt: new Date(costCacheTimestamp || nowMs).toISOString(),
+      source: resolveTranscriptSource(),
+      rows,
+    };
+  }
+
+  function publishLocalRollup(nowMs: number): void {
+    try {
+      const rollup = buildLocalRollup(nowMs);
+      // No identity, no publish. A hostname-keyed rollup replicates to every
+      // machine on the account as a second computer that never reconciles with
+      // this one, and nothing ever deletes it.
+      if (!rollup) {
+        logger.warn("usage.account.publish_skipped_no_identity");
+        return;
+      }
+      const oldestDay = rollupOldestDay(nowMs);
+      if (oldestDay) accountRollupStore.prune(oldestDay);
+      // Incomplete counts as failed here for the same reason a thrown scan
+      // does: the rows that provider did not produce this round are missing
+      // because they were unreadable, not because the days went away, and
+      // reconciling on that silence deletes replicated history.
+      accountRollupStore.publish(rollup, {
+        skipReconcileProviders: [...new Set([...cachedFailedProviders, ...cachedIncompleteProviders])],
+      });
+    } catch (error) {
+      // A rollup that cannot be published costs other machines this machine's
+      // history until the next scan. It must never fail the scan itself.
+      logger.warn("usage.account.publish_failed", { error: getErrorMessage(error) });
+    }
+  }
+
+  function setAccountRollupFetcher(fetcher: AccountRollupFetcher | null): void {
+    fetchAccountRollups = fetcher;
+  }
+
+  /**
+   * Refresh reachable machines in the background and republish what they say.
+   *
+   * Deliberately not awaited by `getAdeUsageStats`: a sleeping laptop must cost
+   * the page nothing. The stored rollups render immediately, this lands later,
+   * and `emitUpdate` nudges the UI to re-read.
+   */
+  function refreshAccountRollupsInBackground({ force = false }: { force?: boolean } = {}): void {
+    // The in-flight collapse holds even for a forced refresh: pressing Refresh
+    // twice must not put two fan-outs on the network, and the one already
+    // running will report what the second would have.
+    if (!fetchAccountRollups || accountLiveRefreshInFlight) return;
+    const startedAtMs = Date.now();
+    // The in-flight handle is cleared in `finally`, before the update this
+    // refresh emits has made it back through the renderer. The floor is what
+    // actually stops the read → refresh → emit → read loop — and `force` is the
+    // user standing outside that loop, asking for a pull.
+    if (!force && startedAtMs - accountLiveRefreshStartedAtMs < ACCOUNT_LIVE_REFRESH_MIN_INTERVAL_MS) return;
+    accountLiveRefreshStartedAtMs = startedAtMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ACCOUNT_LIVE_REFRESH_TIMEOUT_MS);
+    timer.unref?.();
+    const task = fetchAccountRollups({ timeoutMs: ACCOUNT_LIVE_REFRESH_TIMEOUT_MS, signal: controller.signal })
+      .then((result) => {
+        // `publish` returns true only when it really wrote something. Counting
+        // "did not throw" instead would emit an update for every refresh,
+        // including one that stored byte-identical history — and that update is
+        // what makes the next read, which starts the next refresh.
+        let published = 0;
+        // A peer on an older build still sends its whole decade of history. It
+        // must be cut to the same retention edge before it is stored, or this
+        // machine's own `prune` deletes those rows and the next fetch puts them
+        // straight back — the CRR delete/insert churn, arriving over the wire.
+        const oldestDay = rollupOldestDay(startedAtMs);
+        for (const rollup of result.rollups) {
+          // Unknown identity cannot match anything, and nothing was published
+          // under this machine's name either, so there is no self-row to skip.
+          if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+          const bounded = oldestDay
+            ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
+            : rollup;
+          // Fetched from that machine, not scanned here: this side cannot know
+          // which of the peer's providers failed, so it must not delete one
+          // that simply did not appear. See `publish`'s `ownerAuthoritative`.
+          if (accountRollupStore.publish(bounded, { ownerAuthoritative: false })) published += 1;
+        }
+        // Replace wholesale rather than merge: a machine missing from this
+        // round's failures either answered or was not asked, and in both cases
+        // last round's error is no longer something to show.
+        //
+        // "Changed" is a real comparison against the previous round, not "there
+        // were failures". A peer that is permanently unreachable reports the
+        // same failure every time, and reading that as a change would keep the
+        // page emitting updates forever over news it already showed.
+        const previousFailures = new Map(accountRollupFailures);
+        accountRollupFailures.clear();
+        for (const failure of result.failures) {
+          accountRollupFailures.set(failure.machineKey, {
+            label: failure.label,
+            platform: failure.platform,
+            message: failure.message,
+          });
+        }
+        let failuresChanged = previousFailures.size !== accountRollupFailures.size;
+        if (!failuresChanged) {
+          for (const [machineKey, failure] of accountRollupFailures) {
+            const before = previousFailures.get(machineKey);
+            if (before
+              && before.label === failure.label
+              && before.platform === failure.platform
+              && before.message === failure.message) continue;
+            failuresChanged = true;
+            break;
+          }
+        }
+        if (published > 0 || failuresChanged) emitUpdate(lastSnapshot ?? emptySnapshot());
+      })
+      .catch((error) => {
+        logger.warn("usage.account.live_refresh_failed", { error: getErrorMessage(error) });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        accountLiveRefreshInFlight = null;
+      });
+    accountLiveRefreshInFlight = task;
+  }
+
+  /**
+   * Turn stored rollups into merge inputs.
+   *
+   * The local machine always contributes from the live in-memory scan rather
+   * than from its own stored row, so the page is never a republish behind
+   * itself.
+   *
+   * A machine that the last live refresh could not reach and that has never
+   * published contributes a null rollup, which the merge renders as a listed
+   * "failed" machine. That is the point: the totals are honestly short by one
+   * computer, and the page says which one.
+   */
+  function collectAccountContributions(nowMs: number): AccountUsageContribution[] {
+    const identity = readLocalMachineIdentity();
+    // Display-only key for the window where the account identity cannot be
+    // read. It is never published and never stored — it exists so this page can
+    // say "this computer isn't reporting" instead of quietly dropping a machine
+    // out of the totals. Publishing under it is what makes a phantom computer.
+    const localKey = identity?.machineKey ?? `unidentified:${os.hostname()}`;
+    const contributions: AccountUsageContribution[] = [{
+      machineKey: localKey,
+      label: identity?.label ?? os.hostname(),
+      platform: identity?.platform ?? process.platform,
+      isLocal: true,
+      origin: "live",
+      // Same readiness gate `getUsageRollup` applies. Before the first ledger
+      // scan the cost cache is empty, and an unguarded rollup would list this
+      // machine as `live` with zero tokens — an authoritative "I contributed
+      // nothing" that is indistinguishable from a machine that really has no
+      // usage. A null rollup lists it honestly as not yet reporting.
+      rollup: costCacheTimestamp === 0 ? null : buildLocalRollup(nowMs),
+      ...(identity ? {} : { message: "couldn't identify this computer" }),
+    }];
+    const seen = new Set<string>([localKey]);
+    for (const rollup of accountRollupStore.readAll()) {
+      if (rollup.machineKey === localKey) continue;
+      seen.add(rollup.machineKey);
+      contributions.push({
+        machineKey: rollup.machineKey,
+        label: rollup.label,
+        platform: rollup.platform,
+        isLocal: false,
+        origin: "rollup",
+        rollup,
+      });
+    }
+    for (const [machineKey, failure] of accountRollupFailures) {
+      // A machine with a stored rollup is reported from that rollup, flagged
+      // stale if it is old — an unreachable machine we still have numbers for
+      // is not a hole in the totals.
+      if (seen.has(machineKey)) continue;
+      contributions.push({
+        machineKey,
+        label: failure.label,
+        platform: failure.platform,
+        isLocal: false,
+        origin: "live",
+        rollup: null,
+        message: failure.message,
+      });
+    }
+    return contributions;
+  }
+
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
     pacing: emptyPacing(),
@@ -2537,11 +2814,22 @@ export function createUsageTrackingService({
         scanUsageLedgersInWorker(root, { signal })
       )))(projectRoot, ledgerAbortController.signal);
     } else {
+      // Recorded, not merely logged: a provider whose scan failed produced no
+      // rows, and a peer sharing this home must be able to tell that from a
+      // provider that was scanned and genuinely had none. Reading the first as
+      // the second is what makes two views of one directory look divergent.
+      const injectedProviderErrors: Record<string, string> = {};
+      const injectedIncompleteProviders: string[] = [];
       const scanInjected = async (provider: string, work: () => Promise<TokenEntry[]>): Promise<TokenEntry[]> => {
         try {
-          return await work();
+          // Same completeness capture as the worker: a scanner that swallowed
+          // an unreadable directory and returned partial rows is not a scanner
+          // that read the directory.
+          const { value, complete } = await runLedgerScanWithCompleteness(work);
+          if (!complete) injectedIncompleteProviders.push(provider);
+          return value;
         } catch (error) {
-          logger.warn(`usage.cost_scan.${provider}_failed`, { error: getErrorMessage(error) });
+          injectedProviderErrors[provider] = getErrorMessage(error);
           return [];
         }
       };
@@ -2559,7 +2847,7 @@ export function createUsageTrackingService({
         scanInjected("claude", scanClaudeCostLogs),
         scanInjected("codex", scanCodexCostLogs),
         scanInjected("cursor", scanCursorCostLogs),
-        scanInjected("cursor_agent", scanCursorAgentCostLogs),
+        scanInjected("cursor-agent", scanCursorAgentCostLogs),
         scanInjected("openclaw", scanOpenClawCostLogs),
         scanInjected("opencode", scanOpenCodeCostLogs),
         scanInjected("droid", scanDroidCostLogs),
@@ -2587,7 +2875,8 @@ export function createUsageTrackingService({
         entryCounts: Object.fromEntries(
           Array.from(providerEntries, ([provider, entries]) => [provider, entries.length]),
         ),
-        providerErrors: {},
+        providerErrors: injectedProviderErrors,
+        incompleteProviders: injectedIncompleteProviders,
       };
     }
     if (disposed) throw new Error("Usage tracking service disposed during ledger scan");
@@ -2595,12 +2884,107 @@ export function createUsageTrackingService({
       logger.warn(`usage.cost_scan.${provider}_failed`, { error });
     }
 
-    cachedCosts = scanResult.costs;
+    // Carried, not just logged: `publishLocalRollup` needs both of these to
+    // keep an unreliable provider's stored days out of the delete-reconcile
+    // below. `providerErrors` is a provider whose scan threw;
+    // `incompleteProviders` is one whose scan swallowed an unreadable
+    // directory, file or database and returned the rest. Both mean "absent
+    // because unreadable", which is never a removal.
+    cachedFailedProviders = Object.keys(scanResult.providerErrors);
+    cachedIncompleteProviders = [...(scanResult.incompleteProviders ?? [])];
+    // Keeping an unreliable provider's stored days is not enough on its own:
+    // the in-memory cache is what the page reads, what the rollup is built
+    // from, and what gets persisted across restarts. Overwriting it with a
+    // partial round's subset silently lowered a complete provider's totals —
+    // permanently, because `costCacheTimestamp` moving forward also disarmed
+    // the automatic retry. Carry the last good snapshot forward instead.
+    const unreadableProviders = new Set([...cachedFailedProviders, ...cachedIncompleteProviders]);
+    const carriedProviders = new Set<string>();
+    // Lifetime tokens, which only ever grow for a provider that was read in
+    // full. A partial round that produced *some* entries lands below the last
+    // good round, which is how a mid-walk read error is told apart from real
+    // new usage without keeping any transcript state around.
+    const snapshotTokenTotal = (snapshot: CostSnapshot): number => {
+      let total = 0;
+      const addAll = (byModel: Record<string, CostTokenBreakdown>): void => {
+        for (const breakdown of Object.values(byModel)) {
+          total += breakdown.input + breakdown.output + breakdown.cached + (breakdown.cacheWrite ?? 0);
+        }
+      };
+      addAll(snapshot.tokenBreakdownByPreset?.all ?? snapshot.tokenBreakdown);
+      if (total > 0) return total;
+      // Some ledgers only fill the per-day breakdown; read the same tokens
+      // from there rather than treating the provider as having no history.
+      for (const byModel of Object.values(snapshot.dailyTokenBreakdownByPreset?.all ?? {})) addAll(byModel);
+      return total;
+    };
+    const carryForward = (
+      previous: readonly CostSnapshot[],
+      next: readonly CostSnapshot[],
+    ): CostSnapshot[] => {
+      if (unreadableProviders.size === 0) return [...next];
+      const previousByProvider = new Map(previous.map((snapshot) => [snapshot.provider, snapshot]));
+      // A provider whose scan hit a read error mid-walk still returns the
+      // entries it got to, so "produced nothing" is only half the failure.
+      // Keep the larger of the two rounds for an unreadable provider, or one
+      // unreadable file quietly lowers its totals and moves the cache
+      // timestamp forward, disarming the retry that would have fixed it.
+      const kept = next.map((snapshot) => {
+        if (!unreadableProviders.has(snapshot.provider)) return snapshot;
+        const before = previousByProvider.get(snapshot.provider);
+        if (!before || snapshotTokenTotal(before) <= snapshotTokenTotal(snapshot)) return snapshot;
+        carriedProviders.add(snapshot.provider);
+        return before;
+      });
+      const produced = new Set(next.map((snapshot) => snapshot.provider));
+      const carried = previous.filter(
+        (snapshot) => unreadableProviders.has(snapshot.provider) && !produced.has(snapshot.provider),
+      );
+      for (const snapshot of carried) carriedProviders.add(snapshot.provider);
+      return [...kept, ...carried];
+    };
+    const nextCosts = carryForward(cachedCosts, scanResult.costs);
+    const nextProjectCosts = projectCostsReady
+      ? carryForward(cachedProjectCosts, scanResult.projectCosts)
+      : [...scanResult.projectCosts];
+    const nextDaily7d: Partial<Record<UsageProvider, number[]>> = { ...scanResult.daily7d };
+    for (const [provider, buckets] of Object.entries(cachedDaily7d) as [UsageProvider, number[]][]) {
+      if (unreadableProviders.has(provider) && !(provider in nextDaily7d)) {
+        nextDaily7d[provider] = buckets;
+        carriedProviders.add(provider);
+      }
+    }
+    if (cachedIncompleteProviders.length > 0 || carriedProviders.size > 0) {
+      // Warn, not debug: a partial read is the difference between "usage fell"
+      // and "we couldn't read it", and only this line says which.
+      logger.warn("usage.cost_scan.partial_providers", {
+        providers: cachedIncompleteProviders.join(","),
+        carried: [...carriedProviders].join(","),
+      });
+    }
+    // The note is driven off every provider we could not read in full, not
+    // only the ones whose snapshot was carried. A partial round that still
+    // produced entries (nothing to carry, or the partial was the larger of the
+    // two) is exactly the case the page must not present as complete.
+    cachedIncompleteScanProviders = [...new Set([
+      ...carriedProviders,
+      ...cachedIncompleteProviders,
+      ...cachedFailedProviders,
+    ])].sort();
+    cachedCosts = nextCosts;
     cachedAdeCosts = [];
-    cachedProjectCosts = scanResult.projectCosts;
+    cachedProjectCosts = nextProjectCosts;
     projectCostsReady = true;
-    cachedDaily7d = scanResult.daily7d;
+    cachedDaily7d = nextDaily7d;
     costCacheTimestamp = now;
+    // Publishing rides the scan that just happened rather than adding a second
+    // cadence of its own: the rollup is a projection of exactly these snapshots,
+    // so there is never a reason to walk the transcripts again to build it.
+    // The roots are derived from these very snapshots, so this is the one point
+    // where the cached transcript source can be stale — drop it and let the
+    // publish below pay for the single re-read.
+    cachedTranscriptSource = null;
+    publishLocalRollup(now);
     const durationMs = Date.now() - startedAt;
     if (durationMs > 500) {
       logger.warn("usage.cost_scan_slow", {
@@ -2638,6 +3022,9 @@ export function createUsageTrackingService({
             return {
               provider: strategy.provider,
               skipped: true as const,
+              // A user-initiated refresh that gets skipped is still an attempt,
+              // and the snapshot has to say so — see `backoffSkipped` below.
+              backoffSkipped: reason !== "automatic",
               result: {
                 windows: [],
                 source: previousStatus?.source,
@@ -2652,6 +3039,7 @@ export function createUsageTrackingService({
               return {
                 provider: strategy.provider,
                 skipped: true as const,
+                backoffSkipped: false,
                 result,
               };
             }
@@ -2663,7 +3051,7 @@ export function createUsageTrackingService({
               providerFailureCount[strategy.provider] = failureCount;
               providerNextRetryAtMs[strategy.provider] = Date.now() + providerBackoffMs(result, failureCount);
             }
-            return { provider: strategy.provider, skipped: false as const, result };
+            return { provider: strategy.provider, skipped: false as const, backoffSkipped: false, result };
           } catch (error) {
             const message = `${strategy.provider}: poll failed: ${getErrorMessage(error)}`;
             logger.warn(`usage.poll.${strategy.provider}_failed`, { error: message });
@@ -2674,6 +3062,7 @@ export function createUsageTrackingService({
             return {
               provider: strategy.provider,
               skipped: false as const,
+              backoffSkipped: false,
               result: {
                 windows: [],
                 errors: [message],
@@ -2704,9 +3093,37 @@ export function createUsageTrackingService({
         const providerStatus: UsageProviderStatusMap = {};
         const mergedRaw: UsageWindow[] = [];
         for (const entry of providerResults) {
-          const { provider, result, skipped } = entry;
+          const { provider, result, skipped, backoffSkipped } = entry;
           const previousStatus = lastSnapshot?.providerStatus?.[provider] ?? null;
           if (skipped) {
+            /*
+             * A user asked for this refresh and the provider was skipped because
+             * its own `Retry-After` has not elapsed.
+             *
+             * The backoff is honoured rather than bypassed: the only reason we
+             * are here is that the provider told us to wait, and hammering a
+             * 429 lengthens the lockout for the surface the user is trying to
+             * unblock. But "skipped" must not look like "nothing happened" — the
+             * status used to be carried forward byte-identically, so the Retry
+             * button produced an identical snapshot and the UI could not move.
+             * Recording the attempt (and republishing the deadline) is what lets
+             * it say "tried, still blocked" and count down honestly.
+             */
+            if (backoffSkipped && previousStatus) {
+              const retryAtMs = providerNextRetryAtMs[provider] ?? 0;
+              providerStatus[provider] = {
+                ...previousStatus,
+                lastAttemptAt: polledAt,
+                ...(retryAtMs > Date.now()
+                  ? { nextRetryAt: new Date(retryAtMs).toISOString() }
+                  : {}),
+              };
+              mergedRaw.push(...filterUnexpiredCarriedWindows(
+                prevWindows.filter((window) => window.provider === provider),
+                polledAt,
+              ));
+              continue;
+            }
             const carriedWindows = filterUnexpiredCarriedWindows(
               prevWindows.filter((window) => window.provider === provider),
               polledAt,
@@ -2972,9 +3389,29 @@ export function createUsageTrackingService({
     return await current;
   }
 
+  /**
+   * Which usage scope this installation actually looked at.
+   *
+   * This is the boundary that owns the answer -- the renderer's segmented
+   * control fires on every render and every `usage.onUpdate` re-read, and a UI
+   * event would be one per poll. The capture carries the coarse scope enum and
+   * nothing else, and the service's own per-scope 24 h dedupe key means the
+   * read-heavy path costs at most three accepted events a day. Never allowed to
+   * affect the read: analytics failing must not fail the Usage page.
+   */
+  function captureScopeAnalytics(scope: AdeUsageScope): void {
+    if (!dependencies?.captureAnalytics) return;
+    try {
+      dependencies.captureAnalytics(usageScopeSelectedCapture(scope));
+    } catch (error) {
+      logger.debug("usage.scope_analytics_failed", { error: getErrorMessage(error) });
+    }
+  }
+
   async function getAdeUsageStats(args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats> {
     const nowMs = Date.now();
     const scope = normalizeScope(args.scope);
+    captureScopeAnalytics(scope);
     const range = resolveAdeUsageRange(args, nowMs);
     const exactRange = Boolean(args.since || args.until);
     const cacheKey = githubStatsCacheKey(range, exactRange);
@@ -3013,7 +3450,56 @@ export function createUsageTrackingService({
       providerUpdatedAt: machineSnapshot.costsLastPolledAt ?? null,
       githubUpdatedAt: githubCached?.fetchedAt ?? null,
     };
-    return stats;
+    // A partial scan is carried forward rather than allowed to lower the
+    // totals, which makes it invisible unless the page says so.
+    if (cachedIncompleteScanProviders.length > 0) {
+      stats.sourceNotes = [
+        ...(stats.sourceNotes ?? []),
+        `Couldn't read all of ${formatProviderList(cachedIncompleteScanProviders)} last time, so ${cachedIncompleteScanProviders.length === 1 ? "its numbers may be" : "their numbers may be"} behind.`,
+      ];
+    }
+    if (scope !== "account") return stats;
+    // Render from the durable rollups now; sharpen from reachable machines
+    // later. The live pull is never awaited, so an asleep or unroutable machine
+    // costs the page nothing at all.
+    refreshAccountRollupsInBackground({ force: args.force === true });
+    try {
+      return mergeAccountUsageStats({
+        localStats: stats,
+        contributions: collectAccountContributions(nowMs),
+        nowMs,
+      });
+    } catch (error) {
+      // Account scope is additive. If the merge itself fails, the honest answer
+      // is this machine's numbers with an explanation — not an empty page.
+      logger.warn("usage.account.merge_failed", { error: getErrorMessage(error) });
+      stats.scope = "account";
+      stats.sourceNotes = [
+        ...(stats.sourceNotes ?? []),
+        "Couldn't add up the other computers — showing this one only.",
+      ];
+      return stats;
+    }
+  }
+
+  /**
+   * This machine's rollup, for another machine to merge. Aggregates only: the
+   * caller receives day × provider × model totals and no transcript data.
+   *
+   * Returns `null` until the first ledger scan has completed. Before then the
+   * cost cache is empty and an answer would be an *authoritative* empty rollup:
+   * the caller would store zero rows for this machine, and the store's
+   * reconcile pass would take that as "this history was removed". A readiness
+   * gate turns that window into an honest, retryable failure instead.
+   *
+   * Null for the same reason when this machine's account identity cannot be
+   * read: a peer would file the rows under a key that is not this machine.
+   * Both windows read to the caller as "still reading its history", which the
+   * store already treats as retryable.
+   */
+  function getUsageRollup(): AdeUsageRollup | null {
+    if (costCacheTimestamp === 0) return null;
+    return buildLocalRollup(Date.now());
   }
 
   function refreshStatsInBackground(
@@ -3098,6 +3584,8 @@ export function createUsageTrackingService({
     forceRefresh,
     refreshHistory,
     getAdeUsageStats,
+    getUsageRollup,
+    setAccountRollupFetcher,
     poll,
     dispose: () => {
       disposed = true;
@@ -3110,6 +3598,7 @@ export function createUsageTrackingService({
 // ── Exported for testing ─────────────────────────────────────────
 export const _testing = {
   MIN_POLL_INTERVAL_MS,
+  USAGE_SNAPSHOT_CACHE_VERSION,
   MAX_POLL_INTERVAL_MS,
   readCodexCredentials,
   isCodexTokenStale,

@@ -1,6 +1,4 @@
 import { BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
-import { randomUUID as nodeRandomUUID } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -64,8 +62,7 @@ import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { createSyncCloudRelayStore } from "../../../../../ade-cli/src/services/sync/syncCloudRelayStore";
+import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
   createRuntimeEventSubscriptionRegistry,
   type RuntimeEventWindowSubscription,
@@ -327,8 +324,26 @@ export type RuntimeBridgeRegistration = {
   ): AccountMachineReconciliationResult;
   getLocalMachineIdentity(): AdeAccountLocalMachineIdentity;
   resolveTargetIdForMachineKey(machineKey: string): string | null;
+  /**
+   * Whether a target is already connected. Opportunistic background readers
+   * gate on this so a failed call never spends the target's automatic-reconnect
+   * budget.
+   */
+  isTargetConnected(targetId: string): boolean;
   /** Display name for the paired machine, for user-facing failure copy. */
   resolveTargetNameForMachineKey(machineKey: string): string | null;
+  /**
+   * Machine-scoped RPC to an already-paired target, for main-process callers
+   * that have no project binding — account-wide usage, which asks each machine
+   * for its own rollup. Not the renderer path: `IPC.remoteRuntimeCallSync`
+   * keeps its own method allowlist and this deliberately does not widen it.
+   */
+  callMachineMethod<T>(
+    targetId: string,
+    method: string,
+    params?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ): Promise<T>;
   openRemoteProjectForWindow(args: {
     targetId: string;
     projectId: string;
@@ -342,47 +357,12 @@ export type RuntimeBridgeRegistration = {
   }): Promise<OpenProjectBinding & { kind: "remote" }>;
 };
 
-export function getOrCreateLocalAccountMachineIdentity(args: {
-  secretsDir?: string;
-  randomUUID?: () => string;
-} = {}): AdeAccountLocalMachineIdentity {
-  const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
-  const deviceIdPath = path.join(secretsDir, "sync-device-id");
-  fs.mkdirSync(secretsDir, { recursive: true });
-
-  const readDeviceId = (): string | null => {
-    try {
-      const value = fs.readFileSync(deviceIdPath, "utf8").trim();
-      return value || null;
-    } catch {
-      return null;
-    }
-  };
-
-  let deviceId = readDeviceId();
-  if (!deviceId) {
-    const candidate = (args.randomUUID ?? nodeRandomUUID)();
-    try {
-      fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx", mode: 0o600 });
-      deviceId = candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      deviceId = readDeviceId();
-    }
-  }
-  if (!deviceId) throw new Error("Local ADE device identity is unavailable.");
-  try {
-    fs.chmodSync(deviceIdPath, 0o600);
-  } catch {
-    // Best-effort on filesystems without POSIX mode support.
-  }
-
-  const machineCloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(secretsDir, "sync-cloud-relay.json"),
-  });
-  const { machineKey } = machineCloudRelayStore.getMachineIdentity();
-  return { machineKey, deviceId };
-}
+/**
+ * Re-exported from the Electron-free module so services outside the IPC layer
+ * (the usage rollup publisher, the CLI-hosted brain) can resolve the same
+ * machine key without importing this bridge.
+ */
+export { getOrCreateLocalAccountMachineIdentity };
 
 export function registerRuntimeBridge({
   appVersion,
@@ -489,10 +469,17 @@ export function registerRuntimeBridge({
       getLocalMachineIdentity?.() ?? getOrCreateLocalAccountMachineIdentity(),
     resolveTargetIdForMachineKey: (machineKey) =>
       targetForMachineKey(machineKey)?.id ?? null,
+    isTargetConnected: (targetId) => remoteConnectionService.isConnected(targetId),
     resolveTargetNameForMachineKey: (machineKey) => {
       const target = targetForMachineKey(machineKey);
       return target?.name?.trim() || target?.hostname?.trim() || null;
     },
+    callMachineMethod: <T,>(
+      targetId: string,
+      method: string,
+      params?: Record<string, unknown>,
+      options?: { timeoutMs?: number },
+    ) => remoteConnectionService.callMachineMethod<T>(targetId, method, params ?? {}, options ?? {}),
     openRemoteProjectForWindow: async ({ targetId, projectId, rootPath, windowId }) => {
       const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);

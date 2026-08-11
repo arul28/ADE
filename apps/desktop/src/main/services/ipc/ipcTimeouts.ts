@@ -7,6 +7,7 @@ import {
   LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
   PI_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
+  USAGE_REFRESH_HISTORY_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -33,6 +34,11 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   chat: {
     handoffSession: IPC.agentChatHandoff,
     prepareCrossMachineHandoff: IPC.agentChatPrepareCrossMachineHandoff,
+  },
+  // A remote runtime runs the same ledger worker as a local one, so the Usage
+  // page's Refresh needs the same budget whichever runtime answers it.
+  usage: {
+    refreshHistory: IPC.usageRefreshHistory,
   },
 };
 
@@ -127,6 +133,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // button reports a failure for a restart that actually succeeded.
     case IPC.appRestartBackgroundService:
       return 4 * 60_000;
+    // The Usage page's Refresh runs the isolated ledger worker end to end. On
+    // the 30s default the renderer rejected with a raw IPC timeout — and blanked
+    // the page — while the daemon kept scanning for another nine minutes.
+    case IPC.usageRefreshHistory:
+      return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.transcriptionTranscribe:

@@ -22,6 +22,7 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isRetryableRemoteAction } from "./retryableRemoteActions";
+import { USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
@@ -124,6 +125,10 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.prepareCrossMachineHandoff", 120_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
+  // The remote daemon answers Refresh by running the same isolated ledger
+  // worker a local one does, so the transport must outlive the worker's own
+  // ceiling — and stay under the renderer's IPC budget for this action.
+  ["usage.refreshHistory", USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;

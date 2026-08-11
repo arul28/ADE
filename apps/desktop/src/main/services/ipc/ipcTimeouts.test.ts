@@ -13,7 +13,9 @@ import {
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   longRunningLocalRuntimeActionTimeoutMs,
+  USAGE_REFRESH_HISTORY_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 
 describe("ipcInvokeTimeoutMs", () => {
   it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
@@ -236,6 +238,33 @@ describe("ipcInvokeTimeoutMs", () => {
     const timeoutMs = ipcInvokeTimeoutMs(IPC.accountRepairMachinePairing);
     expect(timeoutMs).toBeGreaterThan(LOCAL_RUNTIME_SYNC_TIMEOUT_MS);
     expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
+  });
+
+  // The Usage page's Refresh runs the isolated ledger worker, whose own ceiling
+  // is 600s. On the 30s default every budget in front of it expired first: the
+  // renderer rejected with a raw IPC timeout and blanked the page while the
+  // daemon kept scanning for another nine minutes.
+  it("outlives the ledger worker on every path Refresh can take", () => {
+    expect(USAGE_REFRESH_HISTORY_TIMEOUT_MS).toBeGreaterThan(LEDGER_WORKER_TIMEOUT_MS);
+    // Direct IPC (no runtime bound).
+    expect(ipcInvokeTimeoutMs(IPC.usageRefreshHistory)).toBe(USAGE_REFRESH_HISTORY_TIMEOUT_MS);
+    // Runtime-backed (production): the daemon action budget, then the IPC
+    // budget that must outlast it plus cold project setup.
+    expect(longRunningLocalRuntimeActionTimeoutMs("usage.refreshHistory"))
+      .toBe(USAGE_REFRESH_HISTORY_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "usage", action: "refreshHistory", args: {} },
+    }])).toBe(
+      LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
+      + USAGE_REFRESH_HISTORY_TIMEOUT_MS
+      + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    // Remote runtime: the same worker, so the same budget.
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "usage", action: "refreshHistory", args: {} },
+    }])).toBe(USAGE_REFRESH_HISTORY_TIMEOUT_MS);
   });
 
   it("composes an unmapped named daemon override for local runtime actions", () => {

@@ -4042,6 +4042,15 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       projectRoot,
+      dependencies: {
+        // Only the project-bound context reports scope adoption. The dormant
+        // machine-level tracker below has no project, and the CLI-hosted brain
+        // is a runtime rather than the desktop surface this fact is scoped to;
+        // the per-scope daily dedupe key covers the Hub read either way.
+        captureAnalytics: (input) => {
+          productAnalyticsService.capture(input);
+        },
+      },
     });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,

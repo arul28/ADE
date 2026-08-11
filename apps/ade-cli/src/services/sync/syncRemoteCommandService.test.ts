@@ -566,8 +566,13 @@ describe("createSyncRemoteCommandService", () => {
     await service.execute(makePayload("usage.getAdeStats", { preset: "7d", scope: "project" }));
     expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "7d", scope: "project" });
     await expect(service.execute(makePayload("usage.getAdeStats", { scope: "galaxy" }))).rejects.toThrow(
-      "usage.getAdeStats scope must be machine or project.",
+      "usage.getAdeStats scope must be account, machine, or project.",
     );
+    // `account` is a real scope now, so it must reach the service rather than
+    // being rejected alongside nonsense values.
+    getAdeUsageStats.mockClear();
+    await service.execute(makePayload("usage.getAdeStats", { preset: "7d", scope: "account" }));
+    expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "7d", scope: "account" });
     getAdeUsageStats.mockClear();
     await service.execute(makePayload("usage.getAdeStats", {
       since: "2026-07-01T00:00:00.000Z",

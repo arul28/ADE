@@ -6755,6 +6755,13 @@ describe("outbound changeset ack retries", () => {
         // 39% of the synced project database, for rows the phone re-fetches on
         // demand through the required `prs.refresh` action anyway.
         "pull_request_snapshots",
+        // Cross-machine usage rollups replicate desktop-to-desktop only; a
+        // phone reads usage over `usage.getAdeStats` and never queries these.
+        "usage_machine_rollups",
+        "usage_machine_rollup_meta",
+        // Deleted-lane aggregate rows: no iOS schema and no read path, so the
+        // phone would drop every one of them on arrival.
+        "lane_usage_tombstones",
       ]));
 
       peer.ws.send(encodeSyncEnvelope({

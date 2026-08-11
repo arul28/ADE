@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import { formatSubagentDurationMs, relativeTimeCompact } from "./format";
+import { formatCost, formatSubagentDurationMs, relativeTimeCompact } from "./format";
 
 describe("relativeTimeCompact", () => {
   beforeEach(() => {
@@ -62,5 +62,25 @@ describe("formatSubagentDurationMs", () => {
     expect(formatSubagentDurationMs(60 * 60_000)).toBe("1h");
     expect(formatSubagentDurationMs(176 * 60_000)).toBe("2h 56m");
     expect(formatSubagentDurationMs(25 * 60 * 60_000)).toBe("25h");
+  });
+});
+
+describe("formatCost", () => {
+  it("groups thousands so large spend reads at the right magnitude", () => {
+    expect(formatCost(23_127.73)).toBe("$23,127.73");
+    expect(formatCost(1_234_567.891)).toBe("$1,234,567.89");
+    expect(formatCost(999.5)).toBe("$999.50");
+    expect(formatCost(1_000)).toBe("$1,000.00");
+  });
+
+  it("keeps the existing small-value and cent behavior", () => {
+    expect(formatCost(0)).toBe("<$0.01");
+    expect(formatCost(0.004)).toBe("<$0.01");
+    expect(formatCost(0.01)).toBe("$0.01");
+    expect(formatCost(12.5)).toBe("$12.50");
+  });
+
+  it("does not print NaN", () => {
+    expect(formatCost(Number.NaN)).toBe("$0.00");
   });
 });

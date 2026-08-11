@@ -280,6 +280,18 @@ export class RemoteConnectionService {
   }
 
   /**
+   * Whether this target is connected *right now*.
+   *
+   * For opportunistic background readers that must not trigger an implicit
+   * reconnect: a failed call on a disconnected target spends that machine's
+   * automatic-reconnect budget, and exhausting it pauses automatic reconnect
+   * for every feature that target serves.
+   */
+  isConnected(targetId: string): boolean {
+    return this.statusById.get(targetId)?.state === "connected";
+  }
+
+  /**
    * Canonical account-trust reconciliation command. Sign-out revokes Relay
    * leases but preserves host-issued paired secrets so LAN/Tailscale remain
    * available. Switching to a different signed-in account prunes the previous

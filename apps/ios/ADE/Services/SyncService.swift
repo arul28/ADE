@@ -18397,7 +18397,12 @@ final class SyncService: ObservableObject {
   /// Fetches the fast, cached cross-client activity snapshot exposed by the
   /// paired desktop runtime. The host refreshes expensive provider/GitHub
   /// sources in the background, so this request is safe on the new-chat path.
-  func fetchAdeUsageStats(preset: String) async throws -> MobileAdeUsageStats {
+  ///
+  /// `force` is set only by an explicit user Refresh. The host reads it by
+  /// identity to bypass the account fan-out's rate floor, so it is omitted
+  /// rather than sent as `false` on ordinary loads — and older hosts, which
+  /// only read the keys they know, ignore it.
+  func fetchAdeUsageStats(preset: String, force: Bool = false) async throws -> MobileAdeUsageStats {
     guard supportsRemoteAction("usage.getAdeStats") else {
       throw NSError(
         domain: "ADE",
@@ -18410,7 +18415,7 @@ final class SyncService: ObservableObject {
     }
     return try await sendDecodableCommand(
       action: "usage.getAdeStats",
-      args: ["preset": preset],
+      args: adeUsageStatsCommandArgs(preset: preset, force: force),
       disconnectOnTimeout: false,
       timeoutNanoseconds: 8_000_000_000,
       as: MobileAdeUsageStats.self
@@ -21487,4 +21492,22 @@ extension SyncService {
       _ = try? await refreshPersonalChats(includeArchived: true)
     }
   }
+}
+
+// MARK: - Usage command arguments
+
+/// Wire arguments for `usage.getAdeStats`.
+///
+/// Pulled out of the send path so the shape is directly testable: dropping
+/// `force` is silent — the request still succeeds, it is just throttled — so
+/// only a test of the argument dictionary catches a regression.
+///
+/// `scope` is deliberately absent: mobile reads the paired machine, and the
+/// host normalizes a missing scope to `machine`. Sending an explicit
+/// `"account"` would hard-fail against a brain predating that value, and no
+/// capability bit exists to detect one.
+func adeUsageStatsCommandArgs(preset: String, force: Bool) -> [String: Any] {
+  var args: [String: Any] = ["preset": preset]
+  if force { args["force"] = true }
+  return args
 }

@@ -317,6 +317,9 @@ apps/ios/
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
 │   │   │                            # ADERootTabBarHiddenPreferenceKey),
+│   │   │                            # ADEUsageDesign (shared usage type scale,
+│   │   │                            #   pressure colors, chart geometry —
+│   │   │                            #   iOS counterpart of usageDesign.ts),
 │   │   │                            # MachineRowView (shared Mac row used by the
 │   │   │                            #   Settings account/machines lists and the
 │   │   │                            #   Hub quick-connect home; .row / .card looks),
@@ -486,7 +489,9 @@ apps/ios/
 │   │   │                            #   scanner),
 │   │   │                            # SettingsConnectionHeader,
 │   │   │                            #   host compatibility warning banner,
-│   │   │                            #   full usage limits + refresh section,
+│   │   │                            # SettingsUsagePage + SettingsUsageChart
+│   │   │                            #   (full Usage page: cost hero, daily
+│   │   │                            #   chart, Live limits, breakdown),
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SSHPairingView + view model/state
@@ -2200,7 +2205,7 @@ Known limits, all deliberate:
 | **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. The session list itself is described in [Work session list rows](#work-session-list-rows). Each row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside its title. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop/TUI `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. This replaced the modal `WorkMentionsPickerSheet` and `WorkSlashCommandsSheet` (both deleted). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: GitHub stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, Integration/Rebase workflow cards rendered from `PrWorkflowCard`, and per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for identity/personality, live model/reasoning/Fast selection, read-only Linear status, memory via `cto.getMemory`, and re-run setup. The tab badges when the thread is blocked on the user: `SyncService.refreshCtoAttentionIfNeeded()` calls the optional `cto.getAttention` command (5 s debounce, gated on `supportsRemoteAction`) and publishes `ctoAttention`. It rides the change pulse that rebuilds the session roster, but is invoked *before* `refreshActiveSessionsAndSnapshot`'s roster-signature early return — the CTO is excluded from that roster, so a CTO-only change leaves the signature unchanged and a probe below the guard could never fire. `saveRemoteCommandDescriptors` also calls it with `force: true`, so the first probe after a (re)connect happens as soon as the host advertises the command. Transport failures and the host's explicit `unknown` status both keep the last known value; an older brain that does not advertise the action clears it. The decoded status is optional so a new phone still infers idle/waiting correctly from the legacy `awaitingInput` field. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), account-wide machine rename/clear, scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. The About row formats the marketing and build versions together as `v<marketing> (<build>)`. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), account-wide machine rename/clear, scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. The About row formats the marketing and build versions together as `v<marketing> (<build>)`. Settings also hosts the full **Usage** page (`SettingsUsagePage`), the phone's counterpart of desktop Settings > Usage. |
 
 `WorkModelPickerSheet` shows the same Claude authentication affordance
 as desktop when Claude-family models are unavailable: a compact
@@ -2594,15 +2599,33 @@ The usage commands are viewer-allowed project actions:
   without doing provider or ledger work. `usage.refreshQuota` runs a bounded
   quota-only refresh with interactive host authentication disabled. Work shows
   a compact provider-icon summary using the host's percent-used values directly.
-  Settings mirrors the desktop cards with provider icons, usage-threshold
-  colors, reset countdowns, source/freshness/error state, explicit refresh, and
-  external links to the Claude and Codex usage pages.
+  The Live limits rows in Settings mirror the desktop band with provider icons,
+  usage-threshold colors, reset countdowns, source/freshness/error state,
+  explicit refresh, and external links to the Claude and Codex usage pages.
 - `usage.getAdeStats` returns the same stale-while-revalidate activity snapshot
-  used by desktop Stats, including daily points and `desktop` / `mobile` /
-  `tui` / `web` client attribution. The phone uses it for the Activity mode of
-  the Work new-chat carousel rather than duplicating the full desktop Stats
-  page. Pull-to-refresh on the new-chat screen refreshes both quota and the
-  currently selected activity range.
+  the desktop Usage page uses, including daily points and `desktop` / `mobile` /
+  `tui` / `web` client attribution. It backs both the Work new-chat activity
+  module and the Settings Usage page. Pull-to-refresh on the new-chat screen
+  refreshes both quota and the currently selected activity range.
+
+`SettingsUsagePage.swift` is the phone's full Usage page, reached from
+`ConnectionSettingsView`. It follows the desktop page's reading order — cost
+hero and per-provider split, daily chart, Live limits, metric strip, breakdown —
+and precomputes every number into a `SettingsUsagePageModel` when the payload
+changes, never in `body`. The chart (`SettingsUsageChart.swift`) is a `Canvas`
+rather than a stack of shape views, because a 60-bucket five-series chart would
+otherwise be 300 view identities SwiftUI diffs on every state change, including
+the pace-bar touch that dims the other series. Touching a pace bar keeps that
+provider lit and fades the rest so one provider's days stand out in a busy
+chart.
+
+`ADEUsageDesign.swift` is the iOS counterpart of the desktop `usageDesign.ts`:
+the same five type steps, the same section and card rhythm, the same pressure
+thresholds, and the same "top N providers plus a merged neutral Other" chart
+rule, shared by the Settings page and `WorkUsageActivityCarousel` so the compact
+module and the full page read as one surface. Anything costing more than a few
+dozen operations lives in a `build` function callers invoke from a task or
+`onChange` and hold in `@State`.
 
 `MobileUsageQuotaStore` persists snapshots by host identity, rebinds on machine
 changes, ignores an older in-flight response after a host switch, and clears
@@ -2610,6 +2633,20 @@ the visible snapshot when the active host is unknown or does not advertise the
 quota actions. Provider credentials remain on the host. A legacy host therefore
 stays connected in limited mode and shows update guidance instead of leaking a
 different machine's cached limits.
+
+The same store also owns the Usage page's range-keyed activity stats, because
+the page renders both bands from one screen and one refresh gesture — two stores
+would mean two spinners and two host-change resets that could disagree.
+`loadStats(range:using:force:)` serves its in-memory cache immediately so
+switching range never blanks the page, then refreshes in place; a generation
+counter and a re-read of the host identity discard any response that lands after
+a host or range change. That cache is memory-only by design:
+`MobileAdeUsageStats` decodes leniently and has no encodable form, so a cold
+launch refetches rather than persisting a shape the next build might not read.
+`force` is the user's explicit Refresh rather than a cache hint and is passed
+through to the host, so an account-scoped read is not silently suppressed by the
+fan-out's rate floor. A host that does not advertise `usage.getAdeStats` clears
+the stats and shows update guidance.
 
 ## Implementation status (phone specifics)
 
