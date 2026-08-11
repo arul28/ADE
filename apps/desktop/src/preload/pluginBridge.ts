@@ -95,13 +95,19 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
     icon: summary.icon,
     accent: summary.accent,
     status: toBridgeRuntimeStatus(summary.status),
+    // `webview` joins `tab` in the rail rather than getting a list of its own:
+    // both are full-page surfaces at `/plugin/<id>`, and only the page itself
+    // cares which one it draws. A client that filtered on `kind === "tab"`
+    // would silently drop every custom-UI plugin from the rail.
     tabs: summary.surfaces
-      .filter((surface) => surface.kind === "tab")
+      .filter((surface) => surface.kind === "tab" || surface.kind === "webview")
       .map((surface) => ({
         id: surface.id,
         title: surface.title,
+        kind: surface.kind === "webview" ? "webview" as const : "tab" as const,
         panelId: surface.panelId,
         icon: surface.icon ?? null,
+        ...(surface.entryHtml ? { entryHtml: surface.entryHtml } : {}),
         // Which core tab this plugin replaces, when it replaces one. Carried
         // explicitly rather than inferred: the extraction pilot gates a builtin
         // tab on it, and inferring the owner from a name would be a guess about

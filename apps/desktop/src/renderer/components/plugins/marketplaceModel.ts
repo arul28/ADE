@@ -362,8 +362,14 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
   const lines: string[] = [];
   const tabs = manifest.surfaces.filter((surface) => surface.kind === "tab");
   const panes = manifest.surfaces.filter((surface) => surface.kind === "pane");
+  const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
   for (const tab of tabs) lines.push(`${tab.title} tab`);
   for (const pane of panes) lines.push(`${pane.title} pane`);
+  // Said on the line itself rather than as a chip somewhere else on the page:
+  // this is the reader's one preview of what installing changes, and "this tab
+  // only works on my computer" is exactly the kind of thing they should not
+  // have to go looking for.
+  for (const webview of webviews) lines.push(`${webview.title} tab — desktop only, custom UI`);
 
   const bySurface = new Map<PluginSurfaceId, number>();
   for (const socket of manifest.sockets) {

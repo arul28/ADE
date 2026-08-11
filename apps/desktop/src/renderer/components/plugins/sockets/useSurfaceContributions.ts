@@ -1,7 +1,9 @@
 import React from "react";
 
 import { showToast } from "../../app/toast/toastStore";
+import { navigateToAppTarget } from "../../../lib/openExternal";
 import { subscribeToPluginChanges } from "../../../lib/pluginRuntimeBridge";
+import { readPluginActionNavigation } from "../../../../shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import type {
   PluginContribution,
@@ -286,12 +288,27 @@ export function usePluginSocketInvoke(): (
   context: PluginSurfaceContext,
 ) => void {
   return React.useCallback((pluginId, actionId, context) => {
-    void invokePluginSocketAction(pluginId, actionId, { context }).catch((cause: unknown) => {
-      showToast({
-        title: "Plugin action failed",
-        message: cause instanceof Error ? cause.message : `${pluginId} couldn’t run ${actionId}.`,
-        tone: "error",
+    void invokePluginSocketAction(pluginId, actionId, { context })
+      .then((result) => {
+        // An action may ask to be followed: "I filed the issue, here it is."
+        // Routed through the ordinary navigation target rather than a direct
+        // `navigate`, so it passes the same installed-and-enabled gate a
+        // `plugin` deeplink does and lands on the same addressable URL.
+        const navigation = readPluginActionNavigation(result);
+        if (!navigation) return;
+        navigateToAppTarget({
+          kind: "plugin",
+          pluginId,
+          panelId: navigation.panelId,
+          context: navigation.context ?? null,
+        });
+      })
+      .catch((cause: unknown) => {
+        showToast({
+          title: "Plugin action failed",
+          message: cause instanceof Error ? cause.message : `${pluginId} couldn’t run ${actionId}.`,
+          tone: "error",
+        });
       });
-    });
   }, []);
 }

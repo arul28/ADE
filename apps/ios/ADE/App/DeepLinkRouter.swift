@@ -26,9 +26,10 @@ final class DeepLinkRouter {
   ///   * `ade://repo/<owner>/<repo>/branch/<branch>`
   ///   * `ade://pr/<owner>/<repo>/<number>`
   ///   * `ade://linear-issue/<ADE-123>[?branch=<branch>]`
+  ///   * `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]`
   ///
   /// Also accepts the web mirror used by CLI / agent handoff output:
-  /// `https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...`.
+  /// `https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|plugin>&...`.
   ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
   func handle(_ url: URL, attentionItemId: String? = nil) {
@@ -132,6 +133,19 @@ final class DeepLinkRouter {
             isValidLinearIssueBranch(url: url)
       else { return }
       routeLinearIssue(identifier: identifier, url: url)
+    case "plugin":
+      // `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]` — a panel of
+      // an installed plugin. Both ids are fatal when malformed; `ctx` is not.
+      guard pathComponents.count >= 2,
+            ADEDeepLinkURLParsing.isValidPluginId(pathComponents[0]),
+            ADEDeepLinkURLParsing.isValidPluginPanelId(pathComponents[1])
+      else { return }
+      routePluginPanel(
+        pluginId: pathComponents[0],
+        panelId: pathComponents[1],
+        context: pluginPanelContext(from: url),
+        url: url
+      )
     case "activity":
       // `ade://activity` — the lock-screen widget's fallback when nothing in
       // particular is asking for you. It opens the drawer rather than picking a
@@ -260,6 +274,17 @@ final class DeepLinkRouter {
             ADEDeepLinkURLParsing.isValidBranch(query["branch"] ?? "main")
               || query["branch"] == nil else { return true }
       routeLinearIssue(identifier: identifier, url: url)
+    case "plugin":
+      guard let pluginId = query["plugin"],
+            let panelId = query["panel"],
+            ADEDeepLinkURLParsing.isValidPluginId(pluginId),
+            ADEDeepLinkURLParsing.isValidPluginPanelId(panelId) else { return true }
+      routePluginPanel(
+        pluginId: pluginId,
+        panelId: panelId,
+        context: PluginPanelContext.read(json: query["ctx"]),
+        url: url
+      )
     default:
       break
     }
@@ -630,6 +655,60 @@ final class DeepLinkRouter {
         source: .linearIssueLink
       )
       sync.requestedLinearIssueNavigation = LinearIssueNavigationRequest(identifier: identifier)
+    }
+  }
+
+  private func pluginPanelContext(from url: URL) -> [String: RemoteJSONValue]? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+    return PluginPanelContext.read(json: ADEDeepLinkURLParsing.adeQueryValues(from: components)["ctx"])
+  }
+
+  /// A `plugin` link opens the plugin's pane, and only where the plugin exists.
+  ///
+  /// Same two-step as `routeLinearIssue`, for the same reason: with no project
+  /// open the phone has no attached machine to ask, so the link bounces to the
+  /// paired computer. With one open, the machine's own install list decides —
+  /// plugins are installed per machine, so a link one person mints is routinely
+  /// a link another person cannot open.
+  ///
+  /// A missing plugin is said out loud rather than dropped. The link has already
+  /// resolved to THIS machine, so there is no other computer to offer it to, and
+  /// a link that does nothing at all reads as a broken app.
+  private func routePluginPanel(
+    pluginId: String,
+    panelId: String,
+    context: [String: RemoteJSONValue]?,
+    url: URL
+  ) {
+    guard let sync = SyncService.shared, sync.activeProjectId != nil else {
+      postSendToMac(url: url, analyticsSource: .pluginPanelLink)
+      return
+    }
+    // Awaited rather than read: a link tapped at cold launch arrives before the
+    // machine has answered what it has installed, and the pre-answer default
+    // would make the same URL work or not by timing.
+    Task { @MainActor in
+      let label = sync.pluginPresenceCatalog().label(for: pluginId)
+      guard await sync.pluginPresenceGate.awaitInstalled(pluginId) else {
+        ProductAnalytics.shared.captureFeature(
+          .deepLink,
+          outcome: .failed,
+          source: .pluginPanelLink
+        )
+        sync.pluginLinkRefusal = PluginLinkRefusal(pluginLabel: label)
+        return
+      }
+      ProductAnalytics.shared.captureFeature(
+        .deepLink,
+        outcome: .opened,
+        source: .pluginPanelLink
+      )
+      sync.presentedPluginPane = PluginPaneRequest(
+        pluginId: pluginId,
+        panelId: panelId,
+        title: label,
+        context: context ?? [:]
+      )
     }
   }
 

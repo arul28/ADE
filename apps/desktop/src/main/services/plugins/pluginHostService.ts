@@ -27,6 +27,8 @@ import {
 import { writeTextAtomic } from "../shared/utils";
 import { isRecord } from "../../../shared/plugins/parse";
 import {
+  assertPluginCollectionKey,
+  assertPluginCollectionName,
   PluginSdkError,
   type PluginCollectionRow,
   type PluginContributionRecord,
@@ -114,6 +116,26 @@ export type PluginHostService = {
   setMachineContext(context: PluginMachineContext): void;
   /** The `plugin` action-domain service, scoped to one project (null = machine). */
   domainService(projectId: string | null): PluginDomainService;
+  /**
+   * A plugin's install directory, for an installed AND enabled plugin only.
+   *
+   * Null-returning rather than throwing: the caller is the `ade-plugin://`
+   * protocol handler, where "no such plugin" and "disabled plugin" are ordinary
+   * answers that both come out as a 404. Enabled is part of the question on
+   * purpose — disabling a plugin has to close its pages, not leave a live origin
+   * serving its files with nothing in the UI to show for it.
+   */
+  rootFor(pluginId: string): string | null;
+  /**
+   * Write one collection row on a plugin's behalf, for the webview bridge.
+   *
+   * Not a `plugin` domain action: `PLUGIN_DOMAIN_ACTIONS` is closed and mirrored
+   * by the RPC schema and iOS's allowlist, so a write action there would let any
+   * client write any plugin's rows. This is reachable only from a guest whose
+   * plugin id the host derived from its own origin, and it applies the same
+   * declared-collection rule `pluginSdkServer.ts` applies to a plugin's child.
+   */
+  writeCollection(args: { pluginId: string; collection: string; key: string; value: unknown }): void;
   /** Child pids for the resource sampler's "plugin-host" role. */
   listChildPids(): number[];
   skillRoots(): string[];
@@ -1168,6 +1190,34 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       return { detach: () => detachProject(binding.projectId) };
     },
     domainService,
+    rootFor(pluginId) {
+      const installed = installs.get(pluginId);
+      if (!installed || !installed.record.enabled) return null;
+      return installed.root;
+    },
+    writeCollection({ pluginId, collection, key, value }) {
+      const installed = requireInstalled(pluginId);
+      if (!installed.record.enabled) {
+        throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+      }
+      const declared = installed.manifest?.collections ?? {};
+      if (!Object.prototype.hasOwnProperty.call(declared, assertPluginCollectionName(collection))) {
+        throw new PluginSdkError(
+          "not_permitted",
+          `Collection "${collection}" is not declared in ${pluginId}'s manifest.`,
+        );
+      }
+      // The data store re-encodes and re-checks every budget inside its own
+      // transaction — that check is the guarantee, and this path deliberately
+      // adds none of its own so a page and a child cannot be held to different
+      // ceilings for the same row.
+      requireProject(pluginId).data.putCollection(
+        pluginId,
+        collection,
+        assertPluginCollectionKey(key),
+        value,
+      );
+    },
     listChildPids() {
       return [...supervisors.values()]
         .map((supervisor) => supervisor.pid())

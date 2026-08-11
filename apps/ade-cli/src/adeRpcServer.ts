@@ -26,7 +26,11 @@ import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistr
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
-import { PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
+import {
+  isValidPluginId,
+  isValidPluginManifestIdentifier,
+} from "../../desktop/src/shared/plugins/manifest";
+import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES, PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -5612,6 +5616,7 @@ const APP_NAVIGATE_SUPPORTED_KINDS = new Set([
   "route",
   "branch",
   "linear-issue",
+  "plugin",
 ]);
 
 export function createAdeRpcRequestHandler(args: {
@@ -5974,6 +5979,22 @@ export function createAdeRpcRequestHandler(args: {
           "app/navigate target 'linear-issue' requires issueIdentifier.",
         );
       }
+      if (kind === "plugin") {
+        // The manifest's own id rules, not a local regex: a plugin id names a
+        // directory, and this RPC is the boundary that skips the URL parser.
+        if (!isValidPluginId(asOptionalTrimmedString(target.pluginId))) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "app/navigate target 'plugin' requires a valid pluginId.",
+          );
+        }
+        if (!isValidPluginManifestIdentifier(asOptionalTrimmedString(target.panelId))) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "app/navigate target 'plugin' requires a valid panelId.",
+          );
+        }
+      }
       const normalizedTarget: Record<string, unknown> = { kind };
       const sessionId = asOptionalTrimmedString(target.sessionId);
       const laneId = asOptionalTrimmedString(target.laneId);
@@ -6041,6 +6062,27 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (kind === "route") {
         normalizedTarget.route = asOptionalTrimmedString(target.route);
+      }
+      if (kind === "plugin") {
+        normalizedTarget.pluginId = asOptionalTrimmedString(target.pluginId);
+        normalizedTarget.panelId = asOptionalTrimmedString(target.panelId);
+        // Same ceiling and same leniency as a `plugin` deeplink's `?ctx=`: an
+        // oversized or unserializable context is dropped and the panel still
+        // opens, because the context is a hint about what to look at.
+        const context = safeObject(target.context);
+        let contextJson: string | undefined;
+        try {
+          contextJson = JSON.stringify(context);
+        } catch {
+          contextJson = undefined;
+        }
+        if (
+          contextJson
+          && contextJson !== "{}"
+          && Buffer.byteLength(contextJson, "utf8") <= PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES
+        ) {
+          normalizedTarget.context = context;
+        }
       }
       const request = {
         target: normalizedTarget,

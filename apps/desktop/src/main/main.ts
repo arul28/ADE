@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, session, shell } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -283,6 +283,16 @@ import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
+import {
+  parsePluginWebviewUrl,
+  pluginWebviewPartition,
+  PLUGIN_WEBVIEW_PROTOCOL,
+} from "../shared/plugins/webviewBridge";
+import {
+  createInstalledPluginRootResolver,
+  registerPluginWebviewProtocol,
+} from "./services/plugins/pluginWebviewProtocol";
+import { registerPluginWebviewGuest } from "./services/plugins/pluginWebviewGuests";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
@@ -636,6 +646,33 @@ function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
   return isAllowedAdeBrowserWebviewNavigation(src);
 }
 
+/**
+ * Which plugins have an origin on this machine.
+ *
+ * Read from the machine install registry rather than from a plugin host: the
+ * host is a daemon-side singleton (D2) and this process never builds one, so
+ * `ctx.pluginHostService` is null here. Same file, same answer — see
+ * `createInstalledPluginRootResolver`.
+ */
+const resolvePluginWebviewRoot = createInstalledPluginRootResolver();
+
+/**
+ * Make `ade-plugin://` resolve inside the partition a plugin's guests use.
+ *
+ * `protocol.handle` on the global import only ever serves the DEFAULT session,
+ * and a plugin guest deliberately runs in its own non-persistent partition — so
+ * without this every request from the guest fails at the network layer while
+ * the same URL would have loaded in a window. Idempotent, and called at attach
+ * because that is the first moment this process knows a partition will be used.
+ */
+function ensurePluginWebviewProtocol(pluginId: string, logger?: Logger): void {
+  const partition = pluginWebviewPartition(pluginId);
+  registerPluginWebviewProtocol(partition, session.fromPartition(partition), {
+    resolvePluginRoot: resolvePluginWebviewRoot,
+    log: (event, fields) => logger?.debug(event, fields),
+  });
+}
+
 // Stricter check used for post-attach navigation: rejects empty/about:blank/file:/data:/blob:
 // so a compromised renderer can't attach a blank webview and then loadURL anywhere.
 function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
@@ -710,8 +747,48 @@ async function createWindow(args: {
   args.onCreated?.(win);
   installEditableContextMenu(win);
 
+  /**
+   * The plugin id each pending attach belongs to, in attach order.
+   *
+   * `will-attach-webview` knows the source URL; `did-attach-webview` knows the
+   * `webContents`. Neither knows both, and a guest has loaded nothing by the
+   * time it is attached, so its URL cannot be re-read there. The two events are
+   * strictly paired and sequential per window — an attach that is
+   * `preventDefault()`ed never reaches the second — so a FIFO queue joins them.
+   * `null` marks an ordinary browser guest, which keeps the queue aligned.
+   */
+  const pendingPluginAttaches: (string | null)[] = [];
+
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
+    // The plugin arm runs FIRST: the browser allowlist below accepts only
+    // http(s), so an `ade-plugin://` src would be refused before it was ever
+    // recognized as a plugin page.
+    const pluginSource = parsePluginWebviewUrl(src);
+    if (pluginSource) {
+      if (!resolvePluginWebviewRoot(pluginSource.pluginId)) {
+        event.preventDefault();
+        args.logger?.warn("window.plugin_webview_blocked", { src, pluginId: pluginSource.pluginId });
+        return;
+      }
+      ensurePluginWebviewProtocol(pluginSource.pluginId, args.logger);
+      // Set, not deleted: this is the one webview in the app that gets a
+      // preload, and it publishes `adePlugin` and nothing else. `preloadURL` is
+      // an attribute the renderer controls, so it is still dropped.
+      delete (webPreferences as Record<string, unknown>).preloadURL;
+      webPreferences.preload = path.join(__dirname, "../preload/pluginWebviewPreload.cjs");
+      webPreferences.partition = pluginWebviewPartition(pluginSource.pluginId);
+      webPreferences.nodeIntegration = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      webPreferences.webSecurity = true;
+      webPreferences.nodeIntegrationInSubFrames = false;
+      webPreferences.webviewTag = false;
+      webPreferences.plugins = false;
+      webPreferences.experimentalFeatures = false;
+      pendingPluginAttaches.push(pluginSource.pluginId);
+      return;
+    }
     if (!isAllowedAdeBrowserWebviewSource(src)) {
       event.preventDefault();
       args.logger?.warn("window.webview_blocked", { src });
@@ -724,6 +801,7 @@ async function createWindow(args: {
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
     webPreferences.webSecurity = true;
+    pendingPluginAttaches.push(null);
   });
 
   // Enforce the same allowlist on post-attach navigation. about:blank/empty src is
@@ -732,6 +810,46 @@ async function createWindow(args: {
   // afterward. The setWindowOpenHandler('deny') below also blocks new windows from
   // the attached webview.
   win.webContents.on("did-attach-webview", (_event, attachedWc) => {
+    const attachedPluginId = pendingPluginAttaches.shift() ?? null;
+    if (attachedPluginId) {
+      const forget = registerPluginWebviewGuest({
+        webContentsId: attachedWc.id,
+        pluginId: attachedPluginId,
+        hostWindowId: win.id,
+        send: (channel, payload) => {
+          if (attachedWc.isDestroyed()) return;
+          attachedWc.send(channel, payload);
+        },
+      });
+      attachedWc.on("destroyed", forget);
+      win.once("closed", forget);
+      // A link in a plugin page goes to the user's real browser or nowhere. A
+      // new guest window would be a second plugin surface with no chrome, no
+      // way back, and no place in the rail.
+      attachedWc.setWindowOpenHandler(({ url }) => {
+        void openExternalUrl(url).catch(() => {
+          args.logger?.warn("window.plugin_webview_open_failed", { pluginId: attachedPluginId, url });
+        });
+        return { action: "deny" };
+      });
+      const stayInsidePlugin = (navEvent: Electron.Event, url: string): void => {
+        // Judged by the shared parser rather than by a string prefix: `origin +
+        // "/"` would refuse the origin itself and accept a plugin id that merely
+        // starts with this one.
+        if (parsePluginWebviewUrl(url)?.pluginId === attachedPluginId) return;
+        navEvent.preventDefault();
+        args.logger?.warn("window.plugin_webview_navigation_blocked", { pluginId: attachedPluginId, url });
+        // An https link the page navigated to itself is still a link the user
+        // clicked, so it opens where links open. Everything else — `file:`,
+        // another plugin's origin, `data:` — is simply refused.
+        if (url.startsWith("https://") || url.startsWith("http://")) {
+          void openExternalUrl(url).catch(() => {});
+        }
+      };
+      attachedWc.on("will-navigate", stayInsidePlugin);
+      attachedWc.on("will-redirect", stayInsidePlugin);
+      return;
+    }
     attachedWc.setWindowOpenHandler(() => ({ action: "deny" }));
     attachedWc.on("will-navigate", (navEvent, url) => {
       // Allow same-page navigations to about:blank only as the initial state; any
@@ -1029,6 +1147,15 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: "ade-artifact",
     privileges: { standard: false, supportFetchAPI: true, stream: true },
+  },
+  {
+    // A plugin page's origin. `standard` is what makes it ONE — without it the
+    // guest is an opaque origin, `'self'` in the plugin CSP matches nothing, and
+    // same-origin storage is unavailable to the page. `secure` puts it on the
+    // same footing as https for the features a modern page expects, and CORS
+    // stays off because nothing outside the guest is meant to fetch from here.
+    scheme: PLUGIN_WEBVIEW_PROTOCOL,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false, stream: true },
   },
 ]);
 

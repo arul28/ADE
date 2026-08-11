@@ -26,6 +26,12 @@ enum PluginVocabulary {
   /// Bumped only for a change older clients cannot safely interpret. A panel
   /// declaring a higher version gets the "Update ADE" fallback, not a guess.
   static let version = 1
+
+  /// The reserved pseudo-collection a panel binds to read the context it was
+  /// opened with (`VOCAB_CONTEXT_COLLECTION`). It is ADE's, not the plugin's:
+  /// the leading `$` is illegal in a collection name, so no real collection can
+  /// shadow it and a bound node never has to guess which one it meant.
+  static let contextCollection = "$context"
 }
 
 /// Narrow a schema-supplied `Double` to an `Int`, or nothing.

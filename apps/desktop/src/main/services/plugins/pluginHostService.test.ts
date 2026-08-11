@@ -554,14 +554,22 @@ describe("install failure and race handling (R5, R6)", () => {
   afterEach(closeScratch);
 
   it("reconciles a plugin back up when its install fails after the old child already stopped (R5)", async () => {
-    const { plugins, supervisors } = await hostWithFixture();
+    const { plugins, pluginsRoot, supervisors } = await hostWithFixture();
     expect(supervisors.latest("hello-plugin")?.status()).toBe("running");
 
     // `beforeReplace` has already stopped the running child by the time the
     // rename itself fails — nothing in `pluginInstallService` knows how to
     // restart a plugin; only `reconcile` (via the host's catch) does.
-    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
-      throw new Error("simulated rename failure");
+    //
+    // Targeted at THIS install root rather than at the next rename to happen:
+    // an install also refreshes the machine's registry index cache, which is
+    // written atomically, and a bare `mockImplementationOnce` failed that write
+    // instead — where it is caught and ignored — leaving the real rename to
+    // succeed and the test asserting a rejection that never came.
+    const realRename = fs.renameSync;
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).startsWith(pluginsRoot)) throw new Error("simulated rename failure");
+      realRename(from, to);
     });
     try {
       await expect(plugins.install({ source: fixtureRoot })).rejects.toThrow(/simulated rename failure/);

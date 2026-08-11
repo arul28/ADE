@@ -39,6 +39,7 @@ type OpenTarget =
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issue: string; branch?: string }
+  | { kind: "plugin"; plugin: string; panel: string }
   | { kind: "unknown" };
 
 const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
@@ -137,6 +138,13 @@ function parseTarget(query: VercelQuery): OpenTarget {
       return branch ? { kind: "linear-issue", issue, branch } : { kind: "linear-issue", issue };
     }
   }
+  if (type === "plugin") {
+    const plugin = pickQuery(query.plugin);
+    const panel = pickQuery(query.panel);
+    // `ctx` is deliberately not read: it is the panel's render context, and this
+    // function only writes the unfurl card.
+    if (plugin && panel) return { kind: "plugin", plugin, panel };
+  }
   return { kind: "unknown" };
 }
 
@@ -189,6 +197,11 @@ function describe(target: OpenTarget): { title: string; description: string } {
         description: target.branch
           ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in ADE.`
           : `Open Linear issue ${target.issue} in ADE.`,
+      };
+    case "plugin":
+      return {
+        title: `${target.plugin} — Open in ADE`,
+        description: `Open the ${target.panel} panel of the ${target.plugin} plugin in ADE. You need the plugin installed on that computer.`,
       };
     case "unknown":
       return {

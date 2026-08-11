@@ -145,12 +145,33 @@ struct ContentView: View {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
-      // `item:` rather than a bool: which plugin is showing is part of the
-      // presentation, and a bool would keep the previous pane's store alive
-      // when one plugin's panel deeplinks to another's.
+      // `item:` rather than a bool: which plugin AND which panel is showing is
+      // part of the presentation, and a bool would keep the previous pane's
+      // store — its panel and the context it was opened with — alive when a
+      // link lands on a different one.
       .sheet(item: $syncService.presentedPluginPane) { request in
         PluginPaneSheet(request: request, syncService: syncService)
           .environmentObject(syncService)
+          // The identity has to reach the view, not only the binding: a sheet
+          // whose item changes while it is up keeps its position in the view
+          // tree, and with it the `@StateObject` store built for the previous
+          // request. `.id` is what retires that store.
+          .id(request.id)
+      }
+      // A plugin link the attached machine cannot serve. Said plainly, in the
+      // plugin's own name, because the link resolved to that machine and there
+      // is no second computer to hand it to.
+      .alert(
+        "Not installed",
+        isPresented: Binding(
+          get: { syncService.pluginLinkRefusal != nil },
+          set: { if !$0 { syncService.pluginLinkRefusal = nil } }
+        ),
+        presenting: syncService.pluginLinkRefusal
+      ) { _ in
+        Button("OK", role: .cancel) { syncService.pluginLinkRefusal = nil }
+      } message: { refusal in
+        Text("\(refusal.pluginLabel) isn't on your computer, so this link has nothing to open.")
       }
       .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
         Button("Don't share", role: .cancel) {

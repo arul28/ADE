@@ -97,20 +97,33 @@ struct PluginRowMenuItems: View {
 }
 
 extension SyncService {
-  /// Dispatch a row's plugin menu item. Fire-and-forget: a context menu has
-  /// already dismissed by the time the call resolves, so there is nowhere to
-  /// show a spinner and the outcome would land on a surface the user has left.
+  /// Dispatch a row's plugin menu item. Fire-and-forget for its OUTCOME: a
+  /// context menu has already dismissed by the time the call resolves, so there
+  /// is nowhere to show a spinner and a success line would land on a surface the
+  /// user has left.
+  ///
+  /// A `navigate` is the exception, and the only one. It is not a report on what
+  /// happened — it is the rest of the interaction the user started, so it opens
+  /// the pane on the panel the plugin sent them to.
   func invokeRowContribution(_ contribution: PluginContribution) {
     guard let item = contribution.menuItem else { return }
     ADEHaptics.light()
     Task { [weak self] in
-      try? await self?.invokePluginAction(
+      guard let self else { return }
+      let result = try? await self.invokePluginAction(
         pluginId: contribution.pluginId,
         actionId: item.actionId,
         payload: [
           "entityKind": contribution.entityKind.rawValue,
           "entityId": contribution.entityId,
         ]
+      )
+      guard let navigation = result?.navigate else { return }
+      self.presentedPluginPane = PluginPaneRequest(
+        pluginId: contribution.pluginId,
+        panelId: navigation.panelId,
+        title: self.pluginPresenceCatalog().label(for: contribution.pluginId),
+        context: navigation.context ?? [:]
       )
     }
   }

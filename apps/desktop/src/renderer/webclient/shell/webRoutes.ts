@@ -47,8 +47,21 @@ export function parseOpenTarget(searchOrUrl: string): DeeplinkTarget | null {
   return result.ok ? result.target : null;
 }
 
-/** Map a deeplink target to the shared App route that renders it. */
-export function targetToWebPath(target: DeeplinkTarget): string {
+/**
+ * Map a deeplink target to the shared App route that renders it, or null when
+ * this client has no route for it.
+ *
+ * Null is a real answer, not a failure to write a case. A plugin panel is the
+ * one target the hosted client may genuinely be unable to draw: `/plugin/:id`
+ * is deliberately absent from the shell's `APP_ROUTE_ROOTS` because a plugin tab
+ * is gated on a host capability the shell cannot probe before the adapter is up
+ * (`pluginTabsAvailable` in `renderer/lib/webClientMode.ts`). Answering with a
+ * plausible-looking route would land the reader on the Marketplace or an empty
+ * shell and call it success; answering null lets each caller degrade where the
+ * user can see it — a boot falls back to its welcome surface, an Activity click
+ * navigates in place instead of opening a dead tab.
+ */
+export function targetToWebPath(target: DeeplinkTarget): string | null {
   const params = new URLSearchParams();
   switch (target.kind) {
     case "lane":
@@ -91,6 +104,8 @@ export function targetToWebPath(target: DeeplinkTarget): string {
       params.set("linearIssue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
       return withQuery("/work", params);
+    case "plugin":
+      return null;
   }
 }
 
@@ -101,12 +116,15 @@ export function targetToWebPath(target: DeeplinkTarget): string {
  * SECOND tab needs a whole URL. The new tab boots the shell fresh, which
  * re-reads the route through `parseWebPath` and restores the machine/project
  * the first tab just connected — so the target survives the hop.
+ *
+ * Null for the same reason `targetToWebPath` is: there is no URL to open.
  */
 export function targetToWebUrl(
   target: DeeplinkTarget,
   origin: string | null = typeof window === "undefined" ? null : window.location.origin,
-): string {
+): string | null {
   const path = targetToWebPath(target);
+  if (path == null) return null;
   if (!origin) return path;
   try {
     return new URL(path, origin).toString();

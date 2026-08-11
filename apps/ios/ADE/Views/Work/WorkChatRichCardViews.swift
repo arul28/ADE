@@ -3922,6 +3922,11 @@ func workAdeCardDeeplink(_ target: WorkAdeCardNavTarget?) -> URL? {
       base: "ade://linear-issue/\(ADEDeepLinkURLParsing.encodedPathSegment(issueIdentifier))",
       items: [("branch", branch)]
     )
+  case .plugin(let pluginId, let panelId, let context):
+    string = workAdeCardURLString(
+      base: "ade://plugin/\(ADEDeepLinkURLParsing.encodedPathSegment(pluginId))/\(ADEDeepLinkURLParsing.encodedPathSegment(panelId))",
+      items: [("ctx", context.flatMap(PluginPanelContext.json))]
+    )
   }
   return URL(string: string)
 }
@@ -3943,6 +3948,9 @@ func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
   case .pr(_, _, let prNumber, _): return "#\(prNumber)"
   case .branch(_, _, let branch, _): return branch
   case .linearIssue(let identifier, _): return identifier
+  // The panel, not the plugin: the card sits next to a sentence that already
+  // said which plugin is talking.
+  case .plugin(_, let panelId, _): return panelId
   }
 }
 

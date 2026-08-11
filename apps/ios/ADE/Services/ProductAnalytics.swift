@@ -89,6 +89,7 @@ enum ADEAnalyticsSource: String, CaseIterable {
   case sessionLink = "session_link"
   case pullRequestLink = "pull_request_link"
   case linearIssueLink = "linear_issue_link"
+  case pluginPanelLink = "plugin_panel_link"
   case sendToMacLink = "send_to_mac_link"
   case notification
   case notificationApprove = "notification_approve"

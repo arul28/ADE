@@ -98,6 +98,26 @@ describe("copy ADE deeplink keybinding", () => {
     expect(buildWebClientUrlForRow(row)).toBe("https://app.ade-app.dev/open?type=pr&repo=anthropics%2Fade&number=42");
   });
 
+  it("builds the ade:// deeplink for a focused plugin panel, context and all", () => {
+    const row: DeeplinkRow = { kind: "plugin", pluginId: "ade-graph", panelId: "overview" };
+    expect(buildDeeplinkForRow(row)).toBe("ade://plugin/ade-graph/overview");
+    expect(
+      buildDeeplinkForRow({ ...row, context: { issue: "ISS-14" } }),
+    ).toBe("ade://plugin/ade-graph/overview?ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
+  });
+
+  it("has no hosted web link for a plugin panel", () => {
+    // Plugin tabs are a desktop surface; a web link would land on the welcome
+    // screen, so the row deliberately mints only the ade:// form.
+    const row: DeeplinkRow = { kind: "plugin", pluginId: "ade-graph", panelId: "overview" };
+    expect(buildWebClientUrlForRow(row)).toBeNull();
+  });
+
+  it("returns null for plugin or panel ids the grammar will not carry", () => {
+    expect(buildDeeplinkForRow({ kind: "plugin", pluginId: "Ade Graph", panelId: "overview" })).toBeNull();
+    expect(buildDeeplinkForRow({ kind: "plugin", pluginId: "ade-graph", panelId: "" })).toBeNull();
+  });
+
   it("returns null when the PR row has no URL and no owner/repo", () => {
     const row: DeeplinkRow = {
       kind: "pr",

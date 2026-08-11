@@ -190,6 +190,48 @@ describe("ade link", () => {
       CliDeeplinkUsageError,
     );
   });
+
+  it("emits a plugin panel link in both forms", () => {
+    const https = runLinkCommand(["plugin", "ade-graph", "overview", "--no-clipboard"]);
+    expect(https.output).toContain("type=plugin");
+    expect(https.output).toContain("plugin=ade-graph");
+    expect(https.output).toContain("panel=overview");
+    const ade = runLinkCommand(["plugin", "ade-graph", "overview", "--ade", "--no-clipboard"]);
+    expect(ade.output).toContain("ade://plugin/ade-graph/overview");
+  });
+
+  it("carries --ctx through as the panel's context", () => {
+    const r = runLinkCommand([
+      "plugin",
+      "ade-graph",
+      "overview",
+      "--ctx",
+      '{"issue":"ISS-14"}',
+      "--ade",
+      "--no-clipboard",
+    ]);
+    expect(r.output).toContain("ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
+  });
+
+  it("refuses a --ctx that is not a JSON object", () => {
+    expect(() => runLinkCommand(["plugin", "ade-graph", "overview", "--ctx", "nope"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["plugin", "ade-graph", "overview", "--ctx", "[1,2]"]))
+      .toThrow(CliDeeplinkUsageError);
+  });
+
+  it("refuses a --ctx over the 2 KiB ceiling instead of dropping it silently", () => {
+    const oversized = JSON.stringify({ blob: "x".repeat(3000) });
+    expect(() => runLinkCommand(["plugin", "ade-graph", "overview", "--ctx", oversized]))
+      .toThrow(CliDeeplinkUsageError);
+  });
+
+  it("refuses plugin or panel ids the shared parser would reject", () => {
+    expect(() => runLinkCommand(["plugin", "Ade Graph", "overview", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["plugin", "ade-graph", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+  });
 });
 
 describe("ade linear install", () => {

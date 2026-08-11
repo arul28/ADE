@@ -186,6 +186,19 @@ private func workAdeCardNavTarget(from value: Any?) -> WorkAdeCardNavTarget? {
   case "linear-issue":
     guard let identifier = optionalString(dict["issueIdentifier"]) else { return nil }
     return .linearIssue(issueIdentifier: identifier, branch: optionalString(dict["branch"]))
+  case "plugin":
+    guard let pluginId = optionalString(dict["pluginId"]),
+          let panelId = optionalString(dict["panelId"]),
+          ADEDeepLinkURLParsing.isValidPluginId(pluginId),
+          ADEDeepLinkURLParsing.isValidPluginPanelId(panelId)
+    else {
+      return nil
+    }
+    return .plugin(
+      pluginId: pluginId,
+      panelId: panelId,
+      context: PluginPanelContext.read(object: dict["context"])
+    )
   default:
     return nil
   }

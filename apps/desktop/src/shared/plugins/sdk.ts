@@ -29,7 +29,9 @@
  * for it, and the data-owning machine computes every contribution.
  */
 
-import type { PluginManifest, PluginManifestSetting } from "./manifest";
+import { isRecord } from "./parse";
+import { isValidPluginManifestIdentifier } from "./manifest";
+import type { PluginManifest, PluginManifestSetting, PluginSurfaceKind } from "./manifest";
 import type { PluginRegistryEntry } from "./registryIndex";
 import type { PluginEntityKind, PluginSocketKind, PluginSurfaceId } from "./sockets";
 
@@ -271,6 +273,71 @@ export type AdePluginSdk = {
   log(level: PluginLogLevel, message: string, fields?: Record<string, unknown>): void;
 };
 
+// ---------------------------------------------------------------------------
+// Action-response navigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest `context` an action may hand to the surface it navigates to.
+ *
+ * Small on purpose. This is a pointer — "the issue you just filed is ISS-14" —
+ * not a payload: the panel it lands on reads the plugin's own collections for
+ * everything else, and a context big enough to carry a page would become a
+ * second, unversioned data channel that no budget accounts for. It is also the
+ * cap on a `plugin` deeplink's `?ctx=`, because the two are the same value
+ * arriving by different routes and a link that a plugin could not have minted
+ * itself would be a strange thing to honour.
+ */
+export const PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES = 2 * 1024;
+
+/**
+ * Where a plugin action asks the client to go when it finishes.
+ *
+ * The one piece of control flow a plugin has over ADE's own navigation, and it
+ * is deliberately a request rather than a command: it names a panel of the
+ * plugin's OWN surface, so the worst a malicious or broken value can do is show
+ * the wrong page of the plugin the user just pressed a button in.
+ */
+export type PluginActionNavigation = {
+  /** A panel of the same plugin. Anything else is dropped by the reader. */
+  panelId: string;
+  /**
+   * Handed to the destination panel as its render context: available to the
+   * panel's schema through the `$context` binding, and attached to every action
+   * that panel then dispatches. See `./vocabulary.ts`.
+   */
+  context?: Record<string, unknown>;
+};
+
+/**
+ * Read a navigation request out of whatever an action returned.
+ *
+ * Tolerant by design — an action's return value is the plugin's own shape and
+ * most of them carry no navigation at all, so anything unrecognizable is
+ * `null`, never an error. Validating here rather than at each of the four call
+ * sites (panel button, socket invoke, iOS sheet, TUI pane) is what keeps the
+ * ceiling and the panel-id rule from drifting apart between them.
+ */
+export function readPluginActionNavigation(result: unknown): PluginActionNavigation | null {
+  if (!isRecord(result)) return null;
+  const navigate = result.navigate;
+  if (!isRecord(navigate)) return null;
+  const panelId = navigate.panelId;
+  if (typeof panelId !== "string" || !isValidPluginManifestIdentifier(panelId)) return null;
+  const context = navigate.context;
+  if (!isRecord(context)) return { panelId };
+  let json: string;
+  try {
+    json = JSON.stringify(context) ?? "";
+  } catch {
+    return { panelId };
+  }
+  // Over the ceiling drops the context and keeps the navigation: the user
+  // pressed a button and should still land where it sent them.
+  if (!json || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return { panelId };
+  return { panelId, context };
+}
+
 /**
  * What a plugin's entry module may export. Both hooks are optional: a plugin
  * that only registers CLI commands and panels needs neither.
@@ -413,6 +480,13 @@ export type PluginSummary = {
      * prove is owned.
      */
     builtin?: string;
+    /**
+     * `webview` surfaces only: the plugin-relative HTML the desktop guest loads.
+     * Absent everywhere else, and absent from a host too old to report it —
+     * which is why its absence means "render the panel", the answer that is
+     * already correct on every surface that cannot host a webview.
+     */
+    entryHtml?: string;
   }[];
   /** Present only for theme plugins; the renderer's theme engine consumes it. */
   theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
@@ -783,11 +857,20 @@ export type PluginClientRuntimeStatus = "running" | "starting" | "stopped" | "cr
 /** Token sets a theme plugin may set, per built-in base theme. */
 export type PluginClientThemeTokens = Partial<Record<"dark" | "light", Record<string, string>>>;
 
-/** One `{"kind":"tab"}` surface, flattened for the rail. */
+/** One `tab` or `webview` surface, flattened for the rail. */
 export type PluginClientTabDescriptor = {
   id: string;
   title: string;
+  /**
+   * How the desktop draws this tab. Absent means `"tab"`: a host that predates
+   * the webview tier reports no kind, and a panel is what it was already
+   * sending. Every other client ignores this and renders the panel regardless —
+   * that is the whole cross-surface fallback.
+   */
+  kind?: PluginSurfaceKind;
   panelId: string;
+  /** `webview` only: plugin-relative HTML served over `ade-plugin://`. */
+  entryHtml?: string | null;
   /** Phosphor icon name; resolved through `pluginIcons.ts`, never rendered raw. */
   icon?: string | null;
   /**

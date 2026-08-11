@@ -824,6 +824,19 @@ private func makeWorkAdeCardNavTarget(from target: AgentChatAdeCardNavTarget?) -
   case "linear-issue":
     guard let identifier = target.issueIdentifier, !identifier.isEmpty else { return nil }
     return .linearIssue(issueIdentifier: identifier, branch: target.branch)
+  case "plugin":
+    guard ADEDeepLinkURLParsing.isValidPluginId(target.pluginId),
+          ADEDeepLinkURLParsing.isValidPluginPanelId(target.panelId),
+          let pluginId = target.pluginId,
+          let panelId = target.panelId
+    else {
+      return nil
+    }
+    return .plugin(
+      pluginId: pluginId,
+      panelId: panelId,
+      context: target.context.flatMap { PluginPanelContext.read(value: .object($0)) }
+    )
   default:
     // `route` / `files-external` and anything a newer host invents have no URL
     // form: the card keeps its fallback text, just without a link.

@@ -155,6 +155,96 @@ describe("parsePluginManifest", () => {
   });
 });
 
+describe("webview surfaces", () => {
+  const webviewSurface = (overrides: Record<string, unknown> = {}) => validManifest({
+    surfaces: [{
+      kind: "webview",
+      id: "board",
+      title: "Board",
+      panelId: "main",
+      entryHtml: "web/index.html",
+      ...overrides,
+    }],
+  });
+
+  it("parses a webview surface with its entry page", () => {
+    const result = parsePluginManifest(webviewSurface());
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.manifest!.surfaces[0]).toMatchObject({
+      kind: "webview",
+      entryHtml: "web/index.html",
+      panelId: "main",
+    });
+  });
+
+  // The whole cross-surface promise rests on this: every webview names the
+  // panel iOS, the web client and the TUI render in its place.
+  it("drops a webview surface that names no panel", () => {
+    const result = parsePluginManifest(webviewSurface({ panelId: undefined }));
+    expect(result.manifest!.surfaces).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/panelId is missing/);
+  });
+
+  it("drops a webview surface with no entry page", () => {
+    const result = parsePluginManifest(webviewSurface({ entryHtml: undefined }));
+    expect(result.manifest!.surfaces).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/entryHtml must be a relative path/);
+  });
+
+  it.each([
+    ["traversal", "../../etc/passwd"],
+    ["absolute", "/etc/passwd"],
+    ["backslash", "web\\index.html"],
+    ["nested traversal", "web/../../secrets.html"],
+  ])("refuses an entry page that escapes the plugin (%s)", (_label, entryHtml) => {
+    const result = parsePluginManifest(webviewSurface({ entryHtml }));
+    expect(result.manifest!.surfaces).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/entryHtml must be a relative path/);
+  });
+
+  // A page is a document, not a script or a binary: the protocol serves what the
+  // manifest names, so the extension is where that is settled.
+  it("refuses an entry page that is not HTML", () => {
+    const result = parsePluginManifest(webviewSurface({ entryHtml: "web/index.js" }));
+    expect(result.manifest!.surfaces).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/must name an \.html file/);
+  });
+
+  it("ignores entryHtml on a surface that is not a webview", () => {
+    const result = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "main", entryHtml: "web/index.html" }],
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.manifest!.surfaces[0]).not.toHaveProperty("entryHtml");
+    expect(result.warnings.join(" ")).toMatch(/applies only to a "webview" surface/);
+  });
+
+  it("refuses to let a webview surface also gate a compiled tab", () => {
+    const result = parsePluginManifest(validManifest({
+      official: true,
+      surfaces: [{
+        kind: "webview",
+        id: "board",
+        title: "Board",
+        panelId: "main",
+        entryHtml: "web/index.html",
+        builtin: "graph",
+      }],
+    }));
+    expect(result.manifest!.surfaces[0]).not.toHaveProperty("builtin");
+    expect(result.warnings.join(" ")).toMatch(/cannot be combined with a "webview" surface/);
+  });
+
+  it("refuses a surface kind it does not know", () => {
+    const result = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "overlay", id: "x", title: "X", panelId: "main" }],
+    }));
+    expect(result.manifest!.surfaces).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/kind must be "tab", "pane" or "webview"/);
+  });
+});
+
 describe("isPluginSupportedByAdeVersion", () => {
   it("compares against the declared floor", () => {
     const manifest = parsePluginManifest(validManifest({ minAdeVersion: "1.3.0" })).manifest!;

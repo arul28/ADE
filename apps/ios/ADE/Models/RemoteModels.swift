@@ -2474,6 +2474,9 @@ struct AgentChatAdeCardNavTarget: Decodable, Equatable {
   var detailTab: String?
   var branch: String?
   var issueIdentifier: String?
+  var pluginId: String?
+  var panelId: String?
+  var context: [String: RemoteJSONValue]?
 }
 
 extension AgentChatEvent {

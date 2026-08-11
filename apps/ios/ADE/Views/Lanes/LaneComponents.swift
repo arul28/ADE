@@ -66,13 +66,23 @@ struct LaneOpenChip: View {
 
 // MARK: - Linear issue
 
+/// Gated on the Linear plugin like every other Linear affordance: the badge
+/// opens the issue, which is the same access the Work menu's Linear link row
+/// offers, and a machine without the plugin should not have either.
 struct LaneLinearIssueBadge: View {
   @Environment(\.openURL) private var openURL
+  @EnvironmentObject private var pluginGate: PluginPresenceGate
 
   let issue: LaneLinearIssue
   var compact = false
 
   var body: some View {
+    if pluginGate.owns(.linear) {
+      badge
+    }
+  }
+
+  private var badge: some View {
     Button {
       if let urlString = issue.url,
          let url = URL(string: urlString),

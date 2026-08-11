@@ -9,12 +9,18 @@ A plugin is a git-repo folder with a `plugin.json` at its root. It installs to
 else:
 
 - **Code runs only on the machine that owns the plugin**, in a supervised Node
-  child process. There is no remote execution path and no webview tier.
+  child process. There is no remote execution path.
 - **UI is declarative data, never code.** A plugin ships a versioned JSON *panel
   schema*; desktop, web, iOS, and the `ade code` TUI each interpret that same
   JSON with their own native widgets. One plugin therefore works across four
   independent release trains (desktop auto-update, App Store review, npm, web)
   without shipping anything executable to three of them.
+
+There is one deliberate exception to the second rule: a **`webview` surface**
+renders the plugin's own HTML page in a sandboxed guest, on the desktop only. It
+still declares a panel, and that panel is what every other client shows in its
+place — so the escape hatch costs a platform, never a blank space. See
+[The webview tier](#the-webview-tier).
 
 ## Source file map
 
@@ -24,11 +30,13 @@ Node built-ins:
 
 | File | Responsibility |
 |---|---|
-| `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate |
-| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel` |
+| `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
+| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, the reserved `$context` binding (`VOCAB_CONTEXT_COLLECTION`, `vocabContextRows`) |
+| `apps/desktop/src/shared/plugins/webviewBridge.ts` | The `window.adePlugin` contract: bridge version, the `ade-plugin://` origin and per-plugin partition, `PLUGIN_WEBVIEW_CSP`, the closed method list |
 | `apps/desktop/src/shared/plugins/sockets.ts` | Socket kinds, surface ids, entity kinds, per-kind payload validation, deterministic placement ordering, row-badge overflow split |
 | `apps/desktop/src/shared/plugins/context.ts` | Read-only surface contexts (`pr`, `lane`, `session`, `file`, `surface`) and their contribution keys |
-| `apps/desktop/src/shared/plugins/sdk.ts` | SDK v0 surface, budgets, error codes, NDJSON child frames, install-registry records, the `plugin` action domain |
+| `apps/desktop/src/shared/plugins/sdk.ts` | SDK v0 surface, budgets, error codes, NDJSON child frames, install-registry records, the `plugin` action domain, action-response navigation (`readPluginActionNavigation`, `PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES`) |
+| `apps/desktop/src/shared/deeplinks.ts` | The `plugin` deeplink target (`ade://plugin/<plugin-id>/<panel-id>[?ctx=…]`) and its lenient `ctx` reader |
 | `apps/desktop/src/shared/plugins/registryIndex.ts` | Marketplace index contract and checksum verification |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Registers the bundled `ade-plugins` authoring skill |
 
@@ -44,6 +52,10 @@ Host (daemon / main process):
 | `apps/desktop/src/main/services/plugins/pluginDataStore.ts` | Collections/contributions/panels reads and writes; delegates budget enforcement |
 | `apps/desktop/src/main/services/plugins/pluginSecretStore.ts` | `plugin:<id>:<NAME>` namespace in the machine credential store |
 | `apps/desktop/src/main/services/plugins/pluginEvents.ts` | Debounced `lane/pr/session/install.changed` fan-out to children |
+| `apps/desktop/src/main/services/plugins/pluginWebviewProtocol.ts` | Serves `ade-plugin://<pluginId>/…` from the install directory: containment, directory rule, closed MIME map, CSP + `nosniff` on every response including refusals |
+| `apps/desktop/src/main/services/plugins/pluginWebviewBridgeServer.ts` | The host half of `window.adePlugin`: sender-pinned plugin id, the declared-collection rule, the write path that bypasses the action domain |
+| `apps/desktop/src/main/services/plugins/pluginWebviewGuests.ts` | Which attached guests are plugin pages, and whose |
+| `apps/desktop/src/preload/pluginWebviewPreload.ts` | The guest-side preload that publishes `window.adePlugin` and nothing else |
 | `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | Budget constants and the prune/reject pass |
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | `.ade/plugins/` and `plugin_collections` storage accounting |
 
@@ -71,6 +83,7 @@ Renderer (desktop and web share this code):
 | `apps/desktop/src/renderer/components/plugins/PluginInstallDialog.tsx`, `PluginConfigForm.tsx`, `PluginThemePreview.tsx` | Install, settings, theme preview/apply |
 | `apps/desktop/src/renderer/components/plugins/marketplaceLocalIndex.ts` | Bundled offline index so the Marketplace works before a live registry exists |
 | `apps/desktop/src/renderer/lib/pluginRuntimeBridge.ts` | `window.ade.plugins` bridge |
+| `apps/desktop/src/renderer/components/app/pluginDeeplinkRoute.ts` | Where an `ade://plugin/…` link goes: the same hide-everything gate the compiled surfaces use, or a plain refusal |
 | `apps/desktop/src/renderer/components/chat/PluginInstallChatCard.tsx` | The `plugin_install` `ade_card` variant for agent-built install flows |
 
 iOS and TUI:
@@ -201,6 +214,88 @@ actions name a plugin action id. There are no expressions, no conditionals, and
 no host callbacks — anything a plugin wants computed, it computes on its own
 machine and stores as data.
 
+### Context and navigation
+
+A panel can arrive carrying a small object — its *render context*. It reaches
+the panel two ways, and they are the same value by different routes: the `?ctx=`
+of a `plugin` deeplink, or the `{navigate: {panelId, context}}` an action
+returned. `readPluginActionNavigation` reads the second shape out of whatever an
+action returned, tolerantly: an unrecognizable value is `null`, never an error,
+because most actions carry no navigation at all. `panelId` must be a panel of
+the same plugin, so the worst a wrong value can do is show the wrong page of the
+plugin the user just pressed a button in.
+
+The context is bindable. `$context` is a reserved collection name — the leading
+`$` is illegal in a real collection name, so nothing can shadow it — and binding
+to it yields one row per top-level key, in declaration order. That is what lets
+a schema with no expressions in it say "Issue: ISS-14". The same object also
+rides on every action the panel dispatches, the way a socket's surface context
+does.
+
+`PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES` is **2 KiB** and caps both routes. It is a
+pointer, not a payload: the destination panel reads the plugin's collections for
+everything else, and a context large enough to carry a page would be a second,
+unversioned data channel no budget accounts for. Over the cap, the navigation
+still happens and the context is dropped — the user pressed a button and should
+still land where it sent them.
+
+### The webview tier
+
+A `webview` surface is the one place a plugin ships UI code. It renders the
+plugin's own HTML in a sandboxed guest on the desktop, and every other client
+renders the surface's `panelId` panel instead — `panelId` is required on a
+webview surface precisely because the fallback is what keeps the cross-surface
+promise honest. `builtin` and `webview` cannot be combined: a gate draws
+nothing and a page draws everything, and honouring both would ask the client
+which of the two it is looking at.
+
+**One origin per plugin.** Pages are served over `ade-plugin://<pluginId>/…`,
+which resolves to that plugin's install directory and nothing above it. A custom
+scheme rather than `file:` for exactly one reason: with `file:` every plugin
+would share one origin, `'self'` in the CSP would mean "the whole filesystem",
+and storage would be shared. Requests are refused unless their real path
+(symlinks followed) is still inside the install directory; a directory URL
+resolves to `index.html` and a directory itself is a 404, never a listing. Only
+an installed *and enabled* plugin has an origin at all, so disabling a plugin
+closes its pages. Content types come from a closed map, and every response —
+refusals included — carries the CSP and `nosniff`.
+
+**The policy** is `PLUGIN_WEBVIEW_CSP`: `script-src 'self'` (no CDN, no inline
+script — a plugin that wants a library vendors it), `style-src 'self'
+'unsafe-inline'`, `img-src`/`media-src` reaching `https:`, `connect-src https:`
+so a page can call its own service, and `form-action`, `frame-ancestors`,
+`base-uri`, `object-src` all closed. The guest runs sandboxed and
+context-isolated, in a **non-persistent per-plugin session partition**: cookies,
+storage, and caches die with the window, so plugin state belongs in collections
+where it is budgeted and visible in the usage meter. Links leave for
+the user's real browser; navigation away from the plugin's own origin is
+refused; new windows are denied.
+
+**The bridge** is `window.adePlugin`, published by a preload that exposes
+nothing else — no `window.ade`, no `require`, no raw IPC.
+`PLUGIN_WEBVIEW_BRIDGE_VERSION` is **1** and moves the way `PLUGIN_SDK_VERSION`
+does: additive, never re-shaped. The closed method list is `collections.get`,
+`collections.put`, `collections.list`, `invoke`, `config.get`, and
+`openDeeplink`; `collections.list` returns at most 500 rows, and every
+collection named must be declared in the manifest. Absent on purpose, and not
+stubbed: `secrets` (a page is the last place credentials should be readable),
+`contributions.publish` and `panels.update` (a page draws itself; publishing
+into other surfaces is the child's job), and `collections.delete`.
+
+**The plugin id is never on the wire.** Every call is answered against the id
+the host derives from the guest's own frame URL, cross-checked against the entry
+the window layer wrote when it approved the attach. A `pluginId` field in a
+payload would be a claim, and honouring a claim is how one plugin reads
+another's collections — so there is no such field to ignore.
+
+Reads and `invoke` go through the ordinary `plugin` action domain, and fall
+through to the project runtime the guest's window is bound to when the Electron
+main process holds no host. Writing does not: `PLUGIN_DOMAIN_ACTIONS` is a
+closed list mirrored by the RPC schema and iOS's compile-time allowlist, and a
+write action on it would let any client write any plugin's rows. The bridge
+reaches the host service's own writer instead — which is why a page's write
+needs an in-process host (see *Accepted v1 limitations*).
+
 ### Sockets
 
 Seven kinds (`toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`,
@@ -255,18 +350,43 @@ official plugins and layers a live index on top when one becomes reachable.
 
 | Client | Entry |
 |---|---|
-| Desktop | Plugin tabs below the nav divider; Marketplace above Account; panels via the vocabulary renderer |
-| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph |
+| Desktop | Plugin tabs below the nav divider; Marketplace above Account; panels via the vocabulary renderer. A `webview` surface joins the same rail and draws the plugin's own page instead of a panel |
+| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. A `plugin` deeplink has no hosted route — `targetToWebPath` answers null and each caller degrades where the user can see it |
 | iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen |
-| TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies the panel's fallback deeplink |
-| CLI | `ade plugin …`, plus `ade <pluginId> <cmd>` for manifest-declared CLI words |
+| TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |
+| CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
 | Chat | The `plugin_install` `ade_card` variant, for agent-built install flows |
+
+A plugin panel is addressable: `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json>]`,
+with the `https://ade-app.dev/open?type=plugin&plugin=…&panel=…` form alongside
+it. It is the one target kind whose destination may genuinely not exist on the
+receiving machine — plugins are installed per machine — so clients say so
+plainly rather than redirecting to the Marketplace. Full grammar and routing
+ladder in [Deeplinks](../deeplinks/README.md).
 
 ## Accepted v1 limitations
 
 Stated plainly because each one is a deliberate scope decision, not an
 oversight:
 
+- **A `webview` surface is desktop-only.** iOS, the web client, and the TUI
+  render the surface's declared panel instead. That is the trade the tier
+  exists to make, not a gap to close: a page buys unlimited UI by giving up
+  three of the four clients.
+- **A page cannot write collections unless the plugin host is in-process.**
+  `collections.put` reaches the host service's own writer, and nothing assigns a
+  plugin host in the Electron main process — the host is a machine-scoped
+  singleton in the daemon — so a page's write is refused with
+  `plugins_unavailable` ("This page can't save data on this computer.") while
+  reads and `invoke` fall through to the project runtime and work. A page that
+  needs to persist calls its own action and lets the child write. Routing the
+  write instead would mean a write action on the closed `plugin` domain, which
+  every client can call for every plugin.
+- **The hosted web client has no route for a plugin panel.** `/plugin/:id` is
+  deliberately absent from the shell's route roots because the tab is gated on a
+  host capability the shell cannot probe before its adapter is up, so
+  `targetToWebPath` answers null for a `plugin` target rather than landing the
+  reader on a plausible-looking empty shell.
 - **iOS draws two of the seven socket kinds.** `row-badge` and `row-menu-item`
   render; `toolbar-action`, `detail-section`, `empty-state`, `filter-chip`, and
   `file-viewer` decode as `.unsupported` and draw nothing. A later iOS build
@@ -305,6 +425,8 @@ oversight:
   the surfaces row badges and menu items attach to.
 - [ADE Code](../ade-code/README.md) — `/plugin-view` and the right-pane
   interpreter.
+- [Deeplinks](../deeplinks/README.md) — the `plugin` target, its `ctx`
+  parameter, and the per-client routing ladder.
 - [System overview](../../ARCHITECTURE.md) — IPC contract, action registry, data
   plane.
 - [registry/README.md](../../../registry/README.md) — the plugin directory, its

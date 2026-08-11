@@ -14,6 +14,7 @@ ade://artifact/<artifact-id>
 ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 ade://pr/<owner>/<repo>/<number>
 ade://linear-issue/<ADE-123>[?branch=<branch>]
+ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]
 
 https://ade-app.dev/open?type=lane&id=<uuid>
 https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>&event=<seq>&offset=<bytes>]
@@ -23,6 +24,7 @@ https://ade-app.dev/open?type=artifact&id=<artifact-id>
 https://ade-app.dev/open?type=branch&repo=<owner>/<repo>&branch=<branch>[&pr=<n>]
 https://ade-app.dev/open?type=pr&repo=<owner>/<repo>&number=<n>
 https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
+https://ade-app.dev/open?type=plugin&plugin=<plugin-id>&panel=<panel-id>[&ctx=<json-object>]
 ```
 
 Machine-local targets (lane / session / commit / artifact) additionally carry a
@@ -85,7 +87,8 @@ Shared contract:
   payload across IPC. Targets cover `lane`, `chat`/`work` (with `event` /
   `offset` anchors and the envelope), `file`, `commit`, `artifact`, `pr`
   (with optional repoOwner/repoName for not-yet-local PRs), `branch`
-  (cross-machine send-to-mac payload), `linear-issue`, and the generic
+  (cross-machine send-to-mac payload), `linear-issue`, `plugin`
+  (`pluginId` + `panelId` + optional `context`), and the generic
   `route` shape; plus `ProjectFindForRepoArgs`/`Result` for the catalog
   lookup.
 
@@ -95,7 +98,19 @@ Desktop renderer — resolution ladder + anchors:
   `AppNavigationBridge.dispatchTarget` owns the resolution ladder (local →
   switch-project → foreign card) and the file-path → lane-worktree
   resolution; `InboundDeeplinkModal.tsx` renders the branch / foreign /
-  switch-project cards.
+  switch-project cards. A `plugin` target passes the same hide-everything gate
+  the compiled surfaces use (`components/plugins/builtinTabs.ts`): plugin
+  support, a resolved registry, and the named plugin installed and enabled.
+  Short of all three it refuses out loud with the plugin's display name (or its
+  id when the registry has never seen it) rather than routing anywhere;
+  otherwise it navigates to `/plugin/<id>?panel=<panelId>[&ctx=<json>]`.
+- `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` — `targetToWebPath`
+  answers `null` for a `plugin` target. The hosted client does not host plugin
+  tabs: `/plugin/:id` is deliberately absent from the shell's `APP_ROUTE_ROOTS`
+  because the tab is gated on a host capability the shell cannot probe before
+  its adapter is up (`renderer/lib/webClientMode.ts`'s `pluginTabsAvailable`).
+  Callers degrade visibly on null — a boot lands on the welcome surface, an
+  Activity click navigates in place instead of opening a dead tab.
 - `apps/desktop/src/main/services/projects/repoProjectResolver.ts` — backs
   the `project.findForRepo` IPC: parses recent projects' git origin from
   `.git/config` (no git subprocess), cached by config mtime.
@@ -173,8 +188,12 @@ ADE CLI — outbound + inbound:
     "Open issue in coding tool" entry passes; the receiving install opens
     the Linear pane to that issue, or shows a setup state if the project has
     not connected Linear yet.
-  - `ade link …` builds a deeplink for a lane / work session / branch / PR / Linear
-    issue and copies it to the clipboard. `--ade` emits the custom
+  - `ade link …` builds a deeplink for a lane / work session / branch / PR /
+    Linear issue / plugin panel and copies it to the clipboard.
+    `ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']` mints the
+    plugin form; unlike the parser, which drops a bad context and keeps the
+    link, `--ctx` refuses a value that is not a JSON object or is over the 2 KiB
+    ceiling rather than handing back a link quietly missing it. `--ade` emits the custom
     scheme; the default is the HTTPS form; `--web` emits the hosted web
     client form (`https://app.ade-app.dev/open?...`, via `buildWebClientUrl`)
     and cannot be combined with `--ade`. Round-trip form
@@ -190,16 +209,27 @@ ADE CLI — outbound + inbound:
   path, `ade link pr <owner/repo> <number> --no-clipboard` mints the
   same URL.
 - `apps/ade-cli/src/tuiClient/deeplinkRow.ts` — pure helper used by the
-  TUI's `Ctrl+Y` keybinding. Resolves the focused row (lane / PR) to a
-  canonical `ade://` URL, including parsing GitHub PR URLs to lift
+  TUI's `Ctrl+Y` keybinding. Resolves the focused row (lane / PR / open plugin
+  panel) to a canonical `ade://` URL, including parsing GitHub PR URLs to lift
   owner/repo/number when the right-pane only carries the URL.
   `buildWebClientUrlForRow` in the same file resolves the focused row to
-  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead.
+  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead, and
+  answers null for a plugin panel because the hosted client has no plugin tabs.
+  A panel whose ids the grammar will not carry falls back to the plugin's own
+  `fallback.deeplink` from the panel schema.
+- `apps/ade-cli/src/adeRpcServer.ts` — `app/navigate` accepts `plugin`, validating
+  both ids with the shared manifest rules and applying the same 2 KiB
+  drop-not-fail rule to `context` that the URL parser applies to `?ctx=`.
 - `apps/ade-cli/src/tuiClient/keybindings/index.ts` — registers
-  `copy_deeplink` so `Ctrl+Y` over a highlighted lane or PR row builds
-  and copies the `ade://` link via `tuiClient/app.tsx`. The bindable
-  action set also includes `app:copyAdeWebLink`, which copies the
+  `copy_deeplink` so `Ctrl+Y` over a highlighted lane or PR row — or an open
+  plugin panel — builds and copies the `ade://` link via `tuiClient/app.tsx`.
+  The bindable action set also includes `app:copyAdeWebLink`, which copies the
   web-client form of the focused row instead.
+- `apps/ade-cli/src/tuiClient/app.tsx` — a plugin action that returns
+  `{navigate:{panelId, context?}}` opens that panel in the right pane, read
+  through the shared `readPluginActionNavigation`. The context reaches the pane
+  the same way a deeplink's `?ctx=` does: bindable as `$context`, and attached
+  as `context` to every action that pane then dispatches.
 
 Apps/web — landing page + OG unfurl:
 
@@ -207,6 +237,8 @@ Apps/web — landing page + OG unfurl:
   `/open`. Reads the same query shape as the parser, attempts the
   `ade://` upgrade, and falls back to a download / install card with
   the parsed target described inline.
+  Both files carry hand-rolled copies of the target union (apps/web does not
+  import from `apps/desktop`), so a new target kind has to be added in both.
 - `apps/web/api/open.ts` — Vercel serverless function for `/open`. Self-
   fetches `/index.html`, rewrites `<title>`, `og:*`, and `twitter:*`
   meta tags from query params so chat-app unfurlers (Slack, Discord,
@@ -265,10 +297,26 @@ Send-to-Mac:
 | `ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]` | `{ kind: "branch", repoOwner, repoName, branch, prNumber? }` | Cross-machine. Renderer routes to the lane that already owns the branch; otherwise it opens a create/import modal. PR-backed links use PR preflight, branch-only links fetch the remote branch and import it as a local lane. If no ADE project is open, the modal asks the user to open the matching project first. |
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
 | `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
+| `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]` | `{ kind: "plugin", pluginId, panelId, context? }` | A panel of an installed plugin. Both ids are validated against the manifest's own rules and an invalid one fails the link. `ctx` is the panel's render context — the same value an action's `{navigate:{context}}` carries — capped at 2 KiB and parsed leniently: too big, unparseable, or not an object drops the context and still opens the panel. The only target whose destination may genuinely not exist on the receiving machine, since plugins are installed per machine; see the refusal rules below. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the
 TUI builders, and the web `/open` handler agree on what counts as
 malformed.
+
+### Who refuses a `plugin` link, and why
+
+Plugins are installed per machine, so a link one person mints is routinely a
+link another person cannot open. That is a normal outcome, not an error, and
+every surface answers it the same way it answers a link into an uninstalled
+compiled surface: plainly, and without redirecting to the Marketplace — which
+would advertise something the reader may have deliberately removed.
+
+| Surface | Answer |
+|---------|--------|
+| Desktop renderer | Opens `/plugin/<id>?panel=…` when the plugin is installed **and** enabled and the registry has resolved. Anything else is a refusal toast naming the plugin. |
+| Hosted web client | No route at all. `targetToWebPath` returns null and callers fall back to the welcome surface; the ADE Code TUI and iOS therefore mint only the `ade://` form for panels. |
+| ADE Code TUI | `Ctrl+Y` over an open panel copies the `ade://` link; the web-link sibling says panels are desktop-only. |
+| `ade link plugin` | Mints the link without checking whether the plugin is installed anywhere — a link is a coordinate, and the receiving install is what decides. |
 
 ## Portable envelopes and the resolution ladder
 

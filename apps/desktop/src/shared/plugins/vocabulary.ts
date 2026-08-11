@@ -108,6 +108,44 @@ export type VocabParseResult =
       fallback: VocabFallback | null;
     };
 
+/* ── Render context ─────────────────────────────────────────────────────── */
+
+/**
+ * The reserved collection name a panel binds to read the context it was opened
+ * with.
+ *
+ * A panel can arrive carrying a small object: a `plugin` deeplink's `?ctx=`, or
+ * the `{navigate:{context}}` an action returned after the user pressed a button
+ * on a session row. Rule 3 forbids expressions, so there is no way to
+ * interpolate that object into a label — which left it invisible to the schema
+ * and useful only to the plugin's own handlers.
+ *
+ * Exposing it as a *binding* fixes that without adding a language: `$context`
+ * reads like any other collection, so a `keyValue` or `list` node bound to it
+ * renders "Issue: ISS-14" with the components that already exist. The name
+ * starts with `$`, which {@link PLUGIN_COLLECTION_NAME_PATTERN} forbids, so no
+ * real collection can ever shadow it and the host never has to guess whether a
+ * binding meant the plugin's data or ADE's.
+ *
+ * The context also rides on every action the panel dispatches, the same way a
+ * socket's surface context does, so a button pressed on a context-carrying
+ * panel reaches the plugin knowing what it was looking at.
+ */
+export const VOCAB_CONTEXT_COLLECTION = "$context";
+
+/**
+ * The context as bindable rows: one row per top-level key, in declaration
+ * order. Values are passed through untouched — the renderer already knows how
+ * to draw an arbitrary JSON value in a row, and re-shaping them here would make
+ * `$context` render differently from every other collection.
+ */
+export function vocabContextRows(
+  context: Record<string, unknown> | null | undefined,
+): { key: string; value: unknown }[] {
+  if (!context) return [];
+  return Object.entries(context).map(([key, value]) => ({ key, value }));
+}
+
 /* ── Parsing ────────────────────────────────────────────────────────────── */
 
 /**

@@ -17,6 +17,8 @@ struct PluginPaneSheet: View {
     self.request = request
     _store = StateObject(wrappedValue: PluginPaneStore(
       pluginId: request.pluginId,
+      panelId: request.panelId,
+      context: request.context,
       sync: syncService
     ))
   }

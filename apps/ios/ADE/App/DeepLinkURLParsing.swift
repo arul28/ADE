@@ -109,6 +109,23 @@ enum ADEDeepLinkURLParsing {
     return !containsControlCharacter(trimmed)
   }
 
+  /// The manifest's own plugin-id rule (`isValidPluginId` in
+  /// `apps/desktop/src/shared/plugins/manifest.ts`). Spelled once here because a
+  /// plugin id is one of the ways a link reaches a directory name, and two
+  /// spellings of "valid id" is how a boundary check drifts out of agreement
+  /// with the parser that named the directory.
+  static func isValidPluginId(_ value: String?) -> Bool {
+    guard let value else { return false }
+    return value.range(of: #"^[a-z][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil
+  }
+
+  /// The manifest identifier rule, which is what a panel id is
+  /// (`isValidPluginManifestIdentifier`).
+  static func isValidPluginPanelId(_ value: String?) -> Bool {
+    guard let value, value.count <= 64 else { return false }
+    return value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil
+  }
+
   static func isValidScopeComponent(_ value: String?) -> Bool {
     guard let value else { return false }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -428,12 +428,12 @@ export function WebClientRoot({
       const { restored } = await installFederatedAdapter(snapshot);
       if (disposed) return;
       const restoredTarget = readStashedTarget();
+      // A target with no web route (a plugin panel) falls through to the same
+      // answer as no target at all rather than inventing a route for it.
+      const restoredPath = restoredTarget ? targetToWebPath(restoredTarget) : null;
       const initialPath = restored
-        ? restoredTarget
-          ? targetToWebPath(restoredTarget)
-          : isAppRoute(path)
-            ? `${path}${window.location.search}`
-            : WELCOME_PATH
+        ? restoredPath
+          ?? (isAppRoute(path) ? `${path}${window.location.search}` : WELCOME_PATH)
         : WELCOME_PATH;
       if (restored) {
         pendingTargetRef.current = null;

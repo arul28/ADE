@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDeeplink,
+  deeplinkToNavigationTarget,
   describeTarget,
   looksLikeAdeDeeplink,
   parseDeeplink,
@@ -533,6 +534,95 @@ describe("parseDeeplink — linear-issue", () => {
 
     const https = buildDeeplink(target);
     expect(expectOk(parseDeeplink(https))).toEqual(target);
+  });
+});
+
+describe("parseDeeplink — plugin", () => {
+  it("parses ade://plugin/<pluginId>/<panelId>", () => {
+    expect(expectOk(parseDeeplink("ade://plugin/ade-graph/main"))).toEqual({
+      kind: "plugin",
+      pluginId: "ade-graph",
+      panelId: "main",
+    });
+  });
+
+  it("carries a small context object", () => {
+    const target = expectOk(
+      parseDeeplink(`ade://plugin/jira/issue?ctx=${encodeURIComponent('{"issue":"ISS-14"}')}`),
+    );
+    expect(target).toEqual({
+      kind: "plugin",
+      pluginId: "jira",
+      panelId: "issue",
+      context: { issue: "ISS-14" },
+    });
+  });
+
+  it("parses the https mirror", () => {
+    expect(expectOk(parseDeeplink(
+      "https://ade-app.dev/open?type=plugin&plugin=jira&panel=issue",
+    ))).toEqual({ kind: "plugin", pluginId: "jira", panelId: "issue" });
+  });
+
+  // The ids name a directory and a manifest entry, so a bad one is fatal.
+  it("rejects ids that could not be a plugin or a panel", () => {
+    expect(parseDeeplink("ade://plugin/Ade-Graph/main").ok).toBe(false);
+    expect(parseDeeplink("ade://plugin/ade%2Fgraph/main").ok).toBe(false);
+    expect(parseDeeplink("ade://plugin/ade-graph").ok).toBe(false);
+    expect(parseDeeplink("ade://plugin/ade-graph/main/extra").ok).toBe(false);
+    expect(parseDeeplink("ade://plugin/ade-graph/not a panel").ok).toBe(false);
+  });
+
+  // A `..` never reaches the id check: the URL parser collapses it, so the link
+  // names an ordinary plugin id that simply has to be installed. Asserted so a
+  // future change to how the path is read cannot quietly turn it into traversal.
+  it("collapses traversal in the path rather than honouring it", () => {
+    expect(expectOk(parseDeeplink("ade://plugin/../ade-graph/main"))).toEqual({
+      kind: "plugin",
+      pluginId: "ade-graph",
+      panelId: "main",
+    });
+  });
+
+  // The context is a hint about what to look at. Losing it must never cost the
+  // reader the page, so every bad shape drops it and the link still resolves.
+  it.each([
+    ["not JSON", "{oops"],
+    ["not an object", '"just a string"'],
+    ["an array", "[1,2,3]"],
+    ["over the ceiling", JSON.stringify({ blob: "x".repeat(4096) })],
+  ])("drops a context that is %s and still opens the panel", (_label, ctx) => {
+    const target = expectOk(parseDeeplink(`ade://plugin/jira/issue?ctx=${encodeURIComponent(ctx)}`));
+    expect(target).toEqual({ kind: "plugin", pluginId: "jira", panelId: "issue" });
+  });
+
+  it("round-trips through buildDeeplink in both forms", () => {
+    const target = {
+      kind: "plugin" as const,
+      pluginId: "jira",
+      panelId: "issue",
+      context: { issue: "ISS-14" },
+    };
+    const ade = buildDeeplink(target, { form: "ade" });
+    expect(ade.startsWith("ade://plugin/jira/issue?ctx=")).toBe(true);
+    expect(expectOk(parseDeeplink(ade))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target)))).toEqual(target);
+  });
+
+  it("maps to a navigation target", () => {
+    expect(deeplinkToNavigationTarget({
+      kind: "plugin",
+      pluginId: "jira",
+      panelId: "issue",
+      context: { issue: "ISS-14" },
+    })).toEqual({
+      kind: "plugin",
+      pluginId: "jira",
+      panelId: "issue",
+      context: { issue: "ISS-14" },
+    });
+    expect(deeplinkToNavigationTarget({ kind: "plugin", pluginId: "jira", panelId: "issue" }))
+      .toEqual({ kind: "plugin", pluginId: "jira", panelId: "issue", context: null });
   });
 });
 

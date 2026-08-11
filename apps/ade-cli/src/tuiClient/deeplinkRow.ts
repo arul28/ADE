@@ -1,12 +1,17 @@
 // ---------------------------------------------------------------------------
 // Helper for the "copy ADE deeplink" keybinding in the TUI.
 //
-// Resolves the focused row in the lanes-picker / PR-picker contexts to a
-// canonical `ade://` URL. Keeping this isolated from the Ink component lets us
-// unit-test the dispatch path without rendering the whole app.
+// Resolves whatever the TUI has focused — a lanes-picker or PR-picker row, or
+// an open plugin panel — to a canonical `ade://` URL. Keeping this isolated
+// from the Ink component lets us unit-test the dispatch path without rendering
+// the whole app.
 // ---------------------------------------------------------------------------
 
 import { buildDeeplink, type DeeplinkEnvelope, type DeeplinkTarget } from "../../../desktop/src/shared/deeplinks";
+import {
+  isValidPluginId,
+  isValidPluginManifestIdentifier,
+} from "../../../desktop/src/shared/plugins/manifest";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 
 /**
@@ -35,7 +40,8 @@ export type DeeplinkPrRow =
 
 export type DeeplinkRow =
   | { kind: "lane"; lane: DeeplinkLaneRow }
-  | { kind: "pr"; pr: DeeplinkPrRow };
+  | { kind: "pr"; pr: DeeplinkPrRow }
+  | { kind: "plugin"; pluginId: string; panelId: string; context?: Record<string, unknown> };
 
 /**
  * Pull `{owner, name, number}` out of a GitHub PR URL like
@@ -82,6 +88,20 @@ export function deeplinkTargetForRow(row: DeeplinkRow): DeeplinkTarget | null {
       : undefined;
     return { kind: "lane", laneId: row.lane.id, ...(envelope ? { envelope } : {}) };
   }
+
+  if (row.kind === "plugin") {
+    // The ids are the manifest's, so the shared parser is the authority on
+    // whether they are linkable; an unlinkable pair returns null here rather
+    // than minting a URL that would not parse back.
+    if (!isValidPluginId(row.pluginId) || !isValidPluginManifestIdentifier(row.panelId)) return null;
+    return {
+      kind: "plugin",
+      pluginId: row.pluginId,
+      panelId: row.panelId,
+      ...(row.context ? { context: row.context } : {}),
+    };
+  }
+
   const pr = row.pr;
   if ("repoOwner" in pr) {
     if (!pr.repoOwner || !pr.repoName || !isValidPrNumber(pr.prNumber)) return null;
@@ -103,6 +123,10 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
 }
 
 export function buildWebClientUrlForRow(row: DeeplinkRow): string | null {
+  // The hosted client does not host plugin tabs, so a web link to a panel would
+  // land the reader on its welcome surface. Null is the honest answer; the
+  // `ade://` form still works, because desktop is where the panel lives.
+  if (row.kind === "plugin") return null;
   const target = deeplinkTargetForRow(row);
   return target ? buildWebClientUrl(target) : null;
 }

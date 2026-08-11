@@ -21,6 +21,7 @@ import {
   type DeeplinkEnvelope,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
+import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES } from "../../../desktop/src/shared/plugins/sdk";
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
 
@@ -65,6 +66,7 @@ const HELP_LINK = [
   "  ade link branch <owner/repo> <branch> [--pr <number>]",
   "  ade link pr <owner/repo> <number>",
   "  ade link linear-issue <ADE-123> [--branch <branch>]",
+  "  ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']",
   "  ade link <url>            # round-trip — parse + re-print canonical form",
   "",
   "Options:",
@@ -283,7 +285,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   }
   const flags = extractFlags(args, {
     booleans: ["ade", "web", "no-envelope", "no-clipboard"],
-    valued: ["pr", "branch", "lane", "line"],
+    valued: ["pr", "branch", "lane", "line", "ctx"],
   });
   const positional = flags.positional;
   const wantsAde = flags.booleans.has("ade");
@@ -402,6 +404,20 @@ function buildLinkPlan(args: string[]): LinkPlan {
       ? { kind: "linear-issue", issueIdentifier, branch: branchHint }
       : { kind: "linear-issue", issueIdentifier });
   }
+  if (verb === "plugin") {
+    const pluginId = positional[1];
+    const panelId = positional[2];
+    if (!pluginId || !panelId) {
+      throw new CliDeeplinkUsageError("ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']");
+    }
+    const context = parseCtxFlag(flags.valued.get("ctx"));
+    return plan({
+      kind: "plugin",
+      pluginId,
+      panelId,
+      ...(context ? { context } : {}),
+    });
+  }
 
   throw new CliDeeplinkUsageError(HELP_LINK);
 }
@@ -416,6 +432,32 @@ function parseRepoSlug(repo: string): { repoOwner: string; repoName: string } {
     throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
   }
   return { repoOwner, repoName };
+}
+
+/**
+ * Read `--ctx '<json-object>'` for `ade link plugin`.
+ *
+ * The parser drops a bad context and keeps the link, because a reader who was
+ * sent one should still reach the panel. Minting is the other way round: the
+ * builder would drop an oversized or unserializable value and hand back a link
+ * quietly missing what was asked for, so this refuses instead — the same reason
+ * `ade link file` validates the path before building.
+ */
+function parseCtxFlag(raw: string | undefined): Record<string, unknown> | undefined {
+  if (raw == null) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw) as unknown;
+  } catch {
+    throw new CliDeeplinkUsageError("--ctx must be JSON");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new CliDeeplinkUsageError("--ctx must be a JSON object");
+  }
+  if (Buffer.byteLength(JSON.stringify(decoded), "utf8") > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) {
+    throw new CliDeeplinkUsageError(`--ctx must be under ${PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES} bytes`);
+  }
+  return decoded as Record<string, unknown>;
 }
 
 function parsePositiveInteger(value: string, label: string): number {

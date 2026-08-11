@@ -449,6 +449,19 @@ export type AppNavigationTarget =
       branch?: string | null;
     }
   | {
+      /**
+       * A panel of an installed plugin. Unlike every other kind, the
+       * destination may legitimately not exist on this machine — plugins are
+       * installed per machine — so the dispatcher answers "not installed here"
+       * rather than treating it as a broken link.
+       */
+      kind: "plugin";
+      pluginId: string;
+      panelId: string;
+      /** The panel's render context; see `shared/plugins/vocabulary.ts`. */
+      context?: Record<string, unknown> | null;
+    }
+  | {
       kind: "route";
       route: string;
     }

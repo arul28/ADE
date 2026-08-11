@@ -5,9 +5,11 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { useRootAppStore } from "../../state/appStore";
 import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 import { PluginPanelHost } from "./PluginPanelHost";
+import { PluginWebviewHost, supportsPluginWebviews } from "./PluginWebviewHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { pluginIcon } from "./pluginIcons";
 import { builtinRouteForPluginRoute } from "./builtinTabs";
+import { parseDeeplinkPluginContext } from "../../../shared/deeplinks";
 
 /**
  * The route page for a plugin tab (`/plugin/:pluginId`).
@@ -25,7 +27,7 @@ import { builtinRouteForPluginRoute } from "./builtinTabs";
 
 export function PluginTabPage({ active = true }: { active?: boolean }) {
   const params = useParams<{ pluginId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const pluginId = params.pluginId ?? "";
 
   // The registry lives on the root store; a project-scoped copy would go stale
@@ -54,10 +56,53 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
     ?? plugin?.tabs[0]?.panelId
     ?? "main";
 
+  // The context an `ade://plugin/…?ctx=` link arrived with. Read off the query
+  // string rather than held in router state so it survives a reload and a
+  // restored route — the panel is addressable WITH its context or the link only
+  // half works.
+  const rawContext = searchParams.get("ctx");
+  const renderContext = React.useMemo(() => parseDeeplinkPluginContext(rawContext) ?? null, [rawContext]);
+
+  // Which surface this panel id belongs to, so a webview tab draws its page and
+  // an ordinary tab draws its panel. Matched on `panelId` because that is the
+  // only thing the route carries.
+  const surface = React.useMemo(
+    () => plugin?.tabs.find((tab) => tab.panelId === panelId) ?? null,
+    [panelId, plugin],
+  );
+  const entryHtml = surface?.kind === "webview" ? surface.entryHtml ?? null : null;
+  // A page fills the frame; a panel sits in the page's padding. Decided here
+  // rather than inside the guest so the header keeps its own spacing either way.
+  const hostsWebview = Boolean(entryHtml) && supportsPluginWebviews();
+
   React.useEffect(() => {
     if (!plugin || !panelId) return;
     setLastPluginPanel(plugin.pluginId, panelId);
   }, [panelId, plugin, setLastPluginPanel]);
+
+  /**
+   * Honour an action's `{navigate:{panelId, context}}`.
+   *
+   * Written to the URL rather than to component state, so the destination is
+   * the same address a `plugin` deeplink would have produced: the same panel
+   * with the same context, shareable, restorable, and reachable by Back.
+   */
+  const navigateToPanel = React.useCallback(
+    (navigation: { panelId: string; context?: Record<string, unknown> }) => {
+      const next = new URLSearchParams();
+      next.set("panel", navigation.panelId);
+      if (navigation.context) {
+        try {
+          next.set("ctx", JSON.stringify(navigation.context));
+        } catch {
+          // A context that will not serialize is dropped; the reader still lands
+          // on the panel the plugin sent them to.
+        }
+      }
+      setSearchParams(next, { replace: false });
+    },
+    [setSearchParams],
+  );
 
   if (builtinRoute) return <Navigate to={builtinRoute} replace />;
 
@@ -79,8 +124,21 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
   }
 
   return (
-    <PluginPageShell plugin={plugin} title={plugin.displayName} pluginId={pluginId} active={active}>
-      <PluginBody plugin={plugin} panelId={panelId} active={active} />
+    <PluginPageShell
+      plugin={plugin}
+      title={plugin.displayName}
+      pluginId={pluginId}
+      active={active}
+      fill={hostsWebview}
+    >
+      <PluginBody
+        plugin={plugin}
+        panelId={panelId}
+        active={active}
+        entryHtml={entryHtml}
+        renderContext={renderContext}
+        onNavigate={navigateToPanel}
+      />
     </PluginPageShell>
   );
 }
@@ -89,10 +147,17 @@ function PluginBody({
   plugin,
   panelId,
   active,
+  entryHtml,
+  renderContext,
+  onNavigate,
 }: {
   plugin: InstalledPlugin;
   panelId: string;
   active: boolean;
+  /** Set when this surface is a webview and this client can host one. */
+  entryHtml: string | null;
+  renderContext: Record<string, unknown> | null;
+  onNavigate: (navigation: { panelId: string; context?: Record<string, unknown> }) => void;
 }) {
   if (!plugin.enabled) {
     return (
@@ -109,11 +174,20 @@ function PluginBody({
     return <PluginCrashCard plugin={plugin} />;
   }
 
+  // A webview surface names its page AND a panel. The page wins where a guest
+  // can run; everywhere else the panel is what the manifest promised would be
+  // shown instead, so falling through to it is the contract, not a degradation.
+  if (entryHtml && supportsPluginWebviews()) {
+    return <PluginWebviewHost pluginId={plugin.pluginId} entryHtml={entryHtml} active={active} />;
+  }
+
   return (
     <PluginPanelHost
       pluginId={plugin.pluginId}
       panelId={panelId}
       active={active}
+      renderContext={renderContext}
+      onNavigate={onNavigate}
       recoveryAction={plugin.status === "none" ? undefined : <RestartButton pluginId={plugin.pluginId} />}
     />
   );
@@ -205,12 +279,15 @@ function PluginPageShell({
   pluginId,
   title,
   active,
+  fill = false,
   children,
 }: {
   plugin: InstalledPlugin | null;
   pluginId: string;
   title: string;
   active: boolean;
+  /** The body owns the whole frame — a webview page rather than a panel. */
+  fill?: boolean;
   children?: React.ReactNode;
 }) {
   const Icon = pluginIcon(plugin?.icon);
@@ -224,7 +301,7 @@ function PluginPageShell({
         height: "100%",
         minHeight: 0,
         minWidth: 0,
-        overflow: "auto",
+        overflow: fill ? "hidden" : "auto",
         ...(plugin?.accent ? ({ "--plugin-accent": plugin.accent } as React.CSSProperties) : {}),
       }}
     >
@@ -271,7 +348,13 @@ function PluginPageShell({
           </span>
         ) : null}
       </header>
-      <div style={{ padding: 20, minWidth: 0 }}>{children}</div>
+      <div
+        style={fill
+          ? { display: "flex", flex: 1, minHeight: 0, minWidth: 0 }
+          : { padding: 20, minWidth: 0 }}
+      >
+        {children}
+      </div>
     </div>
   );
 }

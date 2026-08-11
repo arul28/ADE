@@ -1,11 +1,11 @@
 ---
 name: ade-plugins
-description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once.
+description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to build a desktop-only custom UI page (a `webview` surface) against the `window.adePlugin` bridge; to link to a plugin panel or hand it a context; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once.
 ---
 
 # Authoring ADE plugins
 
-## The model, in six lines
+## The model, in seven lines
 
 1. A plugin is a folder with a `plugin.json` at its root. It installs to `~/.ade/plugins/<id>/`.
 2. Its code runs **only on the machine that owns it**, in a supervised Node child process. There is no remote execution.
@@ -13,6 +13,7 @@ description: Use this skill to build, extend, debug, or publish an ADE plugin �
 4. Desktop, web, iOS, and the TUI each interpret that same JSON with their own native widgets — write once, appear everywhere.
 5. Everything a plugin stores goes in one shared table, and the **writer** enforces every budget before a row lands.
 6. Any surface that cannot render a panel renders the panel's required `fallback` instead. A panel is never blank.
+7. One exception to line 3: a `webview` surface draws the plugin's own HTML page, on the desktop and nowhere else. It still names a panel the other surfaces show in its place — see *Custom UI*.
 
 Corollary you will feel immediately: **anything you want computed, compute in your code and store as data.** The schema has no expressions, no conditionals, no formatting strings, and no callbacks.
 
@@ -89,7 +90,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `minAdeVersion` | no | Floor. An ADE below it will not load the plugin; an unknown host version never locks the user out |
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
-| `surfaces[]` | no | `{kind: "tab"\|"pane", id, title, panelId, icon?, order?}` |
+| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI* |
 | `panels[]` | no | `{id, schemaFile?, title?, icon?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime |
 | `sockets[]` | no | See *Sockets* below |
 | `collections` | no | `{"<name>": {"sync": true\|false}}`. `sync: true` rides the sync layer to your other devices |
@@ -106,6 +107,7 @@ Manifest-level rules the parser enforces (a violation drops that entry, not the 
 - `detail-section` and `file-viewer` sockets require `panelId`.
 - `toolbar-action` and `row-menu-item` sockets require `actionId`.
 - `file-viewer` requires at least one `".ext"` extension.
+- A `webview` surface requires `entryHtml`, and it must name an `.html` (or `.htm`) file inside the plugin. A `webview` with no page is dropped, not warned about. `entryHtml` on any other kind is ignored.
 
 ## Panel schemas — the UI vocabulary
 
@@ -159,7 +161,7 @@ Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any re
 |---|---|---|---|
 | `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState` | full | full | full |
 | `form` | full | full | full (via the composer prompt line) |
-| `video`, `image` | full | full | named placeholder + `Ctrl+Y` to copy the fallback deeplink |
+| `video`, `image` | full | full | named placeholder; `Ctrl+Y` copies a link to the panel |
 | `chart` | full | named marker | named placeholder |
 | anything a later vocabulary version adds | inline "not supported here" marker | marker | placeholder |
 
@@ -176,6 +178,141 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 `maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
+
+### Context, navigation, and links to a panel
+
+A panel can arrive carrying a small object — the *context*. It gets there two ways: a `plugin` deeplink's `?ctx=`, or an action that asked the client to go there. Two things then read it:
+
+- **The schema**, through the reserved binding `{"collection": "$context"}` — one row per top-level key, in declaration order. A real collection can never be called `$context`, so nothing shadows it. This is the only way to put a value the panel was opened with into the panel's own text, and it is a binding rather than an expression on purpose.
+- **Every action that panel dispatches**, which carries the same object along.
+
+An action asks for navigation by returning it:
+
+```js
+exports.actions = {
+  async file(args) {
+    const id = await createIssue(args);
+    return { navigate: { panelId: "detail", context: { issue: id } } };
+  },
+};
+```
+
+`panelId` must be a panel of the same plugin — anything else is ignored, and a return value with no `navigate` key behaves exactly as before. The context is capped at **2 KiB**; over the cap the navigation still happens and the context is dropped, so keep it a pointer ("the issue is ISS-14") and read the rest from your own collections.
+
+The same destination has a link:
+
+```bash
+ade link plugin graph detail --ctx '{"issue":"ISS-14"}' --ade
+# ade://plugin/graph/detail?ctx=…   (drop --ade for the https://ade-app.dev/open form)
+```
+
+The link opens the panel on a machine where the plugin is installed and enabled, and says so plainly on one where it is not — plugins are per-machine, so a link one person mints is routinely a link another cannot open. A malformed or oversized `ctx` on the way in is dropped and the panel still opens; `--ctx` on the way out refuses rather than minting a link quietly missing what you asked for. In the TUI, `Ctrl+Y` copies a link to the panel you have open.
+
+## Custom UI (webview)
+
+A `webview` surface renders the plugin's **own HTML page** instead of a panel schema. It is the one place a plugin ships UI code, and the price is fixed: the page draws on the desktop and nowhere else. iOS, the web client, and the TUI render the surface's `panelId` panel in its place — which is why `panelId` is required on a webview surface rather than optional.
+
+### When to choose it — and when not to
+
+The vocabulary's ceiling is the thirteen components above, arranged in stacks. Rows, tables, key/value pairs, forms, a line or bar chart, an image, a video. No expressions, no conditionals, no custom layout, no pointer events of your own, no canvas, no drag.
+
+Choose a webview when what you need to draw is genuinely past that line — a graph someone pans, a diagram editor, a timeline with blocks people drag. Do not choose it to skip learning the vocabulary: everything you build in a page is invisible on three of ADE's four clients, and you will have written the panel anyway.
+
+A rule of thumb that decides most cases: **if it is rows of things with buttons on them, it is a panel; if it is a drawing surface, it is a page.**
+
+### Scaffold
+
+`ade plugin create` scaffolds a tab, so add the surface by hand:
+
+```json
+{
+  "surfaces": [{ "kind": "webview", "id": "board", "title": "Board",
+                 "entryHtml": "web/index.html", "panelId": "board" }],
+  "panels":   [{ "id": "board", "schemaFile": "panels/board.json", "title": "Board" }]
+}
+```
+
+`entryHtml` is a relative path inside the plugin, free of `..`, ending in `.html` (or `.htm`). The page and everything it loads are served from `ade-plugin://<pluginId>/…`, which maps to the install directory and nothing above it. A request ending in `/` resolves to `index.html`; a directory itself is a 404, never a listing.
+
+`web/index.html` — note there is no inline `<script>`, because there cannot be one:
+
+```html
+<!doctype html>
+<meta charset="utf-8" />
+<title>Board</title>
+<link rel="stylesheet" href="./board.css" />
+<div id="root">Loading…</div>
+<script src="./board.js"></script>
+```
+
+`web/board.js`:
+
+```js
+const root = document.getElementById("root");
+
+async function render() {
+  const rows = await window.adePlugin.collections.list("cards", { limit: 100 });
+  root.textContent = `${rows.length} cards`;
+}
+
+window.adePlugin.events.on("changed", () => void render());
+void render();
+```
+
+Ship plain `.js` and `.css`. Content types come from a closed map — `.js`, `.mjs`, `.css`, `.json`, `.svg`, the usual images and fonts, `.mp4`, `.webm`, `.txt` — and anything else is served as `application/octet-stream` with `nosniff`, so a `.ts` or `.jsx` file will not execute.
+
+### The bridge
+
+`window.adePlugin` is the whole API. Every method is async and rejects with an ordinary `Error` carrying the host's own message; there is no error class to catch, so the code rides in the text.
+
+| Call | Contract |
+|---|---|
+| `adePlugin.version` | Bridge version of the host that attached the page. **1** today. Additive like the SDK — check it before calling anything newer |
+| `adePlugin.pluginId` | The page's own plugin id, from the host. Informational; nothing on the wire carries it |
+| `collections.get(collection, key)` | One value, or `null` |
+| `collections.put(collection, key, value)` | Write one value — see the note below before relying on it |
+| `collections.list(collection, {keyPrefix?, limit?})` | `{key, value}` rows, at most 500 |
+| `invoke(action, args?)` | Call one of the plugin's own action handlers. Needs an `entry` — a page-only plugin has nothing to invoke |
+| `config.get()` | Current values for `manifest.settings`, defaults applied |
+| `events.on("changed", cb)` | Fires when this plugin's data moves. Returns an unsubscribe function; payload is `{kind, panelId?, collection?}`. Refetch on a `kind` you do not recognize |
+| `openDeeplink(url)` | An `ade://` link opens in ADE; an `https:` link goes to the user's real browser. Nothing else is accepted |
+
+The plugin id is never sent by the page: the host derives it from the guest's own origin and answers every call against that. Collections still have to be declared in `plugin.json` — an undeclared name is refused, not created.
+
+Deliberately missing, and not stubbed:
+
+| Absent | Why |
+|---|---|
+| `secrets` | A page is the last place a plugin's credentials should be readable, and the first place an injected script would look. Read secrets in your child process and hand the page the *result* |
+| `contributions.publish`, `panels.update` | A page draws itself. Publishing into ADE's other surfaces stays the child process's job |
+| `collections.delete` | Destructive, and not needed to build a UI |
+| Raw IPC, `require`, `window.ade` | There is no such object in the page |
+
+**Writing from a page is conditional.** `collections.put` needs the plugin host in the same process, and on the desktop app the host lives in the daemon — so a page's write is refused with `plugins_unavailable` ("This page can't save data on this computer.") while reads and `invoke` route through to the project's runtime and work normally. Write through your own handler instead: `await adePlugin.invoke("save", {…})`, and let the child call `ade.collections.put`.
+
+### The sandbox, plainly
+
+- The page gets **its own origin**, `ade-plugin://<pluginId>`, one per plugin, so the browser's same-origin rules do the isolating.
+- **Only files inside the plugin's install directory are served.** A path that escapes it — `..`, an absolute path, a symlink pointing out — is refused. An uninstalled or disabled plugin has no origin at all, so disabling a plugin closes its pages.
+- **No Node, no `require`, no `window.ade`, no raw IPC.**
+- **Scripts and styles must ship with the plugin** (`script-src 'self'`). No CDN, no inline `<script>`, no `onclick=` attributes, no `eval`. A library you want, you vendor. Inline `style=` and `<style>` are fine.
+- **Images and media may come from `https:`**, and the page may call `https:` services. Plain `http:` cannot be fetched.
+- **The session is per-plugin and throwaway.** Cookies, `localStorage`, and caches die with the window. Put state in collections, where it is budgeted and the user can see it in the usage meter.
+- **The page cannot leave its own origin.** A link to a site opens in the user's real browser; a new window is denied; forms cannot post anywhere; the page cannot be framed.
+
+### The dev loop
+
+```bash
+ade plugin install ~/plugins/board   # once
+ade plugin dev board                 # watch + reload on every save
+```
+
+`ade plugin dev` reloads the plugin on every save — it re-reads the manifest and restarts the child. Page files are read off disk when the guest asks for them, so re-opening the surface picks up your edits. `ade plugin logs board --text` is still where the child's log lines are; `ade.log` from the child, not `console.log` from the page, is what lands there.
+
+### How it sits next to panels
+
+- Write the surface's panel as the honest small version of the page, and give its `fallback` a `deeplink` — that panel is what three of four clients show.
+- `$context` and `{navigate:{…}}` belong to panels; a page navigates itself. To send the user to one of your panels from a page, call `adePlugin.openDeeplink("ade://plugin/<pluginId>/<panelId>?ctx=…")`.
 
 ## Sockets — appearing on core surfaces
 
@@ -346,7 +483,7 @@ Put a `SKILL.md` under `skills/<name>/` with `name` + `description` frontmatter 
 
 ## Hard rules
 
-1. **Data, never code.** No expressions, no conditionals, no formatting strings, no callbacks in a schema. Compute on your machine, store the result.
+1. **Data, never code.** No expressions, no conditionals, no formatting strings, no callbacks in a schema. Compute on your machine, store the result. A `webview` is the one exception, and it buys unlimited UI by giving up three of the four clients.
 2. **Every panel declares `fallback` with a `title` and `text`.** A panel without one is fatal on every client. Add a `deeplink` too.
 3. **Secrets go through `ade.secrets`, never through the environment.** The child's env is denylisted, and a secret in a collection value is a secret in the sync layer.
 4. **Never assume a socket renders.** iOS draws two of the seven kinds today, and the TUI draws none. A contribution is an enhancement; the panel and the fallback are the floor.
@@ -366,6 +503,10 @@ Put a `SKILL.md` under `skills/<name>/` with `name` + `description` frontmatter 
 | Panel renders as a fallback card | Panel-fatal: bad JSON, `v` mismatch, missing `fallback`, or over 200 nodes / depth 8 / 64 KiB. Compare against the limits above |
 | One component shows a marker, rest renders fine | Node-local. Either the component is malformed, or that surface does not draw it (see the support matrix) |
 | Panel renders on desktop, marker on iOS or the TUI | Expected for `chart`, and for `video`/`image` in the TUI. Not a bug — give the panel something else to say |
+| A webview page loads but stays blank | Almost always the CSP: `script-src 'self'` blocks inline `<script>`, `onclick=` attributes, `eval`, and anything from a CDN. Move the code into a `.js` file next to the page and load it with `src` |
+| A file in the page 404s or does not run | The path escaped the plugin directory, the file is not there, or its extension is outside the served content-type map (a `.ts` or `.jsx` arrives as `application/octet-stream` and will not execute). A directory URL resolves to `index.html`; a directory itself is a 404 |
+| The webview surface shows a panel instead of the page | You are not on the desktop. iOS, the web client, and the TUI render the surface's `panelId` — that is the design, so make that panel say something useful |
+| `adePlugin.collections.put` fails with `plugins_unavailable` | A page can only write where the plugin host runs in the same process. Call your own action with `adePlugin.invoke(...)` and write from the child instead |
 | Contribution never appears | Check `manifest.sockets` declares the kind on that surface, the payload validates for that kind, and you published from the machine that owns the entity |
 | `ade plugin <cmd>` says it needs the brain | `install`/`remove`/`enable`/`disable`/`reload`/`logs`/`dev` are daemon-backed. Start ADE or run `ade brain start`. `list` and `create` never need it |
 | `ade <pluginId> <word>` says unknown command | The plugin must be installed, **enabled**, and declare that exact word in `cli` — otherwise the CLI treats it as a typo, which is what you want |

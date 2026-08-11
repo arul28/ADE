@@ -34,6 +34,7 @@ import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { usePluginRegistrySync } from "../plugins/usePluginRegistry";
 import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
 import { builtinGateForRoute, isBuiltinSurfaceVisible, isBuiltinTabVisible } from "../plugins/builtinTabs";
+import { resolvePluginDeeplinkRouting } from "./pluginDeeplinkRoute";
 import { BuiltinRouteGuard } from "../plugins/BuiltinRouteGuard";
 import { showToast } from "./toast/toastStore";
 
@@ -1349,6 +1350,13 @@ function AppNavigationBridge() {
         branch: target.branch ?? null,
         source: "deeplink",
       });
+      return true;
+    }
+
+    if (target.kind === "plugin") {
+      const routing = resolvePluginDeeplinkRouting(target, builtinGateInputRef.current);
+      if (routing.kind === "refuse") return refuseGatedTarget(routing.title);
+      navigate(routing.path);
       return true;
     }
 

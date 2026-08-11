@@ -87,7 +87,24 @@ export const PLUGIN_THEME_TOKEN_PREFIXES = [
  */
 export const PLUGIN_THEME_TOKEN_NAME_PATTERN = /^--[a-z0-9-]{1,60}$/;
 
-export type PluginSurfaceKind = "tab" | "pane";
+/**
+ * `webview` is the escape hatch from the vocabulary, and it is deliberately the
+ * narrowest one.
+ *
+ * A tab or a pane renders a panel schema, which every client interprets with its
+ * own widgets — that is what lets one plugin work on desktop, iOS, web and the
+ * TUI at once. A webview renders the plugin's own HTML inside a sandboxed guest
+ * on the desktop and nowhere else, so it buys unlimited UI at the cost of being
+ * a single-platform surface. Choose it when the vocabulary genuinely cannot say
+ * what the plugin needs to draw, not to avoid learning the vocabulary.
+ *
+ * Every webview surface still declares a `panelId`. That panel is what iOS, the
+ * web client and the TUI show in its place, so "desktop-only" degrades to the
+ * plugin's own sentence and an open-on-desktop link rather than to a blank
+ * space. It is required, not optional, precisely because the fallback is the
+ * thing that keeps the cross-surface promise honest.
+ */
+export type PluginSurfaceKind = "tab" | "pane" | "webview";
 
 /**
  * Tabs that ship compiled into the app and can be *gated* by a plugin rather
@@ -120,11 +137,18 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
   return PLUGIN_BUILTIN_SURFACE_IDS.some((id) => id === value);
 }
 
+const SURFACE_KINDS: readonly PluginSurfaceKind[] = ["tab", "pane", "webview"];
+
 export type PluginManifestSurface = {
   kind: PluginSurfaceKind;
   id: string;
   title: string;
   icon?: string;
+  /**
+   * The vocabulary panel this surface renders — and, for a `webview` surface,
+   * the panel every non-desktop client renders in its place. Required on all
+   * three kinds: see {@link PluginSurfaceKind}.
+   */
   panelId: string;
   order?: number;
   /**
@@ -132,6 +156,12 @@ export type PluginManifestSurface = {
    * present on an official manifest — see the trust note in {@link parseSurfaces}.
    */
   builtin?: PluginBuiltinSurfaceId;
+  /**
+   * `webview` only: the HTML file the sandboxed guest loads, relative to the
+   * plugin's install directory. Served over `ade-plugin://<pluginId>/…`, which
+   * exposes that directory and nothing above it.
+   */
+  entryHtml?: string;
 };
 
 export type PluginManifestPanel = {
@@ -282,14 +312,29 @@ export function isValidPluginManifestIdentifier(value: unknown): value is string
 function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): PluginManifestSurface[] {
   return parseArray(raw, "surfaces", ctx, (entry, label) => {
     if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
-    const kind = entry.kind === "pane" ? "pane" : entry.kind === "tab" ? "tab" : null;
-    if (!kind) return ctx.drop(`${label}.kind must be "tab" or "pane"`);
+    const kind = SURFACE_KINDS.find((candidate) => candidate === entry.kind) ?? null;
+    if (!kind) return ctx.drop(`${label}.kind must be "tab", "pane" or "webview"`);
     const id = parseIdentifier(entry.id);
     if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
     const title = trimmedString(entry.title);
     if (!title) return ctx.drop(`${label}.title is required`);
     const panelId = parseIdentifier(entry.panelId);
     if (!panelId) return ctx.drop(`${label}.panelId is missing or not an identifier`);
+    let entryHtml: string | null = null;
+    const declaredEntryHtml = entry.entryHtml;
+    if (kind === "webview") {
+      // Dropped, not warned: a webview surface with no page is not a degraded
+      // surface, it is a surface that would load nothing.
+      if (!isSafePluginRelativePath(declaredEntryHtml)) {
+        return ctx.drop(`${label}.entryHtml must be a relative path inside the plugin`);
+      }
+      if (!/\.html?$/i.test(declaredEntryHtml)) {
+        return ctx.drop(`${label}.entryHtml must name an .html file`);
+      }
+      entryHtml = declaredEntryHtml;
+    } else if (declaredEntryHtml !== undefined) {
+      ctx.warnings.push(`${label}.entryHtml applies only to a "webview" surface — ignored`);
+    }
     let builtin: PluginBuiltinSurfaceId | null = null;
     if (entry.builtin !== undefined) {
       const requested = trimmedString(entry.builtin);
@@ -297,6 +342,10 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         ctx.warnings.push(`${label}.builtin "${String(entry.builtin)}" is not a gateable built-in tab — ignored`);
       } else if (!official) {
         ctx.warnings.push(`${label}.builtin is honoured only for official plugins — ignored`);
+      } else if (kind === "webview") {
+        // A gate draws nothing; a webview draws everything. Honouring both would
+        // ask the client which of the two pages it is looking at.
+        ctx.warnings.push(`${label}.builtin cannot be combined with a "webview" surface — ignored`);
       } else {
         builtin = requested;
       }
@@ -309,6 +358,7 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
       ...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
       ...(builtin ? { builtin } : {}),
+      ...(entryHtml ? { entryHtml } : {}),
     };
   });
 }

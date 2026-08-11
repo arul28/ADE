@@ -694,15 +694,22 @@ import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { PluginHostService } from "../plugins/pluginHostService";
+import { handleDeeplinkUrl } from "../deeplinks/protocolHandler";
 import {
   isValidPluginId,
   isValidPluginManifestIdentifier,
   type PluginManifest,
 } from "../../../shared/plugins/manifest";
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
+import {
+  createPluginWebviewBridgeServer,
+  type PluginWebviewDomain,
+} from "../plugins/pluginWebviewBridgeServer";
+import type { PluginWebviewGuest } from "../plugins/pluginWebviewGuests";
 import { PLUGIN_ENTITY_KINDS, PLUGIN_SURFACE_IDS } from "../../../shared/plugins/sockets";
 import {
   assertPluginCollectionName,
+  PluginSdkError,
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   type PluginCollectionRow,
   type PluginContributionRecord,
@@ -1826,13 +1833,18 @@ export function registerIpc({
     };
   };
 
-  const getLocalRuntimeRootForEvent = (event: { sender: Electron.WebContents }): string | null => {
+  const getLocalRuntimeRootForWindowId = (windowId: number | null): string | null => {
     if (!getWindowSession) return null;
-    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const session = getWindowSession(windowId);
     const binding = session?.binding;
     if (binding?.kind === "local") return binding.rootPath;
     return session?.project?.rootPath ?? null;
+  };
+
+  const getLocalRuntimeRootForEvent = (event: { sender: Electron.WebContents }): string | null => {
+    // A webview guest is not a window's own webContents, so callers that hold a
+    // guest resolve its HOST window id and use the helper above directly.
+    return getLocalRuntimeRootForWindowId(BrowserWindow.fromWebContents(event.sender)?.id ?? null);
   };
 
   const tryLocalRuntimeSync = async <T>(
@@ -6024,6 +6036,101 @@ export function registerIpc({
     const source = typeof arg.source === "string" ? arg.source.trim() : "";
     if (!source) throw new Error("plugin inspectSource source must be a non-empty string.");
     return requirePluginDomainService().inspectSource({ source });
+  });
+
+  /**
+   * The plugin domain as a GUEST reaches it.
+   *
+   * A plugin page's calls have to be answered by whichever process actually
+   * holds the plugin host. In the Electron main process that is nobody — the
+   * host lives in the daemon (D2), which is why the handlers above answer
+   * `plugins_unavailable` here — so the bridge falls through to the project
+   * runtime the guest's own window is bound to, the same route the renderer's
+   * `window.ade.plugins` takes through the preload's strict router.
+   */
+  const pluginWebviewDomainFor = (guest: PluginWebviewGuest): PluginWebviewDomain => {
+    const ctx = getCtx();
+    if (ctx.pluginHostService) return ctx.pluginHostService.domainService(ctx.projectId);
+    const rootPath = getLocalRuntimeRootForWindowId(guest.hostWindowId);
+    const pool = localRuntimeConnectionPool;
+    if (!rootPath || !pool) {
+      throw new Error(
+        encodeCodedErrorMessage(
+          PLUGIN_SERVICE_UNAVAILABLE_CODE,
+          "Plugins aren’t available on this computer.",
+        ),
+      );
+    }
+    const callPluginAction = async <T>(action: string, args: Record<string, unknown>): Promise<T> => {
+      const response = await pool.callActionForRoot(rootPath, { domain: "plugin", action, args });
+      return response.result as T;
+    };
+    return {
+      get: (args) => callPluginAction<PluginDetail | null>("get", { ...args }),
+      getCollection: (args) => callPluginAction<PluginCollectionRow[]>("getCollection", { ...args }),
+      getManifest: (args) => callPluginAction<PluginManifest | null>("getManifest", { ...args }),
+      invoke: (args) => callPluginAction<unknown>("invoke", { ...args }),
+    };
+  };
+
+  const pluginWebviewBridgeServer = createPluginWebviewBridgeServer({
+    domainFor: pluginWebviewDomainFor,
+    putCollection: ({ guest, collection, key, value }) => {
+      // No routed fallback on purpose: writing a collection is not a `plugin`
+      // action, and inventing one for the daemon route would put a write to any
+      // plugin's rows on the action domain every client can call.
+      const host = getCtx().pluginHostService;
+      if (!host) {
+        throw new Error(
+          encodeCodedErrorMessage(
+            PLUGIN_SERVICE_UNAVAILABLE_CODE,
+            "This page can’t save data on this computer.",
+          ),
+        );
+      }
+      host.writeCollection({ pluginId: guest.pluginId, collection, key, value });
+    },
+    openDeeplink: ({ guest, url }) => {
+      const win = guest.hostWindowId == null ? null : BrowserWindow.fromId(guest.hostWindowId);
+      if (!win || win.isDestroyed()) throw new Error("There is no ADE window to open that in.");
+      // Parsed by the shared deeplink grammar, never by this layer: a plugin
+      // link is the same link a user could paste, and it gets the same reading.
+      handleDeeplinkUrl(url, "plugin-webview", (request) => {
+        win.webContents.send(IPC.appNavigate, request);
+      });
+    },
+    openExternalUrl: (url) => openExternalUrl(url),
+  });
+
+  ipcMain.handle(IPC.pluginWebviewBridge, async (event, arg: unknown): Promise<unknown> => {
+    try {
+      return await pluginWebviewBridgeServer.handle(
+        {
+          webContentsId: event.sender.id,
+          // The frame's own URL, not the payload's claim about it. See
+          // `pluginWebviewBridgeServer.ts` — this is the whole pinning story.
+          frameUrl: event.senderFrame?.url ?? event.sender.getURL(),
+        },
+        arg,
+      );
+    } catch (error) {
+      // The page has no error class to catch, so the typed code rides in the
+      // message the way every other coded refusal does.
+      if (error instanceof PluginSdkError) {
+        throw new Error(encodeCodedErrorMessage(error.code, error.message));
+      }
+      throw error;
+    }
+  });
+
+  ipcMain.on(IPC.pluginWebviewHandshake, (event) => {
+    // Synchronous because `adePlugin.pluginId` is a plain property a page reads
+    // while rendering; an empty string means "the host will not vouch for this
+    // page", which is the same answer every method call would get.
+    event.returnValue = pluginWebviewBridgeServer.resolvePluginId({
+      webContentsId: event.sender.id,
+      frameUrl: event.senderFrame?.url ?? event.sender.getURL(),
+    }) ?? "";
   });
 
 

@@ -41,16 +41,19 @@ type RelayResult = {
 /**
  * Open an Activity destination in a new browser tab.
  *
- * Returns false when the tab could not be opened — no `window`, or a popup
- * blocker that did not see this click as user-initiated — so the caller can
- * fall back to navigating in place rather than leaving the click dead.
+ * Returns false when the tab could not be opened — no `window`, a target this
+ * client has no route for, or a popup blocker that did not see this click as
+ * user-initiated — so the caller can fall back to navigating in place rather
+ * than leaving the click dead.
  */
 function openWebTargetInNewTab(target: DeeplinkTarget): boolean {
   if (typeof window === "undefined") return false;
+  const url = targetToWebUrl(target);
+  if (!url) return false;
   try {
     // `noopener` keeps the new tab from reaching back into this one; without it
     // the opened document inherits a scriptable handle to the workspace.
-    const opened = window.open(targetToWebUrl(target), "_blank", "noopener,noreferrer");
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
     return Boolean(opened);
   } catch {
     return false;

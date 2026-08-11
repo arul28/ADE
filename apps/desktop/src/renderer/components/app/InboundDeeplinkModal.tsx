@@ -94,6 +94,7 @@ function originalTargetLabel(target: AppNavigationTarget, entity: "chat" | "lane
   if ((target.kind === "work" || target.kind === "chat") && target.sessionId) return `Chat ${target.sessionId}`;
   if (target.kind === "lane") return "Lane";
   if (target.kind === "commit") return `Commit ${target.sha}`;
+  if (target.kind === "plugin") return `${target.pluginId} · ${target.panelId}`;
   return entity === "chat" ? "Chat" : entity === "commit" ? "Commit" : "Lane";
 }
 

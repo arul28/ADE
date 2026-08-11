@@ -94,12 +94,23 @@ final class PluginPaneStore: ObservableObject {
   /// An action waiting on the confirmation sentence its schema declared.
   @Published var pendingConfirmation: PluginPendingConfirmation?
 
+  /// What this pane was opened with. Read by a node bound to `$context` and
+  /// attached to every action dispatched from here, so a button knows what the
+  /// reader was looking at when they pressed it.
+  private(set) var context: [String: RemoteJSONValue]
+
   private let sync: PluginPaneSyncing
   private var presenceCatalog = PluginPresenceCatalog()
 
-  init(pluginId: String, panelId: String? = nil, sync: PluginPaneSyncing) {
+  init(
+    pluginId: String,
+    panelId: String? = nil,
+    context: [String: RemoteJSONValue] = [:],
+    sync: PluginPaneSyncing
+  ) {
     self.pluginId = pluginId
     self.selectedPanelId = panelId
+    self.context = context
     self.sync = sync
   }
 
@@ -134,6 +145,19 @@ final class PluginPaneStore: ObservableObject {
   func selectPanel(_ panelId: String) {
     guard panelId != selectedPanelId else { return }
     selectedPanelId = panelId
+    presentation = resolvePresentation()
+  }
+
+  /// Follow the `navigate` an action returned.
+  ///
+  /// In place, not as a second sheet: the navigation names a panel of THIS
+  /// plugin, and stacking a sheet on the pane the reader is already in would
+  /// bury the way back. A navigation carrying no context clears the one the
+  /// pane had, which is what replacing the address does on desktop — the
+  /// destination is not still about what the previous panel was about.
+  func navigate(to navigation: PluginInvokeNavigation) {
+    context = navigation.context ?? [:]
+    selectedPanelId = navigation.panelId
     presentation = resolvePresentation()
   }
 
@@ -210,7 +234,56 @@ final class PluginPaneStore: ObservableObject {
   }
 
   private func entries(for binding: PluginVocabBinding, limit: Int) -> [PluginCollectionEntry] {
-    sync.pluginCollectionEntries(binding: binding, pluginId: pluginId, limit: limit)
+    // `$context` is resolved here rather than at the database, which has no such
+    // collection and would answer a guaranteed miss. Resolving it beside the
+    // real bindings is also what keeps what a panel READS the same value its
+    // actions CARRY.
+    if binding.collection == PluginVocabulary.contextCollection {
+      return contextEntries(limit: min(limit, binding.limit ?? limit))
+    }
+    return sync.pluginCollectionEntries(binding: binding, pluginId: pluginId, limit: limit)
+  }
+
+  /// The context as bindable rows, one per top-level key.
+  ///
+  /// Sorted by key, where desktop keeps declaration order: Foundation's JSON
+  /// reader hands back a dictionary, so the order the plugin wrote is already
+  /// gone by the time anything here can see it. A stable order beats an
+  /// arbitrary one that reshuffles between reads.
+  ///
+  /// Scalars become their display text so a `keyValue` row renders — a bound
+  /// row reads its value as a string, and a context value is a fact to show,
+  /// not an argument to pass on. Actions carry ``context`` itself, untouched,
+  /// so the plugin still receives the number it wrote.
+  private func contextEntries(limit: Int) -> [PluginCollectionEntry] {
+    context.keys.sorted().prefix(limit).compactMap { key in
+      guard let value = context[key], let valueJSON = contextValueJSON(value) else { return nil }
+      return PluginCollectionEntry(
+        pluginId: pluginId,
+        collection: PluginVocabulary.contextCollection,
+        key: key,
+        valueJSON: valueJSON,
+        updatedAt: ""
+      )
+    }
+  }
+
+  private func contextValueJSON(_ value: RemoteJSONValue) -> String? {
+    let displayable: Any
+    switch value {
+    case let .string(text):
+      displayable = text
+    case let .number(number):
+      displayable = PluginPanelParser.formatNumber(number)
+    case let .bool(flag):
+      displayable = flag ? "Yes" : "No"
+    case .object, .array:
+      displayable = foundationObject(from: value)
+    case .null:
+      return nil
+    }
+    guard let data = try? adeJSONData(withJSONObject: displayable) else { return nil }
+    return String(data: data, encoding: .utf8)
   }
 
   // MARK: - Actions
@@ -246,7 +319,13 @@ final class PluginPaneStore: ObservableObject {
       // spinner when the socket drops mid-call (the `runSessionAction` rule).
       defer { self.inFlightActionIds.remove(action.action) }
       do {
-        let payload = action.argsJSON.merging(extraArgs) { _, override in override }
+        var payload = action.argsJSON.merging(extraArgs) { _, override in override }
+        if !self.context.isEmpty {
+          // Under `context`, the same field `PluginPanelHost.tsx` sends and the
+          // same place a socket's surface context rides. Last so a schema
+          // cannot name an argument that would quietly replace it.
+          payload["context"] = PluginPanelContext.payload(self.context)
+        }
         let result = try await self.sync.invokePluginAction(
           pluginId: self.pluginId,
           actionId: action.action,
@@ -256,6 +335,9 @@ final class PluginPaneStore: ObservableObject {
           text: result.message ?? "Done",
           isFailure: !result.ok
         )
+        if let navigation = result.navigate {
+          self.navigate(to: navigation)
+        }
       } catch {
         self.actionMessage = PluginActionMessage(
           text: (error as NSError).localizedDescription,

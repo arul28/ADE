@@ -11,11 +11,17 @@
 //   ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 //   ade://pr/<owner>/<repo>/<number>[?tab=overview|files|checks]
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
+//   ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]
 //
-//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...
+//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|plugin>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
 //    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number[+tab];
-//    linear-issue→issue[+branch])
+//    linear-issue→issue[+branch]; plugin→plugin&panel[+ctx])
+//
+// A plugin link addresses a panel of an installed plugin, and `ctx` is the same
+// small object an action's `{navigate:{context}}` carries — the two are one
+// value reaching a panel by two routes. It is capped and parsed leniently: a
+// context that is too big or malformed is dropped and the panel still opens.
 //
 // PR links may name the detail sub-tab to land on (`?tab=`). The value is
 // parsed leniently: an unknown tab is dropped, never failing the whole link,
@@ -30,6 +36,8 @@
 // so a receiver that cannot resolve the primary id can fall back to the
 // branch, PR, or Linear issue — see DeeplinkEnvelope.
 
+import { isValidPluginId, isValidPluginManifestIdentifier } from "./plugins/manifest";
+import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES } from "./plugins/sdk";
 import type { AppNavigationTarget } from "./types/core";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
@@ -136,6 +144,23 @@ export type DeeplinkLinearIssueTarget = {
   branch?: string;
 };
 
+/**
+ * A panel of an installed plugin.
+ *
+ * The only target kind whose destination may genuinely not exist on the
+ * receiving machine — plugins are installed per machine, so a link one person
+ * mints is routinely a link another person cannot open. Clients answer that the
+ * same way they answer a link into an uninstalled compiled surface: they say so
+ * plainly, rather than redirecting to the Marketplace.
+ */
+export type DeeplinkPluginTarget = {
+  kind: "plugin";
+  pluginId: string;
+  panelId: string;
+  /** The panel's render context. Dropped rather than fatal when malformed. */
+  context?: Record<string, unknown>;
+};
+
 export type DeeplinkTarget =
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
@@ -144,7 +169,8 @@ export type DeeplinkTarget =
   | DeeplinkArtifactTarget
   | DeeplinkBranchTarget
   | DeeplinkPrTarget
-  | DeeplinkLinearIssueTarget;
+  | DeeplinkLinearIssueTarget
+  | DeeplinkPluginTarget;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // GitHub: owner 1-39 chars [A-Za-z0-9-]; repo can include _.-, no path separators.
@@ -205,6 +231,41 @@ export function isValidRepoRelativePath(value: string): boolean {
 /** Commit sha rule shared with non-URL boundaries (7-40 hex chars). */
 export function isValidCommitSha(value: string): boolean {
   return COMMIT_SHA_RE.test(value);
+}
+
+/**
+ * Read a `?ctx=` parameter as the small JSON object a plugin panel renders with.
+ *
+ * Lenient in the `parsePrDetailTabParam` tradition: a context that is missing,
+ * unparseable, not an object, or over {@link PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES}
+ * yields `undefined` and the link still opens the panel. The context is a hint
+ * about what to look at — losing it should never cost the reader the page.
+ */
+export function parseDeeplinkPluginContext(raw: string | null | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  // Measured before parsing: the cap has to bound what we decode, not what we
+  // decoded, or an oversized value is only refused after it has been expanded.
+  if (raw.length > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return undefined;
+  return decoded as Record<string, unknown>;
+}
+
+function appendPluginContextParam(params: URLSearchParams, context: Record<string, unknown> | undefined): void {
+  if (!context) return;
+  let json: string;
+  try {
+    json = JSON.stringify(context) ?? "";
+  } catch {
+    return;
+  }
+  if (!json || json === "{}" || json.length > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return;
+  params.set("ctx", json);
 }
 
 function parseNonNegativeIntParam(raw: string | null): number | undefined | null {
@@ -417,6 +478,13 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
     }
+    case "plugin": {
+      const params = new URLSearchParams();
+      appendPluginContextParam(params, target.context);
+      const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://plugin/${encodeURIComponent(target.pluginId)}/${encodeURIComponent(target.panelId)}`;
+      return qs ? `${base}?${qs}` : base;
+    }
   }
 }
 
@@ -473,6 +541,12 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       params.set("type", "linear-issue");
       params.set("issue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
+      break;
+    case "plugin":
+      params.set("type", "plugin");
+      params.set("plugin", target.pluginId);
+      params.set("panel", target.panelId);
+      appendPluginContextParam(params, target.context);
       break;
   }
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
@@ -603,6 +677,18 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     };
   }
 
+  if (host === "plugin") {
+    if (pathSegments.length !== 2) {
+      return { ok: false, error: { kind: "malformed", reason: "expected plugin/<plugin-id>/<panel-id>" }, rawUrl };
+    }
+    return buildPluginTarget(
+      safeDecode(pathSegments[0]),
+      safeDecode(pathSegments[1]),
+      url.searchParams.get("ctx"),
+      rawUrl,
+    );
+  }
+
   return { ok: false, error: { kind: "unknown_type", type: host }, rawUrl };
 }
 
@@ -661,7 +747,43 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
       rawUrl,
     };
   }
+  if (type === "plugin") {
+    return buildPluginTarget(
+      url.searchParams.get("plugin") ?? "",
+      url.searchParams.get("panel") ?? "",
+      url.searchParams.get("ctx"),
+      rawUrl,
+    );
+  }
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
+}
+
+/**
+ * Shared plugin-target assembly for the ade:// and https:// parse paths.
+ *
+ * Both ids are validated against the manifest's own rules rather than a local
+ * regex: a link is one of the ways a plugin id reaches a filesystem path, and
+ * two spellings of "valid id" is exactly how a boundary check drifts out of
+ * agreement with the parser that named the directory.
+ */
+function buildPluginTarget(
+  pluginId: string,
+  panelId: string,
+  ctxRaw: string | null,
+  rawUrl: string,
+): ParseResult {
+  if (!isValidPluginId(pluginId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid plugin id" }, rawUrl };
+  }
+  if (!isValidPluginManifestIdentifier(panelId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid panel id" }, rawUrl };
+  }
+  const context = parseDeeplinkPluginContext(ctxRaw);
+  return {
+    ok: true,
+    target: { kind: "plugin", pluginId, panelId, ...(context ? { context } : {}) },
+    rawUrl,
+  };
 }
 
 /** Shared branch-target assembly for the ade:// and https:// parse paths. */
@@ -849,6 +971,8 @@ export function describeTarget(target: DeeplinkTarget): string {
         : `PR #${target.prNumber}`;
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
+    case "plugin":
+      return `${target.pluginId} · ${target.panelId}`;
   }
 }
 
@@ -915,6 +1039,13 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         kind: "linear-issue",
         issueIdentifier: target.issueIdentifier,
         branch: target.branch ?? null,
+      };
+    case "plugin":
+      return {
+        kind: "plugin",
+        pluginId: target.pluginId,
+        panelId: target.panelId,
+        context: target.context ?? null,
       };
   }
 }

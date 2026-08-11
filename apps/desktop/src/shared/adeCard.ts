@@ -318,6 +318,13 @@ function navigationTargetToDeeplinkTarget(
         issueIdentifier: target.issueIdentifier,
         ...(target.branch ? { branch: target.branch } : {}),
       };
+    case "plugin":
+      return {
+        kind: "plugin",
+        pluginId: target.pluginId,
+        panelId: target.panelId,
+        ...(target.context ? { context: target.context } : {}),
+      };
     default:
       // `route` / `files-external` are local-app concepts with no URL form.
       return null;

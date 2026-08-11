@@ -15,6 +15,9 @@ struct SendToMacTarget: Equatable, Identifiable {
     case repoBranch(owner: String, repo: String, branch: String)
     case pr(owner: String, repo: String, number: Int)
     case linearIssue(identifier: String, branch: String?)
+    /// A panel of a plugin. The context a link may carry is not described here:
+    /// it is a detail for the panel to render, never a name for the card.
+    case plugin(pluginId: String, panelId: String)
     case other
   }
 
@@ -115,6 +118,14 @@ struct SendToMacTarget: Equatable, Identifiable {
       } else {
         self.kind = .other
       }
+    case "plugin":
+      if parts.count >= 2,
+         ADEDeepLinkURLParsing.isValidPluginId(parts[0]),
+         ADEDeepLinkURLParsing.isValidPluginPanelId(parts[1]) {
+        self.kind = .plugin(pluginId: parts[0], panelId: parts[1])
+      } else {
+        self.kind = .other
+      }
     default:
       self.kind = .other
     }
@@ -161,6 +172,14 @@ struct SendToMacTarget: Equatable, Identifiable {
       guard let identifier = query["issue"], !identifier.isEmpty else { return .other }
       let branch = query["branch"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       return .linearIssue(identifier: identifier, branch: branch?.isEmpty == false ? branch : nil)
+    case "plugin":
+      guard let pluginId = query["plugin"],
+            let panelId = query["panel"],
+            ADEDeepLinkURLParsing.isValidPluginId(pluginId),
+            ADEDeepLinkURLParsing.isValidPluginPanelId(panelId) else {
+        return .other
+      }
+      return .plugin(pluginId: pluginId, panelId: panelId)
     default:
       return .other
     }
@@ -181,6 +200,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     case .repoBranch(_, _, _): return "Branch shared with you"
     case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
+    case .plugin: return "Plugin panel shared with you"
     case .other: return "Shared from your computer"
     }
   }
@@ -218,6 +238,8 @@ struct SendToMacTarget: Equatable, Identifiable {
         return "\(identifier) on \(branch)"
       }
       return identifier
+    case .plugin(let pluginId, let panelId):
+      return "\(pluginId) · \(panelId)"
     case .other:
       return url.absoluteString
     }
@@ -239,7 +261,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     switch kind {
     case .lane, .session, .commit, .artifact:
       return envelope?.repoSlug == nil
-    case .file, .repoBranch, .pr, .linearIssue, .other:
+    case .file, .repoBranch, .pr, .linearIssue, .plugin, .other:
       return true
     }
   }
@@ -347,6 +369,7 @@ struct SendToMacCard: View {
     case .repoBranch: return "arrow.triangle.branch"
     case .pr: return "arrow.triangle.merge"
     case .linearIssue: return "smallcircle.filled.circle"
+    case .plugin: return "puzzlepiece.extension"
     case .other: return "link"
     }
   }

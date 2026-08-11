@@ -17,6 +17,7 @@ type OpenTarget =
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
+  | { kind: "plugin"; pluginId: string; panelId: string; ctx?: string }
   | { kind: "unknown" };
 
 type OpenEnvelope = {
@@ -121,6 +122,18 @@ function parseQuery(search: string): OpenTarget {
         : { kind: "linear-issue", issueIdentifier };
     }
   }
+  if (type === "plugin") {
+    const pluginId = params.get("plugin") ?? "";
+    const panelId = params.get("panel") ?? "";
+    // The context is carried through untouched: this page hands the link to the
+    // desktop app, which is the thing that decides whether to keep it.
+    const ctx = params.get("ctx") ?? "";
+    if (pluginId && panelId) {
+      return ctx
+        ? { kind: "plugin", pluginId, panelId, ctx }
+        : { kind: "plugin", pluginId, panelId };
+    }
+  }
   return { kind: "unknown" };
 }
 
@@ -171,6 +184,10 @@ function buildAdeUrl(target: OpenTarget): string | null {
     case "linear-issue": {
       const base = `ade://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
+    }
+    case "plugin": {
+      const base = `ade://plugin/${encodeURIComponent(target.pluginId)}/${encodeURIComponent(target.panelId)}`;
+      return appendQuery(base, [["ctx", target.ctx]]);
     }
     case "unknown":
       return null;
@@ -248,6 +265,13 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
       return {
         title: `Open ${target.issueIdentifier} in ADE`,
         summary: target.branch ? `Branch ${target.branch}` : "Linear issue",
+      };
+    case "plugin":
+      return {
+        title: `Open ${target.pluginId} in ADE`,
+        summary: "Plugin panel — needs the plugin installed on that computer",
+        valueLabel: "Panel",
+        value: target.panelId,
       };
     case "unknown":
       return {

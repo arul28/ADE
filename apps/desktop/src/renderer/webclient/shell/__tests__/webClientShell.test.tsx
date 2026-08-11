@@ -360,15 +360,34 @@ describe("web route translation", () => {
     { kind: "linear-issue", issueIdentifier: "ADE-123", branch: "arul/ade-123" },
   ];
 
+  /** Every target in this block is routable; a null here IS the failure. */
+  function webPath(target: DeeplinkTarget): string {
+    const path = targetToWebPath(target);
+    if (path == null) throw new Error(`no web route for target kind ${target.kind}`);
+    return path;
+  }
+
   it("round-trips every supported deeplink shape through shared App routes", () => {
-    const paths = targets.map(targetToWebPath);
+    const paths = targets.map(webPath);
     expect(paths.map(parseWebPath)).toEqual(targets);
     expect(paths[0]).toBe("/lanes?laneId=11111111-2222-3333-4444-555555555555");
     expect(paths[1]).toBe("/work?sessionId=sess-abc123");
   });
 
+  it("has no web route for a plugin panel", () => {
+    // The hosted client does not host plugin tabs, so the honest answer is
+    // "nowhere" — not a route that lands the reader somewhere else.
+    expect(targetToWebPath({
+      kind: "plugin",
+      pluginId: "ade-graph",
+      panelId: "overview",
+      context: { issue: "ISS-14" },
+    })).toBeNull();
+    expect(parseWebPath("/plugin/ade-graph?panel=overview")).toBeNull();
+  });
+
   it("preserves repository identity for PR routes while ignoring desktop-only extras", () => {
-    const path = targetToWebPath({
+    const path = webPath({
       kind: "pr",
       repoOwner: "arul",
       repoName: "ade",

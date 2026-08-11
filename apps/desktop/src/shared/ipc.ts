@@ -434,6 +434,13 @@ export const IPC = {
   pluginListContributions: "ade.plugin.listContributions",
   pluginInspectSource: "ade.plugin.inspectSource",
   pluginReload: "ade.plugin.reload",
+  // The sandboxed webview tier. Separate from the channels above because the
+  // sender is a plugin's own page, not the renderer: these three are the only
+  // ones a guest can reach, and the host answers them against the sender's
+  // origin rather than anything the payload claims.
+  pluginWebviewBridge: "ade.plugin.webview.bridge",
+  pluginWebviewHandshake: "ade.plugin.webview.handshake",
+  pluginWebviewEvent: "ade.plugin.webview.event",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",

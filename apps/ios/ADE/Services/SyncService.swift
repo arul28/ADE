@@ -3696,6 +3696,9 @@ final class SyncService: ObservableObject {
   /// `RootTab` is wired into analytics, persistence and badges, and a plugin
   /// must not be able to add itself to that set.
   @Published var presentedPluginPane: PluginPaneRequest?
+  /// A plugin link the attached machine cannot serve, waiting to be said out
+  /// loud. Set by `DeepLinkRouter` and cleared by whoever shows it.
+  @Published var pluginLinkRefusal: PluginLinkRefusal?
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()

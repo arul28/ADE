@@ -83,14 +83,17 @@ struct PluginPresenceListEntry: Decodable, Equatable, Identifiable {
 struct PluginInvokeResult: Decodable, Equatable {
   var ok = true
   var message: String?
+  /// Where the action asked the pane to go next, when it asked at all.
+  var navigate: PluginInvokeNavigation?
 
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error
+    case ok, message, error, result, navigate
   }
 
-  init(ok: Bool = true, message: String? = nil) {
+  init(ok: Bool = true, message: String? = nil, navigate: PluginInvokeNavigation? = nil) {
     self.ok = ok
     self.message = message
+    self.navigate = navigate
   }
 
   init(from decoder: Decoder) throws {
@@ -102,16 +105,153 @@ struct PluginInvokeResult: Decodable, Equatable {
       self.message = error
       ok = false
     }
+    // One level down, unlike desktop. `plugins.invoke` answers
+    // `{ok, message?, result}` where `result` is the plugin handler's own
+    // return — the value `readPluginActionNavigation` is given on the clients
+    // that call the handler directly. Reading `navigate` beside `ok` would find
+    // the envelope's field, which no plugin writes.
+    //
+    // A navigation this build cannot use drops on its own; the sentence and the
+    // outcome above it are what the user is owed either way.
+    if let handlerResult = try? container.nestedContainer(keyedBy: CodingKeys.self, forKey: .result) {
+      navigate = (try? handlerResult.decodeIfPresent(PluginInvokeNavigation.self, forKey: .navigate)) ?? nil
+    }
   }
 }
 
-/// What the root sheet is showing. One plugin, opened whole: the sheet picks
-/// the first of its panels and offers the rest in its own picker, so nothing
-/// here names a panel.
+/// Where an action asked the pane to go next. Mirrors `readPluginActionNavigation`
+/// in `apps/desktop/src/shared/plugins/sdk.ts`.
+///
+/// The panel is named without a plugin: an action can only send the reader to a
+/// panel of the plugin whose button they pressed.
+struct PluginInvokeNavigation: Decodable, Equatable {
+  var panelId: String
+  var context: [String: RemoteJSONValue]?
+
+  private enum CodingKeys: String, CodingKey {
+    case panelId, context
+  }
+
+  init(panelId: String, context: [String: RemoteJSONValue]? = nil) {
+    self.panelId = panelId
+    self.context = context
+  }
+
+  /// Throws on a panel id no link could address either — the whole navigation
+  /// goes, because half of one would send the reader nowhere in particular. The
+  /// context is the tolerant half and drops by itself.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let panelId = try container.decode(String.self, forKey: .panelId)
+    guard ADEDeepLinkURLParsing.isValidPluginPanelId(panelId) else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .panelId,
+        in: container,
+        debugDescription: "Not a panel id."
+      )
+    }
+    self.panelId = panelId
+    context = PluginPanelContext.read(
+      value: (try? container.decodeIfPresent(RemoteJSONValue.self, forKey: .context)) ?? nil
+    )
+  }
+}
+
+/// The render context a panel is opened with — from a `ade://plugin/…?ctx=`
+/// link, or from the `navigate` an action returned.
+///
+/// Values are ``RemoteJSONValue``, the app's loose-JSON type, rather than
+/// `[String: Any]`: it is `Equatable` (which every model holding a context
+/// needs) and its decoder keeps a JSON `true` from arriving as the number 1,
+/// which an `NSNumber` cast cannot.
+enum PluginPanelContext {
+  /// Mirrors `PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES` in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  static let maxBytes = 2_048
+
+  /// Tolerant by contract: over the ceiling, unparseable, or not an object all
+  /// read as absent. Every caller keeps the panel and loses only the context —
+  /// dropping it costs a detail, refusing the link costs the page.
+  ///
+  /// An empty object reads as absent too. There is nothing to render and
+  /// nothing to send, and it is what the desktop link builder omits.
+  static func read(json raw: String?) -> [String: RemoteJSONValue]? {
+    guard let raw, !raw.isEmpty else { return nil }
+    // Measured before decoding, so an oversized context is refused rather than
+    // expanded first.
+    guard raw.utf8.count <= maxBytes, let data = raw.data(using: .utf8) else { return nil }
+    return decode(data)
+  }
+
+  /// The same reading for a context that arrived already decoded.
+  static func read(value: RemoteJSONValue?) -> [String: RemoteJSONValue]? {
+    guard case let .object(object) = value, !object.isEmpty else { return nil }
+    return json(object) == nil ? nil : object
+  }
+
+  /// The same reading for a context that arrived as raw `JSONSerialization`
+  /// output, which is what the transcript parser walks.
+  static func read(object raw: Any?) -> [String: RemoteJSONValue]? {
+    guard let raw,
+          JSONSerialization.isValidJSONObject(raw),
+          let data = try? adeJSONData(withJSONObject: raw),
+          data.count <= maxBytes else {
+      return nil
+    }
+    return decode(data)
+  }
+
+  /// The context as the value of a `ctx=` parameter. Keys sort so the same
+  /// context always mints the same link.
+  static func json(_ context: [String: RemoteJSONValue]) -> String? {
+    guard !context.isEmpty,
+          let data = try? adeJSONData(withJSONObject: payload(context), options: [.sortedKeys]),
+          data.count <= maxBytes else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
+  /// The context as it rides on an action — under `context`, the field name
+  /// `PluginPanelHost.tsx` sends, so a plugin sees one shape wherever the
+  /// button was pressed.
+  static func payload(_ context: [String: RemoteJSONValue]) -> [String: Any] {
+    context.mapValues { foundationObject(from: $0) }
+  }
+
+  private static func decode(_ data: Data) -> [String: RemoteJSONValue]? {
+    guard let object = try? JSONDecoder().decode([String: RemoteJSONValue].self, from: data),
+          !object.isEmpty else {
+      return nil
+    }
+    return object
+  }
+}
+
+/// What the root sheet is showing: one panel of one plugin, with the context it
+/// was opened with.
 struct PluginPaneRequest: Identifiable, Equatable {
-  var id: String { pluginId }
+  /// The panel is part of the identity because two panels of one plugin are two
+  /// different sheets — a link into a second panel has to replace the first,
+  /// not reuse the store that is already showing another one.
+  var id: String { "\(pluginId)|\(panelId ?? "")" }
   var pluginId: String
+  /// The panel to open, or nothing to open the plugin whole: the sheet then
+  /// picks the first of its panels and offers the rest in its own picker, which
+  /// is what the top-bar entry point wants.
+  var panelId: String?
   /// Label carried from the entry point so the sheet has a title before its
   /// first read finishes.
   var title: String
+  var context: [String: RemoteJSONValue] = [:]
+}
+
+/// A plugin link this phone will not open, and the name to say it under.
+///
+/// Refused out loud rather than dropped: the link already resolved to the
+/// machine this phone is attached to, so there is no other computer to offer it
+/// to and silence would read as a broken link.
+struct PluginLinkRefusal: Identifiable, Equatable {
+  let id = UUID()
+  var pluginLabel: String
 }

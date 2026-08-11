@@ -21,6 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import {
+  VOCAB_CONTEXT_COLLECTION,
   VOCAB_LIMITS,
   bindingKey,
   boundRowValues,
@@ -29,6 +30,7 @@ import {
   coerceBoundTableRow,
   distinctBindings,
   parsePluginPanel,
+  vocabContextRows,
   type VocabAction,
   type VocabBinding,
   type VocabFallback,
@@ -64,6 +66,25 @@ export type PluginPaneCollectionMap = Map<string, PluginPaneCollectionRow[]>;
  * `app.tsx` reaches for the pane rather than into the desktop tree.
  */
 export { bindingKey, distinctBindings };
+
+/**
+ * Rows for one binding of a panel about to be drawn.
+ *
+ * `$context` is ADE's, not the plugin's: the host has no collection under that
+ * name and asking for one would return nothing. Resolving it here rather than at
+ * the fetch site is what keeps the terminal's `$context` the same value the
+ * panel's actions carry.
+ */
+export function pluginPaneBindingRows(
+  binding: VocabBinding,
+  context: Record<string, unknown> | null | undefined,
+  fetchRows: () => Promise<PluginPaneCollectionRow[]>,
+): Promise<PluginPaneCollectionRow[]> {
+  if (binding.collection === VOCAB_CONTEXT_COLLECTION) {
+    return Promise.resolve(vocabContextRows(context));
+  }
+  return fetchRows();
+}
 
 /* ── What the host gave us ──────────────────────────────────────────────── */
 
@@ -591,6 +612,12 @@ export type PluginPaneInput = {
   panelId: string;
   fetch: PluginPanelFetch;
   collections: PluginPaneCollectionMap;
+  /**
+   * What the panel was opened with: a `plugin` deeplink's `?ctx=`, or the
+   * `{navigate:{context}}` an action returned. Bindable as `$context` and
+   * attached to every action this pane dispatches — see `vocabulary.ts`.
+   */
+  context?: Record<string, unknown> | null;
   values: Record<string, string>;
   /** Interactive index that currently owns the composer, if any. */
   editing?: number | null;

@@ -13,10 +13,13 @@ import {
 } from "../../lib/pluginRuntimeBridge";
 import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
+  VOCAB_CONTEXT_COLLECTION,
   bindingKey,
   distinctBindings,
+  vocabContextRows,
   type VocabAction,
 } from "../../../shared/plugins/vocabulary";
+import { readPluginActionNavigation } from "../../../shared/plugins/sdk";
 
 /**
  * Data plumbing for one plugin panel.
@@ -60,6 +63,8 @@ export function PluginPanelHost({
   active,
   recoveryAction,
   surfaceContext,
+  renderContext,
+  onNavigate,
 }: {
   pluginId: string;
   panelId: string;
@@ -67,6 +72,19 @@ export function PluginPanelHost({
   active: boolean;
   /** Passed through to the fallback card, e.g. a Restart button. */
   recoveryAction?: React.ReactNode;
+  /**
+   * The context this panel was opened with — from a `plugin` deeplink's `?ctx=`
+   * or from the `{navigate:{context}}` an action returned. Readable by the
+   * schema through the `$context` binding, and attached to every action the
+   * panel dispatches. See `shared/plugins/vocabulary.ts`.
+   */
+  renderContext?: Record<string, unknown> | null;
+  /**
+   * Where to send the reader when an action asks for it. Absent means the host
+   * cannot navigate — a socket's detail section is already where it is going —
+   * and the request is then dropped rather than half-honoured.
+   */
+  onNavigate?: (navigation: { panelId: string; context?: Record<string, unknown> }) => void;
   /**
    * The typed surface context, when this panel is mounted at a socket rather
    * than as a tab. It rides along on every action the panel dispatches, so a
@@ -80,10 +98,19 @@ export function PluginPanelHost({
   const [refreshToken, setRefreshToken] = React.useState(0);
   const activeRef = React.useRef(active);
   activeRef.current = active;
+  const contextRef = React.useRef(renderContext ?? null);
+  contextRef.current = renderContext ?? null;
 
   React.useEffect(() => {
     setState(INITIAL_STATE);
   }, [pluginId, panelId]);
+
+  // A context that arrives after the panel has loaded — a second deeplink into
+  // the same panel — has to re-run the fetch, or `$context` keeps rendering the
+  // first one.
+  React.useEffect(() => {
+    setRefreshToken((token) => token + 1);
+  }, [renderContext]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -108,6 +135,13 @@ export function PluginPanelHost({
         if (bindings.length > 0) {
           const results = await Promise.all(
             bindings.map(async (binding) => {
+              // `$context` is not a collection and asking the host for one would
+              // be a guaranteed miss — it is the context this panel was opened
+              // with, synthesized here so a schema can render it with the
+              // components that already exist.
+              if (binding.collection === VOCAB_CONTEXT_COLLECTION) {
+                return [bindingKey(binding), vocabContextRows(contextRef.current)] as const;
+              }
               const fetched = await readPluginCollection(pluginId, panelId, binding.collection, {
                 ...(binding.keyPrefix !== undefined ? { keyPrefix: binding.keyPrefix } : {}),
                 ...(binding.limit !== undefined ? { limit: binding.limit } : {}),
@@ -149,17 +183,24 @@ export function PluginPanelHost({
 
   const dispatch = React.useCallback(
     async (action: VocabAction, extraArgs?: VocabActionArgs) => {
-      await invokePluginAction(pluginId, action.action, {
+      // One `context` field, filled by whichever the panel has: a socket's typed
+      // surface context when it is mounted at a socket, otherwise the context it
+      // was opened with. A panel is never both at once, and sending two shapes
+      // under one name would make the plugin guess which it received.
+      const context = surfaceContext ?? renderContext ?? null;
+      const result = await invokePluginAction(pluginId, action.action, {
         ...action.args,
         ...extraArgs,
-        ...(surfaceContext ? { context: surfaceContext } : {}),
+        ...(context ? { context } : {}),
       });
       // The host publishes a change event for anything it wrote, but an action
       // whose only effect is outside the plugin's own tables would otherwise
       // leave a stale panel on screen.
       setRefreshToken((token) => token + 1);
+      const navigation = readPluginActionNavigation(result);
+      if (navigation) onNavigate?.(navigation);
     },
-    [pluginId, surfaceContext],
+    [onNavigate, pluginId, renderContext, surfaceContext],
   );
 
   const context = React.useMemo(

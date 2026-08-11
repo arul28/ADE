@@ -42,6 +42,10 @@ import {
   type OrchestrationSpawnAgentRequest,
 } from "../../../../shared/types/orchestration";
 import type { DeeplinkTarget } from "../../../../shared/deeplinks";
+import {
+  isValidPluginId,
+  isValidPluginManifestIdentifier,
+} from "../../../../shared/plugins/manifest";
 import type {
   createOrchestrationService,
   NewOutboxEntry,
@@ -2485,6 +2489,15 @@ const deeplinkTargetSchema = z.discriminatedUnion("kind", [
     kind: z.literal("linear-issue"),
     issueIdentifier: z.string().min(1),
     branch: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("plugin"),
+    // Both ids are checked against the manifest's own rules rather than by
+    // length: they name a directory and a declared panel, and the tool is the
+    // one boundary where an agent's free text becomes either.
+    pluginId: z.string().refine(isValidPluginId, "not a plugin id"),
+    panelId: z.string().refine(isValidPluginManifestIdentifier, "not a panel id"),
+    context: z.record(z.string(), z.unknown()).optional(),
   }),
 ]);
 // Compile-time guard: the inferred target type must stay assignable to the

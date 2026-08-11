@@ -17,7 +17,11 @@ export default defineConfig({
     "main/pluginChildBootstrap": "src/main/services/plugins/childRuntime/pluginChildBootstrap.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
-    "preload/preload": "src/preload/preload.ts"
+    "preload/preload": "src/preload/preload.ts",
+    // The plugin webview guest's own preload. A separate entry, never a chunk of
+    // the main one: it is loaded into an untrusted page and must publish
+    // `adePlugin` and nothing else.
+    "preload/pluginWebviewPreload": "src/preload/pluginWebviewPreload.ts"
   },
   format: ["cjs"],
   platform: "node",

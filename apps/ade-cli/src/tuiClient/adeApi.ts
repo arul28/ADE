@@ -1437,7 +1437,9 @@ export async function invokePluginAction(
   connection: AdeCodeConnection,
   pluginId: string,
   action: string,
-  args: Record<string, string | number | boolean> = {},
+  // `unknown` rather than a scalar map: a panel's `context` rides along as one
+  // of these args, and it is a small object.
+  args: Record<string, unknown> = {},
 ): Promise<unknown> {
   // MUTATING (D19): a plugin handler may write anything, so this one is allowed
   // to reject and the caller surfaces the rejection.

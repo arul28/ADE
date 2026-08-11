@@ -62,6 +62,7 @@ import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
+import { readPluginActionNavigation } from "../../../desktop/src/shared/plugins/sdk";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -384,6 +385,7 @@ import {
   pluginFieldUsesComposer,
   pluginFormValueKey,
   pluginInteractiveKey,
+  pluginPaneBindingRows,
   PLUGIN_PANE_TOO_NARROW,
   type PluginPaneCollectionMap,
   type PluginPaneInput,
@@ -9714,11 +9716,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * mid-edit cannot wipe the field they are in.
    */
   const loadPluginPane = useCallback(async (
-    target: { pluginId: string; displayName: string; panelId: string },
+    target: {
+      pluginId: string;
+      displayName: string;
+      panelId: string;
+      context?: Record<string, unknown> | null;
+    },
     options: { announce?: boolean; open?: boolean } = {},
   ): Promise<void> => {
     const conn = connectionRef.current;
     if (!conn) return;
+    const context = target.context ?? null;
     const fetched = await readPluginPanel(conn, target.pluginId, target.panelId);
     const collections: PluginPaneCollectionMap = new Map();
     if (fetched.state === "ok") {
@@ -9728,7 +9736,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       for (const binding of distinctBindings(fetched.record.schema)) {
         collections.set(
           bindingKey(binding),
-          await readPluginCollection(conn, target.pluginId, binding),
+          await pluginPaneBindingRows(
+            binding,
+            context,
+            () => readPluginCollection(conn, target.pluginId, binding),
+          ),
         );
       }
     }
@@ -9742,6 +9754,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         panelId: target.panelId,
         fetch: fetched,
         collections,
+        context,
         values: samePanel ? current.state.values : {},
         editing: samePanel ? current.state.editing ?? null : null,
         width: prospectiveRightPaneWidth,
@@ -9760,6 +9773,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       pluginId: current.state.pluginId,
       displayName: current.state.displayName,
       panelId: current.state.panelId,
+      context: current.state.context ?? null,
     }, options);
   }, [loadPluginPane]);
 
@@ -9886,7 +9900,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     pluginConfirmArmedRef.current = null;
 
-    const args: Record<string, string | number | boolean> = { ...(action.args ?? {}) };
+    const args: Record<string, unknown> = { ...(action.args ?? {}) };
+    // The panel's own context rides along as `context`, the same field a socket's
+    // surface context uses, so a button pressed on a context-carrying panel
+    // reaches the plugin knowing what it was looking at.
+    if (current.state.context) args.context = current.state.context;
     if (interactive.kind === "submit") {
       for (const field of interactive.fields) {
         const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
@@ -9900,15 +9918,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     updatePluginPaneState((state) => ({ ...state, editing: null }));
     try {
-      await invokePluginAction(conn, current.state.pluginId, action.action, args);
+      const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
       addNotice(`${interactive.label} ran.`, "success");
+      // An action may ask to be followed to another panel of its own plugin.
+      // Reload rather than refresh: the destination is a different panel, and
+      // it arrives with the context the action handed us.
+      const navigation = readPluginActionNavigation(result);
+      if (navigation) {
+        setRightSelectionIndex(0);
+        await loadPluginPane({
+          pluginId: current.state.pluginId,
+          displayName: current.state.displayName,
+          panelId: navigation.panelId,
+          context: navigation.context ?? null,
+        }, { open: true });
+        return;
+      }
       await refreshPluginPane();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setRightPane((pane) => (pane.kind === "plugin-panel" ? { ...pane, error: message } : pane));
       addNotice(message, "error");
     }
-  }, [addNotice, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
+  }, [addNotice, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
 
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
@@ -13215,11 +13247,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [activeLane?.worktreePath, addImageMention, addNotice, focusChat, project.workspaceRoot, remoteLaunch]);
 
   // Resolve the deeplink target for the row/pane currently focused in the
-  // lanes-picker or PR-picker contexts. Returns `null` when the focus is on
-  // something the deeplink scheme does not cover (chat preview, slash-prompt
-  // pane, etc.) — keep this conservative so we never copy a misleading URL.
+  // lanes-picker, PR-picker or plugin-panel contexts. Returns `null` when the
+  // focus is on something the deeplink scheme does not cover (chat preview,
+  // slash-prompt pane, etc.) — keep this conservative so we never copy a
+  // misleading URL.
   const resolveFocusedDeeplinkRow = useCallback((): DeeplinkRow | null => {
     const pane = activePaneRef.current;
+
+    // An open plugin panel is addressable: the pane knows the plugin and the
+    // panel, which is the whole `plugin` target.
+    if (pane === "details" && rightPane.kind === "plugin-panel") {
+      return {
+        kind: "plugin",
+        pluginId: rightPane.state.pluginId,
+        panelId: rightPane.state.panelId,
+        ...(rightPane.state.context ? { context: rightPane.state.context } : {}),
+      };
+    }
 
     // PR-picker context: the lane-details right pane is showing and the focus
     // ring is on its PR row. We prefer this over the lane row when both are
@@ -13544,27 +13588,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (action === "app:copyAdeDeeplink") {
-      // A plugin panel carries its own link in the schema's required fallback —
-      // the plugin's word on where this content lives in full. There is no
-      // `plugin` deeplink target to mint one from, so this is the only link.
-      const pluginPane = rightPaneRef.current;
-      if (activePaneRef.current === "details" && pluginPane.kind === "plugin-panel") {
-        const link = pluginPane.model.fallback?.deeplink;
-        if (!link) {
-          addNotice("This panel has no link to copy.", "info");
-          return true;
-        }
-        if (copyToClipboard(link)) addNotice("Plugin panel link copied", "success");
-        else addNotice(`Plugin panel link: ${link}`, "info");
-        return true;
-      }
       const row = resolveFocusedDeeplinkRow();
       if (!row) {
-        addNotice("No lane or PR row is focused to copy a deeplink for.", "info");
+        addNotice("No lane, PR or plugin panel is focused to copy a deeplink for.", "info");
         return true;
       }
       const url = buildDeeplinkForRow(row);
       if (!url) {
+        // A panel whose ids the grammar will not carry still has the plugin's
+        // own word on where this content lives, in the schema's fallback. Only
+        // for a plugin row: an unlinkable PR row must not copy whatever panel
+        // happens to be open in the right pane.
+        const pluginPane = rightPaneRef.current;
+        const link = row.kind === "plugin" && pluginPane.kind === "plugin-panel"
+          ? pluginPane.model.fallback?.deeplink
+          : null;
+        if (link) {
+          if (copyToClipboard(link)) addNotice("Plugin panel link copied", "success");
+          else addNotice(`Plugin panel link: ${link}`, "info");
+          return true;
+        }
         addNotice("Cannot build an ADE deeplink for the focused row.", "error");
         return true;
       }
@@ -13578,12 +13621,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (action === "app:copyAdeWebLink") {
       const row = resolveFocusedDeeplinkRow();
       if (!row) {
-        addNotice("No lane or PR row is focused to copy a web link for.", "info");
+        addNotice("No lane, PR or plugin panel is focused to copy a web link for.", "info");
         return true;
       }
       const url = buildWebClientUrlForRow(row);
       if (!url) {
-        addNotice("Cannot build an ADE web link for the focused row.", "error");
+        addNotice(
+          row.kind === "plugin"
+            ? "Plugin panels only open on the desktop app. Copy the ADE link instead."
+            : "Cannot build an ADE web link for the focused row.",
+          row.kind === "plugin" ? "info" : "error",
+        );
         return true;
       }
       if (copyToClipboard(url)) {

@@ -511,6 +511,10 @@ enum WorkAdeCardNavTarget: Equatable {
   )
   case branch(repoOwner: String, repoName: String, branch: String, prNumber: Int?)
   case linearIssue(issueIdentifier: String, branch: String?)
+  /// A panel of a plugin, with the context the panel should render against. The
+  /// context is carried rather than resolved here: whether the plugin exists at
+  /// all is the attached machine's answer, given when the link is followed.
+  case plugin(pluginId: String, panelId: String, context: [String: RemoteJSONValue]?)
 }
 
 /// One `ade_card` transcript row.
