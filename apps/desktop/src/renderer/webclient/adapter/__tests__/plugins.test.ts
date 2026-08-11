@@ -288,6 +288,33 @@ describe("web plugin namespace", () => {
     });
   });
 
+  it("installs a bundled plugin by id, not as a repository URL", async () => {
+    fake.commandResults.set("plugins.install", {
+      pluginId: "ade-theme-ink",
+      version: "1.0.0",
+      enabled: true,
+      displayName: "Ink",
+      icon: "",
+      accent: "",
+      source: "builtin",
+      installedAt: "2026-08-11T00:00:00.000Z",
+    });
+    mounted = mountAdapter(fake);
+
+    await installPlugin({ source: "ade-theme-ink", version: "1.0.0" });
+
+    // The plugins ADE bundles have no repository to clone from — the honest
+    // source is the copy on the machine performing the install, and only that
+    // machine can resolve an id to it. Sent as a git URL this would fail with
+    // "unsupported git URL" where it should say "that computer does not have
+    // this plugin". `version` rides the registry field, not `ref`: the host
+    // resolves a version against the directory before it has a ref at all.
+    expect(fake.commandCalls[0]).toEqual({
+      action: "plugins.install",
+      args: { kind: "registry", pluginId: "ade-theme-ink", version: "1.0.0" },
+    });
+  });
+
   it("renders manifest detail when the host sends it, and stays honest when it does not", async () => {
     fake.commandResults.set("plugins.list", {
       plugins: [

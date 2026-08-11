@@ -104,10 +104,13 @@ installer owes two rules:
   the machine proves nothing about what the directory currently vouches for, and
   a cold cache would silently downgrade every official install to unverified.
 - **Refuse what cannot be verified.** For an id the directory publishes as
-  official, a requested version with no digest — and a directory that could not
-  be reached at all — must refuse the install rather than proceed unverified.
-  Without that, "we verify official plugins" means "we verify them except when
-  offline, and except on the version an attacker picked".
+  official, a requested version with no digest refuses the install rather than
+  proceeding unverified — otherwise "we verify official plugins" would mean "we
+  verify them except on the version an attacker picked". When the directory
+  could not be reached at all there is no entry to read, so the check falls back
+  to the staged manifest's own `official` claim and refuses on that: a plugin
+  lying about being official gets refused, and one lying the other way was never
+  going to be verified anyway, so reading the claim there can only add refusals.
 
 The tree digest is defined as:
 

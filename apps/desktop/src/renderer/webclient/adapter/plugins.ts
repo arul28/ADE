@@ -74,6 +74,16 @@ const PANEL_ROWS_MAX_PANELS = 32;
  */
 const PLUGINS_UNAVAILABLE_CODE = "plugins_unavailable";
 
+/**
+ * A source that is a bare plugin id rather than a place to fetch from.
+ *
+ * Kept byte-identical to `isValidPluginId` in `shared/plugins/manifest.ts`. An
+ * id here is not a guess about what the reader meant: the Marketplace sends one
+ * for a plugin ADE bundles, whose honest source is the copy on the target
+ * machine's disk, not a repository URL that has to resolve over the network.
+ */
+const PLUGIN_ID_SOURCE = /^[a-z][a-z0-9-]{0,63}$/;
+
 /** A read this transport cannot serve. Never an empty result — see above. */
 function pluginsUnavailable(): () => never {
   return () => {
@@ -386,23 +396,35 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   // cannot serve them; this is the second line of defence for the window
   // between a host handoff and the next descriptor refresh.
   const install = async (input: PluginInstallRequest): Promise<PluginInstallResult> => {
+    // The bridge names a SOURCE STRING; the wire names a source KIND, and this
+    // is where one becomes the other.
+    //
+    // A bare plugin id is `kind: "registry"` — the id names a plugin, not a
+    // place, and the machine performing the install is the only one that can
+    // resolve it (from the directory, or from the copy it bundles). Sending it
+    // as a git URL would work only by accident of the host being forgiving, and
+    // would fail with "unsupported git URL" where it should say "this computer
+    // does not have that plugin".
+    //
+    // Anything else is `kind: "git"`. A filesystem path is deliberately not
+    // reachable from a browser: there is no shared filesystem, so a path here
+    // would name a file on the wrong computer.
+    //
+    // VERSION is carried in both branches and dropped in neither, because a
+    // path that drops it silently installs whatever the default branch holds
+    // today. What it MEANS differs by kind, which is the whole reason the two
+    // fields have different names: for git it is the `ref` — a release is cut
+    // from a tag, so checking that tag out is the only thing an installer can
+    // do with a version — and for a registry id it is the `version`, which the
+    // host resolves against the directory before it has a ref at all.
+    const source = input.source.trim();
+    const byId = PLUGIN_ID_SOURCE.test(source);
     const record = await commands.call<RemotePluginRecord>(
       "plugins.install",
-      // The bridge names a SOURCE STRING; the wire names a source KIND. A
-      // filesystem path cannot be installed from a browser — there is no shared
-      // filesystem — so a non-URL source is a git source or nothing.
-      //
-      // VERSION → REF, everywhere. A directory entry's `version` is the tag its
-      // release was cut from, and the only thing an installer can do with a
-      // version is check that tag out — so this is the one mapping in the
-      // product: `PluginInstallRequest.version` becomes the git `ref`, and
-      // nothing downstream re-interprets it. (The desktop path must agree; a
-      // path that DROPS the version silently installs the default branch, which
-      // is how "install 1.2.0" ends up running whatever main holds today.)
       {
-        kind: "git",
-        url: input.source,
-        ...(input.version ? { ref: input.version } : {}),
+        ...(byId
+          ? { kind: "registry", pluginId: source, ...(input.version ? { version: input.version } : {}) }
+          : { kind: "git", url: source, ...(input.version ? { ref: input.version } : {}) }),
         // Forwarded by the host to the machine it names, so the Marketplace's
         // coverage matrix can install onto a computer other than this one.
         ...(input.machineKey ? { machineKey: input.machineKey } : {}),
