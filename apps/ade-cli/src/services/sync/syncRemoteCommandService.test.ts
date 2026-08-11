@@ -2344,6 +2344,7 @@ describe("session lifecycle remote commands", () => {
   }) {
     const sessionService = {
       settleSession: vi.fn(() => true),
+      settleSessionReportingAbort: vi.fn(() => ({ found: true, settled: true })),
       unsettleSession: vi.fn(() => true),
       settleSessions: vi.fn(() => ["session-1"]),
       unsettleSessions: vi.fn(),
@@ -2369,7 +2370,7 @@ describe("session lifecycle remote commands", () => {
       sessionId: "session-1",
       outcome: "PR #841 merged",
     }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
-    expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", { outcome: "PR #841 merged" });
+    expect(sessionService.settleSessionReportingAbort).toHaveBeenCalledWith("session-1", { outcome: "PR #841 merged" });
 
     await expect(service.execute(makePayload("session.unsettleSession", { sessionId: "session-1" })))
       .resolves.toEqual({ ok: true, sessionId: "session-1" });
@@ -2393,7 +2394,7 @@ describe("session lifecycle remote commands", () => {
     }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
 
     expect(handleSessionSettled).not.toHaveBeenCalled();
-    expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
+    expect(sessionService.settleSessionReportingAbort).toHaveBeenCalledWith("session-1", {});
   });
 
   // `dismissPendingInputBeforeSettle` mutates and can then throw for a row with
