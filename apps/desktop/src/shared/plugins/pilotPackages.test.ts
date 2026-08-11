@@ -302,6 +302,70 @@ describe("installing a package the way `ade plugin install <path>` does", () => 
     const installed = await install.install({ source: path.join(pluginsRoot, "ade-graph") });
     expect(installed.manifest?.surfaces[0]?.builtin).toBe("graph");
   });
+
+  /**
+   * Seeding, pointed at the REAL bundle rather than a synthetic one.
+   *
+   * `pluginFixture.test.ts` proves the seeding mechanism with a fabricated
+   * builtin root, which is the right test for the mechanism and cannot catch the
+   * thing that actually breaks here: this directory's own layout. A package
+   * whose folder name stops matching its manifest id, or a theme that drifts to
+   * the top level and starts installing itself on every machine, both pass every
+   * other test in the suite.
+   */
+  describe("seeding from the real bundle", () => {
+    it("seeds exactly the two default plugins, installed and enabled", () => {
+      const root = pluginsRootScratch();
+      const install = createPluginInstallService({
+        logger: logger(),
+        pluginsRoot: root,
+        builtinPluginsRoot: pluginsRoot,
+      });
+
+      const seeded = install.list();
+      expect(seeded.map((entry) => entry.record.pluginId).sort()).toEqual(["ade-graph", "ade-log-viewer"]);
+      for (const entry of seeded) {
+        expect(entry.record.enabled, entry.record.pluginId).toBe(true);
+        expect(entry.errors, entry.record.pluginId).toEqual([]);
+      }
+    });
+
+    it("leaves the themes opt-in", () => {
+      // Themes live under `plugins/themes/`, one level below the seeder's walk.
+      // That nesting IS the opt-in: a palette nobody chose should not arrive
+      // installed, and the Marketplace is where someone picks one.
+      const root = pluginsRootScratch();
+      const install = createPluginInstallService({
+        logger: logger(),
+        pluginsRoot: root,
+        builtinPluginsRoot: pluginsRoot,
+      });
+      const ids = install.list().map((entry) => entry.record.pluginId);
+      expect(ids).not.toContain("ade-theme-paper");
+      expect(ids).not.toContain("themes");
+    });
+
+    it("does not put a seeded plugin back after the user removes it", () => {
+      const root = pluginsRootScratch();
+      const first = createPluginInstallService({
+        logger: logger(),
+        pluginsRoot: root,
+        builtinPluginsRoot: pluginsRoot,
+      });
+      expect(first.list().map((entry) => entry.record.pluginId)).toContain("ade-graph");
+      first.uninstall("ade-graph");
+
+      // A fresh service re-runs the seed. Without the tombstone the uninstall
+      // would look like it silently failed, which is the one outcome that would
+      // make the slimmed rail impossible to reach.
+      const second = createPluginInstallService({
+        logger: logger(),
+        pluginsRoot: root,
+        builtinPluginsRoot: pluginsRoot,
+      });
+      expect(second.list().map((entry) => entry.record.pluginId)).toEqual(["ade-log-viewer"]);
+    });
+  });
 });
 
 describe("seeded catalogues agree with the packages", () => {
