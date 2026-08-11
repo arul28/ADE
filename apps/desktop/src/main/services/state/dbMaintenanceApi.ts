@@ -89,6 +89,79 @@ export function pruneIngressEventRowsForProject(
 /** Linear/worker/pack/CTO event-log rows older than this are deleted. */
 export const EVENT_LOG_RETENTION_DAYS = 30;
 
+// --- Plugin data budgets --------------------------------------------------
+//
+// The plugin tables are the first schema ADE ships whose rows are authored by
+// third-party code. Every other table has a writer we control, so a runaway
+// row count is a bug we can fix; here it is an input. That inverts the usual
+// enforcement order: the caps below are enforced IN THE WRITER, inside the same
+// transaction as the insert, and a write that would exceed one is REJECTED
+// rather than accepted-then-pruned.
+//
+// Rejecting is the whole point. `plugin_collections` and `plugin_contributions`
+// are cr-sqlite CRRs, so each row also materializes clock and primary-key shadow
+// rows that no prune reclaims — `compactCrsqlTombstones` only ever rebuilds
+// `operations`, and it refuses to run at all while the project has sync peers.
+// Accepting a write and pruning it later would therefore leave the shadow behind
+// and ship it to every peer on the account before the prune ran.
+//
+// The doctor pass (`prunePluginData`) is a floor, not the enforcement: it exists
+// for rows a crashed writer left behind and for plugins that have been
+// uninstalled, not to make room for a plugin that is over budget.
+
+/** Total `value_json` bytes one plugin may hold across all its collections. */
+export const PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN = 2 * 1024 * 1024;
+/** Rows one plugin may hold in `plugin_collections`, across all collections. */
+export const PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN = 4_000;
+/** Bytes of a single `plugin_collections.value_json`. */
+export const PLUGIN_COLLECTION_VALUE_MAX_BYTES = 64 * 1024;
+/** Materialized socket outputs one plugin may hold in `plugin_contributions`. */
+export const PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN = 2_000;
+/** Bytes of a single `plugin_contributions.payload_json`. */
+export const PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES = 4 * 1024;
+/** Panels one plugin may declare. */
+export const PLUGIN_PANELS_MAX_PER_PLUGIN = 32;
+/** Bytes of a single `plugin_panels.schema_json` (matches the vocabulary limit). */
+export const PLUGIN_PANEL_SCHEMA_MAX_BYTES = 64 * 1024;
+/** Per-plugin wire-meter rollups older than this are deleted. */
+export const PLUGIN_WIRE_METER_RETENTION_DAYS = 45;
+
+/** Error code every budget rejection carries, on both the SDK and wire paths. */
+export const PLUGIN_BUDGET_EXCEEDED_CODE = "plugin_budget_exceeded";
+
+/**
+ * Delete rows belonging to plugins that are no longer present in
+ * `plugin_presence` for this machine, plus meter rollups past their window.
+ *
+ * Deliberately keyed on presence rather than on age: plugin rows are user data
+ * for as long as the plugin is installed, and a plugin that syncs once a month
+ * must not lose its collection because nothing wrote to it. `presentPluginIds`
+ * is the caller's machine-local install registry — an EMPTY set means "this
+ * machine has no plugins", which is a legitimate state (nothing installed) and
+ * deletes every plugin row, so callers that cannot read the registry must skip
+ * the prune rather than pass an empty set.
+ *
+ * `deleteRows` executes one parameterized DELETE and reports its change count,
+ * mirroring {@link pruneIngressEventRowsForProject}.
+ */
+export function prunePluginRowsForAbsentPlugins(
+  deleteRows: (sql: string, params: string[]) => number,
+  presentPluginIds: readonly string[],
+  meterCutoffDay: string,
+): number {
+  const placeholders = presentPluginIds.map(() => "?").join(", ");
+  const notPresent = presentPluginIds.length > 0
+    ? `plugin_id not in (${placeholders})`
+    : "1 = 1";
+  const params = [...presentPluginIds];
+  let removed = 0;
+  for (const table of ["plugin_collections", "plugin_contributions", "plugin_panels"]) {
+    removed += deleteRows(`delete from ${table} where ${notPresent}`, params);
+  }
+  removed += deleteRows("delete from plugin_wire_meter_daily where day < ?", [meterCutoffDay]);
+  return removed;
+}
+
 /**
  * Rows deleted per batch by {@link pruneRowsInBatches}.
  *
@@ -178,6 +251,15 @@ export interface DbMaintenanceApi {
    * "has_peers" without touching anything.
    */
   compactCrsqlTombstones(): DbMaintenanceResult;
+  /**
+   * Delete plugin rows left behind by uninstalled plugins and expired wire-meter
+   * rollups. A floor beneath the writer-enforced budgets, not a substitute:
+   * `presentPluginIds` names the plugins this machine still has installed, and
+   * the pass is skipped entirely (skippedReason "unsupported") when the caller
+   * cannot supply that list — an empty list would otherwise read as "delete
+   * everything".
+   */
+  prunePluginData(presentPluginIds: readonly string[] | null): DbMaintenanceResult;
   /**
    * Full VACUUM (+ auto_vacuum=INCREMENTAL activation) when the freelist
    * fraction exceeds `threshold`; bounded incremental_vacuum chunks otherwise.

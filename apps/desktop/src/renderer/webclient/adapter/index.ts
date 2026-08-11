@@ -22,6 +22,7 @@ import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
+import { createPluginsNamespace } from "./plugins";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import type { AdapterEvents, AdapterInfra } from "./types";
@@ -41,6 +42,7 @@ const DOMAIN_EVENTS = {
   files: "filesInvalidated",
   github: "githubInvalidated",
   rebase: "rebaseInvalidated",
+  plugins: "pluginsInvalidated",
 } as const satisfies Record<InvalidationDomain,
   | "lanesInvalidated"
   | "sessionsInvalidated"
@@ -49,6 +51,7 @@ const DOMAIN_EVENTS = {
   | "filesInvalidated"
   | "githubInvalidated"
   | "rebaseInvalidated"
+  | "pluginsInvalidated"
 >;
 
 export function createAdeWebAdapter(
@@ -116,6 +119,7 @@ export function createAdeWebAdapter(
     git,
     conflicts,
     prs: createPrsNamespace(infra),
+    plugins: createPluginsNamespace(infra),
     sync: misc.sync,
     keybindings: misc.keybindings,
     projectSecrets: misc.projectSecrets,

@@ -173,6 +173,7 @@ export type DbBreakdownCategory =
   | "sync_bookkeeping"
   | "review_artifacts"
   | "pr_cache"
+  | "plugins"
   | "core";
 
 export type DbBreakdownEntry = {

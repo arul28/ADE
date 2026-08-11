@@ -5,6 +5,7 @@ import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_BINARY_ENVELOPES_CAPABILITY,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_PLUGIN_TABLES_CAPABILITY,
   type SyncApplicationCompressionCodec,
   type SyncCompressionCodec,
   type SyncEnvelope,
@@ -40,6 +41,9 @@ export { SYNC_CHUNKED_ENVELOPES_CAPABILITY };
 
 /** Hello capability a client declares when it can decode binary envelope frames. */
 export { SYNC_BINARY_ENVELOPES_CAPABILITY };
+
+/** Hello capability a client declares when its schema has the plugin tables. */
+export { SYNC_PLUGIN_TABLES_CAPABILITY };
 
 export { syncFrameByteLength };
 
@@ -165,6 +169,12 @@ export type ParsedSyncEnvelope = {
   payload: unknown;
   raw: SyncEnvelope;
   /**
+   * Optional plugin attribution tag copied off the envelope header. Read by the
+   * host's per-plugin wire meter at `parseSyncEnvelopeFrame`; null on every
+   * frame that is not plugin traffic, which is almost all of them.
+   */
+  pluginId: string | null;
+  /**
    * Raw slice of a binary `envelope_chunk`, whose part is the frame body rather
    * than a base64 string in `payload`. Typed here rather than smuggled through
    * `raw` so the chunk branch does not have to cast its way back to a Buffer.
@@ -256,6 +266,12 @@ type EncodeEnvelopeArgs = {
    * retain byte-for-byte wire behavior.
    */
   compressionCodec?: Exclude<SyncCompressionCodec, "none"> | "none";
+  /**
+   * Attribution tag for plugin traffic. Written into the envelope header once,
+   * next to `projectId`, so both the text and binary encoders carry it without
+   * either having to know about plugins.
+   */
+  pluginId?: string | null;
 };
 
 function asSyncEnvelope(value: unknown): SyncEnvelope {
@@ -267,6 +283,7 @@ type PreparedEnvelope = {
     version: SyncProtocolVersion;
     type: SyncEnvelope["type"];
     projectId?: string;
+    pluginId?: string;
     requestId: string | null;
   };
   /** Non-null only when the payload cleared the compression threshold. */
@@ -285,10 +302,16 @@ function prepareSyncEnvelope(args: EncodeEnvelopeArgs): PreparedEnvelope {
     : null;
   const threshold = Math.max(0, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
   const compressionCodec = args.compressionCodec ?? "gzip";
+  const pluginId = typeof args.pluginId === "string" && args.pluginId.trim().length > 0
+    ? args.pluginId.trim()
+    : null;
   const header = {
     version: SYNC_PROTOCOL_VERSION,
     type: args.type,
     ...(projectId ? { projectId } : {}),
+    // Spread conditionally: an always-present `pluginId: null` would add bytes
+    // to every frame on the wire to describe the absence of a plugin.
+    ...(pluginId ? { pluginId } : {}),
     requestId,
   };
 
@@ -593,6 +616,24 @@ function inflateSyncEnvelopeBody(
  * Anything without the binary magic takes the text path unchanged, so a peer
  * that never negotiated binary frames sees byte-identical behavior.
  */
+/**
+ * Read the optional plugin attribution tag off an envelope header.
+ *
+ * Bounded on purpose. The tag is advisory (it only steers a usage meter), but
+ * it arrives from a peer and is keyed into a per-plugin map, so an unbounded
+ * string would let a peer grow that map one long key at a time. Anything that
+ * is not a short, non-empty string is simply untagged traffic.
+ */
+const MAX_ENVELOPE_PLUGIN_ID_CHARS = 128;
+
+function readEnvelopePluginId(header: Record<string, unknown>): string | null {
+  const raw = header.pluginId;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > MAX_ENVELOPE_PLUGIN_ID_CHARS) return null;
+  return trimmed;
+}
+
 export function parseSyncEnvelopeFrame(raw: unknown): ParsedSyncEnvelope {
   // `ws` delivers RawData as a single Buffer by default, but as Buffer[] when a
   // socket is in fragments mode. Concatenating first means the magic sniff sees
@@ -623,6 +664,7 @@ export function parseSyncBinaryEnvelope(raw: Buffer): ParsedSyncEnvelope {
   const projectId = typeof header.projectId === "string" && header.projectId.trim()
     ? header.projectId.trim()
     : null;
+  const pluginId = readEnvelopePluginId(header);
   const compression = header.compression;
   const type = header.type as SyncEnvelope["type"];
 
@@ -638,6 +680,7 @@ export function parseSyncBinaryEnvelope(raw: Buffer): ParsedSyncEnvelope {
       requestId,
       compression: "none",
       payload: null,
+      pluginId,
       raw: header as unknown as SyncEnvelope,
       binaryChunk: { ...chunk, body: decoded.body },
     };
@@ -660,6 +703,7 @@ export function parseSyncBinaryEnvelope(raw: Buffer): ParsedSyncEnvelope {
     requestId,
     compression,
     payload: safeJsonParse(uncompressed.toString("utf8"), null),
+    pluginId,
     raw: header as unknown as SyncEnvelope,
   };
 }
@@ -691,6 +735,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
   const projectId = typeof decoded.projectId === "string" && decoded.projectId.trim().length > 0
     ? decoded.projectId.trim()
     : null;
+  const pluginId = readEnvelopePluginId(decoded as unknown as Record<string, unknown>);
 
   if (decoded.compression === "gzip" || decoded.compression === "deflate") {
     if (decoded.payloadEncoding !== "base64" || typeof decoded.payload !== "string") {
@@ -717,6 +762,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
       requestId,
       compression: decoded.compression,
       payload: safeJsonParse(uncompressed, null),
+      pluginId,
       raw: decoded,
     };
   }
@@ -732,6 +778,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
     requestId,
     compression: "none",
     payload: decoded.payload,
+    pluginId,
     raw: decoded,
   };
 }

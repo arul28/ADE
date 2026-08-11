@@ -12,10 +12,12 @@ import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
+  PLUGIN_WIRE_METER_RETENTION_DAYS,
   PR_SNAPSHOT_RETENTION_DAYS,
   pruneRowsInBatches,
   REVIEW_ARTIFACT_RETENTION_DAYS,
   pruneIngressEventRowsForProject,
+  prunePluginRowsForAbsentPlugins,
   type DbMaintenanceApi,
   type DbMaintenanceResult,
 } from "./dbMaintenanceApi";
@@ -895,6 +897,14 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
   "session_lifecycle_revisions",
+  // Per-plugin wire bytes measured on THIS machine's sync link. Replicating it
+  // would be circular — the meter rows are themselves CRR rows that generate
+  // the traffic being metered — and a shared (day, plugin) counter cannot work
+  // anyway: cr-sqlite is last-writer-wins per column, so one machine's total
+  // would discard another's, which is the exact under-counting trap documented
+  // for `ai_usage_log` above. Keeping it local also keeps it out of the plugin
+  // SDK's `collections` surface, so a plugin cannot read or forge its own meter.
+  "plugin_wire_meter_daily",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -3965,6 +3975,124 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
+
+  // --- Plugin platform ----------------------------------------------------
+  //
+  // Four tables, all CRR-replicated by `ensureCrrTables`/`listEligibleCrrTables`
+  // discovery (primary key present, not in LOCAL_ONLY_CRR_EXCLUDED_TABLES), so
+  // there is no explicit `crsql_as_crr` call here. Uniqueness lives entirely in
+  // each composite primary key: a CRR-converted table may not carry any UNIQUE
+  // index besides its primary key, so every other constraint is enforced in the
+  // writer (see `pluginTableWriters.ts`). The lookup indexes below are all
+  // non-unique, which cr-sqlite permits.
+  //
+  // Outbound replication of every `plugin_*` table is gated on the peer
+  // advertising the `pluginTables` hello capability (see
+  // SYNC_PLUGIN_TABLES_CAPABILITY in syncHostService). That gate is the reason
+  // these tables can be added at all: an inbound change for a table a peer does
+  // not have THROWS in `applyChanges` below, rolling the whole batch back and
+  // freezing that peer's cursor permanently. A desktop on an older build never
+  // receives a plugin row, and the matching iOS DDL ships in
+  // `apps/ios/ADE/Resources/DatabaseBootstrap.sql` in the same release.
+  //
+  // THE SQL SHAPE OF `plugin_panels` AND `plugin_collections` IS FROZEN. Both
+  // carry an opaque, versioned JSON blob (`schema_json` with `vocab_version`,
+  // `value_json`) precisely so that a richer plugin vocabulary never needs a new
+  // column. Adding one would mean iOS clients on older builds receiving a
+  // changeset naming a column their schema lacks — the same freeze hazard, one
+  // release later and much harder to walk back. Version inside the JSON.
+
+  // Which plugins each machine on the account has installed. Written locally for
+  // this machine and, for other machines, by `pluginPresenceService`'s directory
+  // fan-out — replication is the durable cache beneath that live pull, not the
+  // mechanism (a pure-CRR presence table shows only the machines a changeset
+  // link already reaches). Writers compare before writing so republishing an
+  // unchanged install state does not churn the CRR clock.
+  db.run(`
+    create table if not exists plugin_presence (
+      machine_key text not null,
+      plugin_id text not null,
+      version text not null default '',
+      enabled integer not null default 1,
+      display_name text not null default '',
+      icon text not null default '',
+      accent text not null default '',
+      updated_at text not null default '',
+      primary key (machine_key, plugin_id)
+    )
+  `);
+  db.run("create index if not exists idx_plugin_presence_plugin on plugin_presence(plugin_id)");
+
+  // Declarative panel schemas. `schema_json` is opaque vocabulary JSON carrying
+  // its own `vocab_version`; nothing in SQL reads into it.
+  db.run(`
+    create table if not exists plugin_panels (
+      plugin_id text not null,
+      panel_id text not null,
+      title text not null default '',
+      icon text not null default '',
+      surface text not null default '',
+      schema_json text not null default '{}',
+      vocab_version integer not null default 1,
+      updated_at text not null default '',
+      primary key (plugin_id, panel_id)
+    )
+  `);
+
+  // The ONE plugin data table. Plugins never get tables of their own: a
+  // per-plugin table would be auto-CRR'd by the discovery above, multiplying
+  // clock/pks shadow tables per install, and would arrive at every peer as an
+  // unknown table — the freeze hazard again, now triggerable by installing a
+  // plugin rather than by shipping a release.
+  db.run(`
+    create table if not exists plugin_collections (
+      plugin_id text not null,
+      collection text not null,
+      key text not null,
+      value_json text not null default 'null',
+      updated_at text not null default '',
+      primary key (plugin_id, collection, key)
+    )
+  `);
+  db.run(
+    "create index if not exists idx_plugin_collections_scope on plugin_collections(plugin_id, collection)",
+  );
+
+  // Materialized socket outputs (a badge on a PR row, a section on a lane) as a
+  // SIDE table joined at read, never as columns on the entity's own row.
+  // cr-sqlite merges last-writer-wins PER COLUMN, so a plugin-authored column on
+  // `pull_requests` would have two machines' values silently discard each other
+  // — and it would put a clock entry on the hot write path of a core table.
+  db.run(`
+    create table if not exists plugin_contributions (
+      entity_kind text not null,
+      entity_id text not null,
+      plugin_id text not null,
+      socket text not null,
+      payload_json text not null default 'null',
+      updated_at text not null default '',
+      primary key (entity_kind, entity_id, plugin_id, socket)
+    )
+  `);
+  db.run(
+    "create index if not exists idx_plugin_contributions_entity on plugin_contributions(entity_kind, entity_id)",
+  );
+  db.run(
+    "create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id)",
+  );
+
+  // Per-plugin wire accounting. LOCAL-ONLY on purpose (see
+  // LOCAL_ONLY_CRR_EXCLUDED_TABLES) — it measures one machine's link.
+  db.run(`
+    create table if not exists plugin_wire_meter_daily (
+      day text not null,
+      plugin_id text not null,
+      direction text not null,
+      bytes integer not null default 0,
+      frames integer not null default 0,
+      primary key (day, plugin_id, direction)
+    )
+  `);
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
@@ -4344,6 +4472,22 @@ export async function openKvDb(
         });
       }
       if (!supported) return unsupportedMaintenanceResult();
+      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
+    }),
+    prunePluginData: (presentPluginIds) => runMaintenanceSafely("prunePluginData", () => {
+      // No install registry ⇒ no safe deletion. An empty array is a real answer
+      // ("nothing installed"); null means the caller could not read the registry
+      // at all, and deleting on that would wipe every plugin's data.
+      if (!presentPluginIds) return unsupportedMaintenanceResult();
+      if (!rawHasTable(db, "plugin_collections")) return unsupportedMaintenanceResult();
+      const meterCutoffDay = new Date(
+        Date.now() - PLUGIN_WIRE_METER_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString().slice(0, 10);
+      const itemsAffected = prunePluginRowsForAbsentPlugins(
+        (sql, params) => runStatement(db, sql, params).changes,
+        presentPluginIds,
+        meterCutoffDay,
+      );
       return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
     }),
     compactCrsqlTombstones: () => runMaintenanceSafely("compactCrsqlTombstones", () => {

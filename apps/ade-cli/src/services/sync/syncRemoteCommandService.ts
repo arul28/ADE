@@ -4,6 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
+import {
+  requirePluginInstallService,
+  type PluginInstallSource,
+} from "../plugins/pluginInstallServiceRef";
+import { getPluginPresenceService } from "../plugins/pluginPresenceService";
 import type {
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
@@ -5603,6 +5608,111 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 
+/**
+ * Plugin install control and presence, callable from another machine.
+ *
+ * Machine-scoped ("runtime"), never project-scoped: a plugin is installed on a
+ * computer, not into a repository. Every mutating action is `requiresApproval`,
+ * so a non-owner peer's install is held for an explicit decision rather than
+ * silently running third-party code on someone else's machine — a denial comes
+ * back as `approval_required`/`forbidden_command`, which the command layer
+ * reports as a POLICY denial and never as an unknown method.
+ *
+ * None of these may ever enter MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS. A
+ * phone paired to a host that lacks a required action drops to limited mode, so
+ * putting an optional capability in that set turns "this build has no plugins"
+ * into "this phone has no sync".
+ *
+ * The services are resolved at call time through their late-bound refs. When
+ * the plugin host is not present the handler throws a typed
+ * `plugins_unavailable` rather than reporting a success that never happened.
+ */
+function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+  const parsePluginId = (payload: Record<string, unknown>): string => {
+    const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
+    if (!pluginId) throw new Error("A plugin id is required.");
+    return pluginId;
+  };
+
+  register("plugins.list", { viewerAllowed: true }, async () =>
+    ({ plugins: await requirePluginInstallService().list() }), "runtime");
+
+  register("plugins.install", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
+    const source = parsePluginInstallSource(payload);
+    const record = await requirePluginInstallService().install(source);
+    // Presence is republished by the machine that changed, not inferred by the
+    // caller: the installing machine is the only one that knows the result.
+    await getPluginPresenceService()?.publishLocalPresence();
+    return record;
+  }, "runtime");
+
+  register("plugins.uninstall", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
+    const result = await requirePluginInstallService().uninstall(parsePluginId(payload));
+    await getPluginPresenceService()?.publishLocalPresence();
+    return result;
+  }, "runtime");
+
+  register("plugins.enable", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
+    const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), true);
+    await getPluginPresenceService()?.publishLocalPresence();
+    return record;
+  }, "runtime");
+
+  register("plugins.disable", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
+    const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), false);
+    await getPluginPresenceService()?.publishLocalPresence();
+    return record;
+  }, "runtime");
+
+  // Read-only: this machine reporting its own install state. The CALLER files
+  // the answer under the machine key its directory gave, so nothing here has to
+  // (or gets to) name itself.
+  register("plugins.presenceList", { viewerAllowed: true }, async () => {
+    const service = getPluginPresenceService();
+    if (!service) return { plugins: [] };
+    return await service.listLocalPresence();
+  }, "runtime");
+
+  // A nudge carrying no data. It cannot move presence by itself — it only asks
+  // this machine to re-pull from the directory — which is exactly why a push is
+  // safe here at all.
+  register("plugins.presenceSync", { viewerAllowed: true }, async () => {
+    getPluginPresenceService()?.onPeerPresenceChanged();
+    return { ok: true };
+  }, "runtime");
+}
+
+/**
+ * Parse an untrusted install request into one of the three sources.
+ *
+ * Strict rather than tolerant: this payload arrives from another machine and
+ * decides what code gets cloned onto this one, so an unrecognized shape is
+ * rejected instead of being coerced into a best guess.
+ */
+function parsePluginInstallSource(payload: Record<string, unknown>): PluginInstallSource {
+  const kind = typeof payload.kind === "string" ? payload.kind.trim() : "";
+  if (kind === "registry") {
+    const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
+    if (!pluginId) throw new Error("A plugin id is required to install from the registry.");
+    const version = typeof payload.version === "string" && payload.version.trim()
+      ? payload.version.trim()
+      : null;
+    return { kind: "registry", pluginId, version };
+  }
+  if (kind === "git") {
+    const url = typeof payload.url === "string" ? payload.url.trim() : "";
+    if (!url) throw new Error("A repository URL is required to install from git.");
+    const ref = typeof payload.ref === "string" && payload.ref.trim() ? payload.ref.trim() : null;
+    return { kind: "git", url, ref };
+  }
+  if (kind === "path") {
+    const sourcePath = typeof payload.path === "string" ? payload.path.trim() : "";
+    if (!sourcePath) throw new Error("A folder path is required to install from disk.");
+    return { kind: "path", path: sourcePath };
+  }
+  throw new Error("Unsupported plugin install source.");
+}
+
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
   const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
 
@@ -5733,6 +5843,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerConflictRemoteCommands({ args, register });
   registerMiscRemoteCommands({ args, register });
   registerPrAndDeeplinkRemoteCommands({ args, register });
+  registerPluginRemoteCommands({ args, register });
   return {
     getSupportedActions(): SyncRemoteCommandAction[] {
       return [...registry.keys()];

@@ -619,4 +619,43 @@ describe("kvDb migrations - worker agent schema", () => {
       db.close();
     }
   });
+  it("creates the plugin schema, CRR-converts it, and keeps the wire meter local-only", async () => {
+    const db = await openKvDb(makeDbPath("ade-kv-plugin-schema-"), createLogger());
+    try {
+      expectTables(db, [
+        "plugin_presence",
+        "plugin_panels",
+        "plugin_collections",
+        "plugin_contributions",
+        "plugin_wire_meter_daily",
+      ]);
+      expectIndexes(db, [
+        "idx_plugin_presence_plugin",
+        "idx_plugin_collections_scope",
+        "idx_plugin_contributions_entity",
+        "idx_plugin_contributions_plugin",
+      ]);
+
+      if (!isCrsqliteAvailable()) return;
+
+      // The four replicated tables must actually convert. `plugin_collections`
+      // is the one worth asserting by name: its `key` column is a SQLite
+      // keyword, and cr-sqlite generates trigger SQL against every column, so a
+      // quoting failure there would surface as a table that silently never
+      // replicates rather than as an error anyone would notice.
+      for (const table of ["plugin_presence", "plugin_panels", "plugin_collections", "plugin_contributions"]) {
+        expectTables(db, [`${table}__crsql_clock`, `${table}__crsql_pks`]);
+      }
+
+      // The meter is machine-local. If it ever gained CRR metadata it would
+      // replicate its own byte counts to every peer — circular, and last-writer
+      // -wins per column would make the totals wrong as well as expensive.
+      const meterShadow = db.get<{ name: string }>(
+        "select name from sqlite_master where type = 'table' and name = 'plugin_wire_meter_daily__crsql_clock' limit 1",
+      );
+      expect(meterShadow).toBeFalsy();
+    } finally {
+      db.close();
+    }
+  });
 });

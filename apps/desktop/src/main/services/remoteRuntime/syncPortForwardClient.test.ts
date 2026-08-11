@@ -92,6 +92,7 @@ function createLoopbackConnection(): AuthenticatedSyncConnection {
         type: "fwd_data",
         projectId: null,
         requestId: null,
+        pluginId: null,
         compression: "none",
         payload,
         raw: {} as never,

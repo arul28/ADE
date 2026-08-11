@@ -12,6 +12,7 @@ import type {
   SyncPeerMetadata,
   SyncRunQuickCommandArgs,
 } from "../../../../desktop/src/shared/types";
+import { SYNC_PLUGIN_TABLES_CAPABILITY } from "../../../../desktop/src/shared/types/sync";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
@@ -153,7 +154,12 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       deviceType: localDevice.deviceType,
       siteId: localDevice.siteId,
       dbVersion: latestRemoteDbVersion,
-      capabilities: ["changesetAck"],
+      // `pluginTables` tells the host this build's schema has the plugin
+      // tables, so it may include their rows in our changesets. A host filters
+      // them out for any peer that does not say so — see
+      // SYNC_PLUGIN_TABLES_CAPABILITY — which is what keeps an older desktop
+      // from being wedged by a table it cannot apply.
+      capabilities: ["changesetAck", SYNC_PLUGIN_TABLES_CAPABILITY],
     };
   };
 

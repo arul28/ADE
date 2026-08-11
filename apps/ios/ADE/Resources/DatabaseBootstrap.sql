@@ -2103,3 +2103,76 @@ create table if not exists model_picker_recents (
   model_id text primary key,
   used_at text not null
 );
+-- Plugin platform. Mirrors `migrate()` in
+-- apps/desktop/src/main/services/state/kvDb.ts (plugin_presence at :4012,
+-- plugin_panels, plugin_collections, plugin_contributions immediately after);
+-- the DDL must stay column-for-column identical to it. cr-sqlite changesets name
+-- columns, so a shape that differs here is not a cosmetic drift: iOS drops every
+-- row for a table it does not have (the `hasTable` guard in
+-- Database.applyChangesLocked) and errors on a column it does not know, and
+-- neither failure is reported anywhere the user can see.
+--
+-- Shipping this file with the desktop change is what makes those tables safe to
+-- add at all. Until an iOS build advertises the `pluginTables` hello capability
+-- the host filters plugin rows out of phone changesets entirely, so having the
+-- schema here is necessary but not sufficient — the Swift side turns it on.
+--
+-- THE SHAPE OF plugin_panels AND plugin_collections IS FROZEN. Both carry
+-- opaque versioned JSON (schema_json + vocab_version, value_json) precisely so a
+-- richer plugin vocabulary never needs a new column: adding one would mean
+-- phones on older builds receiving changesets that name a column their schema
+-- lacks. Version inside the JSON, never in SQL.
+--
+-- plugin_wire_meter_daily is deliberately absent: it is machine-local on
+-- desktop, never replicates, and would never arrive here.
+
+create table if not exists plugin_presence (
+  machine_key text not null,
+  plugin_id text not null,
+  version text not null default '',
+  enabled integer not null default 1,
+  display_name text not null default '',
+  icon text not null default '',
+  accent text not null default '',
+  updated_at text not null default '',
+  primary key (machine_key, plugin_id)
+);
+
+create index if not exists idx_plugin_presence_plugin on plugin_presence(plugin_id);
+
+create table if not exists plugin_panels (
+  plugin_id text not null,
+  panel_id text not null,
+  title text not null default '',
+  icon text not null default '',
+  surface text not null default '',
+  schema_json text not null default '{}',
+  vocab_version integer not null default 1,
+  updated_at text not null default '',
+  primary key (plugin_id, panel_id)
+);
+
+create table if not exists plugin_collections (
+  plugin_id text not null,
+  collection text not null,
+  key text not null,
+  value_json text not null default 'null',
+  updated_at text not null default '',
+  primary key (plugin_id, collection, key)
+);
+
+create index if not exists idx_plugin_collections_scope on plugin_collections(plugin_id, collection);
+
+create table if not exists plugin_contributions (
+  entity_kind text not null,
+  entity_id text not null,
+  plugin_id text not null,
+  socket text not null,
+  payload_json text not null default 'null',
+  updated_at text not null default '',
+  primary key (entity_kind, entity_id, plugin_id, socket)
+);
+
+create index if not exists idx_plugin_contributions_entity on plugin_contributions(entity_kind, entity_id);
+
+create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id);

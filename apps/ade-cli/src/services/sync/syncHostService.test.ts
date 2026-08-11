@@ -19,6 +19,8 @@ import type {
   SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
+  SyncPluginDeltaPayload,
+  SyncPluginSnapshotPayload,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
@@ -27,6 +29,7 @@ import {
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  SYNC_PLUGIN_TABLES_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import {
@@ -12483,6 +12486,215 @@ describe("createSyncHostService all-projects roster", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+describe("plugin table sync", () => {
+  const PLUGIN_PANEL_SCHEMA = JSON.stringify({
+    kind: "stack",
+    children: [{ kind: "list", data: { collection: "issues" } }],
+  });
+
+  function makePluginChange(dbVersion: number, table: string): CrsqlChangeRow {
+    return {
+      table,
+      pk: `${table}-pk`,
+      cid: "value_json",
+      val: "{}",
+      col_version: dbVersion,
+      db_version: dbVersion,
+      site_id: "site-host",
+      cl: 1,
+      seq: 0,
+    };
+  }
+
+  /**
+   * A host whose export contains one plugin row and one ordinary row at the
+   * same db_version, plus a readable plugin schema for the subscribe tests.
+   */
+  function createPluginHostArgs(projectRoot: string, panelRows: Array<Record<string, unknown>> = []) {
+    const base = createHostArgs(projectRoot, []);
+    return {
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 25,
+      db: {
+        get: (sql: string) =>
+          sql.includes("from plugin_panels")
+            ? {
+              title: "Issues",
+              icon: "graph",
+              surface: "work",
+              schema_json: PLUGIN_PANEL_SCHEMA,
+              vocab_version: 1,
+              updated_at: "2026-08-11T00:00:00.000Z",
+            }
+            : null,
+        all: (sql: string) => (sql.includes("from plugin_collections") ? panelRows : []),
+        sync: {
+          getSiteId: () => "site-host-plugin",
+          getDbVersion: () => 9,
+          exportChangesSince: () => [
+            makeChange(9, 0),
+            makePluginChange(9, "plugin_collections"),
+          ],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0];
+  }
+
+  it("withholds plugin rows from a peer that does not advertise pluginTables", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService(createPluginHostArgs(projectRoot));
+    let oldPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let newPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // An old desktop: no capabilities at all, which is exactly what a build
+      // that predates the plugin tables sends.
+      oldPeer = await connectPeer(port, host.getBootstrapToken(), "old-desktop", {
+        platform: "macOS",
+        deviceType: "desktop",
+        capabilities: [],
+      });
+      newPeer = await connectPeer(port, host.getBootstrapToken(), "new-desktop", {
+        platform: "macOS",
+        deviceType: "desktop",
+        capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+
+      const oldBatch = await waitForValue(
+        () => oldPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "changeset for the old peer",
+      );
+      const newBatch = await waitForValue(
+        () => newPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "changeset for the new peer",
+      );
+
+      const oldTables = (oldBatch.payload as SyncChangesetBatchPayload).changes.map((change) => change.table);
+      const newTables = (newBatch.payload as SyncChangesetBatchPayload).changes.map((change) => change.table);
+
+      // The gate is the whole point: zero plugin frames to the old peer...
+      expect(oldTables).not.toContain("plugin_collections");
+      // ...while everything else still reaches it, so it is not merely cut off.
+      expect(oldTables).toContain("kv");
+      expect(newTables).toContain("plugin_collections");
+      expect(newTables).toContain("kv");
+    } finally {
+      oldPeer?.ws.close();
+      newPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("answers plugin_subscribe with a snapshot, then sends only what changed", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const rows: Array<Record<string, unknown>> = [
+      { collection: "issues", key: "a", value_json: '{"n":1}', updated_at: "t1" },
+    ];
+    const host = createSyncHostService(createPluginHostArgs(projectRoot, rows));
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "panel-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "plugin_subscribe",
+        requestId: "sub-1",
+        projectId: "project-1",
+        payload: { pluginId: "graph", panelId: "main" },
+      }));
+
+      const snapshot = await waitForEnvelope(peer.envelopes, "plugin_snapshot", "sub-1");
+      const snapshotPayload = snapshot.payload as SyncPluginSnapshotPayload;
+      expect(snapshotPayload.panel?.title).toBe("Issues");
+      expect(snapshotPayload.rows).toHaveLength(1);
+      expect(snapshotPayload.seq).toBe(1);
+      // Frames carry their plugin attribution so the wire meter can read it.
+      expect(snapshot.pluginId).toBe("graph");
+
+      // Nothing changed: the poll must not emit a delta, because advancing the
+      // seq for a no-op would show the client a gap it can never close.
+      await new Promise((resolve) => setTimeout(resolve, 1_400));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "plugin_delta")).toHaveLength(0);
+
+      rows.push({ collection: "issues", key: "b", value_json: '{"n":2}', updated_at: "t2" });
+      const delta = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "plugin_delta"),
+        "plugin delta",
+      );
+      const deltaPayload = delta.payload as SyncPluginDeltaPayload;
+      expect(deltaPayload.seq).toBe(2);
+      expect(deltaPayload.changed?.map((row) => row.key)).toEqual(["b"]);
+      // Only the new row: an unchanged row must not be re-sent.
+      expect(deltaPayload.changed).toHaveLength(1);
+      expect(deltaPayload.removed ?? []).toHaveLength(0);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-snapshots a resume whose seq does not match the host watermark", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const rows: Array<Record<string, unknown>> = [
+      { collection: "issues", key: "a", value_json: '{"n":1}', updated_at: "t1" },
+    ];
+    const host = createSyncHostService(createPluginHostArgs(projectRoot, rows));
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "resume-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "plugin_subscribe",
+        requestId: "sub-1",
+        projectId: "project-1",
+        payload: { pluginId: "graph", panelId: "main" },
+      }));
+      await waitForEnvelope(peer.envelopes, "plugin_snapshot", "sub-1");
+
+      // Matching watermark: resumable, so no second snapshot is sent.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "plugin_subscribe",
+        requestId: "sub-2",
+        projectId: "project-1",
+        payload: { pluginId: "graph", panelId: "main", sinceSeq: 1 },
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "plugin_snapshot")).toHaveLength(1);
+
+      // Stale watermark: the host cannot describe the gap, so it re-snapshots
+      // and the snapshot's seq becomes the client's new epoch.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "plugin_subscribe",
+        requestId: "sub-3",
+        projectId: "project-1",
+        payload: { pluginId: "graph", panelId: "main", sinceSeq: 99 },
+      }));
+      const resnapshot = await waitForEnvelope(peer.envelopes, "plugin_snapshot", "sub-3");
+      expect((resnapshot.payload as SyncPluginSnapshotPayload).rows).toHaveLength(1);
+    } finally {
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

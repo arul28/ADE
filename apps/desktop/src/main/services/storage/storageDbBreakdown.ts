@@ -15,6 +15,7 @@ export const DB_BREAKDOWN_META: Record<
   sync_bookkeeping: { label: "Sync bookkeeping", table: "operations__crsql", action: "compactable" },
   review_artifacts: { label: "Review artifacts", table: "review_run_artifacts", action: "prunable" },
   pr_cache: { label: "PR cache", table: "pull_request_snapshots", action: "prunable" },
+  plugins: { label: "Plugin data", table: "plugin_collections", action: "prunable" },
   core: { label: "Core data", table: "core", action: null },
 };
 
@@ -25,6 +26,11 @@ export function classifyDbTable(name: string): DbBreakdownCategoryKey {
   if (lower.includes("automation_ingress_events")) return "webhooks";
   if (lower.includes("review_run_artifacts")) return "review_artifacts";
   if (lower.includes("pull_request_snapshots")) return "pr_cache";
+  // Prefix rather than an exact list: the plugin family includes each table's
+  // cr-sqlite clock and pks shadows (`plugin_collections__crsql_clock`), which
+  // are a real and often larger part of what plugins cost on disk. Attributing
+  // those to "Core data" would understate plugin storage by most of its bulk.
+  if (lower.startsWith("plugin_") || lower.startsWith("idx_plugin_")) return "plugins";
   return "core";
 }
 

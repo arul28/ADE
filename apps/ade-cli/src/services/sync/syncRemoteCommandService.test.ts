@@ -1,11 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
-import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
+import {
+  MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
+  MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
+} from "../../../../desktop/src/shared/syncMobileCompatibility";
+import {
+  PLUGIN_SERVICE_UNAVAILABLE_CODE,
+  setPluginInstallService,
+} from "../plugins/pluginInstallServiceRef";
+import { setPluginPresenceService } from "../plugins/pluginPresenceService";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
 function makePayload(
@@ -3176,5 +3184,99 @@ describe("web-reachable settings and lane-risk commands", () => {
       .rejects.toThrow(/laneId/);
     await expect(service.execute(makePayload("chat.launchCli", { laneId: "lane-1", provider: "claude" })))
       .rejects.toThrow(/kickoffPrompt/);
+  });
+});
+describe("plugin remote commands", () => {
+  const PLUGIN_ACTIONS = [
+    "plugins.install",
+    "plugins.uninstall",
+    "plugins.enable",
+    "plugins.disable",
+    "plugins.list",
+    "plugins.presenceList",
+    "plugins.presenceSync",
+  ] as const;
+
+  afterEach(() => {
+    setPluginInstallService(null);
+    setPluginPresenceService(null);
+  });
+
+  it("registers every plugin action as machine-scoped, with mutations behind approval", () => {
+    const { service } = createService({});
+    for (const action of PLUGIN_ACTIONS) {
+      expect(service.getDescriptor(action)?.scope).toBe("runtime");
+    }
+    for (const action of ["plugins.install", "plugins.uninstall", "plugins.enable", "plugins.disable"]) {
+      // Installing third-party code on someone else's computer is held for an
+      // explicit decision, and the denial is a POLICY denial, never a missing
+      // method — a viewer must be able to tell "not allowed" from "not there".
+      expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: false, requiresApproval: true });
+    }
+    for (const action of ["plugins.list", "plugins.presenceList", "plugins.presenceSync"]) {
+      expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: true });
+    }
+  });
+
+  it("keeps plugin actions out of the mobile required set", () => {
+    // A phone paired to a host missing a REQUIRED action drops to limited mode,
+    // so an optional capability in that set turns "no plugins on this build"
+    // into "no sync on this phone".
+    for (const action of PLUGIN_ACTIONS) {
+      expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toContain(action);
+    }
+  });
+
+  it("reports a typed unavailable error rather than a false success when no plugin host is bound", async () => {
+    const { service } = createService({});
+    await expect(service.execute(makePayload("plugins.list")))
+      .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
+    // Presence degrades to an empty answer instead: "this machine reports no
+    // plugins" is true and harmless, where a silent install is not.
+    await expect(service.execute(makePayload("plugins.presenceList"))).resolves.toEqual({ plugins: [] });
+  });
+
+  it("installs through the bound service and republishes presence from the machine that changed", async () => {
+    const record = {
+      pluginId: "graph",
+      version: "1.0.0",
+      enabled: true,
+      displayName: "Graph",
+      icon: "graph",
+      accent: "#000",
+      source: "registry",
+      installedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const install = vi.fn().mockResolvedValue(record);
+    const publishLocalPresence = vi.fn().mockResolvedValue(undefined);
+    setPluginInstallService({
+      install,
+      uninstall: vi.fn(),
+      setEnabled: vi.fn(),
+      list: vi.fn(),
+    } as never);
+    setPluginPresenceService({ publishLocalPresence } as never);
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.install", { kind: "registry", pluginId: "graph" })))
+      .resolves.toEqual(record);
+
+    expect(install).toHaveBeenCalledWith({ kind: "registry", pluginId: "graph", version: null });
+    expect(publishLocalPresence).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an install source it does not recognize instead of guessing", async () => {
+    setPluginInstallService({
+      install: vi.fn(),
+      uninstall: vi.fn(),
+      setEnabled: vi.fn(),
+      list: vi.fn(),
+    } as never);
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.install", { kind: "curl", url: "http://x" })))
+      .rejects.toThrow(/Unsupported plugin install source/);
+    await expect(service.execute(makePayload("plugins.install", { kind: "git" })))
+      .rejects.toThrow(/repository URL/);
   });
 });

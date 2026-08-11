@@ -384,3 +384,66 @@ describe("parseSyncEnvelope", () => {
     expect(() => parseSyncEnvelope(encoded)).toThrow(/Failed to decode gzip sync envelope oversized-inflate/);
   });
 });
+describe("plugin frame attribution", () => {
+  it("round-trips a plugin tag through an uncompressed text frame", () => {
+    const [frame] = encodeSyncEnvelopeFrames({
+      type: "plugin_snapshot",
+      payload: { seq: 1 },
+      pluginId: "graph",
+    });
+    expect(typeof frame).toBe("string");
+    expect(parseSyncEnvelopeFrame(frame).pluginId).toBe("graph");
+  });
+
+  it("round-trips a plugin tag through a compressed binary frame", () => {
+    // The tag lives in the frame HEADER, not the payload, so it has to survive
+    // the container swap that compression triggers — the meter reads it before
+    // the body is ever inflated.
+    const [frame] = encodeSyncEnvelopeFrames({
+      type: "plugin_snapshot",
+      payload: { seq: 1, rows: Array.from({ length: 400 }, (_, index) => ({ key: `k${index}` })) },
+      pluginId: "graph",
+      compressionThresholdBytes: 16,
+      compressionCodec: "deflate",
+      binaryFrames: true,
+    });
+    expect(Buffer.isBuffer(frame)).toBe(true);
+    const parsed = parseSyncEnvelopeFrame(frame);
+    expect(parsed.compression).toBe("deflate");
+    expect(parsed.pluginId).toBe("graph");
+  });
+
+  it("omits the tag from untagged traffic so ordinary frames pay nothing", () => {
+    const [tagged] = encodeSyncEnvelopeFrames({ type: "heartbeat", payload: {}, pluginId: "graph" });
+    const [untagged] = encodeSyncEnvelopeFrames({ type: "heartbeat", payload: {} });
+    expect(String(untagged)).not.toContain("pluginId");
+    expect(syncFrameByteLength(untagged)).toBeLessThan(syncFrameByteLength(tagged));
+    expect(parseSyncEnvelopeFrame(untagged).pluginId).toBeNull();
+  });
+
+  it("drops a blank or oversized tag rather than keying a map on it", () => {
+    // The tag arrives from a peer and is keyed into a per-plugin meter map, so
+    // an unbounded string would let a peer grow that map one long key at a time.
+    const blank = JSON.stringify({
+      version: 1,
+      type: "heartbeat",
+      pluginId: "   ",
+      requestId: null,
+      compression: "none",
+      payloadEncoding: "json",
+      payload: {},
+    });
+    expect(parseSyncEnvelope(blank).pluginId).toBeNull();
+
+    const oversized = JSON.stringify({
+      version: 1,
+      type: "heartbeat",
+      pluginId: "x".repeat(200),
+      requestId: null,
+      compression: "none",
+      payloadEncoding: "json",
+      payload: {},
+    });
+    expect(parseSyncEnvelope(oversized).pluginId).toBeNull();
+  });
+});

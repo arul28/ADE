@@ -18,6 +18,8 @@ import type {
   SyncTerminalHistoryRequestPayload,
   SyncTerminalHistoryResponsePayload,
   SyncTerminalInputAckPayload,
+  SyncPluginDeltaPayload,
+  SyncPluginSnapshotPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
@@ -90,9 +92,20 @@ export type SupportedFileAction = Exclude<SyncFileRequest["action"], "watchChang
 export type FileArgsFor<TAction extends SupportedFileAction> =
   Extract<SyncFileRequest, { action: TAction }> extends { args?: infer TArgs } ? TArgs : never;
 
+/** Composite key for the panel subscription maps on both ends of the wire. */
+function pluginPanelKey(pluginId: string, panelId: string): string {
+  return `${pluginId}/${panelId}`;
+}
+
 export type ChatHandlers = {
   snapshot?: (payload: SyncChatSubscribeSnapshotPayload) => void;
   event?: (payload: SyncChatEventPayload) => void;
+  error?: (error: Error) => void;
+};
+
+export type PluginPanelHandlers = {
+  snapshot?: (payload: SyncPluginSnapshotPayload) => void;
+  delta?: (payload: SyncPluginDeltaPayload) => void;
   error?: (error: Error) => void;
 };
 
@@ -120,6 +133,18 @@ type ChatSubscription = {
   handlers: ChatHandlers;
   sinceSeq: number | null;
   bindsActiveProject: boolean;
+};
+
+type PluginPanelSubscription = {
+  pluginId: string;
+  panelId: string;
+  handlers: PluginPanelHandlers;
+  /**
+   * Highest seq received. Sent back on resubscribe so a reconnect that lands on
+   * the same host resumes with a delta instead of a full snapshot; the host
+   * re-snapshots on any mismatch and the client adopts the snapshot's seq.
+   */
+  sinceSeq: number | null;
 };
 
 type TerminalSubscription = {
@@ -242,6 +267,7 @@ export class AdeSyncClient {
   private readonly pendingProjectCatalog: PendingRequest<SyncProjectCatalogPayload>[] = [];
   private readonly pendingProjectSwitches = new Map<string, PendingRequest<SyncProjectSwitchResultPayload>>();
   private readonly chatSubscriptions = new Map<string, ChatSubscription>();
+  private readonly pluginSubscriptions = new Map<string, PluginPanelSubscription>();
   private readonly terminalSubscriptions = new Map<string, TerminalSubscription>();
   private readonly terminalInputQueue: TerminalInputOperation[] = [];
   private terminalInputQueueBytes = 0;
@@ -742,6 +768,44 @@ export class AdeSyncClient {
     });
   }
 
+  /**
+   * Stream one plugin panel while it is on screen.
+   *
+   * View-scoped by design: the browser keeps no local replica of the plugin
+   * tables, so this is the only way it sees panel data, and subscribing per open
+   * panel is what keeps a plugin with thousands of stored rows from costing
+   * anything until someone actually looks at it. Returns an unsubscribe.
+   */
+  subscribePluginPanel(
+    pluginId: string,
+    panelId: string,
+    handlers: PluginPanelHandlers = {},
+  ): () => void {
+    const key = pluginPanelKey(pluginId, panelId);
+    const existing = this.pluginSubscriptions.get(key);
+    const subscription: PluginPanelSubscription = {
+      pluginId,
+      panelId,
+      handlers,
+      sinceSeq: existing?.sinceSeq ?? null,
+    };
+    this.pluginSubscriptions.set(key, subscription);
+    if (!this.streamSubscriptionsPaused) this.sendPluginSubscribe(subscription);
+    return () => this.unsubscribePluginPanel(pluginId, panelId);
+  }
+
+  unsubscribePluginPanel(pluginId: string, panelId: string): void {
+    const key = pluginPanelKey(pluginId, panelId);
+    const subscription = this.pluginSubscriptions.get(key);
+    this.pluginSubscriptions.delete(key);
+    if (!subscription || !this.connection.isConnected()) return;
+    this.connection.send({
+      type: "plugin_unsubscribe",
+      projectId: this.activeProjectId,
+      payload: { pluginId, panelId },
+    });
+  }
+
   subscribeTerminal(sessionId: string, opts: { maxBytes?: number } = {}, handlers: TerminalHandlers = {}): () => void {
     const existing = this.terminalSubscriptions.get(sessionId);
     const subscription: TerminalSubscription = {
@@ -1072,6 +1136,12 @@ export class AdeSyncClient {
       case "chat_event":
         this.handleChatEvent(envelope.payload as SyncChatEventPayload);
         break;
+      case "plugin_snapshot":
+        this.handlePluginSnapshot(envelope.payload as SyncPluginSnapshotPayload);
+        break;
+      case "plugin_delta":
+        this.handlePluginDelta(envelope.payload as SyncPluginDeltaPayload);
+        break;
       case "terminal_snapshot":
         this.handleTerminalSnapshot(envelope.payload as SyncTerminalSnapshotPayload);
         break;
@@ -1155,6 +1225,24 @@ export class AdeSyncClient {
     }
     subscription.handlers.event?.(payload);
     this.emit("chatEvent", payload);
+  }
+
+  private handlePluginSnapshot(payload: SyncPluginSnapshotPayload): void {
+    const subscription = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
+    // A late frame from a host we have already unsubscribed from must not leak
+    // into a panel that was since closed or rebound to another project.
+    if (!subscription) return;
+    // A snapshot is a new epoch: adopt its seq outright rather than maxing with
+    // the old one, or a host that restarted its counter would look like a gap.
+    subscription.sinceSeq = payload.seq;
+    subscription.handlers.snapshot?.(payload);
+  }
+
+  private handlePluginDelta(payload: SyncPluginDeltaPayload): void {
+    const subscription = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
+    if (!subscription) return;
+    subscription.sinceSeq = Math.max(subscription.sinceSeq ?? 0, payload.seq);
+    subscription.handlers.delta?.(payload);
   }
 
   private handleTerminalSnapshot(payload: SyncTerminalSnapshotPayload): void {
@@ -1337,6 +1425,25 @@ export class AdeSyncClient {
     }
   }
 
+  private sendPluginSubscribe(subscription: PluginPanelSubscription, throwOnFailure = false): void {
+    if (!this.connection.isConnected()) return;
+    try {
+      this.connection.send({
+        type: "plugin_subscribe",
+        projectId: this.activeProjectId,
+        payload: {
+          pluginId: subscription.pluginId,
+          panelId: subscription.panelId,
+          ...(subscription.sinceSeq != null ? { sinceSeq: subscription.sinceSeq } : {}),
+        },
+      });
+    } catch (error) {
+      const normalized = this.connectionError(error);
+      subscription.handlers.error?.(normalized);
+      if (throwOnFailure) throw normalized;
+    }
+  }
+
   private sendTerminalSubscribe(subscription: TerminalSubscription, throwOnFailure = false): void {
     if (!this.connection.isConnected()) return;
     try {
@@ -1368,6 +1475,12 @@ export class AdeSyncClient {
 
   private resubscribeStreams(): void {
     for (const subscription of this.chatSubscriptions.values()) this.sendChatSubscribe(subscription, true);
+    // Plugin panels re-attach on reconnect for the same reason chats do: a
+    // federated hop or a host restart drops every host-side subscription, and a
+    // panel that is still mounted would otherwise sit frozen with no error.
+    for (const subscription of this.pluginSubscriptions.values()) {
+      this.sendPluginSubscribe(subscription, true);
+    }
     for (const subscription of this.terminalSubscriptions.values()) {
       subscription.recoveryInFlight = false;
       this.sendTerminalSubscribe(subscription, true);

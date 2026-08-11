@@ -233,6 +233,7 @@ export const DB_CATEGORY_HINT: Record<DbBreakdownCategory, string> = {
   sync_bookkeeping: "Records ADE keeps to sync your work across devices.",
   review_artifacts: "Saved output from past code reviews.",
   pr_cache: "A local copy of pull request details, refetched when needed.",
+  plugins: "Data saved by the plugins you've installed.",
   core: "Your project's live data — chats, lanes, and settings.",
 };
 

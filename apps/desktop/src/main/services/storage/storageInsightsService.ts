@@ -148,6 +148,15 @@ export type StorageInsightsServiceOptions = {
    * broker lives in the other process and prunes on its own next read.
    */
   purgeProofRecordsUnder?: (removedPath: string) => void;
+  /**
+   * Plugin ids installed on this machine, or null when that registry cannot be
+   * read. The distinction is load-bearing: an empty array is the real answer
+   * "nothing installed" and prunes every plugin row, while null means "don't
+   * know" and skips the prune entirely. Injected rather than imported so this
+   * service keeps no dependency on the plugin host; absent instances simply
+   * record the step as unsupported.
+   */
+  listInstalledPluginIds?: () => readonly string[] | null;
 };
 
 export function isObsoleteRecoveryBackup(
@@ -1341,6 +1350,13 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       // the doctor degrades on a handle that predates a step, and `x?.method.bind()`
       // still throws when only the method is missing.
       await runDbStep("db.event_logs", "prune", maintenance?.pruneEventLogs?.bind(maintenance));
+      await runDbStep(
+        "db.plugin_collections",
+        "prune",
+        maintenance?.prunePluginData && options.listInstalledPluginIds
+          ? () => maintenance.prunePluginData(options.listInstalledPluginIds?.() ?? null)
+          : undefined,
+      );
       await runDbStep("db.operations_crsql", "compact", maintenance?.compactCrsqlTombstones.bind(maintenance));
       await runDbStep(
         "db.core",

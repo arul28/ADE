@@ -49,6 +49,7 @@ export type AdapterEvents = {
   githubStatusChanged: GitHubStatus;
   rebaseInvalidated: InvalidationEvent;
   rebaseEvent: RebaseEventPayload;
+  pluginsInvalidated: InvalidationEvent;
 };
 
 export type AdapterInfra = {

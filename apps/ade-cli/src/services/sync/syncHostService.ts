@@ -85,6 +85,11 @@ import type {
   SyncRosterProject,
   SyncRosterSnapshotPayload,
   SyncRosterDeltaPayload,
+  SyncPluginCollectionRow,
+  SyncPluginDeltaPayload,
+  SyncPluginSnapshotPayload,
+  SyncPluginSubscribePayload,
+  SyncPluginUnsubscribePayload,
   SyncRosterSubscribePayload,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
@@ -104,6 +109,8 @@ import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_FOLDED_REPLAY_CAPABILITY,
+  SYNC_PLUGIN_TABLES,
+  SYNC_PLUGIN_TABLES_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -114,6 +121,12 @@ import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTra
 import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import {
+  buildPluginPanelView,
+  pluginRowKey,
+  type PluginPanelView,
+} from "../plugins/pluginPanelBuilder";
+import type { PluginSyncMeter } from "../plugins/pluginSyncMeter";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
@@ -355,6 +368,50 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   "lane_usage_tombstones",
 ]);
 
+// The plugin schema, gated behind the peer's declared `pluginTables`
+// capability. Same OUTBOUND-FILTER mechanism as the mobile denylist above — it
+// drops rows from a changeset and never touches CRR metadata, and the peer's
+// ack watermark still advances through the filtered versions — but keyed on
+// what the peer says it can apply rather than on what kind of device it is.
+//
+// Unlike the mobile list this one is a safety gate, not a bandwidth
+// optimization. A peer receiving a row for a table its schema lacks throws
+// inside `applyChanges`, rolls the batch back, and never advances its cursor
+// again; every later export re-sends the same poisoned range. Every desktop on
+// a build that predates the plugin tables is exactly that peer, so the filter
+// is what makes shipping these tables survivable at all.
+//
+// Fail-closed by construction: a peer that says nothing gets nothing. That
+// covers old desktops, old phones, and any client whose hello was truncated.
+const PLUGIN_SYNCED_TABLES = new Set(SYNC_PLUGIN_TABLES);
+
+function peerAcceptsPluginTables(peer: { metadata: SyncPeerMetadata | null }): boolean {
+  const capabilities = peer.metadata?.capabilities;
+  if (Array.isArray(capabilities) && capabilities.includes(SYNC_PLUGIN_TABLES_CAPABILITY)) {
+    return true;
+  }
+  // A compact-invalidation browser is exempt because the hazard cannot reach
+  // it: its changesets are rewritten into `invalidation_batch`, which carries
+  // table NAMES and counts and no row data at all, so there is nothing for it
+  // to apply and nothing to reject. Exempting it here rather than asking the
+  // browser to advertise the capability also covers web builds that shipped
+  // before this existed — and without it the web client would never learn that
+  // a plugin table changed, leaving its `plugins` invalidation domain dead.
+  return isCompactInvalidationBrowserPeer(peer.metadata);
+}
+
+/**
+ * Whether `change` may be sent to `peer`. Exported for the outbound-filter
+ * tests, which assert an old peer receives zero plugin rows while every other
+ * table still flows to it.
+ */
+export function isPluginChangeAllowedForPeer(
+  change: Pick<CrsqlChangeRow, "table">,
+  peer: { metadata: SyncPeerMetadata | null },
+): boolean {
+  return !PLUGIN_SYNCED_TABLES.has(change.table) || peerAcceptsPluginTables(peer);
+}
+
 // Tables the host alone is authoritative for. `sync_cluster_state` is the
 // replicating CRR that governs brain ownership; a paired peer must never be
 // able to author a winning crsql_changes row for it (that would flip
@@ -507,6 +564,17 @@ const SYNC_HOST_AUTH_TIMEOUT_MS = 15_000;
 const ROSTER_DEBOUNCE_MS = 250;
 const ROSTER_MAX_WAIT_MS = 1_000;
 const ROSTER_SAFETY_POLL_MS = 15_000;
+// Plugin panel data is written by the plugin host, a separate supervised
+// process, so the sync host sees no in-process event when a plugin updates a
+// collection. A poll is therefore the mechanism rather than a safety net — but
+// it only runs while at least one peer actually has a panel open, and it reads
+// the bounded row set of exactly those panels. `notifyPluginDataChanged()` on
+// the returned handle collapses the latency for callers that do know.
+const PLUGIN_PANEL_POLL_MS = 1_000;
+const PLUGIN_PANEL_DEBOUNCE_MS = 150;
+// Subscriptions one peer may hold. A panel is a visible surface, so a client
+// needing more than a handful at once is not rendering, it is scraping.
+const MAX_PLUGIN_SUBSCRIPTIONS_PER_PEER = 8;
 // Remote commands that add/remove a roster-visible lane or chat row (possibly
 // in a non-active project via projectId routing). A successful one nudges the
 // coalesced roster flush; everything else relies on chat events + safety poll.
@@ -854,6 +922,12 @@ type PeerState = {
   rosterSubscribed: boolean;
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
+  /**
+   * Open plugin panel subscriptions, keyed `pluginId/panelId`. Per-peer seq and
+   * baseline for the same reason the roster keeps them per peer: a peer that
+   * skips a no-change flush must not see a seq gap on its next delta.
+   */
+  pluginSubscriptions: Map<string, PluginPanelSubscription>;
   /** Settles when every envelope scheduled so far has finished (reads included). */
   messageQueue: Promise<void>;
   /** Settles when the last write-classified envelope finished; reads wait on it. */
@@ -866,6 +940,16 @@ type PeerState = {
   inFlightOperationControllers: Set<AbortController>;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
+};
+
+type PluginPanelSubscription = {
+  pluginId: string;
+  panelId: string;
+  seq: number;
+  /** Last panel descriptor sent, serialized, so a schema rewrite is detectable. */
+  panelSignature: string | null;
+  /** rowKey → serialized row, for changed/removed diffing. */
+  baseline: Map<string, string>;
 };
 
 type PendingChangesetBatch = {
@@ -1126,6 +1210,12 @@ type SyncHostServiceArgs = {
   deviceRegistryService?: DeviceRegistryService;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
+  /**
+   * Per-plugin wire accounting. Optional so every existing construction of the
+   * host (tests included) keeps working unmetered; when absent, plugin frames
+   * still flow and simply are not counted.
+   */
+  pluginSyncMeter?: PluginSyncMeter;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
@@ -3249,6 +3339,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSubscribed: false,
       rosterSeq: 0,
       rosterBaseline: new Map(),
+      pluginSubscriptions: new Map(),
       messageQueue: Promise.resolve(),
       writeQueue: Promise.resolve(),
       activeReadCount: 0,
@@ -3281,6 +3372,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let envelope: ParsedSyncEnvelope;
       try {
         envelope = parseSyncEnvelopeFrame(raw);
+        // Metered off the parsed header, next to the existing frame counter, so
+        // inbound plugin traffic is attributed on the same byte the transport
+        // already measured. Chunked envelopes are counted per arriving frame:
+        // the reassembled envelope carries no wire cost of its own.
+        if (envelope.pluginId && args.pluginSyncMeter) {
+          args.pluginSyncMeter.record(
+            envelope.pluginId,
+            "in",
+            syncFrameByteLength(Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer | string)),
+          );
+        }
         if (
           envelope.type === "envelope_chunk"
           && peer.authenticated
@@ -3410,6 +3512,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.rosterSubscribed && rosterSubscriberPeers().length === 0) {
         stopRosterSafetyPoll();
         clearRosterFlushTimers();
+      }
+      if (peer.pluginSubscriptions.size > 0) {
+        peer.pluginSubscriptions.clear();
+        if (pluginSubscriberPeers().length === 0) {
+          stopPluginPanelPoll();
+          clearPluginFlushTimer();
+        }
       }
       for (const sessionId of peer.subscribedSessionIds) {
         restoreDesktopTerminalSizeIfUnwatched(sessionId);
@@ -4215,11 +4324,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && peer.metadata.capabilities.includes(SYNC_BINARY_ENVELOPES_CAPABILITY);
   }
 
+  /**
+   * Attribution for one send. Present only on plugin traffic; the tag rides the
+   * envelope header so the receiving side can meter it too.
+   */
+  type SendOptions = { pluginId?: string | null };
+
   function encodeFramesFor<TPayload>(
     target: WebSocket | PeerState,
     type: SyncEnvelope["type"],
     payload: TPayload,
     requestId?: string | null,
+    options?: SendOptions,
   ): SyncWireFrame[] {
     const ws = target instanceof WebSocket ? target : target.ws;
     const peer = target instanceof WebSocket ? peerForSocket(target) : target;
@@ -4229,7 +4345,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // codec (its dictionary persists across frames) and stacking the two
     // measures worse than either alone.
     const transportCompresses = shouldSkipApplicationCompression(ws.extensions);
-    return encodeSyncEnvelopeFrames({
+    const frames = encodeSyncEnvelopeFrames({
       type,
       payload,
       requestId,
@@ -4239,10 +4355,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       compressionCodec: transportCompresses ? "none" : (negotiatedCompression ?? "gzip"),
       maxFrameBytes: maxFrameBytesForPeer(peer),
       binaryFrames: usesBinaryFramesForPeer(peer),
+      ...(options?.pluginId ? { pluginId: options.pluginId } : {}),
     });
+    // Metered here rather than at the call sites: this is the one function every
+    // outbound frame passes through, so a new plugin send route cannot forget to
+    // account for itself. The meter buffers in memory — see pluginSyncMeter.
+    if (options?.pluginId && args.pluginSyncMeter) {
+      for (const frame of frames) {
+        args.pluginSyncMeter.record(options.pluginId, "out", syncFrameByteLength(frame));
+      }
+    }
+    return frames;
   }
 
-  function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
+  function send<TPayload>(
+    target: WebSocket | PeerState,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+    options?: SendOptions,
+  ): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
     // Drop sends to backpressured peers as the default — most envelopes are
@@ -4254,7 +4386,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     // The backpressure gate runs once per envelope, not per frame: a chunked
     // envelope must ship every frame or the client's reassembly would stall.
-    for (const frame of encodeFramesFor(target, type, payload, requestId)) {
+    for (const frame of encodeFramesFor(target, type, payload, requestId, options)) {
       ws.send(frame);
     }
     return true;
@@ -4543,7 +4675,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
         includeChange: (change) =>
           !isHostAuthoritativeTable(change)
-          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
+          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table)
+          // The reseed cache is built once and shared across phone peers, so it
+          // cannot be filtered per peer. Phones are excluded from plugin rows
+          // wholesale here; the per-peer gate on the broadcast path is what
+          // admits them once a phone build advertises the capability.
+          && !PLUGIN_SYNCED_TABLES.has(change.table),
       });
       if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
     }
@@ -4970,6 +5107,242 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (rosterSubscriberPeers().length === 0) {
       stopRosterSafetyPoll();
       clearRosterFlushTimers();
+    }
+  }
+
+  // --- View-scoped plugin panels ---------------------------------------------
+  //
+  // Generalized from the roster protocol above. A client subscribes to ONE
+  // panel; the host answers with a snapshot and then sends deltas while the
+  // subscription is open. Every frame is tagged with its plugin id so the wire
+  // meter can attribute it, and every frame goes out over droppable `send()` —
+  // never `sendRequired`, which closes a backpressured peer at 4001. Panel data
+  // is re-derivable from the database on the next flush, so losing a frame to
+  // backpressure costs a redraw; tearing down someone's sync connection because
+  // a plugin panel was chatty would not be a trade worth making.
+
+  let pluginFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let pluginPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function pluginSubscriptionKey(pluginId: string, panelId: string): string {
+    return `${pluginId}/${panelId}`;
+  }
+
+  function pluginSubscriberPeers(): PeerState[] {
+    const subscribers: PeerState[] = [];
+    for (const peer of peers) {
+      if (
+        peer.pluginSubscriptions.size > 0
+        && peer.authenticated
+        && peer.ws.readyState === WebSocket.OPEN
+      ) {
+        subscribers.push(peer);
+      }
+    }
+    return subscribers;
+  }
+
+  function ensurePluginPanelPoll(): void {
+    if (pluginPollTimer || disposed) return;
+    pluginPollTimer = setInterval(() => {
+      if (pluginSubscriberPeers().length === 0) {
+        stopPluginPanelPoll();
+        return;
+      }
+      markPluginPanelsDirty();
+    }, PLUGIN_PANEL_POLL_MS);
+    pluginPollTimer.unref?.();
+  }
+
+  function stopPluginPanelPoll(): void {
+    if (!pluginPollTimer) return;
+    clearInterval(pluginPollTimer);
+    pluginPollTimer = null;
+  }
+
+  function clearPluginFlushTimer(): void {
+    if (!pluginFlushTimer) return;
+    clearTimeout(pluginFlushTimer);
+    pluginFlushTimer = null;
+  }
+
+  function markPluginPanelsDirty(): void {
+    if (disposed || pluginFlushTimer) return;
+    if (pluginSubscriberPeers().length === 0) return;
+    // Leading-edge-free, trailing-edge debounce without a reset: a burst of
+    // plugin writes collapses into one flush, and a steady stream still flushes
+    // once per window rather than being postponed indefinitely.
+    pluginFlushTimer = setTimeout(() => {
+      pluginFlushTimer = null;
+      flushPluginPanels();
+    }, PLUGIN_PANEL_DEBOUNCE_MS);
+    pluginFlushTimer.unref?.();
+  }
+
+  function serializePluginRow(row: SyncPluginCollectionRow): string {
+    return JSON.stringify([row.valueJson, row.updatedAt]);
+  }
+
+  function sendPluginSnapshot(
+    peer: PeerState,
+    subscription: PluginPanelSubscription,
+    view: PluginPanelView,
+    requestId?: string | null,
+  ): void {
+    const seq = ++subscription.seq;
+    const payload: SyncPluginSnapshotPayload = {
+      seq,
+      pluginId: subscription.pluginId,
+      panelId: subscription.panelId,
+      panel: view.panel,
+      rows: view.rows,
+      ...(view.truncated ? { truncated: true } : {}),
+    };
+    const sent = send(peer, "plugin_snapshot", payload, requestId, {
+      pluginId: subscription.pluginId,
+    });
+    if (!sent) {
+      // Dropped: forget the baseline so the next flush re-snapshots rather than
+      // sending a delta against state the client never received.
+      subscription.baseline.clear();
+      subscription.panelSignature = null;
+      return;
+    }
+    subscription.panelSignature = view.panel ? JSON.stringify(view.panel) : null;
+    subscription.baseline = new Map(
+      view.rows.map((row) => [pluginRowKey(row), serializePluginRow(row)]),
+    );
+  }
+
+  function flushPluginPanels(): void {
+    if (disposed) return;
+    const subscribers = pluginSubscriberPeers();
+    if (subscribers.length === 0) {
+      stopPluginPanelPoll();
+      return;
+    }
+    // One view per distinct panel, shared across every peer watching it: the
+    // snapshot is a database read, and N peers on the same panel must not mean
+    // N reads per second.
+    const views = new Map<string, PluginPanelView>();
+    const viewFor = (subscription: PluginPanelSubscription): PluginPanelView => {
+      const key = pluginSubscriptionKey(subscription.pluginId, subscription.panelId);
+      const cached = views.get(key);
+      if (cached) return cached;
+      const built = buildPluginPanelView(args.db, subscription.pluginId, subscription.panelId);
+      views.set(key, built);
+      return built;
+    };
+
+    for (const peer of subscribers) {
+      for (const subscription of peer.pluginSubscriptions.values()) {
+        const view = viewFor(subscription);
+        if (subscription.baseline.size === 0 && subscription.panelSignature === null) {
+          sendPluginSnapshot(peer, subscription, view);
+          continue;
+        }
+        const serialized = new Map(
+          view.rows.map((row) => [pluginRowKey(row), serializePluginRow(row)]),
+        );
+        const changed: SyncPluginCollectionRow[] = [];
+        for (const row of view.rows) {
+          const key = pluginRowKey(row);
+          if (subscription.baseline.get(key) !== serialized.get(key)) changed.push(row);
+        }
+        const removed: Array<{ collection: string; key: string }> = [];
+        for (const key of subscription.baseline.keys()) {
+          if (serialized.has(key)) continue;
+          const parsed = safeJsonParse<[string, string] | null>(key, null);
+          if (parsed) removed.push({ collection: parsed[0], key: parsed[1] });
+        }
+        const panelSignature = view.panel ? JSON.stringify(view.panel) : null;
+        const panelChanged = panelSignature !== subscription.panelSignature;
+        if (changed.length === 0 && removed.length === 0 && !panelChanged) {
+          // Nothing to say. Skip WITHOUT advancing seq so the next delta still
+          // arrives as lastSeq+1 and the client sees no gap.
+          continue;
+        }
+        const seq = ++subscription.seq;
+        const delta: SyncPluginDeltaPayload = {
+          seq,
+          pluginId: subscription.pluginId,
+          panelId: subscription.panelId,
+          ...(panelChanged ? { panel: view.panel } : {}),
+          ...(changed.length > 0 ? { changed } : {}),
+          ...(removed.length > 0 ? { removed } : {}),
+        };
+        const sent = send(peer, "plugin_delta", delta, null, { pluginId: subscription.pluginId });
+        if (!sent) {
+          subscription.seq -= 1;
+          subscription.baseline.clear();
+          subscription.panelSignature = null;
+          continue;
+        }
+        subscription.baseline = serialized;
+        subscription.panelSignature = panelSignature;
+      }
+    }
+  }
+
+  function handlePluginSubscribe(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: SyncPluginSubscribePayload | null,
+  ): void {
+    const pluginId = toOptionalString(payload?.pluginId);
+    const panelId = toOptionalString(payload?.panelId);
+    if (!pluginId || !panelId) return;
+    const key = pluginSubscriptionKey(pluginId, panelId);
+    const existing = peer.pluginSubscriptions.get(key);
+    if (
+      !existing
+      && peer.pluginSubscriptions.size >= MAX_PLUGIN_SUBSCRIPTIONS_PER_PEER
+    ) {
+      args.logger.warn("sync_host.plugin_subscribe_rejected", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        pluginId,
+        panelId,
+        reason: "too_many_subscriptions",
+      });
+      return;
+    }
+    const view = buildPluginPanelView(args.db, pluginId, panelId);
+    const subscription: PluginPanelSubscription = existing ?? {
+      pluginId,
+      panelId,
+      seq: 0,
+      panelSignature: null,
+      baseline: new Map(),
+    };
+    peer.pluginSubscriptions.set(key, subscription);
+    ensurePluginPanelPoll();
+    // `sinceSeq` is honored the way the roster honors it: a client resuming at
+    // exactly the seq we last sent, with its baseline still held here, gets a
+    // delta on the next flush instead of a redundant snapshot. Anything else —
+    // a fresh subscribe, a gap, a mismatched watermark — re-snapshots, and the
+    // snapshot's seq becomes the client's new epoch.
+    const sinceSeq = typeof payload?.sinceSeq === "number" ? Math.floor(payload.sinceSeq) : null;
+    const resumable = existing != null
+      && sinceSeq != null
+      && sinceSeq === existing.seq
+      && (existing.baseline.size > 0 || existing.panelSignature !== null);
+    if (resumable) {
+      markPluginPanelsDirty();
+      return;
+    }
+    subscription.baseline.clear();
+    subscription.panelSignature = null;
+    sendPluginSnapshot(peer, subscription, view, requestId ?? null);
+  }
+
+  function handlePluginUnsubscribe(peer: PeerState, payload: SyncPluginUnsubscribePayload | null): void {
+    const pluginId = toOptionalString(payload?.pluginId);
+    const panelId = toOptionalString(payload?.panelId);
+    if (!pluginId || !panelId) return;
+    peer.pluginSubscriptions.delete(pluginSubscriptionKey(pluginId, panelId));
+    if (pluginSubscriberPeers().length === 0) {
+      stopPluginPanelPoll();
+      clearPluginFlushTimer();
     }
   }
 
@@ -5708,7 +6081,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const changes = exported
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
         .filter((change: CrsqlChangeRow) => !isHostAuthoritativeTable(change))
-        .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table));
+        .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table))
+        .filter((change: CrsqlChangeRow) => isPluginChangeAllowedForPeer(change, peer));
       if (changes.length === 0) {
         const previousDbVersion = peer.lastKnownServerDbVersion;
         // Only advance through what was actually scanned — with a bounded
@@ -8278,6 +8652,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         handleRosterUnsubscribe(peer);
         break;
       }
+      case "plugin_subscribe": {
+        handlePluginSubscribe(peer, envelope.requestId, envelope.payload as SyncPluginSubscribePayload | null);
+        break;
+      }
+      case "plugin_unsubscribe": {
+        handlePluginUnsubscribe(peer, envelope.payload as SyncPluginUnsubscribePayload | null);
+        break;
+      }
       case "command":
         await handleCommand(peer, envelope.requestId, {
           ...(envelope.payload as SyncCommandPayload),
@@ -8391,6 +8773,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     setLocalActiveLanePresence(laneIds: string[]): void {
       setLocalActiveLanePresence(laneIds);
+    },
+
+    /**
+     * Push plugin panel updates now instead of waiting for the poll.
+     * A no-op when nobody has a panel open, so the plugin host can call it on
+     * every collection write without checking first.
+     */
+    notifyPluginDataChanged(): void {
+      markPluginPanelsDirty();
     },
 
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
@@ -8610,6 +9001,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(accountLeaseTimer);
       stopRosterSafetyPoll();
       clearRosterFlushTimers();
+      stopPluginPanelPoll();
+      clearPluginFlushTimer();
       unpublishLanDiscovery();
       try {
         await unpublishTailnetDiscovery();

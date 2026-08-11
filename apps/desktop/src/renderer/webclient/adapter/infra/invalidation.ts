@@ -1,6 +1,14 @@
 import type { EventBus } from "./eventBus";
 
-export type InvalidationDomain = "lanes" | "sessions" | "chats" | "prs" | "files" | "github" | "rebase";
+export type InvalidationDomain =
+  | "lanes"
+  | "sessions"
+  | "chats"
+  | "prs"
+  | "files"
+  | "github"
+  | "rebase"
+  | "plugins";
 
 export const ALL_INVALIDATION_DOMAINS: readonly InvalidationDomain[] = [
   "lanes",
@@ -10,6 +18,7 @@ export const ALL_INVALIDATION_DOMAINS: readonly InvalidationDomain[] = [
   "files",
   "github",
   "rebase",
+  "plugins",
 ];
 
 export type InvalidationEvent = {
@@ -128,6 +137,21 @@ const TABLE_DOMAINS: Readonly<Record<string, readonly InvalidationDomain[]>> = {
   file_diff_snapshots: ["files"],
   file_directory_snapshots: ["files"],
   file_history_snapshots: ["files"],
+
+  // ── Plugins ──────────────────────────────────────────────────────────────
+  // Named exhaustively rather than caught by a `plugin_` prefix rule, for the
+  // reason this whole map is exact: a prefix silently adopts every future table
+  // that happens to be spelled that way. These four are the entire replicated
+  // plugin schema (`plugin_wire_meter_daily` is local-only and never arrives).
+  //
+  // Their own domain, not folded into an existing one: a plugin writing a
+  // collection row must not trigger a lanes/sessions/chats refetch, which is
+  // exactly what the unclassified fallback would have done — and plugin panels
+  // update far more often than any core surface.
+  plugin_presence: ["plugins"],
+  plugin_panels: ["plugins"],
+  plugin_collections: ["plugins"],
+  plugin_contributions: ["plugins"],
 
   // ── Rebase / conflicts ───────────────────────────────────────────────────
   rebase_deferred: ["rebase"],

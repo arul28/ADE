@@ -139,6 +139,41 @@ export const SYNC_BINARY_ENVELOPES_CAPABILITY = "binaryEnvelopes";
  */
 export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
 
+/**
+ * Hello capability a client declares when its schema has the `plugin_*` tables.
+ *
+ * This one is a hard safety gate, not an optimization. A peer that receives a
+ * changeset row for a table its schema lacks THROWS inside `applyChanges`,
+ * rolling back the whole batch and leaving its cursor parked forever — every
+ * later export re-sends the same poisoned range, so the peer never syncs
+ * anything again. Adding four new CRR tables to the schema would do exactly
+ * that to every desktop still on an older build.
+ *
+ * So the host sends plugin rows ONLY to peers that advertise this. Old peers
+ * are not merely spared the rows; their changeset watermark still advances
+ * through the filtered versions, so they stay fully current on everything else.
+ * The mechanism mirrors `MOBILE_CHANGESET_EXCLUDED_TABLES` — an outbound filter
+ * with no CRR-metadata side effects — but is keyed on the peer's declared
+ * capability rather than on its device type, because "is this build new enough"
+ * is not something a device type can answer.
+ */
+export const SYNC_PLUGIN_TABLES_CAPABILITY = "pluginTables";
+
+/**
+ * Every table gated behind {@link SYNC_PLUGIN_TABLES_CAPABILITY}.
+ *
+ * Exhaustive by name rather than a `plugin_` prefix test: a prefix rule silently
+ * adopts any future table that happens to be named that way, and the cost of
+ * being wrong here is a permanently wedged peer. `plugin_wire_meter_daily` is
+ * absent because it is local-only and never replicates at all.
+ */
+export const SYNC_PLUGIN_TABLES: readonly string[] = [
+  "plugin_presence",
+  "plugin_panels",
+  "plugin_collections",
+  "plugin_contributions",
+];
+
 export type SyncPayloadEncoding = "json" | "base64";
 
 export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "unknown";
@@ -858,6 +893,77 @@ export type SyncRosterSubscribePayload = {
 };
 
 export type SyncRosterUnsubscribePayload = Record<string, never>;
+
+/**
+ * View-scoped plugin panel streaming.
+ *
+ * Generalized from the roster protocol above, and for the same reason: a
+ * browser peer keeps no local CRR replica, so it cannot read `plugin_panels` or
+ * `plugin_collections` itself, and shipping every plugin's whole dataset to it
+ * on the chance a panel opens is the opposite of what "view-scoped" means. A
+ * client subscribes to ONE panel, gets a snapshot, and then receives deltas
+ * only while it is looking at it.
+ *
+ * `sinceSeq` resume works exactly as the roster's does: the host answers a
+ * matching watermark with a delta and anything else with a fresh snapshot,
+ * whose `seq` the client adopts as its new epoch.
+ */
+export type SyncPluginSubscribePayload = {
+  pluginId: string;
+  panelId: string;
+  /** Last seq the client holds; lets the host answer with a delta. */
+  sinceSeq?: number | null;
+};
+
+export type SyncPluginUnsubscribePayload = {
+  pluginId: string;
+  panelId: string;
+};
+
+/** One collection row as the panel sees it. `valueJson` stays opaque here. */
+export type SyncPluginCollectionRow = {
+  collection: string;
+  key: string;
+  valueJson: string;
+  updatedAt: string;
+};
+
+export type SyncPluginPanelDescriptor = {
+  pluginId: string;
+  panelId: string;
+  title: string;
+  icon: string;
+  surface: string;
+  /** Opaque vocabulary JSON; the renderer validates it, the wire does not. */
+  schemaJson: string;
+  vocabVersion: number;
+  updatedAt: string;
+};
+
+export type SyncPluginSnapshotPayload = {
+  seq: number;
+  pluginId: string;
+  panelId: string;
+  /** Null when the plugin or panel is not present on this host. */
+  panel: SyncPluginPanelDescriptor | null;
+  rows: SyncPluginCollectionRow[];
+  /** True when the host truncated `rows` at its per-snapshot ceiling. */
+  truncated?: boolean;
+};
+
+/**
+ * Incremental panel update. `panel` is present only when the schema itself
+ * changed; `changed` upserts collection rows by (collection, key) and `removed`
+ * names rows that are gone.
+ */
+export type SyncPluginDeltaPayload = {
+  seq: number;
+  pluginId: string;
+  panelId: string;
+  panel?: SyncPluginPanelDescriptor | null;
+  changed?: SyncPluginCollectionRow[];
+  removed?: Array<{ collection: string; key: string }>;
+};
 
 export type SyncProjectSwitchRequestPayload = {
   projectId?: string | null;
@@ -1970,6 +2076,17 @@ export type SyncRemoteCommandAction =
   | "prs.recheckIntegrationStep"
   | "prs.getMobileSnapshot"
   | "prs.getMobileGithubDetail"
+  // Plugin install control on a remote machine. Machine-scoped, and
+  // deliberately NOT in MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS: a phone
+  // paired to a host that later drops one of the required actions falls back to
+  // limited mode, so nothing optional may ever enter that set.
+  | "plugins.install"
+  | "plugins.uninstall"
+  | "plugins.enable"
+  | "plugins.disable"
+  | "plugins.list"
+  | "plugins.presenceList"
+  | "plugins.presenceSync"
   | "attention.getMachineSnapshot"
   | "attention.acknowledgeMachine"
   | "sync.getWebPairingInfo"
@@ -2024,6 +2141,19 @@ type SyncEnvelopeBase<TType extends string> = {
   type: TType;
   projectId?: string | null;
   requestId?: string | null;
+  /**
+   * Attribution tag for frames carrying one plugin's data.
+   *
+   * Present only on plugin traffic and omitted everywhere else, so it costs
+   * nothing on the frames that dominate the wire. It exists because plugin
+   * panels stream over the same socket as chat and changesets: once the bytes
+   * are out, nothing else can tell you which plugin spent them. The host's
+   * meter reads it at both byte-accounting chokepoints.
+   *
+   * Advisory, never authorization: a peer choosing its own tag can only
+   * mis-attribute its own usage meter.
+   */
+  pluginId?: string | null;
 };
 
 type SyncEnvelopeWithPayload<TType extends string, TPayload> =
@@ -2110,6 +2240,10 @@ export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscr
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
 export type SyncRosterDeltaEnvelope = SyncEnvelopeWithPayload<"roster_delta", SyncRosterDeltaPayload>;
+export type SyncPluginSubscribeEnvelope = SyncEnvelopeWithPayload<"plugin_subscribe", SyncPluginSubscribePayload>;
+export type SyncPluginUnsubscribeEnvelope = SyncEnvelopeWithPayload<"plugin_unsubscribe", SyncPluginUnsubscribePayload>;
+export type SyncPluginSnapshotEnvelope = SyncEnvelopeWithPayload<"plugin_snapshot", SyncPluginSnapshotPayload>;
+export type SyncPluginDeltaEnvelope = SyncEnvelopeWithPayload<"plugin_delta", SyncPluginDeltaPayload>;
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
@@ -2184,6 +2318,10 @@ export type SyncEnvelope =
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope
   | SyncRosterDeltaEnvelope
+  | SyncPluginSubscribeEnvelope
+  | SyncPluginUnsubscribeEnvelope
+  | SyncPluginSnapshotEnvelope
+  | SyncPluginDeltaEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope

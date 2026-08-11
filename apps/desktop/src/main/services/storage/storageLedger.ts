@@ -15,6 +15,10 @@ import {
   INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   EVENT_LOG_RETENTION_DAYS,
+  PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
+  PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
+  PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
+  PLUGIN_WIRE_METER_RETENTION_DAYS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
 } from "../state/dbMaintenanceApi";
@@ -74,6 +78,35 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "Linear sync/workflow, worker cost, and pack event history.",
     policyClass: "operational",
     policy: { maxAgeDays: EVENT_LOG_RETENTION_DAYS },
+    enforcement: "doctor",
+  },
+  {
+    id: "db.plugin_collections",
+    kind: "table",
+    description: "Plugin data — values plugins store, capped per plugin at write time.",
+    policyClass: "user_data",
+    policy: {
+      maxRows: PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
+      maxBytes: PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
+    },
+    // "both": the writer rejects an over-budget write outright, and the doctor
+    // sweeps rows left by plugins that are no longer installed.
+    enforcement: "both",
+  },
+  {
+    id: "db.plugin_contributions",
+    kind: "table",
+    description: "Plugin badges and sections attached to lanes, PRs, and files.",
+    policyClass: "user_data",
+    policy: { maxRows: PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN },
+    enforcement: "both",
+  },
+  {
+    id: "db.plugin_wire_meter_daily",
+    kind: "table",
+    description: "Per-plugin sync traffic totals for this computer.",
+    policyClass: "operational",
+    policy: { maxAgeDays: PLUGIN_WIRE_METER_RETENTION_DAYS },
     enforcement: "doctor",
   },
   {
@@ -153,6 +186,14 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     id: "fs.attachments",
     kind: "directory",
     description: "Chat attachments. Kept until you remove them.",
+    policyClass: "user_data",
+    policy: {},
+    enforcement: "manual",
+  },
+  {
+    id: "fs.plugins",
+    kind: "directory",
+    description: "Installed plugins in your home folder. Kept until you remove the plugin.",
     policyClass: "user_data",
     policy: {},
     enforcement: "manual",
