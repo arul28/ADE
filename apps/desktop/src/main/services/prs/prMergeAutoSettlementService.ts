@@ -129,11 +129,19 @@ export function createPrMergeAutoSettlementService(args: {
     // successful pass, so a snapshot that returns early does not silently
     // consume its own evidence.
     const previouslyWatchedPrIds = new Set(previouslyWatchablePrIds);
+    // Ids whose merge this pass watched but could not finish filing, because a
+    // session became active mid-settle. Kept watchable so the retry can still
+    // announce: `watchedItMerge` is what gates the toast, and a merged PR is
+    // otherwise dropped from the watchable set at the end of every pass — so
+    // without this the retry settles the session silently and the user never
+    // learns their PR merged.
+    const unfinishedMergePrIds = new Set<string>();
     const rememberSnapshot = () => {
       previouslyWatchablePrIds.clear();
       for (const pr of prs) {
         if (pr.state === "draft" || pr.state === "open") previouslyWatchablePrIds.add(pr.id);
       }
+      for (const id of unfinishedMergePrIds) previouslyWatchablePrIds.add(id);
     };
     const settings = getSessionLifecycleSettings(args.db);
     const state = getPrMergeAutoSettlementState(args.db);
@@ -170,7 +178,7 @@ export function createPrMergeAutoSettlementService(args: {
       );
 
       const settledSessionIds: string[] = [];
-      const abortedByActivity: string[] = [];
+      let abandonedThisPr = false;
       for (const session of rows) {
         const currentSettings = getSessionLifecycleSettings(args.db);
         const currentState = getPrMergeAutoSettlementState(args.db);
@@ -196,7 +204,7 @@ export function createPrMergeAutoSettlementService(args: {
           // The session became active while the settle was in flight. Leaving
           // the PR unhandled is the point: a later pass retries, instead of this
           // merge being consumed by a settle that never landed.
-          abortedByActivity.push(...settleResult.aborted.map((entry) => entry.sessionId));
+          abandonedThisPr = true;
         }
       }
 
@@ -204,7 +212,7 @@ export function createPrMergeAutoSettlementService(args: {
       // An abandoned settle must not consume the merge. `handledPrIds` is the
       // only thing that would stop a later pass from retrying, and the whole
       // reason the outcome is typed is so this branch can exist.
-      const abandonedThisPr = abortedByActivity.length > 0;
+      if (abandonedThisPr) unfinishedMergePrIds.add(pr.id);
       const finalState = getPrMergeAutoSettlementState(args.db);
       // Mark this PR handled even when its session had background work, and
       // even when the scope came back `ambiguous` and nothing was filed at all:

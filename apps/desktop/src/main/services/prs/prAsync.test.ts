@@ -1112,6 +1112,7 @@ describe("prMergeAutoSettlementService", () => {
       settled: [] as string[],
       aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
     }));
+    const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: withSessionLookup({
@@ -1121,7 +1122,7 @@ describe("prMergeAutoSettlementService", () => {
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
       }) as any,
-      emitEvent: vi.fn(),
+      emitEvent,
     });
 
     const openPr = createSummary({ state: "open" });
@@ -1146,6 +1147,10 @@ describe("prMergeAutoSettlementService", () => {
       settleSessionsReportingAborts,
       "an abandoned settle must not consume the merge",
     ).toHaveBeenCalledTimes(2);
+    // ...and the retry must still announce. A merged PR falls out of the
+    // watchable set every pass, so without keeping it alive the user would get
+    // the settle and never the toast.
+    expect(emitEvent, "the retry must still announce the merge").toHaveBeenCalled();
   });
 
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {

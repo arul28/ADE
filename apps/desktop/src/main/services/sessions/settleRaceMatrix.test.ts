@@ -98,6 +98,9 @@ describe("settle race matrix (teardown is a no-op)", () => {
     expect(outcome.settled).toEqual([]);
     expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
     expect(service.get("session-1")?.settledAt).toBeNull();
+    // A leaked window would swallow this session's output forever and leave it
+    // permanently unsettleable — the mechanism's worst failure mode.
+    expect(service.settlingSessionIds()).toEqual([]);
   });
 
   /**
@@ -278,34 +281,57 @@ describe("settle race matrix (teardown is a no-op)", () => {
   });
 
   /**
-   * The swallow is per session, not per batch.
+   * `clearOnActivity` is single-session by construction, and the writer now says
+   * so rather than carrying a per-session partition no test could reach.
    *
-   * Unreachable today — every mechanical caller is single-session — but deciding
-   * one disposition for a whole array would silently stop a NON-settling
-   * session's own output from clearing its settle, and nothing in the signature
-   * warns the caller who first passes two ids.
+   * This replaced two tests that were green against the bug they were written to
+   * catch: a multi-id MECHANICAL clear is not expressible through the service
+   * API, so any test built from C4/C5 calls filters to a single id and proves
+   * nothing about batching.
    */
-  it("swallows only the settling session in a mixed batch", async () => {
-    const { db, service, create, setTeardown } = await fixture();
+  it("refuses a multi-id clear rather than guessing one disposition for the batch", async () => {
+    const { service, create } = await fixture();
     create("session-2");
-    service.settleSessions(["session-2"]);
-    expect(service.get("session-2")?.settledAt).toBeTruthy();
+    service.settleSessions(["session-1", "session-2"]);
 
-    setTeardown(() => {
-      // Drive the writer directly with both ids: session-1's window is open,
-      // session-2's is not.
-      db.run("update terminal_sessions set last_output_at = ? where id = ?",
-        ["2026-08-11T00:09:00.000Z", "session-2"]);
-      service.setLastOutputPreview("session-2", "other session output", { clearSettled: true });
-      service.setLastOutputPreview("session-1", "settling session output", { clearSettled: true });
+    // The only multi-id clear the API offers is `unsettleSessions`, which is a
+    // DECLARED unsettle, not a `clearOnActivity` — so it is unaffected and both
+    // rows clear.
+    service.unsettleSessions(["session-1", "session-2"]);
+
+    expect(service.get("session-1")?.settledAt).toBeNull();
+    expect(service.get("session-2")?.settledAt).toBeNull();
+  });
+
+  /**
+   * A teardown that throws is routine in step 3 — a process refuses to die, a
+   * cloud stop 500s. It must be reported, must not leak the window, and must not
+   * discard the accounting for the rest of the batch.
+   */
+  it("reports a throwing teardown and still closes its window", async () => {
+    const { service, create, setTeardown } = await fixture();
+    create("session-2");
+
+    setTeardown((sessionId) => {
+      if (sessionId === "session-1") throw new Error("provider stop failed");
     });
+    const outcome = service.settleSessionsReportingAborts(["session-1", "session-2"]);
+
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "teardown_failed" }]);
+    // The rest of the batch was still attempted and accounted for.
+    expect(outcome.settled).toEqual(["session-2"]);
+    expect(service.settlingSessionIds()).toEqual([]);
+  });
+
+  /** An async teardown would close the window early; the seam refuses one. */
+  it("refuses an async teardown rather than closing the window under it", async () => {
+    const { service, setTeardown } = await fixture();
+    setTeardown((() => Promise.resolve()) as unknown as (sessionId: string) => void);
+
     const outcome = service.settleSessionsReportingAborts(["session-1"]);
 
-    // The settling session's output was swallowed: it still settled.
-    expect(outcome.settled).toEqual(["session-1"]);
-    // The other session's output cleared its settle normally.
-    expect(service.get("session-2")?.settledAt).toBeNull();
-    expect(service.get("session-2")?.lastOutputPreview).toBe("other session output");
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "teardown_failed" }]);
+    expect(service.settlingSessionIds()).toEqual([]);
   });
 
   /** A settling row found after a restart resolves to not-settled. */

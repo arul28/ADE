@@ -760,7 +760,20 @@ export function createSessionService({
       // The owner will report the outcome; reporting it twice would double-count.
       if (begin.kind === "joined") continue;
       try {
-        runSettleTeardown?.(id);
+        const teardownResult = runSettleTeardown?.(id) as unknown;
+        // The seam is synchronous in step 2 and MUST stay so until the settle
+        // path is made async. An async teardown would return here immediately,
+        // the checks below would run against a world where nothing had been
+        // stopped yet, and `finally` would close the window while the real
+        // teardown was still emitting output — which C4/C5 would then no longer
+        // swallow, clearing the settle that just landed. TypeScript's void-return
+        // rule lets an async callback through silently, so this is a loud guard
+        // rather than a type.
+        if (teardownResult && typeof (teardownResult as { then?: unknown }).then === "function") {
+          throw new Error(
+            "runSettleTeardown returned a promise: the settle path must be made async before teardown can await anything.",
+          );
+        }
 
         const abortedBy = settleLifecycle.settling.abortedBy(id);
         if (abortedBy) {
@@ -774,6 +787,12 @@ export function createSessionService({
           continue;
         }
         settled.push(...settleMany([id], options));
+      } catch (error) {
+        // A throw must not discard the accounting for the rest of the batch, nor
+        // leave earlier sessions settled with no record of it. Report this id and
+        // carry on: a bulk caller always gets a full accounting.
+        aborted.push({ sessionId: id, reason: "teardown_failed" });
+        void error;
       } finally {
         settleLifecycle.settling.end(id);
       }
@@ -1496,22 +1515,26 @@ export function createSessionService({
       sessionId: string,
       opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
     ): boolean {
-      const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
-      const outcome = normalizeSessionStatusNote(opts.outcome);
-      return mutateSessionMeta(sessionId, (id) => {
-        // An explicit settle also drops a stale keep-active pin — otherwise the
-        // override would silently veto the settle the user just asked for.
-        writeSettleLifecycle({
-          intent: { kind: "settle", settledAt, source: opts.source ?? "user" },
-          extraSet: {
-            ...(outcome ? { status_note: outcome } : {}),
-            attention_requested_at: null,
-            attention_message: null,
-            attention_source: null,
-          },
-          sessionIds: [id],
-        });
+      // Through the settling window, like the bulk paths. This is the route a
+      // USER takes (row menu -> settleTerminalSession -> here), which is the
+      // "user settle" R4 names — so it has to be joinable and abortable, and in
+      // step 3 it has to run teardown. Routing it here is what makes the R4
+      // claim true rather than only true of bulk callers.
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      // `settleMany` returns [] for both "missing" and "already settled", so the
+      // boolean contract needs its own existence check to stay honest.
+      const exists = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!exists) return false;
+      settleManyWithTeardown([trimmed], {
+        outcome: normalizeSessionStatusNote(opts.outcome) ?? undefined,
+        settledAt: opts.settledAt,
+        source: opts.source,
       });
+      return true;
     },
 
     /** Clears a declared settle plus any `'settled'` override. */
@@ -1597,15 +1620,6 @@ export function createSessionService({
     /** Sessions currently mid-settle, for the visible `Settling…` state. */
     settlingSessionIds(): string[] {
       return settleLifecycle.settling.settlingSessionIds();
-    },
-
-    settleSessionsWithOutcome(
-      sessionIds: string[],
-      outcome: string,
-      settledAt: string = new Date().toISOString(),
-      source: SessionSettleSource = "user",
-    ): string[] {
-      return settleManyWithTeardown(sessionIds, { outcome, settledAt, source }).settled;
     },
 
     unsettleSessions(sessionIds: string[]): void {

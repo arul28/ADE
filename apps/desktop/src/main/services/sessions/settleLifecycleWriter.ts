@@ -238,28 +238,29 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
    * Split a clear into the sessions whose window swallows it and the sessions
    * that clear normally.
    *
-   * Per session, not per batch. Every mechanical caller is single-session today,
-   * so a mixed batch is unreachable — but deciding one disposition for a whole
-   * array would silently stop a NON-settling session's own output from clearing
-   * its settle, and nothing in the signature would warn the caller who first
-   * passes two ids.
+   * Every `clearOnActivity` caller is single-session — C3-C7 all go through
+   * `mutateSessionMeta`, which takes one id — so this is asserted rather than
+   * handled. Deciding one disposition for a whole array would silently stop a
+   * NON-settling session's own output from clearing its settle, and that is a
+   * failure nobody would see; a thrown error is the honest alternative to
+   * defensive code no test can reach.
    */
   const partitionForSettlingWindow = (
     intent: SettleLifecycleIntent,
     sessionIds: readonly string[],
   ): { swallowed: string[]; normal: string[] } => {
     if (intent.kind !== "clearOnActivity") return { swallowed: [], normal: [...sessionIds] };
-    const settlingIds = sessionIds.filter((id) => settling.isSettling(id));
-    if (!settlingIds.length) return { swallowed: [], normal: [...sessionIds] };
-    if (intent.cause === "mechanical") {
-      return {
-        swallowed: settlingIds,
-        normal: sessionIds.filter((id) => !settling.isSettling(id)),
-      };
+    if (sessionIds.length > 1) {
+      throw new Error(
+        "clearOnActivity is single-session by construction; a multi-id clear would need a per-session settling disposition.",
+      );
     }
-    // A human decision: trip abort for the settling sessions, then let every
-    // session clear normally — the clear itself is not suppressed.
-    for (const id of settlingIds) settling.abort(id, intent.cause);
+    const [sessionId] = sessionIds;
+    if (!settling.isSettling(sessionId)) return { swallowed: [], normal: [...sessionIds] };
+    if (intent.cause === "mechanical") return { swallowed: [...sessionIds], normal: [] };
+    // A human decision: trip abort, then let the clear proceed — the clear
+    // itself is never suppressed.
+    settling.abort(sessionId, intent.cause);
     return { swallowed: [], normal: [...sessionIds] };
   };
 
@@ -325,6 +326,10 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
         // The token is advisory; failing to reap it must not fail the delete.
       }
       inProcessLifecycleRevisions.delete(trimmed);
+      // The third map. A window left open for a deleted id would report a
+      // nonexistent session as settling forever, and if the id were ever reused
+      // its mechanical clears would be permanently swallowed.
+      settling.end(trimmed);
     },
   };
 }

@@ -1356,12 +1356,10 @@ describe("sessionService resume metadata", () => {
     expect(service.get("session-new")?.settledAt).not.toBeNull();
     expect(service.get("session-other")?.settledAt).toBeNull();
 
-    expect(service.settleSessionsWithOutcome(
+    expect(service.settleSessionsReportingAborts(
       ["session-settled", "session-other"],
-      "PR #841 merged",
-      "2026-03-17T03:00:00.000Z",
-      "pr_merge",
-    )).toEqual(["session-other"]);
+      { outcome: "PR #841 merged", settledAt: "2026-03-17T03:00:00.000Z", source: "pr_merge" },
+    ).settled).toEqual(["session-other"]);
     expect(service.get("session-settled")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T01:00:00.000Z",
       statusNote: null,

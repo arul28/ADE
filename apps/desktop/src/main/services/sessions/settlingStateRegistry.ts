@@ -20,7 +20,7 @@
 export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";
 
 /** Why a settle was abandoned, as reported to callers. */
-export type SettleAbortedReason = SettleAbortReason | "lifecycle_changed";
+export type SettleAbortedReason = SettleAbortReason | "lifecycle_changed" | "teardown_failed";
 
 export type SettleAbortedSession = {
   sessionId: string;
