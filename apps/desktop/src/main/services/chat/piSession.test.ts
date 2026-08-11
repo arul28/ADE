@@ -70,7 +70,7 @@ async function waitForChildExit(child: ChildProcess): Promise<void> {
 describe("Pi native session leases", () => {
   it("resolves and excludes concurrent SDK/CLI writers", () => {
     const session = makeSession();
-    const canonicalFile = fs.realpathSync(session.file);
+    const canonicalFile = fs.realpathSync.native(session.file);
     expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: session.id, sessionRoot: path.join(session.root, "sessions") })).toBe(canonicalFile);
     expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: "", sessionFile: session.file })).toBe(canonicalFile);
 
@@ -100,11 +100,11 @@ describe("Pi native session leases", () => {
     // under macOS aliases such as /var -> /private/var.
     expect(classifyPiSessionFile({ filePath: planned, cwd: session.cwd, sessionRoot })).toEqual({
       state: "pending",
-      filePath: path.join(fs.realpathSync(path.dirname(planned)), path.basename(planned)),
+      filePath: path.join(fs.realpathSync.native(path.dirname(planned)), path.basename(planned)),
     });
     expect(classifyPiSessionFile({ filePath: session.file, cwd: session.cwd, sessionId: session.id, sessionRoot })).toEqual({
       state: "authorized",
-      filePath: fs.realpathSync(session.file),
+      filePath: fs.realpathSync.native(session.file),
     });
   });
 
@@ -291,7 +291,7 @@ describe("Pi native session leases", () => {
       cwd: session.cwd,
       sessionId: session.id,
       env: { HOME: session.root, PI_CODING_AGENT_SESSION_DIR: sessionRoot },
-    })).toBe(fs.realpathSync(session.file));
+    })).toBe(fs.realpathSync.native(session.file));
   });
 
   it("cleans a dead writer sidecar but never overwrites a live one", () => {
@@ -410,7 +410,7 @@ describe("Pi native session leases", () => {
     expect(listPiSessionFilesForCwd({
       cwd: session.cwd,
       sessionRoot: path.join(session.root, "sessions"),
-    })).toEqual([{ filePath: fs.realpathSync(session.file), id: session.id }]);
+    })).toEqual([{ filePath: fs.realpathSync.native(session.file), id: session.id }]);
   });
 
   it("rejects a live lease held by another Node process and allows handoff after release", async () => {
