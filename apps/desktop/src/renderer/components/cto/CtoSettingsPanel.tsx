@@ -9,6 +9,10 @@ import { TimelineEntry } from "./shared/TimelineEntry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { resolveModelSelection } from "./useCtoModelOptions";
+import { PluginDetailSections } from "../plugins/sockets";
+import type { PluginSurfaceOnlyContext } from "../../../shared/plugins/context";
+
+const CTO_SURFACE_CONTEXT: PluginSurfaceOnlyContext = { kind: "surface", surface: "cto" };
 
 function Section({
   title,
@@ -174,6 +178,9 @@ export function CtoSettingsPanel({
           </div>
         </div>
       </Section>
+
+      {/* Plugin sections, last: after everything the CTO itself owns. */}
+      <PluginDetailSections surface="cto" context={CTO_SURFACE_CONTEXT} showTitles={false} />
     </div>
   );
 }

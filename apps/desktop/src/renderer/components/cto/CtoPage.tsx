@@ -17,6 +17,7 @@ import { getPersonalityTheme } from "./personalityTheme";
 import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { shellBodyCls } from "./shared/designTokens";
+import { PluginToolbarActions } from "../plugins/sockets";
 
 const CTO_ACCENT = "#22D3EE";
 const MAX_WAKING_RETRIES = 4;
@@ -347,6 +348,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           >
             <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
           </button>
+          <PluginToolbarActions surface="cto" active={active} />
         </div>
       </div>
 

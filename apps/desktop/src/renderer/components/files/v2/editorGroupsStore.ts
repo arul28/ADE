@@ -15,7 +15,19 @@ import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../../../../shared/types/fil
  * `sessionKey`, so open tabs persist across lane switches.
  */
 
+/**
+ * Which viewer renders a tab.
+ *
+ * Closed except for one open variant: `plugin:<pluginId>:<panelId>`, produced by
+ * `pluginViewerKind`. The union is PERSISTED in the editor session, so a plugin
+ * viewer's identity has to survive in the value itself — a reopened workbench
+ * must be able to say which plugin owned a tab without a registry that may no
+ * longer list it. `ViewerHost` falls back to the binary viewer with a notice
+ * when that plugin is gone, which is why an orphaned kind is tolerable rather
+ * than a crash.
+ */
 export type ViewerKind =
+  | `plugin:${string}`
   | "code"
   | "image"
   | "markdown"

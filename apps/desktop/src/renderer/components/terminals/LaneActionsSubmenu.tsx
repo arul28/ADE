@@ -4,6 +4,7 @@ import { LaneMenuGroups, menuItemStyle } from "../lanes/LaneContextMenu";
 import { buildLaneMenuGroups } from "../lanes/laneContextMenuItems";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
+import { pluginLaneContext, usePluginMenuEntries } from "../plugins/sockets";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 
 /**
@@ -49,6 +50,11 @@ export function LaneActionsSubmenu({
   }, [lanes]);
   const lane = lanesById.get(laneId) ?? null;
   const actions = useLaneMenuActions({ close: onClose, onManageLane });
+  const pluginEntries = usePluginMenuEntries(
+    "lanes",
+    lane ? pluginLaneContext(lane) : null,
+    { onClose },
+  );
 
   const groups = useMemo(
     () => buildLaneMenuGroups({
@@ -61,8 +67,9 @@ export function LaneActionsSubmenu({
       isRemoteProject,
       onClose,
       ...actions,
+      pluginEntries,
     }),
-    [actions, isRemoteProject, lane, laneId, lanesById, onClose],
+    [actions, isRemoteProject, lane, laneId, lanesById, onClose, pluginEntries],
   );
 
   return (

@@ -39,6 +39,7 @@ import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { isWebClientMode } from "../../../lib/webClientMode";
+import { PluginDetailSections, pluginPrContext } from "../../plugins/sockets";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -1425,6 +1426,21 @@ export function PrDetailPane({
 
   const overviewRailsActive = activeTab === "overview";
 
+  // The detail pane's tab ids come from the route union `PrDetailRouteTab`, so a
+  // plugin cannot add a tab without changing a shared route type. Its sections
+  // land at the foot of Overview instead: after everything the product shows
+  // about the PR, which is where the taxonomy puts contributed content anyway.
+  const pluginPrSurfaceContext = React.useMemo(
+    () => pluginPrContext({
+      number: pr.githubPrNumber,
+      title: pr.title,
+      branch: pr.headBranch,
+      state: pr.state,
+      ciStatus: pr.checksStatus === "not_run" ? "none" : pr.checksStatus,
+    }),
+    [pr.checksStatus, pr.githubPrNumber, pr.headBranch, pr.state, pr.title],
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.prSurface }}>
       {/* ===== HEADER ===== */}
@@ -1692,6 +1708,15 @@ export function PrDetailPane({
             onSubmitReview={handleSubmitReview}
           />
         )}
+        {activeTab === "overview" ? (
+          <div style={{ padding: "0 20px 20px" }}>
+            <PluginDetailSections
+              surface="prs"
+              context={pluginPrSurfaceContext}
+              active={overviewRailsActive}
+            />
+          </div>
+        ) : null}
         <PrManageLaneDialogHost
           open={manageLaneOpen}
           onOpenChange={setManageLaneOpen}

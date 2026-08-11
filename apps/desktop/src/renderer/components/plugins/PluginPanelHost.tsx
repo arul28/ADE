@@ -11,6 +11,7 @@ import {
   type PluginCollectionRow,
   type PluginPanelRecord,
 } from "../../lib/pluginRuntimeBridge";
+import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
   collectVocabBindings,
   parsePluginPanel,
@@ -76,6 +77,7 @@ export function PluginPanelHost({
   panelId,
   active,
   recoveryAction,
+  surfaceContext,
 }: {
   pluginId: string;
   panelId: string;
@@ -83,6 +85,12 @@ export function PluginPanelHost({
   active: boolean;
   /** Passed through to the fallback card, e.g. a Restart button. */
   recoveryAction?: React.ReactNode;
+  /**
+   * The typed surface context, when this panel is mounted at a socket rather
+   * than as a tab. It rides along on every action the panel dispatches, so a
+   * detail section knows which lane or PR its buttons were pressed on.
+   */
+  surfaceContext?: PluginSurfaceContext;
 }) {
   const [state, setState] = React.useState<PanelState>(INITIAL_STATE);
   // Bumped to force a refetch: by a host change event, and by a completed
@@ -159,13 +167,17 @@ export function PluginPanelHost({
 
   const dispatch = React.useCallback(
     async (action: VocabAction, extraArgs?: VocabActionArgs) => {
-      await invokePluginAction(pluginId, action.action, { ...action.args, ...extraArgs });
+      await invokePluginAction(pluginId, action.action, {
+        ...action.args,
+        ...extraArgs,
+        ...(surfaceContext ? { context: surfaceContext } : {}),
+      });
       // The host publishes a change event for anything it wrote, but an action
       // whose only effect is outside the plugin's own tables would otherwise
       // leave a stale panel on screen.
       setRefreshToken((token) => token + 1);
     },
-    [pluginId],
+    [pluginId, surfaceContext],
   );
 
   const context = React.useMemo(

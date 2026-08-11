@@ -65,6 +65,7 @@ import { SessionStatusSlot } from "./SessionStatusSlot";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel } from "./LaneNamingLabel";
+import { PluginRowBadges, pluginSessionContext } from "../plugins/sockets";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -552,6 +553,21 @@ export const SessionCard = React.memo(function SessionCard({
     </span>
   ) : null;
 
+  // Rendered as its own element rather than pushed into `whereParts`: that
+  // array is index-keyed, and a plugin badge appearing or disappearing would
+  // re-key every part after it inside a virtualized list.
+  const pluginBadges = (
+    <PluginRowBadges
+      surface="work"
+      context={pluginSessionContext({
+        id: session.id,
+        title: primaryText,
+        provider: session.toolType,
+        status: session.runtimeState,
+      })}
+    />
+  );
+
   const whereParts: React.ReactNode[] = [];
   if (session.pinned) {
     whereParts.push(
@@ -992,6 +1008,7 @@ export const SessionCard = React.memo(function SessionCard({
           <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
+          {pluginBadges}
           {machineGlyph}
           {gridIndicator}
           {statusSlot}
@@ -1009,6 +1026,7 @@ export const SessionCard = React.memo(function SessionCard({
                 {part}
               </React.Fragment>
             ))}
+            {pluginBadges}
             {machineGlyph}
             {gridIndicator}
             {statusSlot}

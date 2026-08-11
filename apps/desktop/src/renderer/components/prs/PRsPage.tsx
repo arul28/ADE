@@ -12,6 +12,7 @@ import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { GitHubRepoSyncBar } from "./shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "./shared/GitHubPrSearchInput";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
+import { PluginToolbarActions } from "../plugins/sockets";
 import {
   buildPrsRouteSearch,
   parsePrsRouteState,
@@ -560,6 +561,7 @@ function PRsPageInner() {
             <Plus size={14} weight="bold" />
             Create PR
           </button>
+          <PluginToolbarActions surface="prs" />
         </div>
       </div>
 

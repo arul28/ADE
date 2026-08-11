@@ -8,6 +8,7 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
+import { PluginEmptyStateExtra } from "../../plugins/sockets";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import {
   COLORS,
@@ -281,7 +282,9 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                     <EmptyState
                       title={list.loading && !list.hasSnapshot ? "Preparing pull requests" : "No pull requests"}
                       description={list.loading && !list.hasSnapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
-                    />
+                    >
+                      <PluginEmptyStateExtra surface="prs" />
+                    </EmptyState>
                   </div>
                 ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (
                   <GitHubTabVirtualList

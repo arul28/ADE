@@ -62,6 +62,15 @@ export type LaneMenuArgs = {
   onStartChatInLane?: (laneId: string) => void;
   onToggleWorkPin?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
+  /**
+   * Contributed plugin rows, from `usePluginMenuEntries("lanes", …)`.
+   *
+   * Passed in rather than read here because this module is pure and both
+   * renderers share it. They land in their own group before Manage: after
+   * everything the product offers, and never adjacent to an entry that opens a
+   * surface which can delete the lane.
+   */
+  pluginEntries?: LaneMenuEntry[];
 };
 
 /**
@@ -106,6 +115,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     onStartChatInLane,
     onToggleWorkPin,
     workPinnedLaneIds,
+    pluginEntries,
   } = args;
 
   const isInSplit = visibleLaneIds.includes(laneId);
@@ -315,6 +325,10 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         ),
       }],
     });
+  }
+
+  if (pluginEntries && pluginEntries.length > 0) {
+    groups.push({ key: "plugins", label: "Plugins", entries: pluginEntries });
   }
 
   // ── Manage: last, because both entries open a surface that can delete.

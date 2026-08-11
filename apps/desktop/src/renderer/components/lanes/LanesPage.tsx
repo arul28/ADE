@@ -13,6 +13,16 @@ import {
 } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
+import {
+  entityMatchesPluginFilters,
+  PluginDetailSections,
+  PluginEmptyStateExtra,
+  PluginFilterChips,
+  PluginRowBadges,
+  PluginToolbarActions,
+  pluginLaneContext,
+  usePluginSurfaceContributions,
+} from "../plugins/sockets";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { useDockLayout } from "../ui/DockLayoutState";
@@ -697,9 +707,27 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return summaryByLane;
   }, [sortedLanes, laneSnapshots]);
 
+  // Contributed filter chips, and the lane-side half of applying them. Selection
+  // is the surface's — a chip that highlights without filtering would read as a
+  // broken Lanes feature rather than a missing plugin one.
+  const [pluginFilterKeys, setPluginFilterKeys] = useState<string[]>([]);
+  // `active` matters here: Lanes stays mounted behind other tabs, and a hidden
+  // surface must not read the plugin registry at all.
+  const pluginContributionSet = usePluginSurfaceContributions("lanes", active);
+  const togglePluginFilterKey = useCallback((filterKey: string) => {
+    setPluginFilterKeys((current) => (
+      current.includes(filterKey)
+        ? current.filter((entry) => entry !== filterKey)
+        : [...current, filterKey]
+    ));
+  }, []);
+
   const laneFilterMatchedLanes = useMemo(
-    () => sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)),
-    [sortedLanes, laneFilter, pinnedLaneIds],
+    () => sortedLanes.filter((lane) => (
+      laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)
+      && entityMatchesPluginFilters(pluginContributionSet, pluginLaneContext(lane), pluginFilterKeys)
+    )),
+    [sortedLanes, laneFilter, pinnedLaneIds, pluginContributionSet, pluginFilterKeys],
   );
 
   const laneOrderById = useMemo(() => {
@@ -2553,6 +2581,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         bodyClassName: "overflow-hidden",
         children: null,
         renderChildren: ({ minimized }: { minimized: boolean }) => mountGitActionsPane ? (
+          <div className="flex h-full min-h-0 flex-col">
+          <div className="min-h-0 flex-1">
           <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions" delayMs={gitActionsDelayMs}>
             <LaneGitActionsPane
               laneId={laneId}
@@ -2573,6 +2603,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               onClearDiffSelection={laneId ? () => handleClearLanePaneDetailSelection(laneId) : undefined}
             />
           </DeferredLanePane>
+          </div>
+          {/* Plugin detail sections live under the pane's own content rather
+              than in a pane of their own: the Lanes tiling tree is a fixed
+              two-pane constant with versioned persistence, and a third pane
+              would relayout the tab for everyone, plugins or not. Renders
+              nothing when no plugin contributes. */}
+          {lane ? (
+            <div className="shrink-0 overflow-auto" style={{ maxHeight: "40%" }}>
+              <PluginDetailSections
+                surface="lanes"
+                context={pluginLaneContext(lane)}
+                active={active && !minimized}
+              />
+            </div>
+          ) : null}
+          </div>
         ) : null
       },
       "work": {
@@ -2965,6 +3011,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           ) : null}
         </div>
 
+        <PluginFilterChips
+          surface="lanes"
+          selected={pluginFilterKeys}
+          onToggle={togglePluginFilterKey}
+          active={active}
+        />
+
         {laneActionError ? (
           <div
             className="inline-flex max-w-[420px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
@@ -3009,6 +3062,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               <Plus size={12} /> NEW LANE
             </button>
           </SmartTooltip>
+          <PluginToolbarActions surface="lanes" active={active} />
         </div>
 
         {filteredLanes.length > 0 ? (
@@ -3413,6 +3467,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
                 </span>
               ) : null}
+              {/* Plugin badges: after every lane state the product itself draws,
+                  before the hover-only controls, so nothing contributed sits
+                  between the cursor and Pin/Close. */}
+              {!isDeleting ? (
+                <PluginRowBadges surface="lanes" context={pluginLaneContext(lane)} active={active} />
+              ) : null}
               {/* Pin toggle — appears on hover */}
               {!isDeleting && !isPrimary ? (
                 <button
@@ -3580,6 +3640,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                     Create Lane
                   </Button>
                 </div>
+                <PluginEmptyStateExtra surface="lanes" active={active} />
               </EmptyState>
             )
           ) : (

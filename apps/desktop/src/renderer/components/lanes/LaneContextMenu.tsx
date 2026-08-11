@@ -3,6 +3,11 @@ import type { LaneSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
+import {
+  pluginLaneContext,
+  useExtendSurfaceEntry,
+  usePluginMenuEntries,
+} from "../plugins/sockets";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import {
   buildLaneMenuGroups,
@@ -181,6 +186,13 @@ export function LaneContextMenu({
     menuRef.current?.focus();
   }, []);
 
+  const pluginEntries = usePluginMenuEntries(
+    "lanes",
+    ctxLane ? pluginLaneContext(ctxLane) : null,
+    { onClose },
+  );
+  const extendEntry = useExtendSurfaceEntry("lanes", { onClose });
+
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,
@@ -198,6 +210,7 @@ export function LaneContextMenu({
     ...(onStartChatInLane ? { onStartChatInLane } : {}),
     ...(onToggleWorkPin ? { onToggleWorkPin } : {}),
     ...(workPinnedLaneIds ? { workPinnedLaneIds } : {}),
+    pluginEntries: [...pluginEntries, extendEntry],
   };
 
   return (

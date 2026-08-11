@@ -14,6 +14,7 @@ import { MediaViewer } from "./viewers/MediaViewer";
 import { DocumentViewer } from "./viewers/DocumentViewer";
 import { LargeTextViewer } from "./viewers/LargeTextViewer";
 import { BinaryViewer } from "./viewers/BinaryViewer";
+import { PluginViewer } from "./viewers/PluginViewer";
 import type { EditorApi, EditorThemeMode, ViewerProps } from "./viewers/types";
 
 export type ViewerHostProps = {
@@ -59,6 +60,13 @@ export function ViewerHost(props: ViewerHostProps) {
     onRegisterEditorApi: props.onRegisterEditorApi,
     onError: props.onError,
   };
+
+  // A plugin viewer is matched by prefix rather than by a switch arm: the kind
+  // carries the plugin and panel ids inside it, so there is no finite set of
+  // cases to enumerate.
+  if (tab.viewerKind.startsWith("plugin:")) {
+    return <PluginViewer key={tab.id} {...viewerProps} />;
+  }
 
   // Non-code viewers carry per-tab view state (zoom, page, scroll), so key them
   // by tab id to reset when the active tab identity changes. CodeViewer is

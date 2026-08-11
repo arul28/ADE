@@ -1,4 +1,9 @@
 import type { FilePreviewKind } from "../../../../shared/types";
+import {
+  matchPluginViewer,
+  pluginViewerKind,
+  type PluginViewerRegistration,
+} from "../../plugins/sockets/contributionModel";
 import type { ViewerKind } from "./editorGroupsStore";
 
 /**
@@ -13,7 +18,17 @@ export type ViewerResolveContext = {
   isBinary?: boolean;
   /** True when the backend returned only a streamable first chunk (oversized text). */
   isPartial?: boolean;
+  /**
+   * File-viewer sockets from installed plugins, if any.
+   *
+   * Consulted only after every built-in viewer has declined — see the ordering
+   * note on {@link resolveViewerKind}.
+   */
+  pluginViewers?: readonly PluginViewerRegistration[];
 };
+
+/** The kinds a plugin viewer may take over from. Everything else is core's. */
+const PLUGIN_ELIGIBLE_FALLBACKS: ReadonlySet<ViewerKind> = new Set(["code", "binary", "largeText"]);
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
 const AUDIO_EXTS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
@@ -27,13 +42,29 @@ export function extensionOf(path: string): string {
 
 /**
  * Ordered first-match resolution:
- *   pdf → image → media → csv → documents → largeText(streamed) → html → markdown → binary → code(default).
+ *   pdf → image → media → csv → documents → largeText(streamed) → html → markdown → binary → code(default),
+ * with plugin viewers inserted between the built-ins and the three fallbacks.
  *
  * Special file types (pdf/image/csv) win over the large-text streamer because
  * their viewers stream bytes themselves; an oversized plain/markdown/code file
  * falls through to the read-only virtualized largeText viewer.
+ *
+ * A plugin viewer only claims a file that every built-in *specific* viewer
+ * declined — i.e. one that would otherwise land on `code`, `binary` or
+ * `largeText`. That is a deliberate narrowing of "before the binary fallback":
+ * a plugin can give ADE a viewer for a format it has none for, and cannot take
+ * `.mp4` away from the built-in player by installing itself. A plugin that
+ * wants a format core already handles is a core change, not an install.
  */
 export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
+  const builtIn = resolveBuiltInViewerKind(ctx);
+  if (!ctx.pluginViewers || ctx.pluginViewers.length === 0) return builtIn;
+  if (!PLUGIN_ELIGIBLE_FALLBACKS.has(builtIn)) return builtIn;
+  const match = matchPluginViewer(ctx.pluginViewers, extensionOf(ctx.path));
+  return match ? pluginViewerKind(match.pluginId, match.panelId) : builtIn;
+}
+
+function resolveBuiltInViewerKind(ctx: ViewerResolveContext): ViewerKind {
   const ext = extensionOf(ctx.path);
 
   if (ext === "pdf") return "pdf";

@@ -12,6 +12,13 @@ import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
 import { branchNameFromRef } from "../tabs/githubPrBranch";
 import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
+import {
+  PluginRowBadges,
+  pluginPrContext,
+  useExtendSurfaceEntry,
+  usePluginMenuEntries,
+} from "../../plugins/sockets";
+import { ContextMenu, type ContextMenuItem } from "../../files/v2/ContextMenu";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -328,8 +335,46 @@ export function GitHubTabPrRow({
   const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
   const mappable = isPrRowMappable(item);
+
+  // The PR list had no row menu at all before plugins: rows are plain buttons.
+  // Rather than introduce a menu framework for one socket, this reuses the
+  // Files workbench's portal menu — the only lightweight one in the app — and
+  // owns its open state per row, so a list with no plugins installed still
+  // offers the one entry that explains how to change that.
+  const [rowMenu, setRowMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const closeRowMenu = React.useCallback(() => setRowMenu(null), []);
+  const prContext = React.useMemo(
+    () => pluginPrContext({
+      number: item.githubPrNumber,
+      title: item.title,
+      branch: item.headBranch,
+      state: item.state,
+      isDraft: item.isDraft,
+    }),
+    [item.githubPrNumber, item.headBranch, item.isDraft, item.state, item.title],
+  );
+  const pluginEntries = usePluginMenuEntries("prs", prContext, { onClose: closeRowMenu });
+  const extendEntry = useExtendSurfaceEntry("prs", { onClose: closeRowMenu });
+  const rowMenuItems = React.useMemo<ContextMenuItem[]>(() => {
+    const entries: ContextMenuItem[] = pluginEntries.map((entry) => ({
+      type: "item",
+      label: entry.label,
+      onClick: entry.onSelect,
+      ...(entry.danger ? { danger: true } : {}),
+    }));
+    if (entries.length > 0) entries.push({ type: "separator" });
+    entries.push({ type: "item", label: extendEntry.label, onClick: extendEntry.onSelect });
+    return entries;
+  }, [extendEntry, pluginEntries]);
+
   return (
-    <div style={{ position: "relative" }}>
+    <div
+      style={{ position: "relative" }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setRowMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
       <button
         type="button"
         data-tour="prs.listRow"
@@ -505,6 +550,7 @@ export function GitHubTabPrRow({
             branch
           </span>
         ) : null}
+        <PluginRowBadges surface="prs" context={prContext} />
       </div>
       </button>
       <button
@@ -534,6 +580,9 @@ export function GitHubTabPrRow({
       >
         <ArrowSquareOut size={13} />
       </button>
+      {rowMenu ? (
+        <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenuItems} onClose={closeRowMenu} />
+      ) : null}
     </div>
   );
 }

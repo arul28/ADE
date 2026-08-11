@@ -70,6 +70,7 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { PluginEmptyStateExtra } from "../plugins/sockets";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -3086,6 +3087,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             <div className="mt-1 text-[10px] text-muted-fg/40 leading-relaxed max-w-[180px]">
               Start a new session above.
             </div>
+            <PluginEmptyStateExtra surface="work" />
           </div>
         ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
           <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">

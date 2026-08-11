@@ -18,6 +18,7 @@ import {
   unsettleSession,
   wakeSessionNow,
 } from "./sessionLifecycleActions";
+import { pluginSessionContext, useExtendSurfaceEntry, usePluginMenuEntries } from "../plugins/sockets";
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
@@ -208,6 +209,18 @@ function SessionContextMenuPanel({
   const isSettled = canonicalPhase === "settled";
   const isDeclaredSettled = Boolean(session.settledAt);
   const canStopRuntime = isRunning && Boolean(session.ptyId) && !isChat;
+  const pluginEntries = usePluginMenuEntries(
+    "work",
+    pluginSessionContext({
+      id: session.id,
+      title: session.title,
+      provider: session.toolType,
+      status: session.runtimeState,
+    }),
+    { onClose },
+  );
+  const extendEntry = useExtendSurfaceEntry("work", { onClose });
+
   const chooseSnooze = (key: SnoozeDurationKey) => {
     void snoozeSessionForDuration(session, key, Date.now(), binding);
     onClose();
@@ -491,6 +504,18 @@ function SessionContextMenuPanel({
             triggerClassName={MENU_ITEM_CLASS}
           />
         ) : null}
+
+        {/* Plugin entries, then the way to get more of them — both before the
+            destructive fence below, never inside it. */}
+        {pluginEntries.length > 0 ? <MenuSeparator /> : null}
+        {pluginEntries.map((entry) => (
+          <button key={entry.key} type="button" className={MENU_ITEM_CLASS} onClick={entry.onSelect}>
+            {entry.label}
+          </button>
+        ))}
+        <button type="button" className={MENU_ITEM_CLASS} onClick={extendEntry.onSelect}>
+          {extendEntry.label}
+        </button>
 
         {/* ── Destructive, last and fenced off. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}

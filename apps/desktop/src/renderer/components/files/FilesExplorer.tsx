@@ -17,6 +17,8 @@ import { modifierKeyLabel } from "../../lib/platform";
 import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon } from "./filePresentation";
+import { PluginRowBadges, PluginToolbarActions } from "../plugins/sockets";
+import { pluginFileExtension } from "../../../shared/plugins/context";
 
 const ROW_HEIGHT = 26;
 
@@ -81,6 +83,8 @@ export type FilesExplorerProps = {
   onContextMenu: (event: FilesExplorerContextMenuEvent) => void;
   onRenamePath: (sourcePath: string, destinationPath: string) => Promise<void>;
   onInlineRenameSettled: () => void;
+  /** Identifies the workspace for plugin file contexts; null in previews. */
+  workspaceId?: string | null;
   compact?: boolean;
 };
 
@@ -191,6 +195,7 @@ export function FilesExplorer({
   onContextMenu,
   onRenamePath,
   onInlineRenameSettled,
+  workspaceId = null,
   compact = false,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -404,6 +409,7 @@ export function FilesExplorer({
               <FolderPlus size={13} weight="regular" />
             </button>
           </SmartTooltip>
+          <PluginToolbarActions surface="files" />
         </div>
       ) : (
         <>
@@ -724,6 +730,22 @@ export function FilesExplorer({
                     }} title={changeStatusTitle(node.changeStatus)}>
                       {statusLabel}
                     </span>
+                  ) : null}
+                  {node.type === "file" ? (
+                    <PluginRowBadges
+                      surface="files"
+                      context={{
+                        kind: "file",
+                        path: node.path,
+                        size: null,
+                        extension: pluginFileExtension(node.path),
+                        workspaceId,
+                      }}
+                      // The git status label already claimed the auto margin when
+                      // it is present; without it the badges take the flush-right
+                      // slot themselves.
+                      style={{ marginLeft: statusLabel ? 4 : "auto", flexShrink: 0 }}
+                    />
                   ) : null}
                 </>
               );

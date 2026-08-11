@@ -6,6 +6,7 @@ import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
 import { AutomationsEmptyState } from "./AutomationsEmptyState";
 import { RuleRow } from "./RuleRow";
+import { PluginEmptyStateExtra, PluginToolbarActions } from "../../plugins/sockets";
 
 export function RuleList({
   rules,
@@ -66,6 +67,7 @@ export function RuleList({
             <BookOpen size={12} weight="regular" />
             Templates
           </Button>
+          <PluginToolbarActions surface="automations" />
         </div>
         <div className="relative mt-3">
           <MagnifyingGlass size={12} weight="bold" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
@@ -98,7 +100,10 @@ export function RuleList({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {rules.length === 0 ? (
-          <AutomationsEmptyState onUseTemplate={onUseTemplate} onBrowseTemplates={onOpenTemplates} />
+          <>
+            <AutomationsEmptyState onUseTemplate={onUseTemplate} onBrowseTemplates={onOpenTemplates} />
+            <PluginEmptyStateExtra surface="automations" />
+          </>
         ) : (
           <div className="space-y-2">
             {rules.map((rule) => (

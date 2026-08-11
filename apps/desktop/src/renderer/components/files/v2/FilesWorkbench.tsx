@@ -56,6 +56,13 @@ import {
   writeCachedWorkspaces,
 } from "./filesTreeCache";
 import { resolveViewerKind } from "./viewerRegistry";
+import {
+  PluginEmptyStateExtra,
+  useExtendSurfaceEntry,
+  usePluginFileViewers,
+  usePluginMenuEntries,
+} from "../../plugins/sockets";
+import { pluginFileExtension, type PluginFileContext } from "../../../../shared/plugins/context";
 import { getCachedFileContent, invalidateFileContent, primeFileContent, sameFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
@@ -238,6 +245,12 @@ export function FilesWorkbench({
   rootPathRef.current = rootPath;
   const dirtyTabIdsRef = useRef(dirtyTabIds);
   dirtyTabIdsRef.current = dirtyTabIds;
+  // Read through a ref: viewer resolution happens inside `openFile`, and making
+  // the registrations a dependency would rebuild that callback — and everything
+  // memoized on it — every time the plugin registry refreshes.
+  const pluginFileViewers = usePluginFileViewers();
+  const pluginFileViewersRef = useRef(pluginFileViewers);
+  pluginFileViewersRef.current = pluginFileViewers;
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? EMPTY_GROUPS_STATE;
@@ -978,6 +991,7 @@ export function FilesWorkbench({
           mimeType: content.mimeType,
           isBinary: content.isBinary,
           isPartial: content.isPartial,
+          pluginViewers: pluginFileViewersRef.current,
         });
         const tab: EditorTab = {
           id: editorTabId(workspaceId, path),
@@ -1279,6 +1293,27 @@ export function FilesWorkbench({
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
     menu.nodeType === "directory" ? menu.nodePath : menu.nodePath.includes("/") ? menu.nodePath.slice(0, menu.nodePath.lastIndexOf("/")) : "";
 
+  const treeMenuFileContext = useMemo<PluginFileContext | null>(
+    () =>
+      treeMenu && treeMenu.nodeType === "file"
+        ? {
+          kind: "file",
+          path: treeMenu.nodePath,
+          // The tree row knows the path, not the size; a plugin that needs the
+          // length reads it rather than being handed a guess.
+          size: null,
+          extension: pluginFileExtension(treeMenu.nodePath),
+          workspaceId: workspaceId ?? null,
+        }
+        : null,
+    [treeMenu, workspaceId],
+  );
+  const closeTreeMenu = useCallback(() => setTreeMenu(null), []);
+  const pluginTreeMenuEntries = usePluginMenuEntries("files", treeMenuFileContext, {
+    onClose: closeTreeMenu,
+  });
+  const extendFilesEntry = useExtendSurfaceEntry("files", { onClose: closeTreeMenu });
+
   const treeMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!treeMenu) return [];
     const path = treeMenu.nodePath;
@@ -1306,8 +1341,21 @@ export function FilesWorkbench({
       onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
       disabled: !canRevealInFinder,
     });
+    // Plugin entries last, under their own separator: the tree menu's own rows
+    // include Delete, and nothing contributed should sit between someone's eye
+    // and the destructive action they were aiming for.
+    items.push({ type: "separator" });
+    for (const entry of pluginTreeMenuEntries) {
+      items.push({
+        type: "item",
+        label: entry.label,
+        onClick: entry.onSelect,
+        ...(entry.danger ? { danger: true } : {}),
+      });
+    }
+    items.push({ type: "item", label: extendFilesEntry.label, onClick: extendFilesEntry.onSelect });
     return items;
-  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder]);
+  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder, pluginTreeMenuEntries, extendFilesEntry]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
@@ -1424,6 +1472,7 @@ export function FilesWorkbench({
               onContextMenu={setTreeMenu}
               onRenamePath={renamePath}
               onInlineRenameSettled={() => setInlineRename(null)}
+              workspaceId={workspaceId ?? null}
               compact={embedded}
             />
           </div>
@@ -1439,15 +1488,20 @@ export function FilesWorkbench({
         </div>
         <div className="min-h-0 min-w-0">
           {openCount === 0 ? (
-            <WarmEmptyState
-              workspaceName={workspace?.name ?? null}
-              branch={branch}
-              dirtyCount={dirtyTabIds.size}
-              recents={visibleRecentFiles}
-              onOpen={(path) => void openFile(path, { preview: false })}
-              onSearch={() => setOverlay({ kind: "search", query: "" })}
-              modifierKey={modifierKeyLabel}
-            />
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="min-h-0 flex-1">
+                <WarmEmptyState
+                  workspaceName={workspace?.name ?? null}
+                  branch={branch}
+                  dirtyCount={dirtyTabIds.size}
+                  recents={visibleRecentFiles}
+                  onOpen={(path) => void openFile(path, { preview: false })}
+                  onSearch={() => setOverlay({ kind: "search", query: "" })}
+                  modifierKey={modifierKeyLabel}
+                />
+              </div>
+              <PluginEmptyStateExtra surface="files" />
+            </div>
           ) : (
           <EditorGroups
             sessionKey={sessionKey}

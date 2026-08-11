@@ -8,6 +8,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { PluginToolbarActions } from "../plugins/sockets";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -305,14 +306,15 @@ export function WorkSurfaceHeader({
           />
         ) : null}
 
-        {trailingActions || onToggleToolsPane ? (
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {trailingActions}
-            {onToggleToolsPane ? (
-              <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
-            ) : null}
-          </div>
-        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {trailingActions}
+          {/* Contributed actions sit between the surface's own buttons and the
+              Tools toggle, which stays the far-right anchor it has always been. */}
+          <PluginToolbarActions surface="work" />
+          {onToggleToolsPane ? (
+            <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
+          ) : null}
+        </div>
       </div>
     </div>
   );
