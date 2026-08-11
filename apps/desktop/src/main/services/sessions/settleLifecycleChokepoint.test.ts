@@ -84,10 +84,12 @@ describe("settle-lifecycle chokepoint", () => {
    */
   it("has no settle-tuple assignment outside the chokepoint's own generator", () => {
     const source = fs.readFileSync(SESSION_SERVICE, "utf8");
-    const generatorStart = source.indexOf("const settleTupleAssignment");
-    const generatorEnd = source.indexOf("const fallbackLifecycleRevisions");
-    expect(generatorStart).toBeGreaterThan(-1);
-    expect(generatorEnd).toBeGreaterThan(generatorStart);
+    // Explicit sentinels, not neighbouring identifiers: an unrelated rename must
+    // not silently turn this invariant into a no-op.
+    const generatorStart = source.indexOf("settle-tuple-sql:start");
+    const generatorEnd = source.indexOf("settle-tuple-sql:end");
+    expect(generatorStart, "start sentinel missing").toBeGreaterThan(-1);
+    expect(generatorEnd, "end sentinel missing").toBeGreaterThan(generatorStart);
 
     const outsideGenerator =
       source.slice(0, generatorStart) + source.slice(generatorEnd);
@@ -201,6 +203,51 @@ describe("settle-lifecycle chokepoint", () => {
 
     expect(service.getSettleLifecycleRevision("session-1")).toBe(1);
     expect(service.getSettleLifecycleRevision("session-2")).toBe(1);
+  });
+
+  /**
+   * A bump can land in either store — the table normally, memory when the table
+   * write fails. If the table then starts working it begins its own count at 1,
+   * so a reader that preferred one store could hand back a LOWER number than it
+   * had already returned. A revision that moves backwards is worse than none: it
+   * lets a stale settle match a token it should have missed.
+   */
+  it("never reports a revision lower than one it has already reported", async () => {
+    const projectRoot = makeProjectRoot();
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+
+    // Force the persisted bump to fail so it falls back to memory.
+    const realRun = db.run.bind(db);
+    (db as unknown as { run: typeof db.run }).run = (sql: string, params?: unknown[]) => {
+      if (sql.includes("session_lifecycle_revisions")) throw new Error("table unavailable");
+      return realRun(sql, params as never);
+    };
+
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-1",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Chat",
+      startedAt: "2026-08-11T00:01:00.000Z",
+      transcriptPath: "/tmp/session-1.log",
+      toolType: "codex-chat",
+    });
+
+    service.settleSessions(["session-1"]);
+    service.unsettleSessions(["session-1"]);
+    service.settleSessions(["session-1"]);
+    const afterFallback = service.getSettleLifecycleRevision("session-1");
+    expect(afterFallback).toBeGreaterThanOrEqual(3);
+
+    // The table starts working again; its own count restarts at 1.
+    (db as unknown as { run: typeof db.run }).run = realRun;
+    service.unsettleSessions(["session-1"]);
+
+    expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(afterFallback);
   });
 
   it("keeps the revision table out of CRR replication", async () => {

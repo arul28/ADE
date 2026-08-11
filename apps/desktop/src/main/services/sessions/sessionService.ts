@@ -401,6 +401,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
     | { kind: "unsettle" }
     | { kind: "override"; value: string | null; source: SessionSettleSource };
 
+  // settle-tuple-sql:start — the ONLY region allowed to assign the settle tuple.
+  // `settleLifecycleChokepoint.test.ts` scans for assignments outside these
+  // markers, so do not remove them or widen the region to cover other code.
   const settleTupleAssignment = (intent: SettleLifecycleIntent): { sql: string; params: SqlValue[] } => {
     switch (intent.kind) {
       case "settle":
@@ -428,17 +431,27 @@ export function createSessionService({ db }: { db: AdeDb }) {
     }
   };
 
+  // settle-tuple-sql:end
+
   /**
-   * In-memory revisions, used when the local-only table is unavailable (an
-   * older database, or a write that failed). Degrades exactly like the settling
-   * state does: a restart resolves to "not settled", which is the safe
-   * direction — a lost revision can only cause a settle to be re-taken, never
-   * a stale one to be applied.
+   * Per-process revision counter, incremented on EVERY bump — not only when the
+   * table write fails.
+   *
+   * The two stores answer different questions and both are needed. The table
+   * survives a restart; this map guarantees the value always moves. Bumping only
+   * on failure would let the revision stall: after a failed write the table is
+   * behind, and when it starts working again it restarts its own count at 1, so
+   * a real mutation could produce no observable change — a change the guard
+   * cannot see, which is the failure direction that matters.
+   *
+   * Bounded by the sessions this process has touched, same order as the row set
+   * it shadows.
    */
-  const fallbackLifecycleRevisions = new Map<string, number>();
+  const inProcessLifecycleRevisions = new Map<string, number>();
 
   const bumpLifecycleRevisions = (sessionIds: readonly string[]): void => {
     for (const id of sessionIds) {
+      inProcessLifecycleRevisions.set(id, (inProcessLifecycleRevisions.get(id) ?? 0) + 1);
       try {
         // One atomic statement, PK lookup, local-only table. This runs on the
         // per-output-chunk path (C4), so it must not grow a pre-read.
@@ -448,7 +461,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           [id],
         );
       } catch {
-        fallbackLifecycleRevisions.set(id, (fallbackLifecycleRevisions.get(id) ?? 0) + 1);
+        // The in-process counter already moved, so the guard still works for the
+        // lifetime of this process; only restart-survival is lost.
       }
     }
   };
@@ -456,16 +470,24 @@ export function createSessionService({ db }: { db: AdeDb }) {
   const readLifecycleRevision = (sessionId: string): number => {
     const trimmed = sessionId.trim();
     if (!trimmed) return 0;
+    let persisted = 0;
     try {
       const row = db.get<{ revision: number }>(
         "select revision from session_lifecycle_revisions where session_id = ?",
         [trimmed],
       );
-      if (row) return Number(row.revision) || 0;
+      persisted = row ? Number(row.revision) || 0 : 0;
     } catch {
-      // fall through to the in-memory value
+      persisted = 0;
     }
-    return fallbackLifecycleRevisions.get(trimmed) ?? 0;
+    // The MAXIMUM of the two stores, never whichever answered. After a restart
+    // the table is ahead; after a failed write the in-process counter is. Taking
+    // either one alone could hand back a LOWER number than a previous call did,
+    // and a revision that moves backwards is worse than no revision at all — it
+    // lets a stale settle match a token it should have missed. Monotonic within
+    // a process, and never regressing across a restart, are the only two
+    // properties this value has to have.
+    return Math.max(persisted, inProcessLifecycleRevisions.get(trimmed) ?? 0);
   };
 
   /**
