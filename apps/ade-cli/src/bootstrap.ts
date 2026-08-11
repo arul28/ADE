@@ -168,6 +168,10 @@ import {
   getSharedPluginHostService,
   type PluginHostService,
 } from "../../desktop/src/main/services/plugins/pluginHostService";
+import {
+  PLUGIN_CHANGED_EVENT_TYPE,
+  subscribeToPluginChanges,
+} from "../../desktop/src/main/services/plugins/pluginEvents";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -2072,6 +2076,12 @@ export async function createAdeRuntime(args: {
   // Plugin code authenticates at agent role: it may reach every allowlisted
   // action that is not operator-only, and nothing else. Reusing the automation
   // predicate keeps that ceiling defined in exactly one place.
+  // Plugin changes are machine-wide, so every open project republishes them
+  // into its own event buffer. See pluginEvents.ts for the wire contract.
+  const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
+    pushEvent("runtime", { type: PLUGIN_CHANGED_EVENT_TYPE, ...event });
+  });
+
   detachPluginHostBinding = (() => {
     const attachment = pluginHostService.attachProject({
       projectId,
@@ -2096,7 +2106,10 @@ export async function createAdeRuntime(args: {
         return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(service, args);
       },
     });
-    return () => attachment.detach();
+    return () => {
+      unsubscribePluginChanges();
+      attachment.detach();
+    };
   })();
 
   const adeActionLookup: AutomationAdeActionRegistry = {

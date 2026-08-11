@@ -21,6 +21,7 @@ import {
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
 import type { AdeDb } from "../state/kvDb";
+import { emitPluginChange } from "./pluginEvents";
 
 /**
  * The three plugin data tables this module writes, character-for-character as
@@ -179,8 +180,9 @@ export function createPluginDataStore(deps: {
 
   const nowIso = (): string => new Date().toISOString();
 
-  const notifyCollectionChanged = (): void => {
+  const notifyCollectionChanged = (pluginId: string, collection: string): void => {
     deps.onCollectionChanged?.();
+    emitPluginChange({ kind: "collections", pluginId, collection });
   };
 
   return {
@@ -209,16 +211,17 @@ export function createPluginDataStore(deps: {
           nowIso: nowIso(),
         });
       });
-      notifyCollectionChanged();
+      notifyCollectionChanged(pluginId, name);
     },
 
     deleteCollection(pluginId, collection, key) {
+      const name = assertPluginCollectionName(collection);
       deletePluginCollectionValue(db, {
         pluginId,
-        collection: assertPluginCollectionName(collection),
+        collection: name,
         key: assertPluginCollectionKey(key),
       });
-      notifyCollectionChanged();
+      notifyCollectionChanged(pluginId, name);
     },
 
     listCollection(pluginId, collection, options) {
@@ -280,6 +283,7 @@ export function createPluginDataStore(deps: {
           nowIso: nowIso(),
         });
       });
+      emitPluginChange({ kind: "contributions", pluginId });
     },
 
     updatePanel(pluginId, panelId, args) {
@@ -295,6 +299,7 @@ export function createPluginDataStore(deps: {
           nowIso: nowIso(),
         });
       });
+      emitPluginChange({ kind: "panels", pluginId, panelId });
     },
 
     readPanel(pluginId, panelId) {

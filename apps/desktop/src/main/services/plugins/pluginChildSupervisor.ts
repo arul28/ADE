@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { terminateProcessTree } from "../shared/processExecution";
 import { pluginHasRuntimeEntry, type PluginManifest } from "../../../shared/plugins/manifest";
+import { emitPluginChange } from "./pluginEvents";
 import {
   decodePluginFrame,
   encodePluginFrame,
@@ -146,6 +147,17 @@ export function createPluginChildSupervisor(args: {
 
   let child: ChildProcess | null = null;
   let status: PluginRuntimeStatus = hasEntry ? "idle" : "no-entry";
+  /**
+   * Every status transition goes through here so a subscriber cannot miss one:
+   * the child's lifecycle is driven from six places (ready frame, exit, restart
+   * timer, spawn, stop, dispose) and a bare assignment in any of them would be
+   * a silently unreported state change.
+   */
+  const setStatus = (next: PluginRuntimeStatus): void => {
+    if (status === next) return;
+    status = next;
+    emitPluginChange({ kind: "status", pluginId, status: next });
+  };
   let restarts = 0;
   let crashedAt: string | null = null;
   let disposed = false;
@@ -219,7 +231,7 @@ export function createPluginChildSupervisor(args: {
   const handleFrame = (frame: PluginChildFrame): void => {
     switch (frame.type) {
       case "ready": {
-        status = "running";
+        setStatus("running");
         startedAtMs = now();
         appendLog({ at: new Date(now()).toISOString(), level: "info", message: `Plugin ready (${frame.actions.length} actions).` });
         settleReady(null);
@@ -288,7 +300,7 @@ export function createPluginChildSupervisor(args: {
   const scheduleRestart = (): void => {
     if (disposed) return;
     const delay = pluginChildRestartDelayMs(restarts);
-    status = "restarting";
+    setStatus("restarting");
     logger.info("plugin.child_restart_scheduled", { pluginId, restartCount: restarts, delayMs: delay });
     restartTimer = setTimer(() => {
       restartTimer = null;
@@ -309,7 +321,7 @@ export function createPluginChildSupervisor(args: {
     const lifetimeMs = startedAtMs > 0 ? now() - startedAtMs : 0;
     startedAtMs = 0;
     if (disposed || stopping) {
-      status = "stopped";
+      setStatus("stopped");
       rejectPending(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" stopped.`));
       settleReady(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" stopped.`));
       return;
@@ -319,7 +331,7 @@ export function createPluginChildSupervisor(args: {
     // yesterday's 30-second delay.
     restarts = lifetimeMs >= PLUGIN_CHILD_HEALTHY_RUNTIME_MS ? 0 : restarts + 1;
     crashedAt = new Date(now()).toISOString();
-    status = "crashed";
+    setStatus("crashed");
     const detail = summarizeStderr();
     const exitStatus = code ?? signal ?? "unknown";
     const message = detail
@@ -352,12 +364,12 @@ export function createPluginChildSupervisor(args: {
         windowsHide: true,
       });
     } catch (error) {
-      status = "crashed";
+      setStatus("crashed");
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     child = spawned;
-    status = "starting";
+    setStatus("starting");
     stderrRing = "";
     stdoutBuffer = "";
     readyResolve = resolve;
@@ -379,7 +391,7 @@ export function createPluginChildSupervisor(args: {
       // handleExit would have written has to be written here instead.
       if (spawned.pid == null) {
         child = null;
-        status = "crashed";
+        setStatus("crashed");
         crashedAt = new Date(now()).toISOString();
       }
       settleReady(error);
@@ -485,7 +497,7 @@ export function createPluginChildSupervisor(args: {
       }
       const target = child;
       if (!target) {
-        status = "stopped";
+        setStatus("stopped");
         rejectPending(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" stopped.`));
         return;
       }
@@ -498,7 +510,7 @@ export function createPluginChildSupervisor(args: {
       });
       stopChild();
       await exited;
-      status = "stopped";
+      setStatus("stopped");
       rejectPending(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" stopped.`));
     },
   };

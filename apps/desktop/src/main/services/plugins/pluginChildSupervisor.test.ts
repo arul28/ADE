@@ -12,6 +12,11 @@ import {
   sanitizePluginChildBaseEnv,
   type PluginChildSupervisor,
 } from "./pluginChildSupervisor";
+import {
+  resetPluginChangeListenersForTests,
+  subscribeToPluginChanges,
+  type PluginChangeEvent,
+} from "./pluginEvents";
 
 /**
  * A throwaway child that speaks the NDJSON protocol and nothing else. Using a
@@ -95,6 +100,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 }
 
 describe("pluginChildSupervisor", () => {
+  afterEach(() => resetPluginChangeListenersForTests());
   let pluginRoot: string;
   let previousBootstrapPath: string | undefined;
   const active: PluginChildSupervisor[] = [];
@@ -186,6 +192,34 @@ describe("pluginChildSupervisor", () => {
     await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
     expect(supervisor.restartCount()).toBe(2);
     expect(timers.scheduled.at(-1)?.delay).toBe(2_000);
+  });
+
+  // Producer (b) of the change bus: a client watching a plugin's health learns
+  // about a crash from these, so every transition has to be reported once.
+  it("announces each status transition exactly once", async () => {
+    const seen: PluginChangeEvent[] = [];
+    subscribeToPluginChanges((event) => {
+      if (event.kind === "status") seen.push(event);
+    });
+    const timers = fakeTimers();
+    const supervisor = makeSupervisor("announcer", {
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+      now: () => 1_000,
+    });
+
+    await supervisor.start();
+    await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
+
+    const statuses = seen.map((event) => event.status);
+    expect(statuses.slice(0, 2)).toEqual(["starting", "running"]);
+    expect(statuses).toContain("crashed");
+    expect(statuses.at(-1)).toBe("restarting");
+    expect(seen.every((event) => event.pluginId === "announcer")).toBe(true);
+    // Repeats are the failure mode worth guarding: the supervisor writes
+    // `status` from six places, and a re-announced value would make a client
+    // refetch on every exit-path hop rather than on real transitions.
+    expect(statuses.filter((status) => status === "crashed")).toHaveLength(1);
   });
 
   it("stops restarting once disposed", async () => {

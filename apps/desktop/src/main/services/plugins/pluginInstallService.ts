@@ -12,6 +12,7 @@ import {
   type PluginManifest,
 } from "../../../shared/plugins/manifest";
 import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/plugins/sdk";
+import { emitPluginChange } from "./pluginEvents";
 
 const PLUGIN_STATE_FILE = "state.json";
 const PLUGIN_MANIFEST_FILE = "plugin.json";
@@ -376,6 +377,7 @@ export function createPluginInstallService(deps: {
       source: record.source.kind,
       warnings: warnings.length,
     });
+    emitPluginChange({ kind: "installs", pluginId });
     return { record, manifest, root: target, errors: [], warnings };
   };
 
@@ -398,6 +400,7 @@ export function createPluginInstallService(deps: {
       writeRegistry(registry);
     }
     deps.logger.info("plugin.uninstalled", { pluginId, known });
+    if (known) emitPluginChange({ kind: "installs", pluginId });
     return { removed: known };
   };
 
@@ -407,6 +410,7 @@ export function createPluginInstallService(deps: {
     registry.plugins[pluginId] = next;
     writeRegistry(registry);
     deps.logger.info("plugin.enabled_changed", { pluginId, enabled });
+    emitPluginChange({ kind: "installs", pluginId });
     return describe(next);
   };
 
@@ -419,6 +423,7 @@ export function createPluginInstallService(deps: {
       const next: PluginInstallRecord = { ...record, version: described.manifest.version, updatedAt: nowIso() };
       registry.plugins[pluginId] = next;
       writeRegistry(registry);
+      emitPluginChange({ kind: "installs", pluginId });
       return { ...described, record: next };
     }
     return described;
