@@ -1,4 +1,5 @@
 import type { AdeDb, SqlValue } from "../state/kvDb";
+import { SettlingStateRegistry, type SettleAbortReason } from "./settlingStateRegistry";
 import type { SessionSettleOverride, SessionSettleSource } from "../../../shared/types/sessions";
 
 /**
@@ -12,8 +13,17 @@ import type { SessionSettleOverride, SessionSettleSource } from "../../../shared
 /** What a settle-lifecycle mutation is asking for. */
 export type SettleLifecycleIntent =
   | { kind: "settle"; settledAt: string; source: SessionSettleSource }
-  /** Real activity: drop the whole declaration, keep-active pin included. */
-  | { kind: "clearOnActivity" }
+  /**
+   * Real activity: drop the whole declaration, keep-active pin included.
+   *
+   * `cause` is what makes teardown possible at all. Stopping a process EMITS
+   * OUTPUT, so C4 fires *because* teardown is running — if that cleared the
+   * settle or tripped abort, every real teardown would self-abort and a settle
+   * could never land. Mechanical exhaust is therefore swallowed during the
+   * settling window; a human decision aborts it. Outside the window both behave
+   * identically, exactly as before.
+   */
+  | { kind: "clearOnActivity"; cause: SettleClearCause }
   /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
   | { kind: "unsettleDeclared" }
   | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource };
@@ -23,6 +33,16 @@ export type SettleLifecycleIntent =
  * routing a tuple column through `extraSet` is a compile error rather than
  * something only the source-scan test would catch.
  */
+/**
+ * Who asked for the clear.
+ *
+ * - `mechanical` — C4 `setLastOutputPreview`, C5 `touchSessionActivity`. Output
+ *   and activity bookkeeping, largely produced by the teardown itself.
+ * - `turn_start` / `turn_failed` / `attention_requested` — C3, C6, C7. Durable
+ *   signals of intent that outrank a settle in canonical precedence.
+ */
+export type SettleClearCause = "mechanical" | SettleAbortReason;
+
 export type SettleExtraColumn =
   | "status_note"
   | "attention_requested_at"
@@ -41,6 +61,8 @@ export type SettleLifecycleWriter = {
     guard?: string;
   }) => void;
   readRevision: (sessionId: string) => number;
+  /** The in-flight settle windows. See `settlingStateRegistry.ts`. */
+  settling: SettlingStateRegistry;
   /** Drop a deleted session's token so the local table and map do not grow forever. */
   forget: (sessionId: string) => void;
 };
@@ -180,6 +202,28 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
    * one (its "still unsettled" check, which another ADE process could otherwise
    * invalidate between the select and the update).
    */
+  const settling = new SettlingStateRegistry();
+
+  /**
+   * What the settling window does to this write.
+   *
+   * "Swallowed" means precisely three things, and all three matter: the tuple is
+   * NOT cleared, the revision is NOT bumped, and abort is NOT tripped. The
+   * caller's own columns still land, so the row keeps showing live output while
+   * it settles — which is what a visible `Settling…` state should look like.
+   */
+  const settlingDisposition = (
+    intent: SettleLifecycleIntent,
+    sessionIds: readonly string[],
+  ): "normal" | "swallow" => {
+    if (intent.kind !== "clearOnActivity") return "normal";
+    const active = sessionIds.filter((id) => settling.isSettling(id));
+    if (!active.length) return "normal";
+    if (intent.cause === "mechanical") return "swallow";
+    for (const id of active) settling.abort(id, intent.cause);
+    return "normal";
+  };
+
   const writeSettleLifecycle = (args: {
     intent: SettleLifecycleIntent;
     sessionIds: readonly string[];
@@ -188,6 +232,20 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
   }): void => {
     const ids = args.sessionIds.map((id) => id.trim()).filter(Boolean);
     if (!ids.length) return;
+
+    if (settlingDisposition(args.intent, ids) === "swallow") {
+      // Mechanical exhaust during the settling window. Land the caller's own
+      // columns and nothing else — no tuple clear, no revision bump, no abort.
+      const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
+      if (!extraEntries.length) return;
+      db.run(
+        `update terminal_sessions set ${extraEntries.map(([column]) => `${column} = ?`).join(", ")}`
+          + ` where id in (${ids.map(() => "?").join(", ")})`,
+        [...extraEntries.map(([, value]) => value), ...ids],
+      );
+      return;
+    }
+
     const tuple = settleTupleAssignment(args.intent);
     const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
     const setClauses = [...extraEntries.map(([column]) => `${column} = ?`), tuple.sql];
@@ -227,6 +285,7 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
   return {
     write: writeSettleLifecycle,
     readRevision: readLifecycleRevision,
+    settling,
     forget: (sessionId: string) => {
       const trimmed = sessionId.trim();
       if (!trimmed) return;

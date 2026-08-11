@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
+import type { SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -365,7 +366,21 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
   ));
 }
 
-export function createSessionService({ db }: { db: AdeDb }) {
+export function createSessionService({
+  db,
+  runSettleTeardown,
+}: {
+  db: AdeDb;
+  /**
+   * Stop the session's background work. Injected rather than per-call: teardown
+   * is a service capability, not something a caller decides.
+   *
+   * Step 2 ships with this absent — the settling window, the abort rule, and the
+   * revision guard all land and are tested against a NO-OP, so every race is
+   * exercised before there is any work to lose. Step 3 supplies the real one.
+   */
+  runSettleTeardown?: (sessionId: string) => void;
+}) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
 
@@ -716,6 +731,55 @@ export function createSessionService({ db }: { db: AdeDb }) {
       emitChanged({ sessionId: id, reason: "meta-updated" });
     }
     return newlySettled;
+  };
+
+  /**
+   * Settle through the settling window: the shape a real teardown will run in.
+   *
+   * Per session: read the revision, open the window, run teardown, then apply
+   * the settle ONLY if nothing moved. "Nothing moved" is two checks that catch
+   * different things — the abort flag (a human decision arrived and said so) and
+   * the revision (anything else changed the settle tuple, including a change
+   * this host did not make through a caller).
+   *
+   * Teardown is a NO-OP in step 2 by design. The point of landing the window
+   * first is that every race is testable before there is any work to lose.
+   */
+  const settleManyWithTeardown = (
+    sessionIds: string[],
+    options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+  ): SettleSessionsOutcome => {
+    const ids = normalizeSessionIds(sessionIds);
+    const settled: string[] = [];
+    const aborted: SettleAbortedSession[] = [];
+
+    for (const id of ids) {
+      const revisionBefore = settleLifecycle.readRevision(id);
+      const begin = settleLifecycle.settling.begin(id, revisionBefore);
+      // Joined an in-flight settle rather than starting a second teardown: R4.
+      // The owner will report the outcome; reporting it twice would double-count.
+      if (begin.kind === "joined") continue;
+      try {
+        runSettleTeardown?.(id);
+
+        const abortedBy = settleLifecycle.settling.abortedBy(id);
+        if (abortedBy) {
+          aborted.push({ sessionId: id, reason: abortedBy });
+          continue;
+        }
+        // The revision catches everything the abort flag cannot: a settle-tuple
+        // change from a path that never announced itself as a decision.
+        if (settleLifecycle.readRevision(id) !== revisionBefore) {
+          aborted.push({ sessionId: id, reason: "lifecycle_changed" });
+          continue;
+        }
+        settled.push(...settleMany([id], options));
+      } finally {
+        settleLifecycle.settling.end(id);
+      }
+    }
+
+    return { settled, aborted };
   };
 
   return {
@@ -1307,7 +1371,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         return;
       }
       writeSettleLifecycle({
-        intent: { kind: "clearOnActivity" },
+        intent: { kind: "clearOnActivity", cause: "mechanical" },
         extraSet: { last_output_preview: preview, last_output_at: now },
         sessionIds: [sessionId],
       });
@@ -1333,7 +1397,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         return;
       }
       writeSettleLifecycle({
-        intent: { kind: "clearOnActivity" },
+        intent: { kind: "clearOnActivity", cause: "mechanical" },
         extraSet: { last_output_at: at },
         sessionIds: [sessionId],
       });
@@ -1511,7 +1575,28 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     settleSessions(sessionIds: string[]): string[] {
-      return settleMany(sessionIds);
+      return settleManyWithTeardown(sessionIds).settled;
+    },
+
+    /**
+     * Settle, reporting abandoned sessions explicitly.
+     *
+     * `settleSessions` leaves an aborted id simply absent from its changed-id
+     * list, which is *almost* the right contract — a caller cannot tell "filed"
+     * from "not filed, and here is why". This is that distinction, and it is
+     * what a caller with a durable consequence (the PR-merge auto-settle marking
+     * a PR handled) has to branch on.
+     */
+    settleSessionsReportingAborts(
+      sessionIds: string[],
+      options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+    ): SettleSessionsOutcome {
+      return settleManyWithTeardown(sessionIds, options);
+    },
+
+    /** Sessions currently mid-settle, for the visible `Settling…` state. */
+    settlingSessionIds(): string[] {
+      return settleLifecycle.settling.settlingSessionIds();
     },
 
     settleSessionsWithOutcome(
@@ -1520,7 +1605,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       settledAt: string = new Date().toISOString(),
       source: SessionSettleSource = "user",
     ): string[] {
-      return settleMany(sessionIds, { outcome, settledAt, source });
+      return settleManyWithTeardown(sessionIds, { outcome, settledAt, source }).settled;
     },
 
     unsettleSessions(sessionIds: string[]): void {
@@ -1677,7 +1762,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clearOnActivity" },
+          intent: { kind: "clearOnActivity", cause: "attention_requested" },
           extraSet: {
             attention_requested_at: new Date().toISOString(),
             attention_message: normalizeOptionalText(message, 500),
@@ -1706,7 +1791,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         // settled/failed mutually exclusive at write time, so every surface's
         // precedence order agrees by construction.
         writeSettleLifecycle({
-          intent: { kind: "clearOnActivity" },
+          intent: { kind: "clearOnActivity", cause: "turn_failed" },
           extraSet: { last_turn_failed_at: failedAt },
           sessionIds: [id],
         });
@@ -1731,7 +1816,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clearOnActivity" },
+          intent: { kind: "clearOnActivity", cause: "turn_start" },
           extraSet: {
             last_turn_failed_at: null,
             attention_requested_at: null,

@@ -62,7 +62,7 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
-  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsWithOutcome">;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
@@ -170,6 +170,7 @@ export function createPrMergeAutoSettlementService(args: {
       );
 
       const settledSessionIds: string[] = [];
+      const abortedByActivity: string[] = [];
       for (const session of rows) {
         const currentSettings = getSessionLifecycleSettings(args.db);
         const currentState = getPrMergeAutoSettlementState(args.db);
@@ -185,15 +186,25 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        settledSessionIds.push(...args.sessionService.settleSessionsWithOutcome(
-          [session.id],
-          `PR #${pr.githubPrNumber} merged`,
-          polledAt,
-          "pr_merge",
-        ));
+        const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
+          outcome: `PR #${pr.githubPrNumber} merged`,
+          settledAt: polledAt,
+          source: "pr_merge",
+        });
+        settledSessionIds.push(...settleResult.settled);
+        if (settleResult.aborted.length) {
+          // The session became active while the settle was in flight. Leaving
+          // the PR unhandled is the point: a later pass retries, instead of this
+          // merge being consumed by a settle that never landed.
+          abortedByActivity.push(...settleResult.aborted.map((entry) => entry.sessionId));
+        }
       }
 
       const finalSettings = getSessionLifecycleSettings(args.db);
+      // An abandoned settle must not consume the merge. `handledPrIds` is the
+      // only thing that would stop a later pass from retrying, and the whole
+      // reason the outcome is typed is so this branch can exist.
+      const abandonedThisPr = abortedByActivity.length > 0;
       const finalState = getPrMergeAutoSettlementState(args.db);
       // Mark this PR handled even when its session had background work, and
       // even when the scope came back `ambiguous` and nothing was filed at all:
@@ -201,7 +212,8 @@ export function createPrMergeAutoSettlementService(args: {
       // and a later user reactivation belongs to a new lifecycle rather than to
       // this already-consumed merge.
       if (
-        finalSettings.autoSettleLaneSessionsOnPrMerge
+        !abandonedThisPr
+        && finalSettings.autoSettleLaneSessionsOnPrMerge
         && finalState?.enabledSince
         && !finalState.handledPrIds.includes(pr.id)
         && isMergeAtOrAfter(pr.mergedAt, finalState.enabledSince)
