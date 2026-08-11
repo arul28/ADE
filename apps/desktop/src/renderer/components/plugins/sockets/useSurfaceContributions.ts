@@ -18,6 +18,7 @@ import {
 } from "./contributionBridge";
 import {
   buildContributionSet,
+  pluginChangeAffects,
   pluginViewerRegistrations,
   selectContributions,
   SURFACE_ENTITY_KIND,
@@ -117,10 +118,12 @@ class SourcesStore extends Store<SourcesSnapshot> {
   private listenForChanges(): void {
     if (this.unsubscribe) return;
     this.unsubscribe = subscribeToPluginChanges((event) => {
-      if (event.kind === "panels" || event.kind === "collections") return;
+      if (!pluginChangeAffects("sources", event.kind)) return;
       this.stale = true;
       // Deliberately does NOT refetch here. A visible surface re-runs
       // `ensureLoaded` on its next render; a hidden one picks it up on reveal.
+      // Plugin events are machine-wide, so an install with two projects open
+      // arrives twice — marking stale is idempotent, a refetch would not be.
       this.set({ ...this.getSnapshot(), status: "idle" });
     });
   }
@@ -165,7 +168,7 @@ class RowsStore extends Store<RowsSnapshot> {
   private listenForChanges(): void {
     if (this.unsubscribe) return;
     this.unsubscribe = subscribeToPluginChanges((event) => {
-      if (event.kind === "panels") return;
+      if (!pluginChangeAffects("contributions", event.kind)) return;
       this.stale = true;
       this.set({ ...this.getSnapshot(), status: "idle" });
     });

@@ -71,7 +71,15 @@ export type PluginCollectionRow = {
 
 /** What changed, so a subscriber can decide whether it needs to refetch. */
 export type PluginChangeEvent = {
-  kind: "installs" | "panels" | "collections" | "status";
+  /**
+   * Mirrors `main/services/plugins/pluginEvents.ts`'s `PluginChangeKind`.
+   *
+   * The daemon may send a kind this build has never heard of — the union is
+   * open in practice and grows without a renderer release. Consumers must treat
+   * an unrecognized kind as "refetch everything for this plugin" rather than
+   * dropping it, which is what `pluginChangeAffects` in the socket module does.
+   */
+  kind: "installs" | "panels" | "collections" | "contributions" | "status";
   pluginId?: string;
   panelId?: string;
   collection?: string;

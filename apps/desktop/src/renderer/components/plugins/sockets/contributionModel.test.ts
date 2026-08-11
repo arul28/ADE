@@ -11,6 +11,7 @@ import {
   entityMatchesPluginFilters,
   matchPluginViewer,
   parsePluginViewerKind,
+  pluginChangeAffects,
   pluginViewerKind,
   pluginViewerRegistrations,
   selectContributions,
@@ -298,6 +299,39 @@ describe("filter chips", () => {
   it("keeps only entities the plugin tagged with the selected key", () => {
     expect(entityMatchesPluginFilters(set, LANE_CONTEXT, ["stacked"])).toBe(true);
     expect(entityMatchesPluginFilters(set, { ...LANE_CONTEXT, id: "lane-9" }, ["stacked"])).toBe(false);
+  });
+});
+
+describe("change-event routing", () => {
+  it("refetches contributions when a plugin publishes them, and not the registry", () => {
+    expect(pluginChangeAffects("contributions", "contributions")).toBe(true);
+    expect(pluginChangeAffects("sources", "contributions")).toBe(false);
+  });
+
+  it("refetches both when what is installed changes", () => {
+    // A new plugin may have rows waiting; a removed one's rows must stop.
+    expect(pluginChangeAffects("sources", "installs")).toBe(true);
+    expect(pluginChangeAffects("contributions", "installs")).toBe(true);
+  });
+
+  it("treats child-process health as a registry change only", () => {
+    expect(pluginChangeAffects("sources", "status")).toBe(true);
+    expect(pluginChangeAffects("contributions", "status")).toBe(false);
+  });
+
+  it("ignores panel and collection writes on both reads", () => {
+    for (const kind of ["panels", "collections"]) {
+      expect(pluginChangeAffects("sources", kind)).toBe(false);
+      expect(pluginChangeAffects("contributions", kind)).toBe(false);
+    }
+  });
+
+  it("refetches everything for a kind this build has never heard of", () => {
+    // The daemon's kind list grows without a renderer release. A stale badge
+    // with nothing to correct it is worse than one redundant round trip.
+    expect(pluginChangeAffects("sources", "secrets")).toBe(true);
+    expect(pluginChangeAffects("contributions", "secrets")).toBe(true);
+    expect(pluginChangeAffects("contributions", "")).toBe(true);
   });
 });
 
