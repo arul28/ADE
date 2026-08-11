@@ -277,6 +277,37 @@ describe("settle race matrix (teardown is a no-op)", () => {
     ).toEqual([]);
   });
 
+  /**
+   * The swallow is per session, not per batch.
+   *
+   * Unreachable today — every mechanical caller is single-session — but deciding
+   * one disposition for a whole array would silently stop a NON-settling
+   * session's own output from clearing its settle, and nothing in the signature
+   * warns the caller who first passes two ids.
+   */
+  it("swallows only the settling session in a mixed batch", async () => {
+    const { db, service, create, setTeardown } = await fixture();
+    create("session-2");
+    service.settleSessions(["session-2"]);
+    expect(service.get("session-2")?.settledAt).toBeTruthy();
+
+    setTeardown(() => {
+      // Drive the writer directly with both ids: session-1's window is open,
+      // session-2's is not.
+      db.run("update terminal_sessions set last_output_at = ? where id = ?",
+        ["2026-08-11T00:09:00.000Z", "session-2"]);
+      service.setLastOutputPreview("session-2", "other session output", { clearSettled: true });
+      service.setLastOutputPreview("session-1", "settling session output", { clearSettled: true });
+    });
+    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+
+    // The settling session's output was swallowed: it still settled.
+    expect(outcome.settled).toEqual(["session-1"]);
+    // The other session's output cleared its settle normally.
+    expect(service.get("session-2")?.settledAt).toBeNull();
+    expect(service.get("session-2")?.lastOutputPreview).toBe("other session output");
+  });
+
   /** A settling row found after a restart resolves to not-settled. */
   it("crash safety: the settling window does not survive the process", async () => {
     const { service, setTeardown } = await fixture();

@@ -212,16 +212,55 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
    * caller's own columns still land, so the row keeps showing live output while
    * it settles — which is what a visible `Settling…` state should look like.
    */
-  const settlingDisposition = (
+  /**
+   * Land ONLY the caller's own columns, for a session whose settle window is
+   * open and whose write is mechanical exhaust.
+   *
+   * "Swallowed" means precisely three things and all three matter: the tuple is
+   * not cleared, the revision is not bumped, and abort is not tripped. The
+   * preview and activity columns still update, so the row keeps showing live
+   * output while it settles.
+   */
+  const writeExtraColumnsOnly = (
+    sessionIds: readonly string[],
+    extraSet: Partial<Record<SettleExtraColumn, SqlValue>> | undefined,
+  ): void => {
+    const extraEntries = Object.entries(extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
+    if (!extraEntries.length || !sessionIds.length) return;
+    db.run(
+      `update terminal_sessions set ${extraEntries.map(([column]) => `${column} = ?`).join(", ")}`
+        + ` where id in (${sessionIds.map(() => "?").join(", ")})`,
+      [...extraEntries.map(([, value]) => value), ...sessionIds],
+    );
+  };
+
+  /**
+   * Split a clear into the sessions whose window swallows it and the sessions
+   * that clear normally.
+   *
+   * Per session, not per batch. Every mechanical caller is single-session today,
+   * so a mixed batch is unreachable — but deciding one disposition for a whole
+   * array would silently stop a NON-settling session's own output from clearing
+   * its settle, and nothing in the signature would warn the caller who first
+   * passes two ids.
+   */
+  const partitionForSettlingWindow = (
     intent: SettleLifecycleIntent,
     sessionIds: readonly string[],
-  ): "normal" | "swallow" => {
-    if (intent.kind !== "clearOnActivity") return "normal";
-    const active = sessionIds.filter((id) => settling.isSettling(id));
-    if (!active.length) return "normal";
-    if (intent.cause === "mechanical") return "swallow";
-    for (const id of active) settling.abort(id, intent.cause);
-    return "normal";
+  ): { swallowed: string[]; normal: string[] } => {
+    if (intent.kind !== "clearOnActivity") return { swallowed: [], normal: [...sessionIds] };
+    const settlingIds = sessionIds.filter((id) => settling.isSettling(id));
+    if (!settlingIds.length) return { swallowed: [], normal: [...sessionIds] };
+    if (intent.cause === "mechanical") {
+      return {
+        swallowed: settlingIds,
+        normal: sessionIds.filter((id) => !settling.isSettling(id)),
+      };
+    }
+    // A human decision: trip abort for the settling sessions, then let every
+    // session clear normally — the clear itself is not suppressed.
+    for (const id of settlingIds) settling.abort(id, intent.cause);
+    return { swallowed: [], normal: [...sessionIds] };
   };
 
   const writeSettleLifecycle = (args: {
@@ -233,31 +272,22 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     const ids = args.sessionIds.map((id) => id.trim()).filter(Boolean);
     if (!ids.length) return;
 
-    if (settlingDisposition(args.intent, ids) === "swallow") {
-      // Mechanical exhaust during the settling window. Land the caller's own
-      // columns and nothing else — no tuple clear, no revision bump, no abort.
-      const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
-      if (!extraEntries.length) return;
-      db.run(
-        `update terminal_sessions set ${extraEntries.map(([column]) => `${column} = ?`).join(", ")}`
-          + ` where id in (${ids.map(() => "?").join(", ")})`,
-        [...extraEntries.map(([, value]) => value), ...ids],
-      );
-      return;
-    }
+    const { swallowed, normal } = partitionForSettlingWindow(args.intent, ids);
+    writeExtraColumnsOnly(swallowed, args.extraSet);
+    if (!normal.length) return;
 
     const tuple = settleTupleAssignment(args.intent);
     const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
     const setClauses = [...extraEntries.map(([column]) => `${column} = ?`), tuple.sql];
     const setParams = [...extraEntries.map(([, value]) => value), ...tuple.params];
-    const idPlaceholders = ids.map(() => "?").join(", ");
+    const idPlaceholders = normal.map(() => "?").join(", ");
     const where = args.guard
       ? `${args.guard} and id in (${idPlaceholders})`
       : `id in (${idPlaceholders})`;
 
     const changed = db.runChanged(
       `update terminal_sessions set ${setClauses.join(", ")} where ${where}`,
-      [...setParams, ...ids],
+      [...setParams, ...normal],
     );
     // Only a write that MATCHED A ROW bumps — that is what this gate buys, and
     // it is what stops a deleted or absent session inserting an orphan token.
@@ -278,7 +308,7 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     // support several processes against one database, so a sibling process could
     // observe the pair mid-flight; that window is microseconds and closing it
     // needs a transaction helper `AdeDb` does not have.
-    bumpLifecycleRevisions(ids);
+    bumpLifecycleRevisions(normal);
   };
 
 
