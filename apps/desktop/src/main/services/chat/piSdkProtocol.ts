@@ -26,7 +26,7 @@ export type PiSdkPackageLocation = {
 export type PiSdkSessionTarget = {
   /** Open this JSONL session file. */
   sessionFile?: string | null;
-  /** Resolve this Pi session id in sessionDir and open its file. */
+  /** Resolve this Pi session id in the session store and open its file. */
   sessionId?: string | null;
   /** Continue the most recent session when true. */
   resume?: boolean | { sessionFile?: string | null; sessionId?: string | null };
@@ -37,8 +37,20 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
   cwd: string;
   /** Passed to Pi as PI_CODING_AGENT_DIR. */
   agentDir: string;
-  /** Passed to Pi as PI_CODING_AGENT_SESSION_DIR. */
-  sessionDir?: string | null;
+  /**
+   * Root every native session file this worker may open must live under. This
+   * is an authorization boundary, not a storage instruction: in Pi's default
+   * layout it is `<agentDir>/sessions`, whose per-cwd subdirectories hold the
+   * actual files.
+   */
+  sessionRoot?: string | null;
+  /**
+   * Directory Pi is told to write sessions into, when the user configured one.
+   * Left unset for Pi's default layout so Pi derives its own per-cwd directory
+   * — handing it `sessionRoot` would write files flat into the store root where
+   * Pi's own subdirectory-only discovery can never see them again.
+   */
+  sessionStorageDir?: string | null;
   modelRef?: PiSdkModelRef | null;
   thinkingLevel?: string | null;
   systemPrompt?: string | null;
@@ -343,7 +355,8 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
     if (!isPackageLocation(payload)) return "Pi SDK init requires packageRoot/packageDir or packageEntry.";
     if (!nonEmptyString(payload.cwd)) return "Pi SDK init requires an absolute cwd.";
     if (!nonEmptyString(payload.agentDir)) return "Pi SDK init requires an absolute agentDir.";
-    if (payload.sessionDir != null && typeof payload.sessionDir !== "string") return "Pi SDK sessionDir must be a string or null.";
+    if (payload.sessionRoot != null && typeof payload.sessionRoot !== "string") return "Pi SDK sessionRoot must be a string or null.";
+    if (payload.sessionStorageDir != null && typeof payload.sessionStorageDir !== "string") return "Pi SDK sessionStorageDir must be a string or null.";
     if (payload.modelRef != null && !isModelRef(payload.modelRef)) return "Pi SDK modelRef must be a model string or {provider,id}.";
     if (payload.thinkingLevel != null && !nonEmptyString(payload.thinkingLevel)) return "Pi SDK thinkingLevel cannot be empty.";
     if (payload.tools != null && (!Array.isArray(payload.tools)

@@ -141,6 +141,14 @@ export function summarizeNativeControls(
       permissionMode: droidPermissionModeToLegacyPermissionMode(controls.droidPermissionMode),
     };
   }
+  // Pi's native permission field IS `permissionMode` — it has no provider
+  // sibling, and the main process deletes `opencodePermissionMode` from a Pi
+  // session. Falling through to the OpenCode tail therefore reported whatever
+  // that absent field defaulted to, and writing it back silently downgraded a
+  // full-auto Pi chat to edit on the first composer interaction.
+  if (provider === "pi") {
+    return { permissionMode: controls.opencodePermissionMode };
+  }
   return {
     opencodePermissionMode: controls.opencodePermissionMode,
     permissionMode: controls.opencodePermissionMode,

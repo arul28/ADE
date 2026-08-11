@@ -902,7 +902,7 @@ export function createDynamicPiModelDescriptor(
       reasoning: options?.capabilities?.reasoning ?? true,
       streaming: options?.capabilities?.streaming ?? true,
     },
-    color: options?.color ?? "#F97316",
+    color: options?.color ?? "#181C25",
     providerRoute: "pi-sdk",
     providerModelId: `${provider}/${model}`,
     piProfileId: profileId,

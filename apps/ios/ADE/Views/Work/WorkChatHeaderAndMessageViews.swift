@@ -337,10 +337,27 @@ struct WorkChatMessageBubble: View {
       || model.hasPrefix("openai/gpt-")
   }
 
+  /// Flat stand-in for the desktop bubble gradient: each branch below is that
+  /// gradient's midpoint stop, which is the colour a small mobile bubble reads
+  /// as anyway. Kept in step with `CHAT_USER_BUBBLE_GRADIENT_*` in
+  /// `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts`.
   private var userBubbleFill: Color {
-    isCodexChat
-      ? workMixColors(accent, workViolet, 0.44)
-      : workMixColors(accent, workViolet, 0.36)
+    // Claude and Codex shipped looking right, so they keep the original stops,
+    // which mix toward a fixed violet.
+    if ADEColor.chatAccentKeepsOriginalBubble(accent) {
+      return isCodexChat
+        ? workMixColors(accent, workViolet, 0.44)
+        : workMixColors(accent, workViolet, 0.36)
+    }
+    // Near-black accents (Cursor, Pi) lift toward white instead — mixing them
+    // toward violet turned two different runtimes into the same purple, and
+    // deepening them would sink the bubble into the transcript background.
+    if ADEColor.isDeepChatAccent(accent) {
+      return workMixColors(accent, Color.white, 0.14)
+    }
+    // Everything else shades from its own accent, so a per-provider colour is
+    // actually visible as that colour.
+    return accent
   }
 
   private var userBubbleBorder: Color {

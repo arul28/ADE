@@ -1364,10 +1364,12 @@ export function buildTrackedCliResumeLaunchCommand(
       ...piToolFlags(permissionMode),
     ];
     // Pi's supported native continuation target is a session id/file passed to
-    // --session. When ADE has not captured a concrete id yet, continue the
-    // most recent session instead of silently launching a new one.
+    // --session. When ADE has not captured a concrete id, it starts a fresh
+    // session rather than falling back to `--continue`: "continue" means "the
+    // most recent session for this directory", which since chat and CLI share
+    // one native store can be another terminal's session or an ADE chat's.
+    // Terminals were silently reopening days-old transcripts that way.
     if (metadata.targetKind === "session" && targetId) parts.push("--session", targetId);
-    else parts.push("--continue");
     // A bare `pi` command resolves to an npm `.cmd` shim on some Windows
     // installs. `cmd.exe` rewrites multiline prompts, expands `%NAME%`, and
     // imposes a command-line length limit, so deliver the resume prompt over

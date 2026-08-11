@@ -1,11 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 // The cross-process lease test loads this source file directly with Node's
 // strip-types loader, which requires the explicit source extension.
 // @ts-expect-error TS5097: the bundler resolves the sibling TypeScript module.
-import { pathsEqual } from "../shared/pathCompare.ts";
+import { pathKey } from "../shared/pathCompare.ts";
 
 export type PiSessionLeaseOwner = "sdk" | "cli";
 
@@ -34,163 +33,6 @@ const localLeases = new Map<string, PiSessionLease>();
 
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function homeDir(env: NodeJS.ProcessEnv): string {
-  return nonEmpty(env.USERPROFILE) ?? nonEmpty(env.HOME) ?? os.homedir();
-}
-
-/** Resolve the native Pi session tree used by both CLI and discovery paths. */
-export function piSessionDirectoryForEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
-  fallbackDir?: string | null,
-): string {
-  const explicit = nonEmpty(env.PI_CODING_AGENT_SESSION_DIR);
-  if (explicit && path.isAbsolute(explicit)) return path.resolve(explicit);
-  if (fallbackDir && path.isAbsolute(fallbackDir)) return path.resolve(fallbackDir);
-  const agentDir = nonEmpty(env.PI_CODING_AGENT_DIR) ?? path.join(homeDir(env), ".pi", "agent");
-  return path.join(path.resolve(agentDir), "sessions");
-}
-
-function samePath(left: string, right: string): boolean {
-  return pathsEqual(path.resolve(left), path.resolve(right));
-}
-
-function pathWithinDirectory(filePath: string, directoryPath: string): boolean {
-  const relative = path.relative(directoryPath, filePath);
-  return relative === ""
-    || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
-
-export type PiSessionHeader = {
-  id: string;
-  /** Normalized, non-empty native Pi working directory from the header. */
-  cwd: string;
-};
-
-export function normalizePiSessionCwd(value: unknown): string | null {
-  const clean = nonEmpty(value);
-  return clean ? path.resolve(clean) : null;
-}
-
-/** Read a native Pi header. A session without a cwd is invalid for ADE use. */
-export function readPiSessionHeader(filePath: string): PiSessionHeader | null {
-  try {
-    const line = fs.readFileSync(filePath, "utf8").split(/\r?\n/u, 1)[0] ?? "";
-    const parsed = JSON.parse(line) as Record<string, unknown>;
-    const id = nonEmpty(parsed.id);
-    const cwd = normalizePiSessionCwd(parsed.cwd);
-    return parsed.type === "session" && id && cwd ? { id, cwd } : null;
-  } catch {
-    return null;
-  }
-}
-
-export function piSessionHeaderMatchesCwd(
-  header: Pick<PiSessionHeader, "cwd"> | null | undefined,
-  requestedCwd: unknown,
-): boolean {
-  const expected = normalizePiSessionCwd(requestedCwd);
-  return Boolean(header?.cwd && expected && samePath(header.cwd, expected));
-}
-
-function canonicalSessionFile(filePath: string): string | null {
-  try {
-    return fs.realpathSync(path.resolve(filePath));
-  } catch {
-    return null;
-  }
-}
-
-export type PiSessionFile = {
-  filePath: string;
-  id: string;
-};
-
-/**
- * Snapshot every valid native Pi session under a configured root.
- *
- * This deliberately reads the header instead of trusting timestamp-prefixed
- * filenames, refuses symlinks, and requires an exact requested cwd. Callers
- * use it before an implicit/fork launch to distinguish a newly-created JSONL
- * from a recent session that was already present.
- */
-export function listPiSessionFilesForCwd(args: {
-  cwd: string;
-  sessionDir?: string | null;
-  env?: NodeJS.ProcessEnv;
-}): PiSessionFile[] {
-  const requestedCwd = normalizePiSessionCwd(args.cwd);
-  if (!requestedCwd) return [];
-  const root = nonEmpty(args.sessionDir) ?? piSessionDirectoryForEnvironment(args.env ?? process.env);
-  const pendingDirectories = [path.resolve(root)];
-  const files: PiSessionFile[] = [];
-  const seenFiles = new Set<string>();
-
-  while (pendingDirectories.length > 0) {
-    const directory = pendingDirectories.pop();
-    if (!directory) continue;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const candidate = path.join(directory, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        pendingDirectories.push(candidate);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const resolved = canonicalSessionFile(candidate);
-      if (!resolved || seenFiles.has(resolved)) continue;
-      const header = readPiSessionHeader(resolved);
-      if (!header || !piSessionHeaderMatchesCwd(header, requestedCwd)) continue;
-      seenFiles.add(resolved);
-      files.push({ filePath: resolved, id: header.id });
-    }
-  }
-  return files;
-}
-
-/** Resolve a native Pi JSONL file without importing Pi. */
-export function resolvePiSessionFile(args: {
-  cwd: string;
-  sessionId: string;
-  sessionFile?: string | null;
-  sessionDir?: string | null;
-  env?: NodeJS.ProcessEnv;
-}): string | null {
-  const targetId = args.sessionId.trim();
-  const explicit = nonEmpty(args.sessionFile);
-  if (!targetId && !explicit) return null;
-  if (explicit) {
-    // Use the filesystem's canonical spelling so macOS aliases such as
-    // /var -> /private/var cannot produce two sidecars for one JSONL file.
-    const resolved = canonicalSessionFile(explicit);
-    if (!resolved) return null;
-    const requestedSessionDir = nonEmpty(args.sessionDir);
-    if (requestedSessionDir) {
-      let canonicalSessionDir: string;
-      try {
-        canonicalSessionDir = fs.realpathSync(path.resolve(requestedSessionDir));
-      } catch {
-        return null;
-      }
-      if (!pathWithinDirectory(resolved, canonicalSessionDir)) return null;
-    }
-    const header = readPiSessionHeader(resolved);
-    if (header && (!targetId || header.id === targetId) && piSessionHeaderMatchesCwd(header, args.cwd)) return resolved;
-    return null;
-  }
-  if (!targetId) return null;
-  return listPiSessionFilesForCwd({
-    cwd: args.cwd,
-    ...(args.sessionDir ? { sessionDir: args.sessionDir } : {}),
-    ...(args.env ? { env: args.env } : {}),
-  }).find((session) => session.id === targetId)?.filePath ?? null;
 }
 
 function lockPathFor(sessionFile: string): string {
@@ -418,7 +260,33 @@ export function piSessionLeasePath(sessionFile: string): string {
   return lockPathFor(path.resolve(sessionFile));
 }
 
-/** Synthetic target used to serialize ADE-created sessions before Pi writes its first JSONL file. */
-export function piSessionCreationLeaseTarget(sessionDir: string): string {
-  return path.join(path.resolve(sessionDir), ".ade-session-create");
+/**
+ * Whether another live writer already owns this native session.
+ *
+ * Used to keep a launch from adopting a session that belongs to someone else —
+ * cheaper, and far less destructive, than discovering it by failing to acquire
+ * the lease after the launch has already committed to that session.
+ */
+export function piSessionLeaseIsHeld(
+  sessionFile: string,
+  isProcessIdentityLive?: ProcessIdentityLiveCheck,
+): boolean {
+  const lockPath = lockPathFor(path.resolve(sessionFile));
+  if (localLeases.has(lockPath)) return true;
+  const record = readLease(lockPath);
+  return Boolean(record && leaseOwnerIsLive(record, isProcessIdentityLive));
+}
+
+/**
+ * Synthetic target used to serialize ADE-created sessions before Pi writes its
+ * first JSONL file.
+ *
+ * Keyed by working directory: the store root is shared by every project on the
+ * machine, so a single root-wide token would make one lane's starting Pi chat
+ * block every other lane's. Pi ignores the file — all of its own scans filter
+ * on `.jsonl`.
+ */
+export function piSessionCreationLeaseTarget(sessionRoot: string, cwd: string): string {
+  const key = createHash("sha256").update(pathKey(path.resolve(cwd))).digest("hex").slice(0, 16);
+  return path.join(path.resolve(sessionRoot), `.ade-session-create-${key}`);
 }

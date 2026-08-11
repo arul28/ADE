@@ -356,10 +356,11 @@ enum ADEColor {
     "anthropic": 0xD97706,
     "codex": 0xE7E5E4,
     "openai": 0xE7E5E4,
-    "cursor": 0xA78BFA,
-    "droid": 0x8B5CF6,
-    "factory": 0x8B5CF6,
-    "opencode": 0x2563EB,
+    "cursor": 0x13120C,
+    "droid": 0xD46C2E,
+    "factory": 0xD46C2E,
+    "opencode": 0x739CEE,
+    "pi": 0x181C25,
     "google": 0xF59E0B,
     "gemini": 0xF59E0B,
     "mistral": 0xF97316,
@@ -393,6 +394,45 @@ enum ADEColor {
   /// the neutral grey when the provider isn't recognized.
   static func providerChatAccent(for provider: String?) -> Color {
     chatSurfaceAccent(modelId: nil, provider: provider)
+  }
+
+  /// Perceived brightness of a chat accent, 0…1. Same weighting desktop uses in
+  /// `chatSurfaceTheme.ts` (`chatAccentLuminance`) so both platforms classify an
+  /// accent the same way.
+  static func chatAccentLuminance(_ color: Color) -> Double {
+    let rgb = chatAccentComponents(color)
+    return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b
+  }
+
+  /// Dark enough that shading it further would erase the bubble's edges — the
+  /// near-black runtime accents (Cursor, Pi). Mirrors desktop `isDeepChatAccent`.
+  static func isDeepChatAccent(_ color: Color) -> Bool {
+    chatAccentLuminance(color) < 0.22
+  }
+
+  /// Accents whose user bubble keeps its original violet-mixed fill.
+  ///
+  /// Claude and Codex already read correctly, and re-colouring the other
+  /// runtimes was not licence to restyle them. Matched on the resolved colour
+  /// (not the provider id) so this stays identical to desktop's
+  /// `ACCENTS_KEEPING_ORIGINAL_BUBBLE`, which compares accent hex.
+  static func chatAccentKeepsOriginalBubble(_ color: Color) -> Bool {
+    let rgb = chatAccentComponents(color)
+    return [0xD97706 as UInt32, 0xE7E5E4].contains { packed in
+      let target = chatAccentComponents(Color(uiColor: hex(packed)))
+      return abs(rgb.r - target.r) < 0.004
+        && abs(rgb.g - target.g) < 0.004
+        && abs(rgb.b - target.b) < 0.004
+    }
+  }
+
+  /// sRGB components resolved against the dark trait, matching `workMixColors`
+  /// so a colour classifies the same way it will be blended.
+  private static func chatAccentComponents(_ color: Color) -> (r: Double, g: Double, b: Double) {
+    let resolved = UIColor(color).resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+    var (r, g, b, a): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+    resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+    return (Double(r), Double(g), Double(b))
   }
 
   private static func parseHexColor(_ input: String) -> Color? {

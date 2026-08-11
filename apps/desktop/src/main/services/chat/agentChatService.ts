@@ -552,13 +552,9 @@ import {
   type PiSdkPooled,
 } from "./piSdkPool";
 import type { PiSdkUiRequestPayload } from "./piSdkProtocol";
-import {
-  acquirePiSessionLease,
-  piSessionCreationLeaseTarget,
-  piSessionDirectoryForEnvironment,
-  resolvePiSessionFile,
-  type PiSessionLease,
-} from "./piSessionLease";
+import { acquirePiSessionLease, type PiSessionLease } from "./piSessionLease";
+import { recordPiSessionOwner } from "./piSessionOwnership";
+import { classifyPiSessionFile, piSessionStoreForEnvironment, resolvePiSessionFile } from "./piSessionStore";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "../ai/piInstallation";
 import {
   discoverCursorCliModelDescriptors,
@@ -1810,6 +1806,10 @@ type PiRuntime = {
   modelId: string | null;
   activeCompactionId: string | null;
   lease: PiSessionLease | null;
+  /** Store root this runtime's session file must stay under. */
+  sessionRoot: string;
+  /** Pi has named the session file but not written it yet; no header to check. */
+  sessionFilePending: boolean;
   /** Tool/extension policy this worker was built with; a change forces a restart. */
   toolPolicyKey: string;
 };
@@ -10999,8 +10999,13 @@ export function createAgentChatService(args: {
       piExtensionsEnabled ? "ext" : "no-ext",
     ].join("|");
     if (managed.runtime?.kind === "pi") {
+      // `runtimeInvalidated` is checked here, not only on teardown: a session
+      // whose header failed validation mid-turn is flagged while its worker is
+      // still alive, and without this the same rejected runtime is handed back
+      // to every later send.
       if (managed.runtime.poolKey === poolKey
         && managed.runtime.toolPolicyKey === toolPolicyKey
+        && !managed.runtimeInvalidated
         && isPiSdkPooledAlive(managed.runtime.sdk)) {
         return managed.runtime;
       }
@@ -11017,21 +11022,30 @@ export function createAgentChatService(args: {
     const persisted = readPersistedState(managed.session.id);
     const sessionFile = managed.session.piSessionFile?.trim() || persisted?.piSessionFile?.trim() || null;
     const sessionId = managed.session.piSessionId?.trim() || persisted?.piSessionId?.trim() || null;
-    const sessionDir = piSessionDirectoryForEnvironment(runtimeEnv, path.join(layout.cacheDir, "pi", "sessions"));
-    fs.mkdirSync(sessionDir, { recursive: true });
+    // One store for chat and the tracked Pi CLI. Pi's own profile is that
+    // store: an ADE-owned cache directory would be invisible to the user's `pi`
+    // command, and to every ADE path that resolves sessions from the profile
+    // (terminal resume, fork, external-session discovery).
+    const sessionStore = piSessionStoreForEnvironment(runtimeEnv);
+    const sessionRoot = sessionStore.root;
+    fs.mkdirSync(sessionRoot, { recursive: true });
     const piLeaseIdentity = processRegistry
       ? {
           processStartedAt: processRegistry.startedAt,
           isProcessIdentityLive: (pid: number, startedAt: string) => processRegistry.isProcessIdentityLive(pid, startedAt),
         }
       : {};
+    // Only a resume can be leased up front. A new session takes its lease once
+    // the worker reports the path Pi picked — no directory-wide token in
+    // between, because Pi names each session's file when it creates it, so two
+    // chats in one lane never contend for the same JSONL. The tracked CLI still
+    // needs its creation lease: it has to discover which session Pi made.
     let piLease: PiSessionLease | null = null;
-    let piCreationLease: PiSessionLease | null = null;
     const existingPiSessionFile = resolvePiSessionFile({
       cwd: managed.laneWorktreePath,
       sessionId: sessionId ?? "",
       sessionFile,
-      sessionDir,
+      sessionRoot,
       env: runtimeEnv,
     });
     if (existingPiSessionFile) {
@@ -11041,17 +11055,7 @@ export function createAgentChatService(args: {
         ownerId: managed.session.id,
         ...piLeaseIdentity,
       });
-    } else {
-      // A new Pi SDK session has no JSONL path until Pi creates its session.
-      // Serialize that first-write window so two ADE runtimes cannot both
-      // create implicit sessions before either one can publish a concrete
-      // header-authoritative file pointer.
-      piCreationLease = acquirePiSessionLease({
-        sessionFile: piSessionCreationLeaseTarget(sessionDir),
-        owner: "sdk",
-        ownerId: managed.session.id,
-        ...piLeaseIdentity,
-      });
+      recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
     const systemPrompt = isPersonalSession(managed.session)
       ? PERSONAL_CHAT_SYSTEM_PROMPT
@@ -11084,7 +11088,8 @@ export function createAgentChatService(args: {
       packageEntry: installation.packageEntry,
       cwd: managed.laneWorktreePath,
       agentDir: installation.agentDir,
-      sessionDir,
+      sessionRoot,
+      ...(sessionStore.storageDir ? { sessionStorageDir: sessionStore.storageDir } : {}),
       tools: piTools,
       ...(piToolPolicy.approvalTools.length ? { approvalTools: piToolPolicy.approvalTools } : {}),
       // Lets Pi ask the user a question mid-turn, which no tool allowlist can
@@ -11108,41 +11113,44 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       piLease?.release();
-      piCreationLease?.release();
       throw error;
     }
-    const workerSessionFile = resolvePiSessionFile({
+    // Pi buffers a new session in memory and only writes its JSONL file once
+    // the first assistant message lands, so a freshly created session names a
+    // path that does not exist yet. That path is still constrained to the
+    // authorized store here; the concrete lease is taken later, once Pi has
+    // flushed and the header can be checked.
+    const workerSession = classifyPiSessionFile({
+      filePath: acquired.pooled.sessionFile ?? "",
       cwd: managed.laneWorktreePath,
-      sessionId: acquired.pooled.sessionId ?? "",
-      sessionFile: acquired.pooled.sessionFile,
-      sessionDir,
-      env: runtimeEnv,
+      sessionId: acquired.pooled.sessionId ?? null,
+      sessionRoot,
     });
-    if (!workerSessionFile) {
-      releasePiSdkConnection(poolKey, acquired.generation, () => {
-        piCreationLease?.release();
-        piLease?.release();
-      });
+    if (workerSession.state === "rejected") {
+      releasePiSdkConnection(poolKey, acquired.generation, () => piLease?.release());
       throw new Error("Pi SDK worker returned a session outside the authorized native session directory.");
     }
-    acquired.pooled.sessionFile = workerSessionFile;
+    acquired.pooled.sessionFile = workerSession.filePath;
     if (!piLease) {
+      // Leased on the pending path too: Pi has already fixed this exact JSONL
+      // name, so it is spoken for even though nothing is on disk yet.
       try {
         piLease = acquirePiSessionLease({
-          sessionFile: workerSessionFile,
+          sessionFile: workerSession.filePath,
           owner: "sdk",
           ownerId: managed.session.id,
           ...piLeaseIdentity,
         });
+        // Stake a durable claim: a tracked Pi terminal picks its session out of
+        // the same native store, and without this it adopts a chat's session
+        // whenever the two were created minutes apart.
+        recordPiSessionOwner({ sessionFile: workerSession.filePath, owner: "sdk", ownerSessionId: managed.session.id });
       } catch (error) {
-        releasePiSdkConnection(poolKey, acquired.generation, () => piCreationLease?.release());
+        releasePiSdkConnection(poolKey, acquired.generation);
         throw error;
       }
     }
-    if (piCreationLease) {
-      piCreationLease.release();
-      piCreationLease = null;
-    }
+    const piSessionFilePending = workerSession.state === "pending";
     if (piRuntimeSetupInterruptRequested.get(managed)) {
       piRuntimeSetupInterruptRequested.delete(managed);
       releasePiSdkConnection(poolKey, acquired.generation, () => {
@@ -11164,10 +11172,44 @@ export function createAgentChatService(args: {
       modelId: piModelId,
       activeCompactionId: null,
       lease: piLease,
+      sessionRoot,
+      sessionFilePending: piSessionFilePending,
       toolPolicyKey,
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
+    /**
+     * Confirm the session file once Pi flushes it. Ownership was taken on the
+     * planned path already; what is still unverified is the header, which is
+     * the only proof the file really belongs to this working directory.
+     */
+    const settlePiSessionLease = (): void => {
+      if (managed.runtime !== runtime || !runtime.sessionFilePending) return;
+      const classified = classifyPiSessionFile({
+        filePath: runtime.sdk.sessionFile ?? "",
+        cwd: managed.laneWorktreePath,
+        sessionId: runtime.sdk.sessionId ?? null,
+        sessionRoot: runtime.sessionRoot,
+      });
+      if (classified.state === "pending") return;
+      runtime.sessionFilePending = false;
+      if (classified.state !== "authorized") {
+        logger.warn("agent_chat.pi_session_file_unauthorized", {
+          sessionId: managed.session.id,
+          sessionFile: runtime.sdk.sessionFile ?? "",
+        });
+        // The setup path throws on the same failure. Here a turn is already in
+        // flight, and killing it would lose the user's work over a file ADE
+        // only reads for resume — so the turn finishes on the live worker
+        // while the runtime is marked unusable. Nothing points at the session
+        // afterwards: the pointer is dropped and the next send rebuilds.
+        delete managed.session.piSessionFile;
+        delete managed.session.piSessionId;
+        managed.runtimeInvalidated = true;
+        return;
+      }
+      persistChatState(managed);
+    };
     acquired.pooled.bridge.onEvent = (event) => {
       if (managed.runtime !== runtime) return;
       const eventRecord = asRecord(event);
@@ -11178,6 +11220,7 @@ export function createAgentChatService(args: {
       for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) emitChatEvent(managed, mapped);
       if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
       if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
+      if (eventRecord?.type === "message_end") settlePiSessionLease();
     };
     acquired.pooled.bridge.onLifecycle = (event) => {
       if (managed.runtime !== runtime) return;
@@ -12153,7 +12196,7 @@ export function createAgentChatService(args: {
         : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
           ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
           : {}),
-      ...(managed.runtime?.kind === "pi"
+      ...(managed.runtime?.kind === "pi" && !managed.runtimeInvalidated
         ? {
             ...(managed.runtime.sdk.sessionId ? { piSessionId: managed.runtime.sdk.sessionId } : {}),
             ...(managed.runtime.sdk.sessionFile ? { piSessionFile: managed.runtime.sdk.sessionFile } : {}),

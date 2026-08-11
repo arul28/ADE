@@ -464,7 +464,12 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
   if (toolType === "droid") return "droid --resume";
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
-  if (toolType === "pi") return "pi --continue";
+  // Deliberately null for Pi. `pi --continue` means "the most recent session
+  // for this directory", and since ADE chat and the tracked CLI share one
+  // native Pi store that can be another terminal's session or a chat's — a
+  // fresh terminal reopened a four-day-old transcript this way. Pi is resumed
+  // only by a session id ADE actually captured for that terminal.
+  if (toolType === "pi") return null;
   return null;
 }
 

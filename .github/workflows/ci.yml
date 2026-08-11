@@ -537,6 +537,7 @@ jobs:
           src/main/services/externalSessions/discoveryUtils.test.ts
           src/main/services/externalSessions/externalSessionsService.test.ts
           src/main/services/lanes/laneStorageLifecycle.test.ts
+          src/main/services/chat/piSession.test.ts
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to

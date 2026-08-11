@@ -482,19 +482,40 @@ Renderer — settings:
   `updateConfig`). When the OpenCode provider inventory is served from the
   persisted disk cache on a cold start, `opencodeProvidersStale` renders an
   italic "updating…" hint until the first live probe. When the OpenCode
-  binary is missing the group collapses to an install card. The **Pi** card
-  additionally hosts in-app sign-in (`PiSignIn`): one merged tile per provider
-  — configured status, signable methods, or both, keyed by provider id so a
-  signable configured provider is one row rather than two. A method button
-  starts `piLoginStart`, and the flow card then renders whatever Pi asks for
-  live off `onPiAuthStatus`: an auth URL with an Open button, a device code with
-  a Copy control, a free-text or password field, or a labelled choice group.
-  Auth URLs and device codes stay pinned while plain progress lines replace each
-  other. Cancel is a distinct outcome from failure, and only a failure offers
-  **Try again** (retrying with the method the user actually pressed). Pi's own
-  terminal `/login` is offered beside the in-app flow, not behind a reveal, and
-  becomes the whole surface when `sdkAvailable` is false. Nothing typed into a
-  Pi prompt is stored by ADE — see
+  binary is missing the group collapses to an install card. The **Pi** card is a
+  `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
+  `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
+  `PiProvidersPanel.tsx`.
+- `apps/desktop/src/renderer/components/settings/PiProvidersPanel.tsx`
+  — Pi's half of Settings → Providers: the sign-in flow and the provider
+  catalog. Its own module because Pi's catalog is the size of OpenCode's and the
+  two together made `ProvidersSection.tsx` unreadable. A running sign-in owns
+  the surface — `PiSignInFlowCard` renders whatever Pi asks for live off
+  `onPiAuthStatus` (an auth URL, which is opened automatically and left on
+  screen for a blocked browser; a device code with a Copy control; a free-text
+  or password field; a labelled choice group), and the catalog steps aside while
+  it runs, because starting a second sign-in supersedes the first. Auth URLs and
+  device codes stay pinned while plain progress lines replace each other. Cancel
+  is a distinct outcome from failure, and only a failure offers **Try again**
+  (retrying with the method the user actually pressed); leaving Settings no
+  longer cancels anything. With no flow on screen, `PiProviderBrowser` shows
+  **Connected** first, then **All providers** behind a search field (a "Popular"
+  grid — everything with an interactive sign-in, most models first — until the
+  user types), then **Local Model Servers**. A tile opens
+  `PiProviderDetailModal.tsx`, the provider's own page: the models it
+  contributes and how it can be signed into; starting a sign-in closes the
+  dialog so the device code and prompts survive it. Local servers are a separate
+  section with **no sign-in at all** — their login options are dropped rather
+  than hidden, which is what put an API-key prompt in front of LM Studio — and
+  their status comes from ADE's live endpoint probe (Running / Load a model /
+  Not detected), never from the presence of a `models.json` entry; ADE probes
+  only Ollama and LM Studio, so any other loopback server falls back to
+  "Configured in Pi". When `sdkAvailable` is false the panel collapses to a
+  stated instruction to run `pi` and use its `/login` — ADE does not automate
+  it. Row shape and the questions asked of it live in `piProviderRow.ts`; the
+  grid/tile/search/dialog primitives shared with the OpenCode half live in
+  `providerSectionPrimitives.tsx`. Nothing typed into a Pi prompt is stored by
+  ADE — see
   [Agent Routing › Pi sign-in](../chat/agent-routing.md#pi-sign-in).
 - `apps/desktop/src/renderer/components/settings/OAuthConnectModal.tsx`
   — subscription OAuth connect dialog for OpenCode providers. Runs a

@@ -182,8 +182,26 @@ const mocks = vi.hoisted(() => {
       }
       return fileContents.get(p) ?? "";
     }),
-    unlinkSync: vi.fn(),
-    writeFileSync: vi.fn(),
+    unlinkSync: vi.fn((p: string) => {
+      fileContents.delete(p);
+      existsSyncResults.set(p, false);
+    }),
+    writeFileSync: vi.fn((p: string, data: unknown) => {
+      fileContents.set(p, String(data));
+      existsSyncResults.set(p, true);
+    }),
+    // The Pi session lease publishes its sidecar with a create-only hard link,
+    // which is what makes the no-clobber guarantee atomic. Modelling it as a
+    // plain copy would let two writers both "win".
+    linkSync: vi.fn((from: string, to: string) => {
+      if (existsSyncResults.get(to) === true) {
+        const error = new Error(`EEXIST: file already exists, link '${from}' -> '${to}'`) as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      }
+      fileContents.set(to, fileContents.get(from) ?? "");
+      existsSyncResults.set(to, true);
+    }),
     renameSync: vi.fn(),
     randomUUID: vi.fn(() => "uuid-" + Math.random().toString(36).slice(2, 10)),
     randomBytes: vi.fn(() => Buffer.alloc(32, nextRandomByte++ % 256)),
@@ -251,6 +269,7 @@ vi.mock("node:fs", () => ({
     readFileSync: mocks.readFileSync,
     unlinkSync: mocks.unlinkSync,
     writeFileSync: mocks.writeFileSync,
+    linkSync: mocks.linkSync,
     renameSync: mocks.renameSync,
     promises: mocks.promises,
   },
@@ -268,11 +287,15 @@ vi.mock("node:fs", () => ({
   readFileSync: mocks.readFileSync,
   unlinkSync: mocks.unlinkSync,
   writeFileSync: mocks.writeFileSync,
+  linkSync: mocks.linkSync,
   renameSync: mocks.renameSync,
   promises: mocks.promises,
 }));
 
-vi.mock("node:crypto", () => ({
+vi.mock("node:crypto", async (importOriginal) => ({
+  // createHash is real: the Pi session store derives its per-cwd lease token
+  // from it, and a stubbed digest would make two different worktrees collide.
+  ...(await importOriginal<typeof import("node:crypto")>()),
   randomBytes: mocks.randomBytes,
   randomUUID: mocks.randomUUID,
 }));
@@ -753,15 +776,18 @@ describe("ptyService", () => {
   });
 
   describe("Pi native session ownership selection", () => {
+    const projectRoot = "/repo/project";
+
     it("skips a recent pre-existing session file and selects only the new header", () => {
       const oldFile = "/tmp/pi-sessions/2026-08-08T00-00-00-000Z-old.jsonl";
       const newFile = "/tmp/pi-sessions/2026-08-08T00-00-01-000Z-new.jsonl";
       const selected = selectPiStorageSessionCandidate({
+        cwd: projectRoot,
         startedAt: "2026-08-08T00:00:01.100Z",
         maxStartDeltaMs: 10_000,
         candidates: [
-          { id: "old", sourcePath: oldFile, createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
-          { id: "new", sourcePath: newFile, createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
+          { id: "old", cwd: projectRoot, sourcePath: oldFile, createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
+          { id: "new", cwd: projectRoot, sourcePath: newFile, createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
         ],
         excludedIds: new Set(["old"]),
         excludedFiles: new Set([oldFile]),
@@ -775,14 +801,80 @@ describe("ptyService", () => {
       const childId = "child-session";
       expect(piForkParentIdFromCommand(`pi --fork ${parentId}`)).toBe(parentId);
       expect(selectPiStorageSessionCandidate({
+        cwd: projectRoot,
         startedAt: "2026-08-08T00:00:01.100Z",
         maxStartDeltaMs: 10_000,
         candidates: [
-          { id: parentId, sourcePath: "/tmp/pi-sessions/parent.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
-          { id: childId, sourcePath: "/tmp/pi-sessions/child.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
+          { id: parentId, cwd: projectRoot, sourcePath: "/tmp/pi-sessions/parent.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.050Z") },
+          { id: childId, cwd: projectRoot, sourcePath: "/tmp/pi-sessions/child.jsonl", createdAt: Date.parse("2026-08-08T00:00:01.200Z") },
         ],
         excludedIds: new Set([parentId]),
       })).toEqual({ id: childId, filePath: "/tmp/pi-sessions/child.jsonl" });
+    });
+
+    // Discovery scopes by containment, so a primary lane rooted at the project
+    // sees every lane worktree's sessions. Selecting one produced a resume
+    // target that every downstream cwd check then rejected, surfacing as
+    // "Pi's latest session is outside the authorized native session directory".
+    it("ignores a newer session belonging to a lane worktree inside the cwd", () => {
+      expect(selectPiStorageSessionCandidate({
+        cwd: projectRoot,
+        candidates: [
+          { id: "own", cwd: projectRoot, sourcePath: "/tmp/pi-sessions/own.jsonl", updatedAt: 1_000 },
+          {
+            id: "lane",
+            cwd: `${projectRoot}/.ade/worktrees/lane-a`,
+            sourcePath: "/tmp/pi-sessions/lane.jsonl",
+            updatedAt: 9_000,
+          },
+        ],
+      })).toEqual({ id: "own", filePath: "/tmp/pi-sessions/own.jsonl" });
+    });
+
+    // A terminal launched now must not adopt a session created days ago whose
+    // file was merely appended to a moment ago — which is what an ADE chat
+    // writing into the shared native store does to its own session.
+    it("ignores an old session whose file was just touched when matching a launch", () => {
+      const launchedAt = "2026-08-10T17:44:00.000Z";
+      expect(selectPiStorageSessionCandidate({
+        cwd: projectRoot,
+        startedAt: launchedAt,
+        maxStartDeltaMs: 10 * 60_000,
+        candidates: [
+          {
+            id: "old-but-touched",
+            cwd: projectRoot,
+            sourcePath: "/tmp/pi-sessions/old.jsonl",
+            createdAt: Date.parse("2026-08-06T15:49:54.000Z"),
+            updatedAt: Date.parse(launchedAt),
+          },
+          {
+            id: "mine",
+            cwd: projectRoot,
+            sourcePath: "/tmp/pi-sessions/mine.jsonl",
+            createdAt: Date.parse("2026-08-10T17:44:02.000Z"),
+            updatedAt: Date.parse("2026-08-10T17:44:02.000Z"),
+          },
+        ],
+      })).toEqual({ id: "mine", filePath: "/tmp/pi-sessions/mine.jsonl" });
+    });
+
+    it("never adopts a session another live ADE writer owns", () => {
+      expect(selectPiStorageSessionCandidate({
+        cwd: projectRoot,
+        candidates: [
+          { id: "leased", cwd: projectRoot, sourcePath: "/tmp/pi-sessions/leased.jsonl", updatedAt: 9_000 },
+          { id: "free", cwd: projectRoot, sourcePath: "/tmp/pi-sessions/free.jsonl", updatedAt: 1_000 },
+        ],
+        isOwnedByAnotherWriter: (filePath) => filePath.endsWith("leased.jsonl"),
+      })).toEqual({ id: "free", filePath: "/tmp/pi-sessions/free.jsonl" });
+    });
+
+    it("refuses a candidate with no recorded working directory", () => {
+      expect(selectPiStorageSessionCandidate({
+        cwd: projectRoot,
+        candidates: [{ id: "blank", cwd: "", sourcePath: "/tmp/pi-sessions/blank.jsonl", updatedAt: 9_000 }],
+      })).toBeNull();
     });
   });
 
@@ -4011,6 +4103,123 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    describe("Pi resume targets", () => {
+      const PI_SESSION_ID = "019fd86d-f40d-76c6-a194-d5ba030cbad3";
+      const PI_ROOT = "/Users/ade-test/.pi/agent/sessions";
+      const PI_FILE = `${PI_ROOT}/encoded/2026-01-01T00-00-00-000Z_${PI_SESSION_ID}.jsonl`;
+
+      /** A native Pi session on disk whose header predates the terminal. */
+      function seedOldPiSession(cwd: string) {
+        mocks.existsSyncResults.set(PI_ROOT, true);
+        mocks.existsSyncResults.set(`${PI_ROOT}/encoded`, true);
+        mocks.existsSyncResults.set(PI_FILE, true);
+        // listPiSessionFilesForCwd reads with { withFileTypes: true }.
+        const dirent = (name: string, dir: boolean) => ({
+          name,
+          isDirectory: () => dir,
+          isFile: () => !dir,
+          isSymbolicLink: () => false,
+        });
+        mocks.dirEntries.set(PI_ROOT, [dirent("encoded", true)] as never);
+        mocks.dirEntries.set(`${PI_ROOT}/encoded`, [dirent(PI_FILE.split("/").pop() as string, false)] as never);
+        mocks.fileStats.set(`${PI_ROOT}/encoded`, { isDirectory: true });
+        mocks.fileStats.set(PI_FILE, { isDirectory: false });
+        mocks.fileContents.set(
+          PI_FILE,
+          `${JSON.stringify({ type: "session", id: PI_SESSION_ID, cwd, timestamp: "2026-01-01T00:00:00.000Z" })}\n`,
+        );
+      }
+
+      function endedPiSession(sessionService: ReturnType<typeof createHarness>["sessionService"], extra: Record<string, unknown>) {
+        sessionService.create({
+          sessionId: "session-pi",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Pi CLI",
+          // Four months after the session file above was written.
+          startedAt: "2026-05-01T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-pi.log",
+          toolType: "pi",
+          resumeCommand: `pi --session ${PI_SESSION_ID}`,
+          resumeMetadata: {
+            provider: "pi",
+            targetKind: "session",
+            targetId: PI_SESSION_ID,
+            launch: { model: "anthropic/claude-opus-4", thinkingLevel: "high" },
+            ...extra,
+          },
+        });
+        sessionService.end({
+          sessionId: "session-pi",
+          endedAt: "2026-05-01T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+      }
+
+      // An imported session is older than the terminal *by definition* — the
+      // user reached back and picked it. Applying the "older than the terminal
+      // means ADE mis-assigned it" heuristic here handed them a terminal
+      // labelled with their session that contained a blank transcript.
+      it("keeps a user-imported Pi session even though it predates the terminal", async () => {
+        const { service, sessionService, logger } = createHarness();
+        seedOldPiSession("/tmp/test-worktree");
+        endedPiSession(sessionService, { importedFrom: "pi" });
+
+        await service.create({
+          sessionId: "session-pi",
+          laneId: "lane-1",
+          title: "Pi CLI",
+          cwd: "/tmp/test-worktree",
+          cols: 80,
+          rows: 24,
+          toolType: "pi",
+          startupCommand: `pi --session ${PI_SESSION_ID}`,
+        });
+
+        // The discard signal itself, not its cleanup: the imported pointer must
+        // survive the plausibility gate however that gate cleans up after
+        // itself.
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          "pty.pi_resume_target_discarded",
+          expect.anything(),
+        );
+        expect(sessionService.updateMeta).not.toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: "session-pi", resumeMetadata: null }),
+        );
+      });
+
+      // The same pointer with no import provenance is one ADE inferred, and a
+      // fresh terminal reopening a four-month-old transcript is the bug.
+      it("discards an ADE-inferred Pi pointer older than the terminal, clearing command and metadata together", async () => {
+        const { service, sessionService, logger } = createHarness();
+        seedOldPiSession("/tmp/test-worktree");
+        endedPiSession(sessionService, {});
+
+        await service.create({
+          sessionId: "session-pi",
+          laneId: "lane-1",
+          title: "Pi CLI",
+          cwd: "/tmp/test-worktree",
+          cols: 80,
+          rows: 24,
+          toolType: "pi",
+          startupCommand: `pi --session ${PI_SESSION_ID}`,
+        });
+
+        // setResumeCommand(null) alone is a no-op: it re-derives the command
+        // from resumeMetadata, which still holds the bad target.
+        expect(sessionService.updateMeta).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: "session-pi", resumeCommand: null, resumeMetadata: null }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.pi_resume_target_discarded",
+          expect.objectContaining({ sessionId: "session-pi", piSessionId: PI_SESSION_ID }),
+        );
+      });
     });
 
     it("preserves the strict resume path when a requested session id does not exist", async () => {

@@ -16,10 +16,7 @@ import {
   type PiSdkWorkerRequest,
   type PiSdkWorkerResponse,
 } from "./piSdkProtocol";
-import {
-  piSessionHeaderMatchesCwd,
-  readPiSessionHeader,
-} from "./piSessionLease";
+import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore";
 import {
   PI_ASK_USER_TOOL_NAME,
   createPiApprovalGate,
@@ -51,6 +48,8 @@ let session: PiSession | null = null;
 let modelInventory: JsonValue[] = [];
 let lastAssistantError: string | null = null;
 const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+/** Cap on the post-sign-in catalog refresh; the credential is already stored. */
+const PI_LOGIN_REFRESH_TIMEOUT_MS = 15_000;
 /** Root-exported factory per built-in tool, used to rebuild it behind an approval gate. */
 const PI_TOOL_DEFINITION_FACTORIES: Record<string, string> = {
   read: "createReadToolDefinition",
@@ -303,13 +302,16 @@ function sessionTarget(init: PiSdkWorkerInit): PiSdkSessionTarget {
   return init.session ?? {};
 }
 
-function sessionFileIsAuthorized(filePath: string, sessionDir: string | null): boolean {
-  if (!sessionDir) return true;
+function sessionFileIsAuthorized(filePath: string, sessionRoot: string | null): boolean {
+  if (!sessionRoot) return true;
   try {
-    const resolvedFile = fs.realpathSync(filePath);
-    const resolvedDir = fs.realpathSync(sessionDir);
+    // `.native` on both sides, matching piSessionLease: on Windows the JS
+    // realpath keeps 8.3 short names and junction casing, so one spelling of a
+    // directory fails containment against another spelling of itself.
+    const resolvedFile = fs.realpathSync.native(filePath);
+    const resolvedDir = fs.realpathSync.native(sessionRoot);
     const relative = path.relative(resolvedDir, resolvedFile);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
   } catch {
     return false;
   }
@@ -317,17 +319,17 @@ function sessionFileIsAuthorized(filePath: string, sessionDir: string | null): b
 
 function validatedSessionFile(
   filePath: string,
-  sessionDir: string | null,
+  sessionRoot: string | null,
   expectedId: string | null,
   expectedCwd: string,
 ): string | null {
   let resolved: string;
   try {
-    resolved = fs.realpathSync(path.resolve(filePath));
+    resolved = fs.realpathSync.native(path.resolve(filePath));
   } catch {
     return null;
   }
-  if (!sessionFileIsAuthorized(resolved, sessionDir)) return null;
+  if (!sessionFileIsAuthorized(resolved, sessionRoot)) return null;
   // A native file may be inside the authorized Pi root while belonging to a
   // different project. Require a non-empty, exact normalized header cwd at
   // this worker boundary; blank cwd must never act as a wildcard.
@@ -348,38 +350,43 @@ async function openSessionManager(init: PiSdkWorkerInit, sdk: PiModule): Promise
   const resumeRecord = record(resume);
   const resumeFile = sessionFile ?? nonEmpty(resumeRecord?.sessionFile);
   const resumeId = requestedId ?? nonEmpty(resumeRecord?.sessionId);
-  const sessionDir = nonEmpty(init.sessionDir);
+  // The authorization root and the directory Pi writes into are different
+  // things. Pi only nests per cwd when told nothing; handing it the root would
+  // scatter files flat into `<agentDir>/sessions`, which Pi's own discovery
+  // (subdirectories only) can never read back.
+  const sessionRoot = nonEmpty(init.sessionRoot);
+  const storageDir = nonEmpty(init.sessionStorageDir) ?? undefined;
 
   try {
     if (resumeFile) {
       assertAbsolute("sessionFile", resumeFile);
-      const authorizedFile = validatedSessionFile(resumeFile, sessionDir, resumeId, init.cwd);
+      const authorizedFile = validatedSessionFile(resumeFile, sessionRoot, resumeId, init.cwd);
       // A stale path can accompany a durable session id after a project move or
       // remote handoff. Prefer the id lookup in that case; never create a new
       // session while a persisted native pointer is present.
       if (authorizedFile) {
-        return method(manager, "open").call(manager, authorizedFile, sessionDir ?? path.dirname(authorizedFile), init.cwd) as PiSessionManager;
+        return method(manager, "open").call(manager, authorizedFile, storageDir ?? path.dirname(authorizedFile), init.cwd) as PiSessionManager;
       }
       if (!resumeId) {
         throw new Error(`Pi session file "${resumeFile}" is missing, outside the authorized session directory, or invalid.`);
       }
     }
     if (resumeId) {
-      const list = await method(manager, "list").call(manager, init.cwd, sessionDir ?? undefined);
+      const list = await method(manager, "list").call(manager, init.cwd, storageDir);
       const found = (Array.isArray(list) ? list : []).find((item) => record(item)?.id === resumeId);
       const foundPath = nonEmpty(record(found)?.path);
       const authorizedFoundPath = foundPath
-        ? validatedSessionFile(foundPath, sessionDir, resumeId, init.cwd)
+        ? validatedSessionFile(foundPath, sessionRoot, resumeId, init.cwd)
         : null;
       if (!authorizedFoundPath) {
         throw new Error(`Pi session "${resumeId}" was not found in the authorized session directory.`);
       }
-      return method(manager, "open").call(manager, authorizedFoundPath, sessionDir ?? path.dirname(authorizedFoundPath), init.cwd) as PiSessionManager;
+      return method(manager, "open").call(manager, authorizedFoundPath, storageDir ?? path.dirname(authorizedFoundPath), init.cwd) as PiSessionManager;
     }
     if (resume === true) {
-      return method(manager, "continueRecent").call(manager, init.cwd, sessionDir ?? undefined) as PiSessionManager;
+      return method(manager, "continueRecent").call(manager, init.cwd, storageDir) as PiSessionManager;
     }
-    return method(manager, "create").call(manager, init.cwd, sessionDir ?? undefined) as PiSessionManager;
+    return method(manager, "create").call(manager, init.cwd, storageDir) as PiSessionManager;
   } catch (error) {
     throw new Error(`Pi session could not be opened${resumeFile ? ` at ${resumeFile}` : ""}: ${errorMessage(error)}`);
   }
@@ -578,17 +585,22 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   if (invalidTools.length) {
     throw new Error(`Pi SDK only permits the built-in tools read, bash, edit, and write; received ${invalidTools.join(", ")}.`);
   }
-  if (init.sessionDir) assertAbsolute("sessionDir", init.sessionDir);
+  if (init.sessionRoot) assertAbsolute("sessionRoot", init.sessionRoot);
+  if (init.sessionStorageDir) assertAbsolute("sessionStorageDir", init.sessionStorageDir);
   const location = resolvePackageLocation(init);
   piRoot = location.root;
   piEntry = location.entry;
   piVersion = location.version;
   initState = init;
   process.env.PI_CODING_AGENT_DIR = init.agentDir;
-  if (init.sessionDir) process.env.PI_CODING_AGENT_SESSION_DIR = init.sessionDir;
+  // Pi's embedded SDK never reads PI_CODING_AGENT_SESSION_DIR — only its CLI
+  // entry point does — so the storage directory travels as an explicit
+  // SessionManager argument instead. Mirroring the variable here would just
+  // hand a stale override to anything the worker later spawns.
   for (const [key, value] of Object.entries(init.skillsEnv ?? {})) process.env[key] = value;
   fs.mkdirSync(init.agentDir, { recursive: true });
-  if (init.sessionDir) fs.mkdirSync(init.sessionDir, { recursive: true });
+  if (init.sessionRoot) fs.mkdirSync(init.sessionRoot, { recursive: true });
+  if (init.sessionStorageDir) fs.mkdirSync(init.sessionStorageDir, { recursive: true });
 
   post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "initializing" });
   try {
@@ -833,11 +845,29 @@ async function loginProvider(providerId: string, method?: string | null): Promis
 
   // login() settles once local credential state is consistent, but not once
   // remote catalogs are fresh. Refresh so newly unlocked models appear.
+  //
+  // Bounded: the credential is already written by this point, so a slow
+  // network catalog fetch must not keep the sign-in RPC — and the card the
+  // user is watching — pending behind it.
   if (typeof runtime.refresh === "function") {
     try {
-      await (runtime.refresh as Callable).call(modelRuntime, { allowNetwork: true, providers: [providerId] });
+      // The refresh keeps running after the timeout wins the race, so its
+      // rejection has to stay observed — an unhandled one would take down the
+      // worker over a catalog fetch the sign-in no longer depends on.
+      const refreshed = Promise.resolve(
+        (runtime.refresh as Callable).call(modelRuntime, { allowNetwork: true, providers: [providerId] }),
+      ).catch(() => undefined);
+      await Promise.race([
+        refreshed,
+        new Promise((resolve) => {
+          const timer = setTimeout(resolve, PI_LOGIN_REFRESH_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
     } catch {
-      // Refresh failures are reported through the model list, not the login.
+      // Only a synchronous throw from refresh() reaches here; an async
+      // rejection is already absorbed above. Either way a stale catalog is
+      // reported through the model list, not as a failed sign-in.
     }
   }
   // Deliberately does not return the model inventory: the credential is

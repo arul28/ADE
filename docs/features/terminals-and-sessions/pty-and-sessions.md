@@ -834,6 +834,73 @@ control the `ade-*` namespace so it never collides with user-chosen
 names. The append is well under PIPE_BUF and safe vs. concurrent
 codex writers.
 
+### Pi session tracking
+
+Pi is the only tracked CLI whose sessions live in a store ADE chat also writes
+to. Both resolve it through `piSessionStoreForEnvironment`
+(`services/chat/piSessionStore.ts`); see
+[Agent Routing › Session store](../chat/agent-routing.md#session-store) for the
+precedence rules and the two sidecar files. Everything below is what sharing
+that store forces on the PTY side.
+
+**Pi is never resumed by "most recent".** `defaultResumeCommandForTool("pi")`
+returns null, `buildTrackedCliResumeLaunchCommand` emits `--session <id>` or
+starts fresh rather than falling back to `--continue`, and
+`PI_CONTINUATION_FLAG_RE` / `stripPiContinuationArgs` remove `--continue`, `-c`,
+and `-r` (Pi's interactive session *picker*) whenever ADE rebuilds a launch.
+"Most recent session for this directory" can be another terminal's session or an
+ADE chat's, and terminals were silently reopening days-old transcripts that way.
+A user-typed `--continue`/`-c`/`-r` is still resolved to a concrete id *before*
+spawning, so Pi cannot start writing a JSONL before ADE has upgraded its
+creation lease to the adjacent session lease.
+
+**A stored resume target is re-checked, not trusted.**
+`piSessionCouldBelongToTerminal` rejects a pointer at a session created before
+the terminal existed (10-minute grace, matching the adoption window ADE itself
+uses) — a terminal creates its own session, so an older one is somebody else's.
+The launch then logs `pty.pi_resume_target_discarded`, clears **both**
+`resumeCommand` and `resumeMetadata` (clearing only the command is a no-op,
+because `setResumeCommand(null)` re-derives from the metadata), and rebuilds the
+launch through `buildTrackedCliResumeLaunchCommand` with a null target so the
+model/thinking/tool flags survive. A target the user chose explicitly
+(`importedFrom`) is exempt: an imported session is old by definition.
+
+**Candidate selection is exact and ownership-aware.**
+`selectPiStorageSessionCandidate` takes the launch `cwd` and requires the native
+header cwd to match exactly — discovery scopes by containment so a project's
+whole tree stays browsable, but a lane worktree sits inside the primary lane's
+root, so containment would hand one directory's launch another's session. When
+matching against a launch time it scores **creation** time only: a session
+created days ago whose file was appended to a moment ago has a current mtime,
+and scoring on that let a fresh terminal adopt a transcript an ADE chat had just
+written to. Candidates that survive those cheap filters are then checked against
+the sidecars via `isOwnedByAnotherWriter` — `piSessionLeaseIsHeld` (a live
+writer holds it) or `piSessionIsAdoptableByTerminal` (someone else durably owns
+it). Skipping such a session here beats discovering it by failing to acquire the
+lease after the launch has committed, which disposes the terminal.
+
+**Ownership is recorded only once confirmed.** `recordPiSessionOwner` writes the
+durable `.ade-owner` claim on the resume path and, for a fresh launch, only on
+the branch where the terminal wins the race to upgrade its creation lease. The
+sidecar is never deleted, so claiming on the losing branch would permanently
+block every other terminal from that session.
+
+**Launch errors name the real cause.** A latest session that cannot be verified
+inside the authorized root reports either that the repository's
+`.pi/settings.json` redirects Pi's session directory (ADE does not follow a
+checkout's setting — set `PI_CODING_AGENT_SESSION_DIR` for the profile instead)
+or that the specific session id could not be verified in the store root.
+
+**Initial input waits for quiescence, not a clock.** For `toolType === "pi"`
+with an `initialInputDelayMs`, the create flow waits for the PTY to stop
+emitting for that interval (capped at 15 s) instead of sleeping, then logs
+`pty.pi_initial_input_ready`. Pi prints a banner, the skill list, and a
+skill-conflict report before its prompt accepts input, which on a large profile
+runs past any delay worth hard-coding — the first message was being typed into a
+screen that was still painting and vanished. The wait is cancellable through
+`PtyEntry.initialInputCancel`, which disposal calls exactly where every sibling
+path clears `initialInputTimer`.
+
 ### Dispose and orphan disposal
 
 `dispose({ ptyId, sessionId? })` kills the PTY process tree via

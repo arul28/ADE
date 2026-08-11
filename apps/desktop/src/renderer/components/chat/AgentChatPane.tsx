@@ -275,6 +275,7 @@ import {
   createHandoffLaunchJobId,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
+import { summarizeNativeControls as summarizeNativeLaunchControls } from "../../lib/nativeLaunchControls";
 import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
@@ -1629,78 +1630,30 @@ function cloneParallelSlotFromComposer(args: {
 function summarizeNativeControls(
   provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "opencode" | "cursor" | "droid",
   controls: NativeControlState,
-): Pick<
-  AgentChatSessionSummary,
-  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "permissionMode" | "cursorModeId"
-> {
-  if (provider === "claude") {
-    let permissionMode: AgentChatSessionSummary["permissionMode"];
-    if (controls.interactionMode === "plan") {
-      permissionMode = "plan";
-    } else if (controls.claudePermissionMode === "bypassPermissions") {
-      permissionMode = "full-auto";
-    } else if (controls.claudePermissionMode === "acceptEdits") {
-      permissionMode = "edit";
-    } else {
-      permissionMode = controls.claudePermissionMode;
-    }
-    return {
-      interactionMode: controls.interactionMode,
-      claudePermissionMode: controls.claudePermissionMode,
-      permissionMode,
-    };
-  }
-  if (provider === "codex") {
-    let permissionMode: AgentChatSessionSummary["permissionMode"];
-    if (controls.codexConfigSource === "config-toml") {
-      permissionMode = "config-toml";
-    } else if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") {
-      permissionMode = "full-auto";
-    } else if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "workspace-write") {
-      permissionMode = "edit";
-    } else if (
-      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure")
-      && controls.codexSandbox === "workspace-write"
-    ) {
-      permissionMode = "default";
-    } else if (
-      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "untrusted")
-      && controls.codexSandbox === "read-only"
-    ) {
-      permissionMode = "plan";
-    }
-    return {
-      codexApprovalPolicy: controls.codexApprovalPolicy,
-      codexSandbox: controls.codexSandbox,
-      codexConfigSource: controls.codexConfigSource,
-      ...(permissionMode ? { permissionMode } : {}),
-    };
-  }
-  if (provider === "cursor") {
-    return {
-      ...(controls.cursorModeId != null ? { cursorModeId: controls.cursorModeId } : {}),
-    };
-  }
-  if (provider === "droid") {
-    return {
-      droidPermissionMode: controls.droidPermissionMode,
-      permissionMode: droidPermissionModeToLegacyPermissionMode(controls.droidPermissionMode),
-    };
-  }
-  return {
-    opencodePermissionMode: controls.opencodePermissionMode,
-    permissionMode: controls.opencodePermissionMode,
-  };
+): ReturnType<typeof summarizeNativeLaunchControls> {
+  const summary = summarizeNativeLaunchControls(provider, controls);
+  if (provider !== "cursor") return summary;
+  // The pane has never persisted a derived `permissionMode` for cursor — the
+  // composer's cursor chip is driven by `cursorModeId` alone, and these
+  // summaries are spread straight into a session patch. Collapsing the two
+  // copies of this derivation is not licence to start writing that field.
+  const { permissionMode: _cursorDerived, ...rest } = summary;
+  return controls.cursorModeId != null ? rest : {};
 }
 
-function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissionMode): AgentChatPermissionMode {
-  if (mode === "read-only") return "plan";
-  // AGI orchestrator is read-only at the top level → closest legacy mode is plan.
-  if (mode === "agi") return "plan";
-  if (mode === "auto-low") return "edit";
-  if (mode === "auto-medium") return "default";
-  return "full-auto";
+/**
+ * Pi stores its mode in `permissionMode`, but the composer drives it through
+ * the shared OpenCode picker, so the chip has to be seeded from the session's
+ * own field or it falls back to the picker's default and misreports the mode.
+ */
+function piPermissionModeToPickerValue(
+  mode: AgentChatPermissionMode | undefined,
+): AgentChatOpenCodePermissionMode | undefined {
+  if (mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") return mode;
+  if (mode === "default" || mode === "auto") return "edit";
+  return undefined;
 }
+
 
 function legacyPermissionModeToDroidPermissionMode(
   mode: AgentChatPermissionMode | undefined,
@@ -1713,14 +1666,7 @@ function legacyPermissionModeToDroidPermissionMode(
 }
 
 function cliPermissionModeFromNativeControls(provider: CliProvider, controls: NativeControlState): AgentChatPermissionMode {
-  if (provider === "cursor") {
-    const modeId = controls.cursorModeId?.trim().toLowerCase() ?? "";
-    if (modeId.includes("full") || modeId.includes("auto")) return "full-auto";
-    if (modeId.includes("plan")) return "plan";
-    if (modeId.includes("ask")) return "edit";
-    return "default";
-  }
-  return summarizeNativeControls(provider, controls).permissionMode ?? "default";
+  return summarizeNativeLaunchControls(provider, controls).permissionMode ?? "default";
 }
 
 function formatWorkCliAttachmentManifest(attachments: AgentChatFileRef[]): string {
@@ -5400,7 +5346,11 @@ export function AgentChatPane({
     setCodexApprovalPolicy(session.codexApprovalPolicy ?? initialNativeControls.codexApprovalPolicy);
     setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
     setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
-    setOpenCodePermissionMode(session.opencodePermissionMode ?? initialNativeControls.opencodePermissionMode);
+    setOpenCodePermissionMode(
+      session.opencodePermissionMode
+        ?? (session.provider === "pi" ? piPermissionModeToPickerValue(session.permissionMode) : undefined)
+        ?? initialNativeControls.opencodePermissionMode,
+    );
     setDroidPermissionMode(
       session.droidPermissionMode
         ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)

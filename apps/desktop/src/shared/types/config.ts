@@ -1236,6 +1236,8 @@ export type AiPiProviderStatus = {
   configured: boolean;
   authType: "api-key" | "oauth" | "local" | "unknown" | null;
   authMethods: Array<"api-key" | "oauth" | "local">;
+  /** Endpoint a local provider serves from. Present only for `local` providers. */
+  baseUrl?: string | null;
   authSource?: AiPiProviderAuthSource;
   authLabel?: string | null;
   subscription?: boolean;

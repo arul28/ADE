@@ -39,7 +39,7 @@ for vendored runtimes without changing the union.
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
-| `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`, `piSessionLease.ts`; installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
+| `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
 
 ## Model registry
 
@@ -179,13 +179,94 @@ interactive `login`, so ADE does not offer to sign into it. One flow runs per
 provider at a time — starting another supersedes the first, including a start
 that is still acquiring its worker.
 
+A **local model server** is not a sign-in either. `piInstallation.ts` classifies
+a provider as `local` from a loopback `baseUrl` rather than from the absence of
+a key, and carries that endpoint through on `AiPiProviderStatus.baseUrl`.
+Host-based is the point: LM Studio ships `apiKey: "lmstudio"` in `models.json` —
+a placeholder its OpenAI-compatible endpoint requires and ignores — so keying
+off a key classified a server the user runs as an API provider, offered to sign
+into it, and called it connected on the strength of a config file rather than a
+reachable server. A stored auth entry still wins, so a provider behind a local
+gateway keeps its sign-in.
+
 Signing in unlocks models, so both the IPC handler and the ADE action path
 invalidate the provider-readiness caches on success and log
 `ai.pi_auth_cache_invalidation_failed` if that fails.
 
-Pi's own terminal `/login` remains available as a secondary path, offered
-beside the in-app flow rather than behind a reveal, and it is the only path
-when `sdkAvailable` is false.
+A sign-in settles in the main process, so its outcome travels on the
+`piAuthStatus` `success` / `error` event rather than only on the resolution of
+the `piLoginStart` call. Settings is destroyed by any navigation, so binding
+the result to that one promise — and cancelling the flow when the card
+unmounted — meant a sign-in the user completed in their browser could report
+nothing, then land as "Sign-in cancelled" over a provider that was in fact
+connected. Leaving Settings no longer cancels anything; an abandoned flow is
+reclaimed by the ten-minute bound. A user-pressed **Cancel** gives Pi a short
+grace window (`PI_LOGIN_CANCEL_GRACE_MS`) to report a login it had already
+completed, so a cancel that lost the race is reported as the success it was; a
+supersede skips that window. Auth URLs open automatically, with the URL and
+device code left on screen for a blocked browser.
+
+ADE does not drive Pi's terminal `/login`. That path typed `/login` into Pi's
+TUI after a fixed delay, which raced Pi's startup and usually submitted empty
+lines; when `sdkAvailable` is false the card states the instruction instead.
+
+### Session store
+
+SDK chat, tracked Pi CLI terminals, and external-session discovery share **one**
+native store, resolved by `piSessionStoreForEnvironment` with Pi's own
+precedence: `--session-dir`, then `PI_CODING_AGENT_SESSION_DIR`, then the
+profile's global `settings.json` `sessionDir`, then `<agentDir>/sessions`. ADE
+never passes `--session-dir`, so the environment variable is effectively the top
+of the list. A checkout's `.pi/settings.json` is deliberately not read — it
+would let any cloned repository redirect where ADE authorizes and leases
+sessions. Pi's own CLI does merge project settings, so a tracked `pi` terminal
+launched in such a repository writes somewhere ADE does not authorize;
+`repositoryOverridesPiSessionDir` detects that and the launch says so instead of
+failing with a generic "could not be verified".
+
+The store **root** and the directory Pi writes into are different things. Pi
+nests one directory per working directory (`<agentDir>/sessions/<encoded-cwd>/`)
+only when it is told nothing; an explicit directory is used flat and verbatim.
+So the worker receives the root as `sessionRoot` (an authorization boundary) and
+`sessionStorageDir` only when the user configured one. Handing Pi the root
+would scatter files directly into `<agentDir>/sessions`, where Pi's own
+subdirectory-only discovery could never read them back.
+
+Pi buffers a new session in memory and writes its JSONL only at the first
+assistant message, so a fresh chat names a path that does not exist yet.
+`classifyPiSessionFile` answers `pending` for such a path once it is confined to
+the store, and the chat leases that exact path straight away — Pi fixes a
+session's file name when it creates the session, so no directory-wide token is
+needed and two chats in one lane never contend. Only the header check waits for
+the flush. The tracked CLI still holds a per-cwd creation lease, because it has
+to discover which session Pi made. Discovery scopes by
+containment so a project's whole tree stays browsable, but ownership is exact —
+`selectPiStorageSessionCandidate` requires the header cwd to match, since a lane
+worktree sits inside the primary lane's root.
+
+Two sidecars sit next to each session's JSONL, and they answer different
+questions:
+
+- **`<session>.ade-lease`** (`piSessionLease.ts`) — "is someone writing this
+  right now". A cross-process lock keyed to the writer's pid and process start
+  time, `owner: "sdk" | "cli"`, removed on release and reclaimable once the
+  owning process is gone. `piSessionLeaseIsHeld` lets a launch skip a session
+  another live writer already holds instead of discovering it by failing to
+  acquire the lease after the launch has committed.
+- **`<session>.ade-owner`** (`piSessionOwnership.ts`) — "whose session is this".
+  A durable `{ owner, ownerSessionId }` claim that is **never** removed, because
+  chat and the tracked CLI share one store and time proximity cannot tell a
+  chat's session from a terminal's created minutes apart. An unclaimed session
+  stays adoptable, so a `pi` run started outside ADE can still be picked up.
+  `ownerSessionId` is the ADE chat or terminal session id, deliberately not the
+  lease's `ownerId` (a live PTY handle), because it has to survive relaunches.
+
+Before Pi writes anything there is no JSONL to lock, so a tracked CLI launch
+holds `piSessionCreationLeaseTarget(sessionRoot, cwd)` — a synthetic token
+hashed **per working directory**, since the store root is shared by every
+project on the machine and a root-wide token would make one lane's starting Pi
+chat block every other lane's. Pi ignores the file; all of its own scans filter
+on `.jsonl`.
 
 ## Permission modes
 
@@ -446,11 +527,17 @@ translates the abstract value into the correct provider-native fields:
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
 - `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high"`.
-- `pi`: no native permission field. The abstract mode is read directly by
+- `pi`: no provider-specific permission field — the abstract `permissionMode`
+  *is* Pi's native field. It is read directly by
   `piSdkToolPolicyForPermissionMode` (chat) or `piToolsForPermissionMode`
   (tracked CLI) and becomes a tool allowlist plus an approval-tool list. Chat
   reads the session's own mode rather than the collapsed harness mode, because
   the approval gate makes `default` meaningfully different from `edit` there.
+  The renderer's `summarizeNativeControls` therefore branches on `pi` and
+  writes back only `permissionMode`: the main process deletes
+  `opencodePermissionMode` from a Pi session, so falling through to the
+  OpenCode tail reported whatever that absent field defaulted to and silently
+  downgraded a full-auto Pi chat to edit on the first composer interaction.
 
 The abstract field is persisted alongside the native fields so the UI
 can summarize session state consistently, and so legacy flows that only

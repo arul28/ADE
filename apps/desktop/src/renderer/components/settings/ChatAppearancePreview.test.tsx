@@ -74,7 +74,7 @@ describe("ChatAppearancePreview", () => {
     expect(first.style.getPropertyValue("--chat-bubble-assistant-py").trim()).toBe("22px");
   });
 
-  it("renders five chat surface shells with colored chrome and standard border mix", () => {
+  it("renders six chat surface shells with colored chrome and standard border mix", () => {
     const { container } = render(
       <ChatAppearancePreview
         theme="dark"
@@ -84,15 +84,17 @@ describe("ChatAppearancePreview", () => {
         shellGeometry="sharp"
       />,
     );
-    // One column per runtime: codex, claude, opencode, cursor, droid.
+    // One column per runtime: codex, claude, opencode, cursor, droid, pi.
     const shells = container.querySelectorAll("section[data-chat-shell-layout]");
-    expect(shells.length).toBe(5);
+    expect(shells.length).toBe(6);
     const sharp = container.querySelectorAll("section[data-chat-shell-geometry='sharp']");
-    expect(sharp.length).toBe(5);
+    expect(sharp.length).toBe(6);
     for (const el of shells) {
       const style = (el as HTMLElement).style;
       const mix = style.getPropertyValue("--chat-user-border-accent-mix").trim();
-      expect(["22%", "28%"]).toContain(mix);
+      // Near-black accents (Cursor, Pi) widen the border mix so the bubble
+      // keeps an edge instead of merging into the transcript.
+      expect(["22%", "28%", "46%"]).toContain(mix);
     }
   });
 

@@ -30,11 +30,21 @@ import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
-  piSessionDirectoryForEnvironment,
-  listPiSessionFilesForCwd,
-  resolvePiSessionFile,
+  piSessionLeaseIsHeld,
   type PiSessionLease,
 } from "../chat/piSessionLease";
+import {
+  piSessionCouldBelongToTerminal,
+  piSessionIsAdoptableByTerminal,
+  recordPiSessionOwner,
+} from "../chat/piSessionOwnership";
+import {
+  listPiSessionFilesForCwd,
+  piSessionHeaderMatchesCwd,
+  piSessionRootForEnvironment,
+  repositoryOverridesPiSessionDir,
+  resolvePiSessionFile,
+} from "../chat/piSessionStore";
 import {
   preferNativeExecutablePath,
   resolveCliSpawnInvocation,
@@ -728,6 +738,8 @@ type PtyEntry = {
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
   initialInputTimer: ReturnType<typeof setTimeout> | null;
+  /** Cancels a readiness wait that is not a plain timer (Pi's quiescence wait). */
+  initialInputCancel: (() => void) | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
   /**
@@ -1128,6 +1140,20 @@ function isOpenCodeToolType(toolType: TerminalToolType | null): boolean {
 function isOpenCodeCommandName(command: string): boolean {
   const basename = command.trim().split(/[\\/]/).pop()?.toLowerCase() ?? "";
   return basename === "opencode" || basename === "opencode.exe" || basename === "opencode.cmd" || basename === "opencode.bat";
+}
+
+export /**
+ * Pi's continuation flags. `-r` is Pi's interactive session *picker* and `-c`
+ * is "continue the most recent session" — neither is a resume ADE can target,
+ * so both are stripped when ADE rebuilds a launch.
+ */
+const PI_CONTINUATION_FLAG_RE = /(?:^|\s)(?:--continue|-c|-r)(?:\s|$)/iu;
+
+/** Drop `--session <id>` and any continuation flag from a Pi argv. */
+function stripPiContinuationArgs(args: string[]): string[] {
+  return args.filter((arg, index, all) => arg !== "--session"
+    && all[index - 1] !== "--session"
+    && !/^(?:--continue|-c|-r)$/iu.test(arg));
 }
 
 export function isPiExecutableCommand(command: string): boolean {
@@ -1884,6 +1910,8 @@ function resumeTargetIdForProvider(
 
 export type PiStorageSessionCandidate = {
   id: string;
+  /** Native header cwd. A candidate without one can never be owned. */
+  cwd?: string | null;
   sourcePath?: string | null;
   createdAt?: number | null;
   updatedAt?: number | null;
@@ -1900,10 +1928,20 @@ export type PiStorageSessionCandidate = {
  */
 export function selectPiStorageSessionCandidate(args: {
   candidates: readonly PiStorageSessionCandidate[];
+  /**
+   * Working directory that must own the session, compared exactly. Discovery
+   * scopes by containment so a project's whole tree is browsable, but a lane
+   * worktree sits inside the primary lane's root — selecting by containment
+   * would hand one directory's launch a session belonging to another, which
+   * every downstream consumer then rejects.
+   */
+  cwd: string;
   startedAt?: string | null;
   maxStartDeltaMs?: number;
   excludedIds?: ReadonlySet<string>;
   excludedFiles?: ReadonlySet<string>;
+  /** Called only for candidates that already passed every in-memory filter. */
+  isOwnedByAnotherWriter?: (filePath: string) => boolean;
 }): { id: string; filePath: string | null } | null {
   const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
   const hasStartedAt = Number.isFinite(requestedStartedAtMs);
@@ -1912,6 +1950,7 @@ export function selectPiStorageSessionCandidate(args: {
   for (const candidate of args.candidates) {
     const id = sanitizeResumeTargetId(candidate.id);
     if (!id || args.excludedIds?.has(id)) continue;
+    if (!piSessionHeaderMatchesCwd({ cwd: candidate.cwd ?? "" }, args.cwd)) continue;
     const sourcePath = typeof candidate.sourcePath === "string" && candidate.sourcePath.trim()
       ? candidate.sourcePath.trim()
       : null;
@@ -1925,8 +1964,16 @@ export function selectPiStorageSessionCandidate(args: {
       }
       if (excluded) continue;
     }
-    const timestamp = candidate.createdAt ?? candidate.updatedAt ?? 0;
+    // Matching against a launch time compares CREATION times only. A session
+    // created days ago whose file was appended to a moment ago has a current
+    // mtime, and scoring on that let a fresh terminal adopt an old transcript
+    // — including one an ADE chat had just written to, now that chat and CLI
+    // share a single native store.
+    const timestamp = hasStartedAt
+      ? candidate.createdAt ?? 0
+      : candidate.createdAt ?? candidate.updatedAt ?? 0;
     if (!Number.isFinite(timestamp) || timestamp <= 0) continue;
+    if (sourcePath && args.isOwnedByAnotherWriter?.(sourcePath)) continue;
     const score = hasStartedAt ? Math.abs(timestamp - requestedStartedAtMs) : 0;
     if (hasStartedAt && typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
     if (
@@ -3302,6 +3349,8 @@ export function createPtyService({
     maxStartDeltaMs?: number;
     excludedIds?: ReadonlySet<string>;
     excludedFiles?: ReadonlySet<string>;
+    /** Tracked terminal this lookup is for; sessions owned elsewhere are skipped. */
+    terminalSessionId?: string | null;
   }): Promise<{ id: string; filePath: string | null } | null> => {
     try {
       const sessions = await discoverPiSessions({
@@ -3312,6 +3361,14 @@ export function createPtyService({
       });
       return selectPiStorageSessionCandidate({
         candidates: sessions,
+        cwd: args.cwd,
+        // A session another live ADE writer already leased is never this
+        // launch's session. Skipping it here beats discovering it by failing
+        // to acquire the lease after the launch has committed — that path
+        // disposes the terminal. Passed as a predicate so the selector only
+        // reads a sidecar for candidates that survived its cheaper filters.
+        isOwnedByAnotherWriter: (filePath) => piSessionLeaseIsHeld(filePath, piLeaseIdentity.isProcessIdentityLive)
+          || (Boolean(args.terminalSessionId) && !piSessionIsAdoptableByTerminal(filePath, args.terminalSessionId!)),
         ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
         ...(args.maxStartDeltaMs !== undefined ? { maxStartDeltaMs: args.maxStartDeltaMs } : {}),
         ...(args.excludedIds ? { excludedIds: args.excludedIds } : {}),
@@ -3469,6 +3526,7 @@ export function createPtyService({
         env: effectiveSessionEnv ?? activePiEnvironment,
         startedAt: session.startedAt,
         maxStartDeltaMs: 10 * 60_000,
+        terminalSessionId: sessionId,
       });
       if (piSession) {
         const resumeCmd = commandArrayToLine(["pi", "--session", piSession.id], { platform: "linux" });
@@ -3840,6 +3898,8 @@ export function createPtyService({
     }
     if (entry.initialInputTimer) {
       clearTimeout(entry.initialInputTimer);
+      entry.initialInputCancel?.();
+      entry.initialInputCancel = null;
       entry.initialInputTimer = null;
     }
     cleanupEntryPaths(entry);
@@ -5485,9 +5545,9 @@ export function createPtyService({
             directArgs.join(" "),
           ].filter((value): value is string => Boolean(value));
           const isForkLaunch = piOwnershipCommands.some((command) => /(?:^|\s)--fork(?:=|\s|$)/iu.test(command));
-          const isContinueLaunch = /(?:^|\s)(?:--continue|-c|-r)(?:\s|$)/iu.test(initialResumeCommand ?? "")
-            || /(?:^|\s)(?:--continue|-c|-r)(?:\s|$)/iu.test(startupCommand);
-          const piSessionDir = piSessionDirectoryForEnvironment(launchEnv);
+          const isContinueLaunch = PI_CONTINUATION_FLAG_RE.test(initialResumeCommand ?? "")
+            || PI_CONTINUATION_FLAG_RE.test(startupCommand);
+          const piSessionDir = piSessionRootForEnvironment(launchEnv);
           piSessionDirForEntry = piSessionDir;
           piLaunchEnvForEntry = launchEnv;
           // The synthetic creation lease is the first file in this directory;
@@ -5501,43 +5561,99 @@ export function createPtyService({
           // if its timestamp is closest to ADE's launch time.
           const preexistingPiSessions = listPiSessionFilesForCwd({
             cwd,
-            sessionDir: piSessionDir,
+            sessionRoot: piSessionDir,
             env: launchEnv,
           });
           piPreexistingSessionFiles = new Set(preexistingPiSessions.map((session) => session.filePath));
           piPreexistingSessionIds = new Set(preexistingPiSessions.map((session) => session.id));
-          if (piResumeTargetId && !isForkLaunch) {
-            const piSessionFile = resolvePiSessionFile({
-              cwd,
-              sessionId: piResumeTargetId,
-              sessionDir: piSessionDir,
-              env: launchEnv,
+          const piResumeFile = piResumeTargetId && !isForkLaunch
+            ? resolvePiSessionFile({
+                cwd,
+                sessionId: piResumeTargetId,
+                sessionRoot: piSessionDir,
+                env: launchEnv,
+              })
+            : null;
+          // A stored pointer at a session older than the terminal itself is
+          // one ADE mis-assigned earlier — it cannot be this terminal's, since
+          // a terminal creates its own session. Drop it and start fresh rather
+          // than reopening a stranger's transcript on every relaunch.
+          // Only ADE-inferred pointers are second-guessed. An imported session
+          // is old by definition — the user picked it — so applying the
+          // "older than the terminal" heuristic there would silently swap
+          // their transcript for a blank one.
+          const piResumeTargetWasChosenByUser = Boolean(initialResumeMetadata?.importedFrom);
+          const piResumeTargetIsPlausible = piResumeFile !== null
+            && (piResumeTargetWasChosenByUser || piSessionCouldBelongToTerminal({
+              sessionFile: piResumeFile,
+              terminalStartedAt: sessionService.get(sessionId)?.startedAt ?? null,
+              // Matches the adoption window ADE itself uses when assigning a
+              // session, so a target ADE just recorded is never rejected here.
+              graceMs: 10 * 60_000,
+            }));
+          if (piResumeFile && !piResumeTargetIsPlausible) {
+            logger.warn("pty.pi_resume_target_discarded", {
+              sessionId,
+              ptyId,
+              piSessionId: piResumeTargetId ?? "",
+              sessionFile: piResumeFile,
             });
-            if (!piSessionFile) {
-              throw new Error(`Pi session '${piResumeTargetId}' was not found in the selected working directory.`);
+            initialResumeCommand = null;
+            // Rebuilt with no target rather than reduced to a bare `pi`. This
+            // string is what gets typed when the direct spawn falls back to a
+            // shell, so hardcoding the binary dropped the model, thinking and
+            // tool flags that the argv path keeps — the two renderings are
+            // meant to be the same launch.
+            startupCommand = withBundledOpenCodeCommandLine(
+              buildTrackedCliResumeLaunchCommand(
+                {
+                  provider: "pi",
+                  targetKind: "session",
+                  targetId: null,
+                  launch: initialResumeMetadata?.launch ?? {},
+                },
+                {},
+                { platform: "linux" },
+              ).startupCommand,
+              toolTypeHint,
+            );
+            if (directCommand && isPiExecutableCommand(directCommand)) {
+              directArgs = stripPiContinuationArgs(directArgs);
             }
+            // The metadata has to go too: setResumeCommand(null) re-derives the
+            // command from the stored resumeMetadata, which still holds the
+            // bad target — so clearing only the command is a no-op.
+            sessionService.updateMeta({ sessionId, resumeCommand: null, resumeMetadata: null });
+            initialResumeMetadata = null;
+          }
+          if (piResumeFile && piResumeTargetIsPlausible) {
             piSessionLease = acquirePiSessionLease({
-              sessionFile: piSessionFile,
+              sessionFile: piResumeFile,
               owner: "cli",
               ownerId: ptyId,
               ...piLeaseIdentity,
             });
+            recordPiSessionOwner({ sessionFile: piResumeFile, owner: "cli", ownerSessionId: sessionId });
+          } else if (piResumeTargetId && !isForkLaunch && !piResumeFile) {
+            throw new Error(`Pi session '${piResumeTargetId}' was not found in the selected working directory.`);
           } else if (isContinueLaunch && !isForkLaunch) {
             // Resolve --continue/-c/-r before spawning whenever Pi already has
             // a concrete latest session. This removes the window where Pi can
             // begin writing that JSONL before ADE has upgraded its synthetic
             // directory lease to the adjacent session lease.
-            const latest = await resolvePiSessionIdFromStorage({ cwd, env: launchEnv });
+            const latest = await resolvePiSessionIdFromStorage({ cwd, env: launchEnv, terminalSessionId: sessionId });
             if (latest) {
               const piSessionFile = resolvePiSessionFile({
                 cwd,
                 sessionId: latest.id,
                 sessionFile: latest.filePath,
-                sessionDir: piSessionDir,
+                sessionRoot: piSessionDir,
                 env: launchEnv,
               });
               if (!piSessionFile) {
-                throw new Error("Pi's latest session is outside the authorized native session directory.");
+                throw new Error(repositoryOverridesPiSessionDir(cwd)
+                  ? `This repository's .pi/settings.json redirects Pi's session directory. ADE does not follow a checkout's setting, so it cannot track this session. Remove it, or set PI_CODING_AGENT_SESSION_DIR for your profile instead.`
+                  : `Pi's most recent session for this directory (${latest.id}) could not be verified in ${piSessionDir}.`);
               }
               piSessionLease = acquirePiSessionLease({
                 sessionFile: piSessionFile,
@@ -5545,6 +5661,7 @@ export function createPtyService({
                 ownerId: ptyId,
                 ...piLeaseIdentity,
               });
+              recordPiSessionOwner({ sessionFile: piSessionFile, owner: "cli", ownerSessionId: sessionId });
               const piResumeCommand = `pi --session ${latest.id}`;
               initialResumeCommand = piResumeCommand;
               startupCommand = withBundledOpenCodeCommandLine(piResumeCommand, toolTypeHint);
@@ -5556,7 +5673,7 @@ export function createPtyService({
             } else {
               piSessionLeaseIsCreation = true;
               piSessionLease = acquirePiSessionLease({
-                sessionFile: piSessionCreationLeaseTarget(piSessionDir),
+                sessionFile: piSessionCreationLeaseTarget(piSessionDir, cwd),
                 owner: "cli",
                 ownerId: ptyId,
                 ...piLeaseIdentity,
@@ -5567,7 +5684,7 @@ export function createPtyService({
             // JSONL path until Pi writes it. Hold a directory creation lease
             // for the entire PTY lifetime so two ADE launches cannot both
             // target the implicit "most recent" session at once.
-            const creationTarget = piSessionCreationLeaseTarget(piSessionDir);
+            const creationTarget = piSessionCreationLeaseTarget(piSessionDir, cwd);
             piSessionLease = acquirePiSessionLease({
               sessionFile: creationTarget,
               owner: "cli",
@@ -5769,6 +5886,7 @@ export function createPtyService({
         aiTitleTimer: null,
         startupTimer: null,
         initialInputTimer: null,
+        initialInputCancel: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
         priorEndState,
@@ -5827,6 +5945,7 @@ export function createPtyService({
           const candidate = await resolvePiSessionIdFromStorage({
             cwd: entry.boundCwd,
             env: entry.piLaunchEnv,
+            terminalSessionId: entry.sessionId,
             startedAt: sessionService.get(entry.sessionId)?.startedAt ?? null,
             maxStartDeltaMs: 10 * 60_000,
             excludedIds: new Set([
@@ -5841,7 +5960,7 @@ export function createPtyService({
             cwd: entry.boundCwd,
             sessionId: candidate.id,
             sessionFile: candidate.filePath,
-            sessionDir: entry.piSessionDir,
+            sessionRoot: entry.piSessionDir,
             env: entry.piLaunchEnv,
           });
           if (!sessionFile) throw new Error("Pi discovered a session outside the authorized native session directory.");
@@ -5856,6 +5975,10 @@ export function createPtyService({
             concreteLease.release();
             return;
           }
+          // Recorded only once this terminal is the confirmed owner. The
+          // sidecar is never deleted, so claiming on the losing branch would
+          // permanently block every other terminal from the session.
+          recordPiSessionOwner({ sessionFile, owner: "cli", ownerSessionId: entry.sessionId });
           entry.piSessionLease = concreteLease;
           entry.piSessionLeaseIsCreation = false;
           creationLease.release();
@@ -6163,6 +6286,43 @@ export function createPtyService({
           });
         };
         const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(effectiveArgs.initialInputDelayMs ?? 0) || 0)));
+        /**
+         * Wait for the TUI to stop drawing before typing into it.
+         *
+         * A fixed delay is a guess about how long a program takes to become
+         * interactive, and Pi loses that race: it prints a banner, the skill
+         * list, and a skill-conflict report before its prompt accepts input,
+         * which on a large profile runs well past any delay worth hard-coding.
+         * The first message was typed into a screen that was still painting and
+         * vanished. Quiescence is the observable signal that it is ready.
+         */
+        const waitForPtyQuiet = async (quietMs: number, maxWaitMs: number): Promise<"quiet" | "timeout"> => {
+          if (entry.disposed) return "timeout";
+          return await new Promise((resolve) => {
+            let quietTimer: ReturnType<typeof setTimeout> | null = null;
+            const settle = (outcome: "quiet" | "timeout") => {
+              entry.initialInputCancel = null;
+              if (quietTimer) clearTimeout(quietTimer);
+              clearTimeout(capTimer);
+              unsubscribe();
+              resolve(outcome);
+            };
+            const armQuietTimer = () => {
+              if (quietTimer) clearTimeout(quietTimer);
+              quietTimer = setTimeout(() => settle("quiet"), quietMs);
+              quietTimer.unref?.();
+            };
+            const unsubscribe = service.onData((event) => {
+              if (event.ptyId === ptyId) armQuietTimer();
+            });
+            // Parked on the entry so disposal cancels the wait, matching what
+            // every sibling initial-input path does with initialInputTimer.
+            entry.initialInputCancel = () => settle("timeout");
+            const capTimer = setTimeout(() => settle("timeout"), maxWaitMs);
+            capTimer.unref?.();
+            armQuietTimer();
+          });
+        };
         if (effectiveArgs.awaitInitialInput) {
           try {
             if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
@@ -6179,6 +6339,13 @@ export function createPtyService({
             closeEntry(ptyId, 1);
             throw err;
           }
+        } else if (toolTypeHint === "pi" && initialInputDelayMs > 0) {
+          void (async () => {
+            const readiness = await waitForPtyQuiet(initialInputDelayMs, 15_000);
+            if (entry.disposed) return;
+            logger.info("pty.pi_initial_input_ready", { ptyId, sessionId, readiness });
+            await writeInitialInput().catch(failInitialInputLaunch);
+          })();
         } else if (initialInputDelayMs > 0) {
           entry.initialInputTimer = setTimeout(() => {
             void writeInitialInput().catch(failInitialInputLaunch);
@@ -7425,6 +7592,8 @@ export function createPtyService({
       }
       if (entry.initialInputTimer) {
         clearTimeout(entry.initialInputTimer);
+      entry.initialInputCancel?.();
+      entry.initialInputCancel = null;
         entry.initialInputTimer = null;
       }
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });

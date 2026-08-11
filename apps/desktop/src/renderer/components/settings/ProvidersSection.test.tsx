@@ -233,7 +233,7 @@ function buildPiInstallation(): NonNullable<AiSettingsStatus["piInstallation"]> 
         subscription: true,
       },
     ],
-    availableModelIds: ["pi/openai-codex/gpt-5.4"],
+    availableModelIds: ["pi/default/openai-codex/gpt-5.4", "pi/default/openai-codex/gpt-5.4-codex"],
     authFileDetected: true,
     modelsFileDetected: false,
     settingsFileDetected: true,
@@ -565,7 +565,7 @@ describe("ProvidersSection", () => {
 
     expect(await screen.findByText("Coding Agents")).toBeTruthy();
     expect(screen.getByText("OpenCode — Universal Model Access")).toBeTruthy();
-    expect(screen.getByText("All providers")).toBeTruthy();
+    expect(screen.getByText(/^All providers · \d+$/)).toBeTruthy();
     expect(screen.getByLabelText("Search all OpenCode providers")).toBeTruthy();
     // Popular cards include Moonshot and Kimi.
     expect(screen.getByText("Moonshot AI")).toBeTruthy();
@@ -574,6 +574,17 @@ describe("ProvidersSection", () => {
     expect(screen.queryByText(/managed by ADE/i)).toBeNull();
     expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
+
+  /** Open a Pi provider's card, then return its sign-in button from the dialog. */
+  async function openPiProviderSignIn(providerName: string, buttonName: string): Promise<HTMLElement> {
+    const tile = await screen.findByRole("button", {
+      name: new RegExp(`^(?:Open|Connect) ${providerName} in Pi$`),
+    });
+    await act(async () => {
+      tile.click();
+    });
+    return await screen.findByRole("button", { name: buttonName });
+  }
 
   it("renders the Pi card with connected providers and opens Pi settings files", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
@@ -617,7 +628,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const signIn = await screen.findByRole("button", { name: "Sign in with SuperGrok — xAI" });
+    const signIn = await openPiProviderSignIn("xAI", "Sign in with SuperGrok — xAI");
     expect(screen.getByRole("button", { name: "Use an API key — xAI" })).toBeTruthy();
 
     await act(async () => {
@@ -677,7 +688,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const signIn = await screen.findByRole("button", { name: "Sign in — xAI" });
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
     });
@@ -712,7 +723,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const signIn = await screen.findByRole("button", { name: "Sign in with SuperGrok — xAI" });
+    const signIn = await openPiProviderSignIn("xAI", "Sign in with SuperGrok — xAI");
     await act(async () => {
       signIn.click();
     });
@@ -741,7 +752,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection();
 
-    const signIn = await screen.findByRole("button", { name: "Sign in — xAI" });
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
     });
@@ -769,19 +780,298 @@ describe("ProvidersSection", () => {
     renderProvidersSection();
 
     expect((await screen.findAllByText("OpenAI Codex")).length).toBe(1);
-    expect(screen.getByRole("button", { name: "Sign in — OpenAI Codex" })).toBeTruthy();
     expect(screen.getByText(/7 models/)).toBeTruthy();
+    expect(await openPiProviderSignIn("OpenAI Codex", "Sign in — OpenAI Codex")).toBeTruthy();
   });
 
-  it("keeps Pi's terminal login reachable in one click", async () => {
+  // Settings is torn down by any navigation, so cancelling on unmount killed
+  // the login of anyone who switched away while authorizing in their browser.
+  it("leaves a Pi sign-in running when Settings unmounts", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
+    );
+
+    const view = renderProvidersSection();
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
+    await act(async () => {
+      signIn.click();
+    });
+
+    await act(async () => {
+      view.unmount();
+    });
+    expect(window.ade.ai.piLoginCancel).not.toHaveBeenCalled();
+  });
+
+  // The outcome is reported by the status event, not only by whoever is still
+  // awaiting the start call, so a card that remounted mid-flow still learns.
+  it("reports a Pi sign-in that completed while no start call was pending", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+
+    renderProvidersSection();
+    await screen.findByRole("button", { name: "Connect xAI in Pi" });
+    getStatusMock.mockClear();
+
+    await act(async () => {
+      emitPiAuthStatus?.({ providerId: "xai", state: "success" });
+    });
+
+    expect(screen.getByText(/Signed in to xAI\./)).toBeTruthy();
+    expect(getStatusMock).toHaveBeenCalled();
+  });
+
+  // finish() emits the event and resolves the start call from the same place;
+  // whichever lands first must settle, and the other must be a no-op.
+  it("reports a Pi sign-in once when both the event and the call resolve", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    let resolveLogin: ((result: { ok: boolean; error?: string }) => void) | null = null;
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+
+    renderProvidersSection();
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
+    await act(async () => {
+      signIn.click();
+    });
+    const loadCallsBefore = (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mock.calls.length;
+    getStatusMock.mockClear();
+
+    await act(async () => {
+      emitPiAuthStatus?.({ providerId: "xai", state: "success" });
+      resolveLogin?.({ ok: true });
+    });
+
+    expect(screen.getByText(/Signed in to xAI\./)).toBeTruthy();
+    expect(getStatusMock).toHaveBeenCalledTimes(1);
+    expect((window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mock.calls.length).toBe(loadCallsBefore + 1);
+  });
+
+  // The settle latch is per provider, so it has to be released when a new
+  // attempt starts — otherwise the first outcome is the only one a provider
+  // can ever report for the rest of the session.
+  it("reports the outcome of a Pi sign-in restarted after a cancelled one", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
+    );
+
+    renderProvidersSection();
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
+    await act(async () => {
+      signIn.click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Cancel" }).click();
+    });
+    // The service settles the cancel after its grace window.
+    await act(async () => {
+      emitPiAuthStatus?.({ providerId: "xai", state: "error", error: "Sign-in cancelled." });
+    });
+    expect(screen.getByText("Sign-in cancelled.")).toBeTruthy();
+
+    const restarted = await openPiProviderSignIn("xAI", "Sign in — xAI");
+    await act(async () => {
+      restarted.click();
+    });
+    await act(async () => {
+      emitPiAuthStatus?.({
+        providerId: "xai",
+        state: "prompt",
+        prompt: { requestId: "req-2", kind: "manual_code", title: "Sign in to xAI", message: "Paste the code from your browser" },
+      });
+    });
+    expect(screen.getByLabelText("Paste the code from your browser")).toBeTruthy();
+
+    await act(async () => {
+      emitPiAuthStatus?.({ providerId: "xai", state: "success" });
+    });
+    expect(screen.getByText(/Signed in to xAI\./)).toBeTruthy();
+  });
+
+  // Pi is already polling the grant by the time the URL arrives; making the
+  // user find and press "Open" first is dead time in a timed flow.
+  it("opens a Pi device-code URL without waiting for a click", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+    ]);
+    (window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
+    );
+
+    renderProvidersSection();
+    const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
+    await act(async () => {
+      signIn.click();
+    });
+    await act(async () => {
+      emitPiAuthStatus?.({
+        providerId: "xai",
+        state: "pending",
+        notice: { level: "info", message: "Enter the code", userCode: "ABCD-1234", verificationUri: "https://x.ai/device" },
+      });
+    });
+
+    expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://x.ai/device");
+    // The code and a manual escape hatch stay on screen for a blocked browser.
+    expect(screen.getByText("ABCD-1234")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+  });
+
+  // A localhost model server has no credential to collect, so asking for an
+  // API key is the wrong question — it gets its own section and a reachability
+  // report instead.
+  it("reports Pi local model servers without offering an API key", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      piInstallation: {
+        ...buildPiInstallation(),
+        providers: [
+          ...buildPiInstallation().providers,
+          {
+            id: "lmstudio",
+            name: "LM Studio",
+            modelCount: 2,
+            availableModelCount: 2,
+            configured: true,
+            authType: "local",
+            authMethods: ["local"],
+            baseUrl: "http://127.0.0.1:1234/v1",
+          },
+        ],
+      },
+    }));
     (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
     renderProvidersSection();
 
-    expect(await screen.findByRole("button", { name: /Open Pi \/login/ })).toBeTruthy();
+    const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
+    expect(within(localServers).getByText("Local Model Servers")).toBeTruthy();
+    // ADE's own probe is the authority on where the server is and whether it
+    // answered; Pi's configured baseUrl is only the fallback.
+    expect(within(localServers).getByText("http://localhost:1234")).toBeTruthy();
+    expect(within(localServers).getByText("Not detected")).toBeTruthy();
+    // Never a sign-in affordance for a server the user runs.
+    expect(screen.queryByRole("button", { name: /LM Studio in Pi$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use an API key — LM Studio/ })).toBeNull();
+  });
+
+  // ADE only probes ollama and lmstudio. A third loopback server is reported by
+  // Pi's own profile and by nothing else, so a probe-shaped label left it
+  // reading "Not checked" forever — a status that never resolves.
+  it("falls back to Pi's profile for a local server ADE cannot probe", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      piInstallation: {
+        ...buildPiInstallation(),
+        providers: [
+          ...buildPiInstallation().providers,
+          {
+            id: "llamacpp",
+            name: "llama.cpp",
+            modelCount: 1,
+            availableModelCount: 1,
+            configured: true,
+            authType: "local",
+            authMethods: ["local"],
+            baseUrl: "http://127.0.0.1:8080/v1",
+          },
+        ],
+      },
+    }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    renderProvidersSection();
+
+    const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
+    expect(within(localServers).getByText("llama.cpp")).toBeTruthy();
+    expect(within(localServers).getByText("Configured in Pi")).toBeTruthy();
+    expect(within(localServers).queryByText("Not checked")).toBeNull();
+    // Still a server the user runs: no credential affordance.
+    expect(screen.queryByRole("button", { name: /llama\.cpp in Pi$/ })).toBeNull();
+  });
+
+  // Everything the local-servers section shows comes from the AI status probe,
+  // not from Pi's login list, so refreshing only the latter left the button
+  // spinning over data that could not change.
+  it("re-probes local servers when Pi's Refresh is pressed", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      piInstallation: {
+        ...buildPiInstallation(),
+        providers: [
+          ...buildPiInstallation().providers,
+          {
+            id: "lmstudio",
+            name: "LM Studio",
+            modelCount: 1,
+            availableModelCount: 1,
+            configured: true,
+            authType: "local",
+            authMethods: ["local"],
+            baseUrl: "http://127.0.0.1:1234/v1",
+          },
+        ],
+      },
+    }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    renderProvidersSection();
+    const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
+    getStatusMock.mockClear();
+
+    await act(async () => {
+      within(localServers).getByRole("button", { name: /Refresh/ }).click();
+    });
+
+    expect(getStatusMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it("filters Pi providers with the search box", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { piInstallation: buildPiInstallation() }));
+    (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
+      { id: "groq", name: "Groq", authTypes: ["api_key"], configured: false },
+    ]);
+
+    renderProvidersSection();
+
+    const search = await screen.findByLabelText("Search all Pi providers");
+    expect(screen.getByRole("button", { name: "Connect Groq in Pi" })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "xa" } });
+    expect(screen.getByRole("button", { name: "Connect xAI in Pi" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Groq in Pi" })).toBeNull();
   });
 
   it("explains the Pi card instead of stranding it when Pi's SDK is missing", async () => {
@@ -800,7 +1090,11 @@ describe("ProvidersSection", () => {
     renderProvidersSection();
 
     expect(await screen.findAllByText("Pi is installed, but ADE cannot load its package here.")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: /Open Pi \/login/ })).toBeTruthy();
+    // ADE used to offer to open Pi and type `/login` into its TUI after a fixed
+    // delay. That raced Pi's startup and submitted empty lines, so the branch
+    // states the instruction rather than automating it.
+    expect(screen.queryByRole("button", { name: /Open Pi \/login/ })).toBeNull();
+    expect(screen.getByText(/run pi in a terminal and use its \/login command/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Refresh providers/ })).toBeNull();
     expect(window.ade.ai.piLoginProviders).not.toHaveBeenCalled();
   });
@@ -816,7 +1110,7 @@ describe("ProvidersSection", () => {
     expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
     // The group body is hidden while uninstalled.
-    expect(screen.queryByText("All providers")).toBeNull();
+    expect(screen.queryByText(/^All providers/)).toBeNull();
   });
 
   it("renders provider cards and catalog-updating state while inventory is stale", async () => {

@@ -2939,7 +2939,7 @@ describe("ADE CLI", () => {
         "--provider",
         "mystery",
       ]),
-    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, or shell/);
+    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, pi, or shell/);
   });
 
   it("does not treat new --mode values as subcommands", () => {

@@ -18,10 +18,11 @@ export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
   anthropic: "#D97706",
   codex: "#E7E5E4",
   openai: "#E7E5E4",
-  cursor: "#A78BFA",
-  droid: "#8B5CF6",
-  factory: "#8B5CF6",
-  opencode: "#2563EB",
+  cursor: "#13120C",
+  droid: "#D46C2E",
+  factory: "#D46C2E",
+  opencode: "#739CEE",
+  pi: "#181C25",
   google: "#F59E0B",
   gemini: "#F59E0B",
   mistral: "#F97316",
@@ -109,12 +110,21 @@ function sharedSurfaceTokens(accent: string, m: number): CSSProperties {
   };
 }
 
-function isLightChatAccent(accent: string): boolean {
+/** Dark enough that shading it further would erase the bubble's edges. */
+function isDeepChatAccent(accent: string): boolean {
+  return chatAccentLuminance(accent) < 0.22;
+}
+
+function chatAccentLuminance(accent: string): number {
   const normalized = normalizeHex(accent);
   const r = hexChannel(normalized.slice(1, 3));
   const g = hexChannel(normalized.slice(3, 5));
   const b = hexChannel(normalized.slice(5, 7));
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.72;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function isLightChatAccent(accent: string): boolean {
+  return chatAccentLuminance(accent) > 0.72;
 }
 
 /// Readable foreground for content painted on top of a `--chat-accent` fill
@@ -132,6 +142,10 @@ export function effectiveChatAccent(accentColor: string, chromeTint: ChatChromeT
   return chromeTint === "neutral" ? NEUTRAL_CHROME_ACCENT : accentColor;
 }
 
+/**
+ * The original bubble fills. Claude and Codex shipped looking right, so they
+ * keep these byte for byte — see `ACCENTS_KEEPING_ORIGINAL_BUBBLE`.
+ */
 const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
 
@@ -139,17 +153,51 @@ const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
 const CHAT_USER_BUBBLE_GRADIENT_LIGHT =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #78716c 10%) 0%, color-mix(in srgb, var(--chat-accent) 58%, #7c3aed 42%) 50%, color-mix(in srgb, var(--chat-accent) 56%, #4c1d95 44%) 100%)";
 
+/**
+ * Accents that keep the original gradient exactly.
+ *
+ * Those stops mix toward a fixed violet, which is why a newly-coloured
+ * provider could not read as its own colour. But Claude and Codex were already
+ * correct, and changing how they look was not part of re-colouring the others.
+ */
+const ACCENTS_KEEPING_ORIGINAL_BUBBLE = new Set(
+  [PROVIDER_CHAT_ACCENTS.claude, PROVIDER_CHAT_ACCENTS.codex].map((hex) => hex!.toLowerCase()),
+);
+
+/**
+ * Every other provider shades from its own accent.
+ *
+ * Mixing toward a fixed violet meant two runtimes with different accents came
+ * out the same purple; deriving the stops from `--chat-accent` is what makes a
+ * per-provider colour visible as that colour.
+ */
+const CHAT_USER_BUBBLE_GRADIENT_ACCENT =
+  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 88%, #ffffff 12%) 0%, var(--chat-accent) 52%, color-mix(in srgb, var(--chat-accent) 84%, #000000 16%) 100%)";
+
+/**
+ * Near-black accents (Cursor, Pi) — lift instead of deepen, or the bubble
+ * disappears into the transcript background and stops reading as a bubble.
+ */
+const CHAT_USER_BUBBLE_GRADIENT_DEEP =
+  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #ffffff 26%) 0%, color-mix(in srgb, var(--chat-accent) 86%, #ffffff 14%) 52%, var(--chat-accent) 100%)";
+
 /** Provider-colored chrome (default) — former “standard” lane accent strength. */
 function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
   const accent = resolveChatSurfaceAccent(mode, accentColor);
   const m = 1;
   const light = isLightChatAccent(accent);
+  const deep = isDeepChatAccent(accent);
+  const keepsOriginal = ACCENTS_KEEPING_ORIGINAL_BUBBLE.has(accent.toLowerCase());
+  // Only the fill differs for a pinned accent: neither Claude nor Codex is
+  // ever `deep`, so the mix ternaries were identical on both arms.
   return {
-    ["--chat-user-border-accent-mix" as string]: light ? "22%" : "28%",
-    ["--chat-user-shadow-accent-mix" as string]: light ? "28%" : "34%",
-    ["--chat-user-bubble-gradient" as string]: light
-      ? CHAT_USER_BUBBLE_GRADIENT_LIGHT
-      : CHAT_USER_BUBBLE_GRADIENT_DEFAULT,
+    ["--chat-user-border-accent-mix" as string]: light ? "22%" : deep ? "46%" : "28%",
+    ["--chat-user-shadow-accent-mix" as string]: light ? "28%" : deep ? "44%" : "34%",
+    ["--chat-user-bubble-gradient" as string]: keepsOriginal
+      ? (light ? CHAT_USER_BUBBLE_GRADIENT_LIGHT : CHAT_USER_BUBBLE_GRADIENT_DEFAULT)
+      : deep
+        ? CHAT_USER_BUBBLE_GRADIENT_DEEP
+        : CHAT_USER_BUBBLE_GRADIENT_ACCENT,
     ...sharedSurfaceTokens(accent, m),
   };
 }

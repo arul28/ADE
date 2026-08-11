@@ -66,6 +66,16 @@ export const LABEL_STYLE: CSSProperties = {
   color: COLORS.textMuted,
 };
 
+/** Uppercase mono heading used for the section bands inside settings panels. */
+export const SECTION_LABEL_STYLE: CSSProperties = {
+  fontSize: 10,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  color: COLORS.textMuted,
+  fontWeight: 700,
+};
+
 export function inlineBadge(color: string, overrides?: CSSProperties): CSSProperties {
   return {
     display: "inline-flex",

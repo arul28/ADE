@@ -155,6 +155,13 @@ and in tests.
   collector coalescing/timeout/bounds and role-classification tests.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
+- `apps/desktop/src/main/services/chat/piSessionStore.ts`,
+  `piSessionLease.ts`, `piSessionOwnership.ts` — the native Pi session store
+  shared by ADE chat, tracked `pi` terminals, and external-session discovery:
+  store resolution and file authorization, the `.ade-lease` live-writer lock,
+  and the durable `.ade-owner` claim. They live under `services/chat/` because
+  chat is the other writer, but `ptyService` is a first-class consumer — see
+  [Pi session tracking](pty-and-sessions.md#pi-session-tracking).
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
   normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
@@ -1142,7 +1149,7 @@ Renderer surfaces:
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch
   payload builder, shared between the desktop renderer Work tab and
   the main-process `syncRemoteCommandService` mobile launcher. Exposes
-  `CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode"`
+  `CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi"`
   and `LaunchProfile = CliProvider | "shell"`;
   `LAUNCH_PROFILE_TOOL_TYPE` and `LAUNCH_PROFILE_TITLE` map a launch
   profile to the recorded `TerminalToolType` (`cursor-cli`, `droid`,
@@ -1471,7 +1478,7 @@ schema is used for:
 
 - interactive shell PTYs (`toolType = "shell"`)
 - tracked CLI agent terminals (`claude`, `codex`, `cursor-cli`, `droid`,
-  `opencode`)
+  `opencode`, `pi`)
 - agent chat sessions that run through the Claude/Codex/Cursor/Droid/
   OpenCode SDKs rather than a PTY (`claude-chat`, `codex-chat`,
   `opencode-chat`, `cursor-chat`, `droid-chat`)
@@ -1903,6 +1910,12 @@ runtime and agent chat runtime both layer the same identity envs
   directly is only allowed through `sessionService.setResumeCommand` or
   `updateMeta`, both of which re-derive the metadata; target-id refreshes merge
   the current metadata so tracked CLI spawn lineage is not discarded.
+  `defaultResumeCommandForTool("pi")` deliberately returns **null**: `pi
+  --continue` means "the most recent session for this directory", and because
+  ADE chat and the tracked Pi CLI share one native session store that can be
+  another terminal's session or a chat's. Pi is resumed only by a session id
+  ADE captured for that terminal — see
+  [Pi session tracking](pty-and-sessions.md#pi-session-tracking).
 - Transcript output is not dropped at 16 MiB. When the retained physical file
   would cross that ceiling, the PTY pauses when possible and atomically keeps a
   UTF-8-safe recent window targeted near 8 MiB plus output that arrived during
