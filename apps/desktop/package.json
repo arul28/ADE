@@ -295,6 +295,16 @@
         ]
       },
       {
+        "from": "../../plugins",
+        "to": "plugins",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**",
+          "!**/.git/**",
+          "!README.md"
+        ]
+      },
+      {
         "from": "resources/voice",
         "to": "voice",
         "filter": [
