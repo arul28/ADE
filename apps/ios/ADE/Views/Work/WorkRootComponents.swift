@@ -536,6 +536,16 @@ struct WorkSessionListRow: View {
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
   var isLaneDeleting = false
+  /// Contributions attached to this session — badges for the trailing cluster,
+  /// menu items for the context menu. Resolved once per projection by the list
+  /// that owns the rows, never read from the service by the row itself.
+  var pluginContributions: [PluginContribution] = []
+  /// Whether the attached machine can take plugin actions right now. Passed in
+  /// rather than read from an `@EnvironmentObject` here: a row that observed
+  /// the sync service would redraw on every publish it makes, which is most of
+  /// what the app does.
+  var pluginActionsEnabled = false
+  var onInvokePluginContribution: (PluginContribution) -> Void = { _ in }
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
   let isChecked: Bool
@@ -702,7 +712,8 @@ struct WorkSessionListRow: View {
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
-          showsLaneIdentity: showsLaneIdentity
+          showsLaneIdentity: showsLaneIdentity,
+          pluginBadges: pluginBadges
         )
         .equatable()
       }
@@ -778,6 +789,12 @@ struct WorkSessionListRow: View {
       identityMenuSection
       lifecycleMenuSection(status: rowStatus)
       goToMenuSection
+      // After "go to", before the fence. A plugin's items sit where a user is
+      // already scanning for secondary actions, and never above the destructive
+      // section — that divider exists so a mis-tap right after the menu opens
+      // cannot land on a delete, and a contribution must not push them back
+      // under a moving finger.
+      pluginMenuSection
       destructiveMenuSection(status: rowStatus)
     }
     .overlay {
@@ -926,6 +943,29 @@ struct WorkSessionListRow: View {
           Label("Keep active", systemImage: "pin.circle")
         }
       }
+    }
+  }
+
+  /// Badges this row draws, capped and ordered the same way every client
+  /// orders them.
+  private var pluginBadges: PluginRowBadges {
+    let badges = pluginContributions.filter { $0.badge != nil }
+    let visible = Array(badges.prefix(pluginRowBadgeVisibleLimit))
+    return PluginRowBadges(visible: visible, overflow: max(0, badges.count - visible.count))
+  }
+
+  /// Plugin entries in the context menu. Divider first, matching every other
+  /// section, so the group reads as one place rather than as loose items.
+  @ViewBuilder
+  private var pluginMenuSection: some View {
+    let items = pluginContributions.filter { $0.menuItem != nil }
+    if !items.isEmpty {
+      Divider()
+      PluginRowMenuItems(
+        contributions: items,
+        isEnabled: pluginActionsEnabled,
+        onInvoke: onInvokePluginContribution
+      )
     }
   }
 

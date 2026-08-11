@@ -491,6 +491,153 @@ final class DatabaseService {
     )
   }
 
+  // MARK: - Plugin platform
+  //
+  // Reads for the four synced plugin tables (`DatabaseBootstrap.sql`, itself a
+  // mirror of `kvDb.ts`). All read-only: iOS never writes a `plugin_*` row.
+  // That is a platform rule, not an omission — an optimistic local write to a
+  // CRR table wins the merge against the machine that actually owns the plugin,
+  // and there is no host-side guard that can take it back (design D14).
+  //
+  // Every one of these degrades to an empty result on a phone whose schema
+  // predates the tables: `query` returns `[]` when the statement fails to
+  // prepare, so a missing table reads as "no plugins" rather than throwing.
+
+  /// Presence rows across every machine on the account. Callers that decide
+  /// what is *available* must scope to the attached machine; this returns the
+  /// whole table because display metadata is machine-independent.
+  func fetchPluginPresence() -> [PluginPresenceRecord] {
+    withLock {
+      query(
+        """
+        select machine_key, plugin_id, version, enabled, display_name, icon, accent, updated_at
+          from plugin_presence
+         order by plugin_id asc
+        """
+      ) { statement in
+        PluginPresenceRecord(
+          machineKey: stringValue(statement, index: 0) ?? "",
+          pluginId: stringValue(statement, index: 1) ?? "",
+          version: stringValue(statement, index: 2) ?? "",
+          enabled: sqlite3_column_int(statement, 3) == 1,
+          displayName: stringValue(statement, index: 4) ?? "",
+          icon: stringValue(statement, index: 5) ?? "",
+          accent: stringValue(statement, index: 6) ?? "",
+          updatedAt: stringValue(statement, index: 7) ?? ""
+        )
+      }
+      .filter { !$0.pluginId.isEmpty }
+    }
+  }
+
+  /// Panel definitions. `schema_json` is returned unparsed: listing panels is a
+  /// hot path on the pane's entry menu, and walking every schema to draw a list
+  /// of titles would be work thrown away.
+  func fetchPluginPanels(pluginId: String? = nil) -> [PluginPanelRecord] {
+    withLock {
+      let predicate = pluginId == nil ? "" : "where plugin_id = ?"
+      return query(
+        """
+        select plugin_id, panel_id, title, icon, surface, schema_json, vocab_version, updated_at
+          from plugin_panels
+          \(predicate)
+         order by plugin_id asc, panel_id asc
+        """,
+        bind: { [self] statement in
+          if let pluginId {
+            try self.bindText(pluginId, to: statement, index: 1)
+          }
+        }
+      ) { statement in
+        PluginPanelRecord(
+          pluginId: stringValue(statement, index: 0) ?? "",
+          panelId: stringValue(statement, index: 1) ?? "",
+          title: stringValue(statement, index: 2) ?? "",
+          icon: stringValue(statement, index: 3) ?? "",
+          surface: stringValue(statement, index: 4) ?? "",
+          schemaJSON: stringValue(statement, index: 5) ?? "",
+          vocabVersion: Int(sqlite3_column_int64(statement, 6)),
+          updatedAt: stringValue(statement, index: 7) ?? ""
+        )
+      }
+      .filter { !$0.pluginId.isEmpty && !$0.panelId.isEmpty }
+    }
+  }
+
+  /// Rows backing one bound component. `limit` is the component's own ceiling —
+  /// a `list` never draws more than `maxListItems`, so nothing above that is
+  /// worth reading out of SQLite.
+  func fetchPluginCollectionEntries(
+    pluginId: String,
+    collection: String,
+    keyPrefix: String? = nil,
+    limit: Int
+  ) -> [PluginCollectionEntry] {
+    guard !pluginId.isEmpty, !collection.isEmpty, limit > 0 else { return [] }
+    return withLock {
+      // `like` with an escaped prefix rather than string interpolation: a key
+      // prefix is plugin-authored text and `%`/`_` in it must match literally.
+      let prefixPredicate = keyPrefix == nil ? "" : "and key like ? escape '\\'"
+      return query(
+        """
+        select plugin_id, collection, key, value_json, updated_at
+          from plugin_collections
+         where plugin_id = ? and collection = ?
+          \(prefixPredicate)
+         order by key asc
+         limit \(limit)
+        """,
+        bind: { [self] statement in
+          try self.bindText(pluginId, to: statement, index: 1)
+          try self.bindText(collection, to: statement, index: 2)
+          if let keyPrefix {
+            let escaped = keyPrefix
+              .replacingOccurrences(of: "\\", with: "\\\\")
+              .replacingOccurrences(of: "%", with: "\\%")
+              .replacingOccurrences(of: "_", with: "\\_")
+            try self.bindText("\(escaped)%", to: statement, index: 3)
+          }
+        }
+      ) { statement in
+        PluginCollectionEntry(
+          pluginId: stringValue(statement, index: 0) ?? "",
+          collection: stringValue(statement, index: 1) ?? "",
+          key: stringValue(statement, index: 2) ?? "",
+          valueJSON: stringValue(statement, index: 3) ?? "null",
+          updatedAt: stringValue(statement, index: 4) ?? ""
+        )
+      }
+    }
+  }
+
+  /// Materialized contributions for one entity kind, ready to index by id.
+  /// Rows whose payload does not match their socket are dropped here, so a
+  /// surface never has to decide whether a half-built badge is worth drawing.
+  func fetchPluginContributions(entityKind: PluginEntityKind) -> [PluginContribution] {
+    withLock {
+      query(
+        """
+        select entity_kind, entity_id, plugin_id, socket, payload_json, updated_at
+          from plugin_contributions
+         where entity_kind = ?
+        """,
+        bind: { [self] statement in
+          try self.bindText(entityKind.rawValue, to: statement, index: 1)
+        }
+      ) { statement in
+        PluginContributionParser.parse(
+          entityKind: stringValue(statement, index: 0) ?? "",
+          entityId: stringValue(statement, index: 1) ?? "",
+          pluginId: stringValue(statement, index: 2) ?? "",
+          socket: stringValue(statement, index: 3) ?? "",
+          payloadJSON: stringValue(statement, index: 4) ?? "null",
+          updatedAt: stringValue(statement, index: 5) ?? ""
+        )
+      }
+      .compactMap { $0 }
+    }
+  }
+
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
     withLock { fetchLanesLocked(includeArchived: includeArchived) }
   }

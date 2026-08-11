@@ -3686,6 +3686,16 @@ final class SyncService: ObservableObject {
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
+  /// Bumped when any `plugin_*` table changes. Plugin surfaces are the only
+  /// readers, and they are rare enough that folding them into an existing
+  /// revision would redraw Lanes and PRs for a panel refresh they do not care
+  /// about.
+  @Published private(set) var pluginsProjectionRevision = 0
+  /// The plugin pane currently presented as a root sheet, or nil. Mirrors
+  /// `linearPanePresented` — the pane is global rather than a tab because
+  /// `RootTab` is wired into analytics, persistence and badges, and a plugin
+  /// must not be able to add itself to that set.
+  @Published var presentedPluginPane: PluginPaneRequest?
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
@@ -5555,6 +5565,7 @@ final class SyncService: ObservableObject {
         || touchedTables.contains(where: Self.tableAffectsFilesProjection)
         || touchedTables.contains(where: Self.tableAffectsPrsProjection)
         || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection)
+        || touchedTables.contains(where: Self.tableAffectsPluginsProjection)
       let affectsActiveSessions = affectsAll || touchedTables.contains(where: Self.tableAffectsActiveSessionsSnapshot)
 
       if affectsProjectCatalog {
@@ -5603,6 +5614,9 @@ final class SyncService: ObservableObject {
     }
     if affectsAll || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection) {
       proofArtifactsProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsPluginsProjection) {
+      pluginsProjectionRevision += 1
     }
   }
 
@@ -5699,6 +5713,23 @@ final class SyncService: ObservableObject {
     return [
       "computer_use_artifacts",
       "computer_use_artifact_links",
+    ].contains(table)
+  }
+
+  /// Exhaustive by name, matching `SYNC_PLUGIN_TABLES` in
+  /// `apps/desktop/src/shared/types/sync.ts`. A `plugin_` prefix test would be
+  /// shorter and would quietly adopt any future table named that way; naming
+  /// them keeps the two lists diffable against each other.
+  ///
+  /// Deliberately not keyed off `projects` like its neighbours: plugin rows are
+  /// machine-scoped, not project-scoped, so a project switch changes nothing
+  /// here.
+  private static func tableAffectsPluginsProjection(_ table: String) -> Bool {
+    [
+      "plugin_presence",
+      "plugin_panels",
+      "plugin_collections",
+      "plugin_contributions",
     ].contains(table)
   }
 
@@ -8911,6 +8942,99 @@ final class SyncService: ObservableObject {
       args: ["issueId": issueId],
       as: [LinearIssueComment].self
     )
+  }
+
+  // MARK: - Plugins
+  //
+  // Two calls, and the asymmetry between them is the platform's shape (D14):
+  // the phone READS plugin state from its local mirror of the synced tables and
+  // ACTS only by asking the attached machine to run something. It never writes
+  // a `plugin_*` row itself.
+
+  /// Which plugins the ATTACHED machine has installed.
+  ///
+  /// Read from the machine rather than from `plugin_presence`, and the
+  /// distinction is not pedantic: the table holds rows for every machine on the
+  /// account (presence is fan-out-plus-cache), while the only machine whose
+  /// plugins this phone can open or invoke is the one it is attached to. The
+  /// table then supplies display metadata — label, icon, accent — which is
+  /// manifest-derived and the same wherever the plugin is installed.
+  ///
+  /// A host that predates the plugin platform never advertises this action, so
+  /// the caller sees an empty list and hides the entry point. That is the
+  /// intended degradation: missing plugins hide silently.
+  func fetchAttachedMachinePlugins() async throws -> PluginPresenceListResult {
+    try await sendDecodableCommand(
+      action: "plugins.presenceList",
+      as: PluginPresenceListResult.self
+    )
+  }
+
+  /// Run one plugin action on the attached machine.
+  ///
+  /// Every tap in a plugin panel — a button, a list row, a form submit, a
+  /// context-menu item — funnels through this single action. A per-plugin
+  /// action name would have to pass the compile-time allowlist that
+  /// `requireInvokableRemoteAction` enforces, which a plugin installed after
+  /// this build shipped can never do; one generic action keeps the preflight
+  /// gate intact while letting the plugin name whatever it likes in `actionId`.
+  @discardableResult
+  func invokePluginAction(
+    pluginId: String,
+    actionId: String,
+    payload: [String: Any] = [:]
+  ) async throws -> PluginInvokeResult {
+    try await sendDecodableCommand(
+      action: pluginInvokeRemoteAction,
+      args: [
+        "pluginId": pluginId,
+        "actionId": actionId,
+        "payload": payload,
+      ],
+      as: PluginInvokeResult.self
+    )
+  }
+
+  /// Whether plugin actions can be dispatched right now. Panels stay visible
+  /// when this is false — a panel is readable without being actionable — but
+  /// their controls disable rather than failing on tap.
+  var canInvokePluginActions: Bool {
+    canInvokeRemoteAction(pluginInvokeRemoteAction)
+  }
+
+  /// Whether the attached machine can answer `plugins.presenceList` at all.
+  /// False on every host that predates the plugin platform, which is what makes
+  /// the entry point disappear instead of failing.
+  var supportsPluginPresenceList: Bool {
+    supportsRemoteAction("plugins.presenceList")
+  }
+
+  /// Display metadata for installed plugins, folded across machines. See
+  /// ``PluginPresenceCatalog`` for why folding is safe for labels and colours
+  /// and wrong for availability.
+  func pluginPresenceCatalog() -> PluginPresenceCatalog {
+    PluginPresenceCatalog(records: database.fetchPluginPresence())
+  }
+
+  func pluginPanels(pluginId: String? = nil) -> [PluginPanelRecord] {
+    database.fetchPluginPanels(pluginId: pluginId)
+  }
+
+  /// Rows for one bound component, capped at what the component can draw.
+  func pluginCollectionEntries(binding: PluginVocabBinding, pluginId: String, limit: Int) -> [PluginCollectionEntry] {
+    database.fetchPluginCollectionEntries(
+      pluginId: pluginId,
+      collection: binding.collection,
+      keyPrefix: binding.keyPrefix,
+      limit: min(limit, binding.limit ?? limit)
+    )
+  }
+
+  /// Contributions for one entity kind, indexed for row lookup. Built by the
+  /// surface that owns the rows and passed down by value — a row must never
+  /// subscribe to this service to find out whether it has a badge.
+  func pluginContributionIndex(entityKind: PluginEntityKind) -> PluginContributionIndex {
+    PluginContributionIndex(contributions: database.fetchPluginContributions(entityKind: entityKind))
   }
 
   // MARK: - Linear credential mutations (mobile connect / manage)
@@ -15721,7 +15845,21 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes", "foldedReplay"],
+      // `pluginTables` is the switch that turns plugin sync on for this phone.
+      // The host withholds every `plugin_*` row from a peer that does not
+      // advertise it (`SYNC_PLUGIN_TABLES_CAPABILITY`, syncHostService.ts), and
+      // fails closed: a client that says nothing gets nothing. Advertising it
+      // is a promise that `DatabaseBootstrap.sql` has the four tables — a row
+      // for a table the schema lacks is dropped silently, and a column it lacks
+      // wedges the changeset cursor until the app is updated.
+      "capabilities": [
+        "changesetAck",
+        "chunkedEnvelopes",
+        "relayReauthorizeV1",
+        "binaryEnvelopes",
+        "foldedReplay",
+        "pluginTables",
+      ],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),

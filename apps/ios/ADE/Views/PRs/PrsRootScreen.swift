@@ -9,6 +9,9 @@ struct PRsTabView: View {
 
   @State private var path = NavigationPath()
   @State private var prs: [PullRequestListItem] = []
+  /// Rebuilt whenever plugin rows change, then read by value per row. See
+  /// `PluginContributionIndex` for why rows must not read the service directly.
+  @State private var pluginContributions = PluginContributionIndex()
   @State private var lanes: [LaneSummary] = []
   @State private var laneSnapshots: [LaneListSnapshot] = []
   @State private var integrationProposals: [IntegrationProposal] = []
@@ -429,6 +432,9 @@ struct PRsTabView: View {
         prsInlineTopBar
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+      .task(id: syncService.pluginsProjectionRevision) {
+        pluginContributions = syncService.pluginContributionIndex(entityKind: .pr)
+      }
       .task(id: prsProjectionReloadKey) {
         guard let revision = prsProjectionReloadKey else { return }
         guard lastHandledPrsProjectionRevision != revision || prs.isEmpty else { return }
@@ -911,6 +917,14 @@ struct PRsTabView: View {
     return prs.first { $0.id == linkedPrId }
   }
 
+  /// Plugin badges for a PR row. Keyed by PR NUMBER as a string, matching
+  /// `pluginContributionKeyForContext` in
+  /// `apps/desktop/src/shared/plugins/context.ts` — the same key the machine
+  /// that wrote the row used, or the lookup silently finds nothing.
+  private func pluginBadges(forPrNumber number: Int) -> PluginRowBadges {
+    pluginContributions.badges(.pr, String(number))
+  }
+
   @ViewBuilder
   private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
     if let prId = item.linkedPrId {
@@ -924,7 +938,8 @@ struct PRsTabView: View {
           item: item,
           linkedPr: linkedPullRequest(for: item),
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
-          isSelectedTransitionSource: selectedPrTransitionId == prId
+          isSelectedTransitionSource: selectedPrTransitionId == prId,
+          pluginBadges: pluginBadges(forPrNumber: item.githubPrNumber)
         )
       }
       .buttonStyle(.plain)
@@ -937,7 +952,7 @@ struct PRsTabView: View {
       Button {
         openGitHubDetail(item)
       } label: {
-        PrRowCard(item: item)
+        PrRowCard(item: item, pluginBadges: pluginBadges(forPrNumber: item.githubPrNumber))
       }
       .buttonStyle(.plain)
       .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -950,7 +965,8 @@ struct PRsTabView: View {
       } label: {
         PrRowCard(
           item: item,
-          linkedPr: linkedPullRequest(for: item)
+          linkedPr: linkedPullRequest(for: item),
+          pluginBadges: pluginBadges(forPrNumber: item.githubPrNumber)
         )
       }
       .buttonStyle(.plain)

@@ -497,6 +497,8 @@ struct LaneStackCard: View, Equatable {
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
+  /// Plugin badges for this lane, resolved once per projection by the list.
+  var pluginBadges: PluginRowBadges = .none
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
     lhs.renderSignature == rhs.renderSignature
@@ -514,7 +516,8 @@ struct LaneStackCard: View, Equatable {
       isOpen: isOpen,
       depth: depth,
       pullRequest: pullRequest,
-      isSelectedTransitionSource: isSelectedTransitionSource
+      isSelectedTransitionSource: isSelectedTransitionSource,
+      pluginBadges: pluginBadges
     )
   }
 
@@ -539,6 +542,10 @@ struct LaneStackCard: View, Equatable {
           }
 
           Spacer(minLength: 4)
+
+          // Plugin badges lead the trailing signals — after everything the
+          // product itself puts on the row, before the chevron that closes it.
+          PluginRowBadgeCluster(pluginBadges)
 
           if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
             Image(systemName: devicePresenceSymbol(for: devices))
@@ -659,7 +666,8 @@ func laneStackCardRenderSignature(
   isOpen: Bool,
   depth: Int,
   pullRequest: LanePrTag?,
-  isSelectedTransitionSource: Bool
+  isSelectedTransitionSource: Bool,
+  pluginBadges: PluginRowBadges = .none
 ) -> Int {
   var hasher = Hasher()
   let lane = snapshot.lane
@@ -690,5 +698,12 @@ func laneStackCardRenderSignature(
   } else {
     hasher.combine(0)
   }
+  // Badge IDENTITY, not payload: contribution content is opaque plugin JSON and
+  // hashing it per row per rebuild would cost more than the row it guards.
+  for contribution in pluginBadges.visible {
+    hasher.combine(contribution.id)
+    hasher.combine(contribution.updatedAt)
+  }
+  hasher.combine(pluginBadges.overflow)
   return hasher.finalize()
 }

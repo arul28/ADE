@@ -165,6 +165,9 @@ struct WorkRootScreen: View {
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
   @State var lastWorkLocalProjectionReload = Date.distantPast
   @State var lastWorkProjectionReloadRevision: Int?
+  /// Plugin contributions for the sessions on screen, rebuilt only when plugin
+  /// rows change. Read by value per row — see `PluginContributionIndex`.
+  @State private var pluginContributions = PluginContributionIndex()
   /// Project scope currently represented by the local @State projections.
   /// This prevents an in-place project remap from briefly mixing old rows with
   /// the new project's live roster while the database reload catches up.
@@ -660,6 +663,10 @@ struct WorkRootScreen: View {
             // Real-Linear-logo button, immediately left of the bell; gated on the
             // active project's Linear connection.
             LinearPaneToolbarButton()
+            // One slot for every plugin with a panel, and nothing at all when
+            // there are none. Opens the pane directly for a single plugin, a
+            // menu for several — the slot is ~38pt and cannot grow per install.
+            PluginEntryMenuButton(syncService: syncService)
           }
         }
       }
@@ -763,6 +770,9 @@ struct WorkRootScreen: View {
         onFiltersOpened: restoreWorkViewStateAfterDeeplink,
         persist: persistWorkViewState
       ))
+      .task(id: syncService.pluginsProjectionRevision) {
+        pluginContributions = syncService.pluginContributionIndex(entityKind: .session)
+      }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
         guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }
@@ -1183,6 +1193,9 @@ struct WorkRootScreen: View {
       compact: compact,
       showsLaneIdentity: showsLaneIdentity,
       isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
+      pluginContributions: pluginContributions.contributions(.session, session.id),
+      pluginActionsEnabled: syncService.canInvokePluginActions,
+      onInvokePluginContribution: { syncService.invokeRowContribution($0) },
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
       isChecked: selectedSessionIds.contains(session.id),

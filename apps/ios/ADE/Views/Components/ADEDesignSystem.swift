@@ -435,6 +435,18 @@ enum ADEColor {
     return (Double(r), Double(g), Double(b))
   }
 
+  /// A plugin's manifest accent, or nil when the plugin did not declare one (or
+  /// declared something unparseable).
+  ///
+  /// The only wire-supplied colour the app accepts, and its reach is
+  /// deliberately small: it tints the plugin's own pane and nothing else.
+  /// Everything in `ADEColor` is a compile-time `adaptiveColor` pair, so there
+  /// is no mechanism for a plugin to restyle the surfaces around it even if it
+  /// wanted to — which is the point (design D15: iOS v1 is accent-only).
+  static func pluginAccent(hex: String) -> Color? {
+    parseHexColor(hex)
+  }
+
   private static func parseHexColor(_ input: String) -> Color? {
     var s = input
     if s.hasPrefix("#") { s.removeFirst() }

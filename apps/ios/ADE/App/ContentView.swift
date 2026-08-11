@@ -119,6 +119,13 @@ struct ContentView: View {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
+      // `item:` rather than a bool: which plugin is showing is part of the
+      // presentation, and a bool would keep the previous pane's store alive
+      // when one plugin's panel deeplinks to another's.
+      .sheet(item: $syncService.presentedPluginPane) { request in
+        PluginPaneSheet(request: request, syncService: syncService)
+          .environmentObject(syncService)
+      }
       .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
         Button("Don't share", role: .cancel) {
           ProductAnalytics.shared.setEnabled(false)

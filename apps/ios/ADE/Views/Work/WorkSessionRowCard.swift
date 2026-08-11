@@ -204,6 +204,11 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let isMuted: Bool
   let isSelectedTransitionSource: Bool
   let compact: Bool
+  /// Identity of the plugin badges this row draws — their ids and write times,
+  /// not the payloads. Contribution content is opaque plugin data and comparing
+  /// it would mean comparing decoded JSON on every equality check; a row only
+  /// needs to know that the set it drew is the set that exists now.
+  let pluginBadgeSignature: String
 
   init(
     session: TerminalSessionSummary,
@@ -215,7 +220,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
     isMuted: Bool,
     isSelectedTransitionSource: Bool,
     compact: Bool,
-    showsLaneIdentity: Bool
+    showsLaneIdentity: Bool,
+    pluginBadges: PluginRowBadges
   ) {
     self.sessionId = session.id
     self.title = chatSummary?.title ?? session.title
@@ -283,6 +289,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isMuted = isMuted
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
+    self.pluginBadgeSignature = pluginBadges.visible
+      .map { "\($0.id)@\($0.updatedAt)" }
+      .joined(separator: ",") + "+\(pluginBadges.overflow)"
   }
 
   var previewText: String? { previewLine?.text }
@@ -303,6 +312,8 @@ struct WorkSessionRow: View, Equatable {
   /// The singleton form: no lane header above this row, so the row shows the
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
+  /// Plugin badges for this session, resolved once per projection by the list.
+  var pluginBadges: PluginRowBadges = .none
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -316,7 +327,8 @@ struct WorkSessionRow: View, Equatable {
     transitionNamespace: Namespace.ID?,
     isSelectedTransitionSource: Bool,
     compact: Bool = false,
-    showsLaneIdentity: Bool = true
+    showsLaneIdentity: Bool = true,
+    pluginBadges: PluginRowBadges = .none
   ) {
     self.session = session
     self.lane = lane
@@ -329,6 +341,7 @@ struct WorkSessionRow: View, Equatable {
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
     self.showsLaneIdentity = showsLaneIdentity
+    self.pluginBadges = pluginBadges
     self.renderSignature = WorkSessionRowRenderSignature(
       session: session,
       lane: lane,
@@ -339,7 +352,8 @@ struct WorkSessionRow: View, Equatable {
       isMuted: isMuted,
       isSelectedTransitionSource: isSelectedTransitionSource,
       compact: compact,
-      showsLaneIdentity: showsLaneIdentity
+      showsLaneIdentity: showsLaneIdentity,
+      pluginBadges: pluginBadges
     )
   }
 
@@ -475,6 +489,8 @@ struct WorkSessionRow: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
       Spacer(minLength: 4)
       statusSlot(wraps: false)
+      // Plugin badges close the trailing cluster, after every product signal.
+      PluginRowBadgeCluster(pluginBadges)
     }
   }
 
@@ -552,7 +568,10 @@ struct WorkSessionRow: View, Equatable {
   private var accessibleBody: some View {
     sessionCardSurface {
       VStack(alignment: .leading, spacing: 6) {
-        statusSlot(wraps: true)
+        HStack(spacing: 6) {
+          statusSlot(wraps: true)
+          PluginRowBadgeCluster(pluginBadges)
+        }
 
         titleView(lineLimit: 2)
 

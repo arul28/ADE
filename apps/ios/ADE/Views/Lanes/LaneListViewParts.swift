@@ -211,7 +211,8 @@ extension LanesTabView {
                 depth: 0,
                 pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id],
                 transitionNamespace: transitionNamespace,
-                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
+                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id,
+                pluginBadges: pluginContributions.badges(.lane, primarySnapshot.lane.id)
               )
               .equatable()
             }
@@ -338,6 +339,13 @@ extension LanesTabView {
     } label: {
       Label("Close others", systemImage: "rectangle.on.rectangle.slash")
     }
+    // Plugin items sit after the lane's own actions and before Archive /
+    // Restore, which are the destructive end of this menu.
+    PluginRowMenuItems(
+      contributions: pluginContributions.menuItems(.lane, snapshot.lane.id),
+      isEnabled: syncService.canInvokePluginActions,
+      onInvoke: { syncService.invokeRowContribution($0) }
+    )
     if !manageableVisibleLaneIds.isEmpty {
       Button {
         batchManageLaneIds = manageableVisibleLaneIds

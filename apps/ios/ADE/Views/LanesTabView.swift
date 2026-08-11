@@ -24,6 +24,9 @@ struct LanesTabView: View {
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
   @State var selectedLaneTransitionId: String?
+  /// Plugin contributions for the lanes on screen. Rebuilt only when plugin
+  /// rows change, then read by value per row.
+  @State var pluginContributions = PluginContributionIndex()
   @State private var lastLanesLocalProjectionReload = Date.distantPast
   @State private var lastHandledLanesProjectionRevision: Int?
 
@@ -160,6 +163,9 @@ struct LanesTabView: View {
         }
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+      .task(id: syncService.pluginsProjectionRevision) {
+        pluginContributions = syncService.pluginContributionIndex(entityKind: .lane)
+      }
       .task(id: primaryBranchReloadKey) {
         guard primaryBranchReloadKey != nil else { return }
         await refreshPrimaryBranches(force: false)

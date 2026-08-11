@@ -14,6 +14,20 @@
 		E20000000000000000000095 /* LinearIssueListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000095 /* LinearIssueListScreen.swift */; };
 		E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000096 /* LinearIssueDetailScreen.swift */; };
 		E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000097 /* LinearLaunchScreen.swift */; };
+		PH0000000000000000000001 /* PluginVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000001 /* PluginVocabulary.swift */; };
+		PH0000000000000000000002 /* PluginVocabularyParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000002 /* PluginVocabularyParsing.swift */; };
+		PH0000000000000000000003 /* PluginRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000003 /* PluginRecords.swift */; };
+		PH0000000000000000000004 /* PluginCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000004 /* PluginCommands.swift */; };
+		PH0000000000000000000005 /* PluginPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000005 /* PluginPaneStore.swift */; };
+		PH0000000000000000000006 /* PluginVocabularyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000006 /* PluginVocabularyView.swift */; };
+		PH0000000000000000000007 /* PluginVocabFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000007 /* PluginVocabFormView.swift */; };
+		PH0000000000000000000008 /* PluginPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000008 /* PluginPaneSheet.swift */; };
+		PH0000000000000000000009 /* PluginEntryMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000009 /* PluginEntryMenu.swift */; };
+		PH000000000000000000000A /* PluginSocketViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000A /* PluginSocketViews.swift */; };
+		PH000000000000000000000B /* PluginVocabularyDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */; };
+		PH000000000000000000000C /* PluginContributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000C /* PluginContributionTests.swift */; };
+		PH000000000000000000000D /* PluginVocabularyNodeParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */; };
+		PH000000000000000000000E /* PluginVocabularyMediaViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000E /* PluginVocabularyMediaViews.swift */; };
 		E20000000000000000000098 /* LinearPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000098 /* LinearPaneSheet.swift */; };
 		E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000099 /* LinearPaneToolbarButton.swift */; };
 		E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009A /* LinearOAuthRunner.swift */; };
@@ -325,6 +339,20 @@
 		D20000000000000000000095 /* LinearIssueListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueListScreen.swift; path = ADE/Views/Linear/LinearIssueListScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000096 /* LinearIssueDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueDetailScreen.swift; path = ADE/Views/Linear/LinearIssueDetailScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000097 /* LinearLaunchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchScreen.swift; path = ADE/Views/Linear/LinearLaunchScreen.swift; sourceTree = "<group>"; };
+		PG0000000000000000000001 /* PluginVocabulary.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabulary.swift; path = ADE/Models/PluginVocabulary.swift; sourceTree = "<group>"; };
+		PG0000000000000000000002 /* PluginVocabularyParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyParsing.swift; path = ADE/Models/PluginVocabularyParsing.swift; sourceTree = "<group>"; };
+		PG0000000000000000000003 /* PluginRecords.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginRecords.swift; path = ADE/Models/PluginRecords.swift; sourceTree = "<group>"; };
+		PG0000000000000000000004 /* PluginCommands.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginCommands.swift; path = ADE/Models/PluginCommands.swift; sourceTree = "<group>"; };
+		PG0000000000000000000005 /* PluginPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPaneStore.swift; path = ADE/Views/Plugins/PluginPaneStore.swift; sourceTree = "<group>"; };
+		PG0000000000000000000006 /* PluginVocabularyView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyView.swift; path = ADE/Views/Plugins/PluginVocabularyView.swift; sourceTree = "<group>"; };
+		PG0000000000000000000007 /* PluginVocabFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabFormView.swift; path = ADE/Views/Plugins/PluginVocabFormView.swift; sourceTree = "<group>"; };
+		PG0000000000000000000008 /* PluginPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPaneSheet.swift; path = ADE/Views/Plugins/PluginPaneSheet.swift; sourceTree = "<group>"; };
+		PG0000000000000000000009 /* PluginEntryMenu.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginEntryMenu.swift; path = ADE/Views/Plugins/PluginEntryMenu.swift; sourceTree = "<group>"; };
+		PG000000000000000000000A /* PluginSocketViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginSocketViews.swift; path = ADE/Views/Plugins/PluginSocketViews.swift; sourceTree = "<group>"; };
+		PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyDecodingTests.swift; path = ADETests/PluginVocabularyDecodingTests.swift; sourceTree = "<group>"; };
+		PG000000000000000000000C /* PluginContributionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginContributionTests.swift; path = ADETests/PluginContributionTests.swift; sourceTree = "<group>"; };
+		PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyNodeParsing.swift; path = ADE/Models/PluginVocabularyNodeParsing.swift; sourceTree = "<group>"; };
+		PG000000000000000000000E /* PluginVocabularyMediaViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyMediaViews.swift; path = ADE/Views/Plugins/PluginVocabularyMediaViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000098 /* LinearPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneSheet.swift; path = ADE/Views/Linear/LinearPaneSheet.swift; sourceTree = "<group>"; };
 		D20000000000000000000099 /* LinearPaneToolbarButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneToolbarButton.swift; path = ADE/Views/Linear/LinearPaneToolbarButton.swift; sourceTree = "<group>"; };
 		D2000000000000000000009A /* LinearOAuthRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearOAuthRunner.swift; path = ADE/Views/Linear/LinearOAuthRunner.swift; sourceTree = "<group>"; };
@@ -705,6 +733,20 @@
 			name = Lanes;
 			sourceTree = "<group>";
 		};
+		PJ0000000000000000000001 /* Plugins */ = {
+			isa = PBXGroup;
+			children = (
+				PG0000000000000000000005 /* PluginPaneStore.swift */,
+				PG0000000000000000000006 /* PluginVocabularyView.swift */,
+				PG0000000000000000000007 /* PluginVocabFormView.swift */,
+				PG0000000000000000000008 /* PluginPaneSheet.swift */,
+				PG0000000000000000000009 /* PluginEntryMenu.swift */,
+				PG000000000000000000000A /* PluginSocketViews.swift */,
+				PG000000000000000000000E /* PluginVocabularyMediaViews.swift */,
+			);
+			name = Plugins;
+			sourceTree = "<group>";
+		};
 		0379509A19E782882C2D84BB /* Views */ = {
 			isa = PBXGroup;
 			children = (
@@ -716,6 +758,7 @@
 				D10000000000000000000021 /* Work */,
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
+				PJ0000000000000000000001 /* Plugins */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				AD0000000000000000000C01 /* Account */,
@@ -1085,6 +1128,11 @@
 		86112D8CA841F32E6F73CE9F /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000001 /* PluginVocabulary.swift */,
+				PG0000000000000000000002 /* PluginVocabularyParsing.swift */,
+				PG0000000000000000000003 /* PluginRecords.swift */,
+				PG0000000000000000000004 /* PluginCommands.swift */,
+				PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */,
 				483C5F1818BAE74B19B84617 /* RemoteModels.swift */,
 				D2000000000000000000004F /* RemoteRosterModels.swift */,
 			);
@@ -1119,6 +1167,8 @@
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
+				PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */,
+				PG000000000000000000000C /* PluginContributionTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
 				AC7300000000000000000002 /* ActivityPollingTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
@@ -1399,6 +1449,18 @@
 				E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */,
 				E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */,
 				E20000000000000000000098 /* LinearPaneSheet.swift in Sources */,
+				PH000000000000000000000D /* PluginVocabularyNodeParsing.swift in Sources */,
+				PH000000000000000000000E /* PluginVocabularyMediaViews.swift in Sources */,
+				PH0000000000000000000001 /* PluginVocabulary.swift in Sources */,
+				PH0000000000000000000002 /* PluginVocabularyParsing.swift in Sources */,
+				PH0000000000000000000003 /* PluginRecords.swift in Sources */,
+				PH0000000000000000000004 /* PluginCommands.swift in Sources */,
+				PH0000000000000000000005 /* PluginPaneStore.swift in Sources */,
+				PH0000000000000000000006 /* PluginVocabularyView.swift in Sources */,
+				PH0000000000000000000007 /* PluginVocabFormView.swift in Sources */,
+				PH0000000000000000000008 /* PluginPaneSheet.swift in Sources */,
+				PH0000000000000000000009 /* PluginEntryMenu.swift in Sources */,
+				PH000000000000000000000A /* PluginSocketViews.swift in Sources */,
 				E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */,
 				E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */,
 				E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */,
@@ -1638,6 +1700,8 @@
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
+				PH000000000000000000000B /* PluginVocabularyDecodingTests.swift in Sources */,
+				PH000000000000000000000C /* PluginContributionTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
 				AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,

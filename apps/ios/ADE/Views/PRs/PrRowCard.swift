@@ -5,16 +5,22 @@ struct PrRowCard: View {
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
   let onShowStack: (String, String?) -> Void
+  /// Plugin badges for this PR, resolved once per projection by the list that
+  /// owns the rows. Passed by value rather than read from the sync service
+  /// here: a row that subscribed would redraw on every unrelated publish.
+  let pluginBadges: PluginRowBadges
 
   init(
     pr: PullRequestListItem,
     transitionNamespace: Namespace.ID? = nil,
     isSelectedTransitionSource: Bool = false,
+    pluginBadges: PluginRowBadges = .none,
     onShowStack: @escaping (String, String?) -> Void = { _, _ in }
   ) {
     self.data = Data(pr: pr)
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
+    self.pluginBadges = pluginBadges
     self.onShowStack = onShowStack
   }
 
@@ -22,11 +28,13 @@ struct PrRowCard: View {
     item: GitHubPrListItem,
     linkedPr: PullRequestListItem? = nil,
     transitionNamespace: Namespace.ID? = nil,
-    isSelectedTransitionSource: Bool = false
+    isSelectedTransitionSource: Bool = false,
+    pluginBadges: PluginRowBadges = .none
   ) {
     self.data = Data(item: item, linkedPr: linkedPr)
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
+    self.pluginBadges = pluginBadges
     self.onShowStack = { _, _ in }
   }
 
@@ -246,6 +254,10 @@ struct PrRowCard: View {
           .buttonStyle(.plain)
           .accessibilityLabel("Open stack of \(groupCount) pull requests")
         }
+
+        // Plugin badges close the cluster. Always last: a contribution follows
+        // the product's own signals and never interleaves with them.
+        PluginRowBadgeCluster(pluginBadges)
       }
       .fixedSize(horizontal: true, vertical: false)
     }
