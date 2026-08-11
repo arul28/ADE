@@ -22,7 +22,7 @@ import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
-import { createPluginsNamespace } from "./plugins";
+import { createPluginsNamespace, type WebPluginBridge } from "./plugins";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import type { AdapterEvents, AdapterInfra } from "./types";
@@ -96,6 +96,7 @@ export function createAdeWebAdapter(
     })
   );
 
+  const pluginsNamespace: WebPluginBridge = createPluginsNamespace(infra);
   const { sessions, pty, terminal } = createSessionsPtyNamespaces(infra);
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
@@ -119,7 +120,15 @@ export function createAdeWebAdapter(
     git,
     conflicts,
     prs: createPrsNamespace(infra),
-    plugins: createPluginsNamespace(infra),
+    // Annotated, not inferred: `surface` is cast through `unknown` below, which
+    // would hide any drift between this namespace and the shapes
+    // `pluginRuntimeBridge` calls. The annotation is where that drift becomes a
+    // compile error instead. Registered under BOTH names because the bridge
+    // reads `ade.plugin ?? ade.plugins` and, under the fallback proxy, an
+    // absent `plugin` resolves to a truthy phantom that would win the `??` and
+    // shadow the real namespace entirely.
+    plugin: pluginsNamespace,
+    plugins: pluginsNamespace,
     sync: misc.sync,
     keybindings: misc.keybindings,
     projectSecrets: misc.projectSecrets,

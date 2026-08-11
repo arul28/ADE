@@ -1,27 +1,81 @@
 import type {
-  SyncPluginDeltaPayload,
+  InstalledPlugin,
+  PluginChangeEvent,
+  PluginCollectionRow,
+  PluginInstallRequest,
+  PluginInstallResult,
+  PluginPanelRecord,
+} from "../../lib/pluginRuntimeBridge";
+import type {
+  SyncPluginCollectionRow,
   SyncPluginSnapshotPayload,
 } from "../../../shared/types/sync";
-import type { PluginPanelHandlers } from "../sync/client";
 import type { AdapterInfra } from "./types";
+import { markHonestSurface } from "./infra/proxy";
 import { unavailableOnHost } from "./misc";
 
 /**
- * Web adapter surface for plugins. Data and transport only — no UI.
+ * Web adapter surface for plugins.
  *
- * Two different mechanisms live here and it matters which is which. Panel
- * CONTENT arrives over the view-scoped `plugin_subscribe` stream, because the
- * browser has no local replica of the plugin tables and a panel's rows change
- * far more often than anything a command round trip would keep up with. Install
- * STATE (what exists, what to install) goes over remote commands, because it is
- * a rare, deliberate action whose answer is a single small object.
+ * This object IS `window.ade.plugin` in the hosted web client, and
+ * `renderer/lib/pluginRuntimeBridge.ts` is its only consumer. That module
+ * decides what the Marketplace may offer by probing
+ * `typeof namespace.member === "function"`, which makes two things load-bearing
+ * here in a way they are not for any other adapter namespace:
  *
- * The invalidation subscription is neither: it is the hint that plugin rows
- * changed on the host, for surfaces that read plugin data through a command
- * rather than through an open panel.
+ * 1. **Member names and argument shapes must match the bridge exactly.** Every
+ *    bridge member takes ONE object. A positional signature does not fail — it
+ *    binds `{pluginId, enabled}` to the first parameter and quietly does the
+ *    wrong thing, which for `setEnabled` means every toggle routes to the same
+ *    branch. The types below are imported FROM the bridge so a future change on
+ *    either side is a compile error rather than a silent misroute.
+ *
+ * 2. **A member that cannot work must be ABSENT, not present-and-failing.** The
+ *    capability probe reads absence as "this host can't do that" and the UI
+ *    hides the affordance. A member that exists and rejects makes the UI offer
+ *    a button that always fails. So the members below are getters that return
+ *    `undefined` unless the connected host actually serves the backing action —
+ *    re-evaluated per access, because which host is connected changes while the
+ *    page is open.
+ *
+ * The namespace is registered under both `plugin` (the bridge's first choice,
+ * matching the preload's single `plugin` action domain) and `plugins`.
+ *
+ * It is also marked honest, so `withFallbackProxy` leaves it alone. Without
+ * that mark every unimplemented member would come back as a truthy callable and
+ * the probe would report ALL capabilities available on web — see
+ * `markHonestSurface`.
  */
 
-export type WebPluginRecord = {
+/** How long a one-shot panel read waits for its snapshot before giving up. */
+const PANEL_READ_TIMEOUT_MS = 8_000;
+
+/**
+ * The subset of the bridge's contract this transport can serve, expressed with
+ * the bridge's own types. Members are optional because the getters below omit
+ * the ones the connected host does not serve.
+ */
+export type WebPluginBridge = {
+  readonly list?: () => Promise<InstalledPlugin[]>;
+  readonly getPanel?: (input: { pluginId: string; panelId: string }) => Promise<PluginPanelRecord | null>;
+  readonly getCollection?: (input: {
+    pluginId: string;
+    collection: string;
+    keyPrefix?: string;
+    limit?: number;
+  }) => Promise<PluginCollectionRow[]>;
+  readonly install?: (input: PluginInstallRequest) => Promise<PluginInstallResult>;
+  readonly uninstall?: (input: { pluginId: string; machineKey?: string }) => Promise<unknown>;
+  readonly setEnabled?: (input: {
+    pluginId: string;
+    enabled: boolean;
+    machineKey?: string;
+  }) => Promise<void>;
+  readonly onChanged?: (listener: (event: PluginChangeEvent) => void) => () => void;
+};
+
+/** What `plugins.list` returns over the wire. Wave A's record, not the UI's. */
+type RemotePluginRecord = {
   pluginId: string;
   version: string;
   enabled: boolean;
@@ -32,91 +86,219 @@ export type WebPluginRecord = {
   installedAt: string;
 };
 
-export type WebPluginPresenceRow = {
-  pluginId: string;
-  version: string;
-  enabled: boolean;
-  displayName: string;
-  icon: string;
-  accent: string;
-};
+function toInstalledPlugin(record: RemotePluginRecord): InstalledPlugin {
+  return {
+    pluginId: record.pluginId,
+    displayName: record.displayName || record.pluginId,
+    version: record.version,
+    enabled: record.enabled,
+    icon: record.icon || null,
+    accent: record.accent || null,
+    // The install record carries no runtime information, and "none" is the
+    // honest reading of that: this transport knows the plugin is installed and
+    // does not know whether a child process is up. Claiming "running" from
+    // `enabled` would put a green dot next to a crashed plugin.
+    status: "none",
+    // Same reasoning. Tabs and themes come from the manifest on disk, which a
+    // browser peer never sees; an empty list means "none known here", and the
+    // capability probe is what tells the UI not to promise otherwise.
+    tabs: [],
+    theme: null,
+  };
+}
 
-export type WebPluginInstallSource =
-  | { kind: "registry"; pluginId: string; version?: string | null }
-  | { kind: "git"; url: string; ref?: string | null }
-  | { kind: "path"; path: string };
+function toCollectionRow(row: SyncPluginCollectionRow): PluginCollectionRow {
+  let value: unknown = null;
+  try {
+    value = JSON.parse(row.valueJson) as unknown;
+  } catch {
+    // Plugin-authored content. A malformed value is one unreadable row, never a
+    // thrown read that loses the whole collection.
+    value = null;
+  }
+  return { key: row.key, value };
+}
 
-export type PluginsWebNamespace = {
-  list(): Promise<WebPluginRecord[]>;
-  listPresence(): Promise<WebPluginPresenceRow[]>;
-  install(source: WebPluginInstallSource): Promise<WebPluginRecord>;
-  uninstall(pluginId: string): Promise<{ removed: boolean }>;
-  setEnabled(pluginId: string, enabled: boolean): Promise<WebPluginRecord>;
-  subscribePanel(
-    pluginId: string,
-    panelId: string,
-    handlers: {
-      snapshot?: (payload: SyncPluginSnapshotPayload) => void;
-      delta?: (payload: SyncPluginDeltaPayload) => void;
-      error?: (error: Error) => void;
-    },
-  ): () => void;
-  onPluginsInvalidated(listener: () => void): () => void;
-};
-
-export function createPluginsNamespace(infra: AdapterInfra): PluginsWebNamespace {
+export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   const { client, commands, events } = infra;
 
-  return {
-    async list() {
-      // A host without the plugin platform simply has no plugins. Falling back
-      // to an empty list rather than surfacing an error is the same "missing
-      // plugins hide silently" rule the rest of the product follows.
-      const result = await commands.call<{ plugins?: WebPluginRecord[] } | null>(
-        "plugins.list",
-        {},
-        { fallback: () => null, idempotent: true },
-      );
-      return result?.plugins ?? [];
-    },
+  /**
+   * One snapshot from the view-scoped panel stream, then unsubscribe.
+   *
+   * The bridge asks for panels and collections as one-shot reads, and a browser
+   * peer has no local replica to read them from — the subscription IS the only
+   * source. Taking the first snapshot and dropping the subscription gives the
+   * bridge exactly what it asked for without leaving a stream open behind a
+   * call that never promised one.
+   */
+  async function readSnapshot(
+    pluginId: string,
+    panelId: string,
+  ): Promise<SyncPluginSnapshotPayload | null> {
+    return await new Promise<SyncPluginSnapshotPayload | null>((resolve) => {
+      let settled = false;
+      let unsubscribe: (() => void) | null = null;
+      const finish = (value: SyncPluginSnapshotPayload | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // The unsubscribe may not be assigned yet if the host answered
+        // synchronously; defer so the stream is always torn down.
+        queueMicrotask(() => unsubscribe?.());
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), PANEL_READ_TIMEOUT_MS);
+      try {
+        unsubscribe = client.subscribePluginPanel(pluginId, panelId, {
+          snapshot: (payload) => finish(payload),
+          error: () => finish(null),
+        });
+      } catch {
+        finish(null);
+      }
+    });
+  }
 
-    async listPresence() {
-      const result = await commands.call<{ plugins?: WebPluginPresenceRow[] } | null>(
-        "plugins.presenceList",
-        {},
-        { fallback: () => null, idempotent: true },
-      );
-      return result?.plugins ?? [];
-    },
-
-    // Mutations surface their failure. An install that quietly did nothing is
-    // worse than an error: the user has no way to tell it apart from success.
-    async install(source) {
-      return await commands.call<WebPluginRecord>("plugins.install", { ...source }, {
-        fallback: unavailableOnHost("Plugins aren't available on this computer."),
-      });
-    },
-
-    async uninstall(pluginId) {
-      return await commands.call<{ removed: boolean }>("plugins.uninstall", { pluginId }, {
-        fallback: unavailableOnHost("Plugins aren't available on this computer."),
-      });
-    },
-
-    async setEnabled(pluginId, enabled) {
-      return await commands.call<WebPluginRecord>(
-        enabled ? "plugins.enable" : "plugins.disable",
-        { pluginId },
-        { fallback: unavailableOnHost("Plugins aren't available on this computer.") },
-      );
-    },
-
-    subscribePanel(pluginId, panelId, handlers) {
-      return client.subscribePluginPanel(pluginId, panelId, handlers as PluginPanelHandlers);
-    },
-
-    onPluginsInvalidated(listener) {
-      return events.on("pluginsInvalidated", () => listener());
-    },
+  const list = async (): Promise<InstalledPlugin[]> => {
+    const result = await commands.call<{ plugins?: RemotePluginRecord[] } | null>(
+      "plugins.list",
+      {},
+      { fallback: () => null, idempotent: true },
+    );
+    return (result?.plugins ?? []).map(toInstalledPlugin);
   };
+
+  const getPanel = async (input: { pluginId: string; panelId: string }): Promise<PluginPanelRecord | null> => {
+    const snapshot = await readSnapshot(input.pluginId, input.panelId);
+    const panel = snapshot?.panel ?? null;
+    if (!panel) return null;
+    let schema: unknown = null;
+    try {
+      schema = JSON.parse(panel.schemaJson) as unknown;
+    } catch {
+      // The renderer's vocabulary validator turns a null schema into its
+      // designed fallback card; throwing here would blank the panel instead.
+      schema = null;
+    }
+    return {
+      pluginId: panel.pluginId,
+      panelId: panel.panelId,
+      title: panel.title || null,
+      schema,
+      vocabVersion: panel.vocabVersion,
+      updatedAt: panel.updatedAt || null,
+    };
+  };
+
+  const getCollection = async (input: {
+    pluginId: string;
+    collection: string;
+    keyPrefix?: string;
+    limit?: number;
+  }): Promise<PluginCollectionRow[]> => {
+    // The panel stream carries every collection its schema binds, so the read
+    // filters client-side rather than asking the host for a narrower slice —
+    // the rows are already bounded by the host's snapshot ceiling.
+    const snapshot = await readSnapshot(input.pluginId, input.collection);
+    const rows = (snapshot?.rows ?? [])
+      .filter((row) => row.collection === input.collection)
+      .filter((row) => !input.keyPrefix || row.key.startsWith(input.keyPrefix))
+      .map(toCollectionRow);
+    return typeof input.limit === "number" ? rows.slice(0, Math.max(0, input.limit)) : rows;
+  };
+
+  // Mutations pass `idempotent: false`, which is what makes an unserved action
+  // throw `UnsupportedRemoteCommandError` instead of resolving a fallback: no
+  // request was sent, so reporting success would report an install that never
+  // happened. The getters below already hide these members on a host that
+  // cannot serve them; this is the second line of defence for the window
+  // between a host handoff and the next descriptor refresh.
+  const install = async (input: PluginInstallRequest): Promise<PluginInstallResult> => {
+    const record = await commands.call<RemotePluginRecord>(
+      "plugins.install",
+      // The bridge names a SOURCE STRING; the wire names a source KIND. A
+      // filesystem path cannot be installed from a browser — there is no shared
+      // filesystem — so a non-URL source is a git source or nothing.
+      {
+        kind: "git",
+        url: input.source,
+        ...(input.version ? { ref: input.version } : {}),
+      },
+      { fallback: unavailableOnHost("Installing plugins isn't available on this computer."), idempotent: false },
+    );
+    return {
+      pluginId: record.pluginId,
+      version: record.version,
+      displayName: record.displayName || record.pluginId,
+    };
+  };
+
+  const uninstall = async (input: { pluginId: string; machineKey?: string }): Promise<unknown> =>
+    await commands.call<unknown>("plugins.uninstall", { pluginId: input.pluginId }, {
+      fallback: unavailableOnHost("Removing plugins isn't available on this computer."),
+      idempotent: false,
+    });
+
+  const setEnabled = async (input: {
+    pluginId: string;
+    enabled: boolean;
+    machineKey?: string;
+  }): Promise<void> => {
+    // Refuse rather than silently act on the wrong machine. The remote commands
+    // this transport reaches always target the connected host, so honouring a
+    // `machineKey` for a different machine would toggle the plugin HERE while
+    // the reader pressed the button on another machine's row.
+    if (input.machineKey) {
+      throw new Error("Turning plugins on or off on another computer isn't supported from the web app.");
+    }
+    await commands.call<unknown>(
+      input.enabled ? "plugins.enable" : "plugins.disable",
+      { pluginId: input.pluginId },
+      {
+        fallback: unavailableOnHost("Turning plugins on or off isn't available on this computer."),
+        idempotent: false,
+      },
+    );
+  };
+
+  const onChanged = (listener: (event: PluginChangeEvent) => void): (() => void) =>
+    events.on("pluginsInvalidated", () => {
+      // The invalidation hint names tables, not what changed within them.
+      // "collections" is the widest of the kinds a subscriber refetches on, so
+      // reporting it is the honest coarse answer; claiming "installs" would
+      // under-refresh every panel.
+      listener({ kind: "collections" });
+    });
+
+  return markHonestSurface<WebPluginBridge>({
+    get list() {
+      return commands.hasAction("plugins.list") ? list : undefined;
+    },
+    // Panels ride the subscribe protocol rather than a remote command, so there
+    // is no descriptor to probe. It ships in the same release as the plugin
+    // tables; an older host simply never answers and the read resolves null.
+    get getPanel() {
+      return getPanel;
+    },
+    get getCollection() {
+      return getCollection;
+    },
+    get install() {
+      return commands.hasAction("plugins.install") ? install : undefined;
+    },
+    get uninstall() {
+      return commands.hasAction("plugins.uninstall") ? uninstall : undefined;
+    },
+    get setEnabled() {
+      // Both halves or nothing: the bridge treats `setEnabled` as able to do
+      // either direction, and a host serving only `plugins.enable` would give a
+      // working "turn on" and a failing "turn off".
+      return commands.hasAction("plugins.enable") && commands.hasAction("plugins.disable")
+        ? setEnabled
+        : undefined;
+    },
+    get onChanged() {
+      return onChanged;
+    },
+  });
 }
