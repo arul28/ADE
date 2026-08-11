@@ -28,6 +28,7 @@
  */
 
 import { isValidPluginAccent, isValidPluginId, isValidPluginVersion } from "./manifest";
+import { bounded, finite, isRecord, oneOf } from "./parse";
 import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
 
 /**
@@ -110,23 +111,42 @@ export type PluginRegistryParseResult = {
   warnings: string[];
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function text(value: unknown, maxChars: number): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > maxChars) return null;
-  return trimmed;
-}
-
+/**
+ * A non-negative whole number, or null.
+ *
+ * `finite` from `parse.ts` answers the JSON question — NaN and both infinities
+ * are numbers to `typeof` and are not counts. The floor at zero and the
+ * rounding are this module's own: `installs` and `stars` are the only numbers
+ * the directory publishes, they are counts of things, and a crawler that
+ * emitted `-1` or `3.5` for one is reporting a bug rather than a quantity.
+ */
 function count(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+  const raw = finite(value);
+  return raw !== null && raw >= 0 ? Math.round(raw) : null;
+}
+
+/**
+ * The members of a closed list an entry claims, in the list's own order.
+ *
+ * Written over `oneOf` rather than `allowed.filter(a => raw.includes(a))` so a
+ * non-string element is rejected by the same reader every other contract module
+ * uses — `["work", 7, {}]` is now two dropped values rather than a shape the
+ * `includes` happened to answer correctly. Canonical order and de-duplication
+ * come from iterating `allowed`, so a directory cannot reorder the gallery's
+ * facet chips by reordering its own array.
+ */
+function closedList<T extends string>(raw: unknown, allowed: readonly T[]): T[] {
+  if (!Array.isArray(raw)) return [];
+  const claimed = new Set<T>();
+  for (const value of raw) {
+    const match = oneOf(value, allowed);
+    if (match !== null) claimed.add(match);
+  }
+  return allowed.filter((item) => claimed.has(item));
 }
 
 function isoDate(value: unknown): string | null {
-  const raw = text(value, 64);
+  const raw = bounded(value, 64);
   if (!raw) return null;
   return Number.isFinite(Date.parse(raw)) ? raw : null;
 }
@@ -141,7 +161,7 @@ function isoDate(value: unknown): string | null {
  * is no case for fetching a plugin over plaintext.
  */
 export function isSafeRegistryUrl(value: unknown): value is string {
-  const raw = text(value, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const raw = bounded(value, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
   if (!raw) return false;
   let url: URL;
   try {
@@ -208,7 +228,7 @@ function parseStringList(raw: unknown, maxEntries: number, maxChars: number): st
   const lines: string[] = [];
   for (const value of raw) {
     if (lines.length >= maxEntries) break;
-    const line = text(value, maxChars);
+    const line = bounded(value, maxChars);
     if (line) lines.push(line);
   }
   return lines;
@@ -227,53 +247,62 @@ export function parsePluginRegistryEntry(
 ): { entry: PluginRegistryEntry; warnings: string[] } | { reason: string } {
   if (!isRecord(raw)) return { reason: "entry is not an object" };
 
-  const pluginId = text(raw.pluginId, 64) ?? text(raw.name, 64);
+  const pluginId = bounded(raw.pluginId, 64) ?? bounded(raw.name, 64);
   if (!pluginId || !isValidPluginId(pluginId)) return { reason: "pluginId is missing or not a plugin id" };
 
-  const version = text(raw.version, 64);
+  const version = bounded(raw.version, 64);
   if (!version || !isValidPluginVersion(version)) {
     return { reason: `${pluginId}: version is missing or not major.minor.patch` };
   }
 
-  const repo = text(raw.repo, PLUGIN_REGISTRY_LIMITS.maxUrlChars)
-    ?? text(raw.repository, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const repo = bounded(raw.repo, PLUGIN_REGISTRY_LIMITS.maxUrlChars)
+    ?? bounded(raw.repository, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
   if (!repo || !isSafeRegistryUrl(repo)) return { reason: `${pluginId}: repo is missing or not an https URL` };
 
-  const sourceRaw = text(raw.source, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const sourceRaw = bounded(raw.source, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
   const source = sourceRaw && isSafeRegistryUrl(sourceRaw) ? sourceRaw : repo;
 
-  const changelogUrl = text(raw.changelogUrl, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const changelogUrl = bounded(raw.changelogUrl, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
   const warnings: string[] = [];
   const checksums = parseChecksums(raw.checksums, (reason) => warnings.push(`${pluginId}: ${reason}`));
 
   // Demotion is loud. An entry that quietly loses its badge looks the same as
   // one that never claimed it, and the difference is the whole signal.
+  //
+  // BOTH halves are checked, and the reason is that they are read by different
+  // code: the badge and the checksum rule read `repo`, and the installer clones
+  // `source`. Binding the claim to `repo` alone let an entry name a curated
+  // repository, wear the badge, waive the checksum requirement on a version the
+  // directory had not digested — and then install from anywhere it liked. The
+  // warning names the half that failed, because "your source is off" and "your
+  // repo is off" are different mistakes for whoever has to fix the entry.
   const claimsOfficial = raw.official === true;
-  const official = claimsOfficial && isCuratedPluginRepo(repo);
+  const curatedRepo = isCuratedPluginRepo(repo);
+  const curatedSource = isCuratedPluginRepo(source);
+  const official = claimsOfficial && curatedRepo && curatedSource;
   if (claimsOfficial && !official) {
-    warnings.push(`${pluginId}: claims official but "${repo}" is outside ADE's curated repositories — listed as community`);
+    const offending = !curatedRepo ? `repo "${repo}"` : `source "${source}"`;
+    warnings.push(`${pluginId}: claims official but ${offending} is outside ADE's curated repositories — listed as community`);
   }
 
-  const rawAccent = text(raw.accent, 32);
+  const rawAccent = bounded(raw.accent, 32);
   if (rawAccent && !isValidPluginAccent(rawAccent)) {
     warnings.push(`${pluginId}: accent "${rawAccent}" is not a hex colour — ignored`);
   }
 
-  const surfaces = PLUGIN_SURFACE_IDS.filter((surface) =>
-    Array.isArray(raw.surfaces) && raw.surfaces.includes(surface));
-  const sockets = PLUGIN_SOCKET_KINDS.filter((socket) =>
-    Array.isArray(raw.sockets) && raw.sockets.includes(socket));
+  const surfaces = closedList(raw.surfaces, PLUGIN_SURFACE_IDS);
+  const sockets = closedList(raw.sockets, PLUGIN_SOCKET_KINDS);
 
   return {
     entry: {
       pluginId,
-      displayName: text(raw.displayName, 120) ?? pluginId,
-      description: text(raw.description, PLUGIN_REGISTRY_LIMITS.maxDescriptionChars) ?? "",
-      author: text(raw.author, 120) ?? "Unknown",
+      displayName: bounded(raw.displayName, 120) ?? pluginId,
+      description: bounded(raw.description, PLUGIN_REGISTRY_LIMITS.maxDescriptionChars) ?? "",
+      author: bounded(raw.author, 120) ?? "Unknown",
       version,
       repo,
       source,
-      icon: text(raw.icon, 64),
+      icon: bounded(raw.icon, 64),
       accent: isValidPluginAccent(rawAccent) ? rawAccent : null,
       official,
       featured: raw.featured === true,
@@ -286,7 +315,7 @@ export function parsePluginRegistryEntry(
       publishedAt: isoDate(raw.publishedAt),
       updatedAt: isoDate(raw.updatedAt),
       changelogUrl: changelogUrl && isSafeRegistryUrl(changelogUrl) ? changelogUrl : null,
-      readme: text(raw.readme, PLUGIN_REGISTRY_LIMITS.maxReadmeChars),
+      readme: bounded(raw.readme, PLUGIN_REGISTRY_LIMITS.maxReadmeChars),
       checksums,
     },
     warnings,

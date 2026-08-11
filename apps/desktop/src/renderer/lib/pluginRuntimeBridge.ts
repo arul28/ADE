@@ -78,6 +78,16 @@ type PluginBridge = {
   getPanel?: (input: { pluginId: string; panelId: string }) => Promise<PluginPanelRecord | null>;
   getCollection?: (input: {
     pluginId: string;
+    /**
+     * The panel whose schema binds this collection.
+     *
+     * Carried even though the desktop host reads collections by name and
+     * ignores it: the web transport has no collection read at all and serves
+     * these rows out of the panel snapshot it already holds, so the panel is
+     * the only key that identifies WHICH rows were asked for. Optional in the
+     * type because an older host publishes a bridge without it.
+     */
+    panelId?: string;
     collection: string;
     keyPrefix?: string;
     limit?: number;
@@ -228,14 +238,24 @@ export async function readPluginPanel(
   return (await getPanel({ pluginId, panelId })) ?? null;
 }
 
+/**
+ * Rows of one collection, for one panel.
+ *
+ * `panelId` is required rather than optional, and it is required HERE rather
+ * than only in the transport that needs it. Every caller reads a collection
+ * because a panel's schema bound it, so the panel is always in hand; making it
+ * a parameter is what stops a future caller from omitting the one key the web
+ * transport has to answer by.
+ */
 export async function readPluginCollection(
   pluginId: string,
+  panelId: string,
   collection: string,
   options: { keyPrefix?: string; limit?: number } = {},
 ): Promise<PluginCollectionRow[]> {
   const getCollection = bridge()?.getCollection;
   if (!getCollection) return [];
-  const result = await getCollection({ pluginId, collection, ...options });
+  const result = await getCollection({ pluginId, panelId, collection, ...options });
   return Array.isArray(result) ? result : [];
 }
 

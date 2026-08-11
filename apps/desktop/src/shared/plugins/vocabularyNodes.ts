@@ -18,7 +18,7 @@
  * can drift apart.
  */
 
-import { finite, isRecord, oneOf, trimmed } from "./parse";
+import { bounded, finite, isRecord, oneOf, trimmed } from "./parse";
 
 /** Bumped only for a change old clients cannot safely interpret. */
 export const VOCAB_VERSION = 1;
@@ -48,6 +48,16 @@ export const VOCAB_LIMITS = {
   maxValueChars: 1_000,
   maxIdChars: 120,
   maxActionArgs: 16,
+  /**
+   * A media `src` or `poster`. Its own ceiling, and its own reader — see
+   * {@link vocabMediaSrc}.
+   *
+   * Larger than `maxValueChars` because a `data:` URI is a legitimate source
+   * here and an inline thumbnail does not fit in a thousand characters; well
+   * under `maxSchemaBytes` because a panel that spends its whole budget on one
+   * image has nothing left to say about it.
+   */
+  maxSrcChars: 8_192,
 } as const;
 
 /**
@@ -360,6 +370,24 @@ export function vocabString(value: unknown, maxChars: number): string | undefine
   const text = trimmed(value);
   if (text === null) return undefined;
   return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+}
+
+/**
+ * A media source, REFUSED when it is too long rather than shortened.
+ *
+ * The one field in the vocabulary where {@link vocabString} was actively
+ * harmful. A `data:` URI cut at the value ceiling still begins `data:image/png`,
+ * so it passes the renderer's scheme check on every surface and then decodes to
+ * nothing — a broken image with no error, from a payload that was fine. The
+ * appended ellipsis made it worse by corrupting the base64 even where the
+ * truncation happened to land on a byte boundary.
+ *
+ * So this reader draws the opposite conclusion from the same fact: a source
+ * over the ceiling is not a long source, it is an unusable one, and the node
+ * parsers turn `undefined` here into their own honest empty state.
+ */
+export function vocabMediaSrc(value: unknown): string | undefined {
+  return bounded(value, VOCAB_LIMITS.maxSrcChars) ?? undefined;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -801,9 +829,9 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
   },
 
   video: (raw, ctx) => {
-    const src = vocabString(raw.src, VOCAB_LIMITS.maxValueChars);
+    const src = vocabMediaSrc(raw.src);
     if (src === undefined) return ctx.invalid("`src` is required");
-    const poster = vocabString(raw.poster, VOCAB_LIMITS.maxValueChars);
+    const poster = vocabMediaSrc(raw.poster);
     const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
     return {
       component: "video",
@@ -814,7 +842,7 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
   },
 
   image: (raw, ctx) => {
-    const src = vocabString(raw.src, VOCAB_LIMITS.maxValueChars);
+    const src = vocabMediaSrc(raw.src);
     const alt = vocabString(raw.alt, VOCAB_LIMITS.maxLabelChars);
     if (src === undefined) return ctx.invalid("`src` is required");
     if (alt === undefined) return ctx.invalid("`alt` is required");

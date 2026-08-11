@@ -23,7 +23,8 @@ that lives in a worker — see "Install counts" below.
 
 | File | What it is |
 |---|---|
-| `index.json` | The published directory. Written by the crawler; do not hand-edit. Hand-written **seed** until extraction — see the `notes` inside it. |
+| `index.json` | The published directory. Written by the crawler; do not hand-edit. Does not exist until the first crawl runs in the extracted repo. |
+| `seed-entries.json` | Staging for the bundled plugins' future directory entries. Never published and read by nothing at runtime — see the `notes` inside it for why copying it into `index.json` breaks bundled installs. |
 | `featured.json` | Curated hero row. Hand-edited. |
 | `official.json` | Curated Official set and the sha256 digests ADE vouches for. Hand-edited. |
 | `schema/index.schema.json` | The index contract, as JSON Schema. The crawler validates against it before publishing. |

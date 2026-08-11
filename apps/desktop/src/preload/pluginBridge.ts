@@ -45,7 +45,22 @@ import type {
 /**
  * The host reports lifecycle detail the plugin surfaces do not draw: a plugin
  * that never started and one that was stopped are the same dot, and a restart
- * reads as a start. `no-entry` is `none` — that plugin has no child at all.
+ * reads as a start.
+ *
+ * The two arms that look alike and are not:
+ *
+ * - `idle` is a plugin that HAS a child to run and is not running it — never
+ *   started, or stopped and not restarted. It maps to `stopped`, which is what
+ *   puts a Restart button in front of the reader. Folding it into `none`
+ *   instead says "this plugin runs no code", and the surfaces answer that by
+ *   offering nothing to press.
+ * - `no-entry` is `none`: that plugin genuinely has no child. A theme has
+ *   nothing to restart and must not be offered a restart.
+ *
+ * `toRecordStatus` in `main/services/plugins/pluginInstallServiceAdapter.ts`
+ * makes exactly this mapping for the sync record every remote peer reads. The
+ * two must agree: without the `idle` arm here, one plugin showed a Restart
+ * button on a phone and no control at all in the window it was installed from.
  */
 export function toBridgeRuntimeStatus(
   status: PluginHostRuntimeStatus,
@@ -59,8 +74,14 @@ export function toBridgeRuntimeStatus(
     case "crashed":
       return "crashed";
     case "stopped":
+    case "idle":
       return "stopped";
+    case "no-entry":
+      return "none";
     default:
+      // A status this build has not learned about yet. `none` is the honest
+      // answer: it draws no dot and offers no control, rather than guessing at
+      // a lifecycle the host has not explained.
       return "none";
   }
 }
@@ -187,8 +208,14 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       panelId: string;
     }): Promise<PluginPanelRecord | null> =>
       callStrictOr("getPanel", args, () => invoke(IPC.pluginGetPanel, args)),
+    // `panelId` rides through untouched. This host reads collections by name —
+    // it holds the whole database — so it makes no use of the field; the web
+    // transport serves the same call out of a panel snapshot and cannot answer
+    // without it. Forwarding rather than stripping keeps ONE bridge signature
+    // across both, which is what lets the renderer call one function.
     getCollection: async (args: {
       pluginId: string;
+      panelId?: string;
       collection: string;
       keyPrefix?: string;
       limit?: number;

@@ -95,10 +95,38 @@ enum PluginMediaURL {
 /// and `https` leaves the app through the browser; anything else — `file:`,
 /// another app's custom scheme — would hand a plugin a tap-to-launch primitive
 /// it was never granted.
+///
+/// The scheme alone is not the whole rule. `ade://` covers more than
+/// navigation: `ade://pair#<payload>` walks straight into the pairing flow
+/// carrying a payload the plugin chose, which is a state change and not a
+/// destination. So a plugin's link is held to the navigation hosts — the ones
+/// `DeepLinkRouter` resolves to a screen or a send-to-Mac card — and every
+/// other host, including one a later build adds, is refused.
 enum PluginDeeplinkURL {
+  /// `repo` is the branch shape (`ade://repo/<owner>/<repo>/branch/<branch>`);
+  /// there is no `ade://branch` host.
+  private static let navigationHosts: Set<String> = [
+    "lane",
+    "session",
+    "file",
+    "commit",
+    "artifact",
+    "repo",
+    "pr",
+    "linear-issue",
+  ]
+
   static func resolve(_ raw: String?) -> URL? {
     guard let raw, let url = URL(string: raw), let scheme = url.scheme?.lowercased() else { return nil }
-    return ["ade", "https"].contains(scheme) ? url : nil
+    switch scheme {
+    case "https":
+      return url
+    case "ade":
+      guard let host = url.host?.lowercased(), navigationHosts.contains(host) else { return nil }
+      return url
+    default:
+      return nil
+    }
   }
 }
 

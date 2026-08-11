@@ -41,6 +41,23 @@ func pluginVocabInt(_ value: Double) -> Int? {
   return Int(value)
 }
 
+/// The same narrowing for a number that means a *position* rather than a
+/// quantity.
+///
+/// Reading an out-of-range value as absent is right for a height or a count —
+/// the caller falls back to its own default. It is wrong for a sort key,
+/// because absent means "unordered" and sorts to the back: a plugin asking for
+/// the front with `-1e300` would land last, and desktop, which sorts the raw
+/// JSON number (`sockets.ts:295`), would put it first. Saturating at the bound
+/// is the closest `Int` comes to the number the author wrote, and it keeps the
+/// two clients showing one row's badges in the same order.
+func pluginVocabSaturatingInt(_ value: Double) -> Int? {
+  guard !value.isNaN else { return nil }
+  if value >= 9.2e18 { return .max }
+  if value <= -9.2e18 { return .min }
+  return Int(value)
+}
+
 enum PluginVocabLimits {
   static let maxNodes = 200
   static let maxDepth = 8

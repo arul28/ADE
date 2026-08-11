@@ -154,21 +154,32 @@ export type PluginPaneInteractive =
  * next Enter runs an action the user never confirmed. Two interactives with the
  * same identity here are the same operation with the same arguments, so
  * confirming one legitimately confirms the other.
+ *
+ * The identity starts at the panel, not at the action: an action id is a
+ * plugin's own namespace, so `{action:"deploy"}` in one plugin and the same in
+ * another are two different operations that would otherwise share a key — and
+ * one Esc back to the picker plus one Enter into a second plugin is all it
+ * takes to reach them in that order. Panel id is in there for the same reason
+ * within a plugin.
  */
-export function pluginInteractiveKey(interactive: PluginPaneInteractive): string {
-  // JSON rather than a joined string: an action id, a label and an argument
-  // value are all free text, and a hand-rolled separator between them is a
-  // collision waiting to happen.
+export function pluginInteractiveKey(
+  panel: Pick<PluginPaneModel, "pluginId" | "panelId">,
+  interactive: PluginPaneInteractive,
+): string {
+  // JSON rather than a joined string: a plugin id, an action id, a label and an
+  // argument value are all free text, and a hand-rolled separator between them
+  // is a collision waiting to happen.
+  const owner = [panel.pluginId, panel.panelId];
   if (interactive.kind === "field") {
-    return JSON.stringify(["field", interactive.formKey, interactive.field.id]);
+    return JSON.stringify([...owner, "field", interactive.formKey, interactive.field.id]);
   }
   const { action, args } = interactive.action;
   const argIdentity = Object.keys(args ?? {})
     .sort()
     .map((name) => [name, args?.[name]]);
   return interactive.kind === "submit"
-    ? JSON.stringify(["submit", interactive.formKey, action, argIdentity])
-    : JSON.stringify(["action", action, argIdentity, interactive.label]);
+    ? JSON.stringify([...owner, "submit", interactive.formKey, action, argIdentity])
+    : JSON.stringify([...owner, "action", action, argIdentity, interactive.label]);
 }
 
 export type PluginPaneModel = {

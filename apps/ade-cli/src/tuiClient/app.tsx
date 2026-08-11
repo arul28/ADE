@@ -9779,7 +9779,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (pluginConfirmArmedRef.current === null) return;
     const stillThere = rightPane.kind === "plugin-panel"
       && rightPane.model.interactives.some(
-        (entry) => pluginInteractiveKey(entry) === pluginConfirmArmedRef.current,
+        (entry) => pluginInteractiveKey(rightPane.model, entry) === pluginConfirmArmedRef.current,
       );
     if (!stillThere) pluginConfirmArmedRef.current = null;
   }, [rightPane]);
@@ -9878,7 +9878,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     const action = interactive.action;
-    const armKey = pluginInteractiveKey(interactive);
+    const armKey = pluginInteractiveKey(current.model, interactive);
     if (action.confirm && pluginConfirmArmedRef.current !== armKey) {
       pluginConfirmArmedRef.current = armKey;
       addNotice(`${action.confirm} Press enter again to confirm.`, "info");

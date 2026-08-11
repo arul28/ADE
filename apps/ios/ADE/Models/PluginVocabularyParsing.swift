@@ -242,6 +242,12 @@ enum PluginPanelParser {
     numberValue(raw).flatMap(pluginVocabInt)
   }
 
+  /// A JSON number narrowed to a sort key. See ``pluginVocabSaturatingInt`` for
+  /// why a position saturates where a quantity drops out.
+  static func orderValue(_ raw: Any?) -> Int? {
+    numberValue(raw).flatMap(pluginVocabSaturatingInt)
+  }
+
   static func formatNumber(_ value: Double) -> String {
     value == value.rounded() && abs(value) < 1e15
       ? String(Int(value))

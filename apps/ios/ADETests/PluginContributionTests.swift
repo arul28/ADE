@@ -70,16 +70,18 @@ final class PluginContributionTests: XCTestCase {
     }
   }
 
-  func testAstronomicalOrderReadsAsUnorderedRatherThanTrapping() throws {
-    // Regression. `Int(_:)` traps outside `Int`'s range, and `order` comes off
-    // a synced row written by another machine.
+  func testAstronomicalOrderSaturatesRatherThanTrapping() throws {
+    // Regression, twice over. `Int(_:)` traps outside `Int`'s range, and `order`
+    // comes off a synced row written by another machine. Desktop keeps the raw
+    // double and sorts it last, so this build saturates instead of dropping to
+    // nil — the two surfaces must agree on where an extreme order sorts.
     let huge = try XCTUnwrap(PluginContributionParser.parse(
       entityKind: "pr", entityId: "42", pluginId: "a", socket: "row-badge",
       payloadJSON: #"{ "order": 1e300, "text": "huge" }"#, updatedAt: ""
     ))
-    XCTAssertNil(huge.order, "An order this build cannot hold sorts as unordered, not as a crash.")
+    XCTAssertEqual(huge.order, Int.max, "An order this build cannot hold saturates, not a crash and not unordered.")
 
-    // And it still sorts: unordered entries fall to the back, then by plugin id.
+    // And it still sorts last, matching desktop's raw-double ordering.
     let index = PluginContributionIndex(contributions: [
       huge,
       try XCTUnwrap(badge(plugin: "b", text: "first", order: 1)),

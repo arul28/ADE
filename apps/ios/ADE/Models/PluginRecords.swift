@@ -246,7 +246,7 @@ enum PluginContributionParser {
       entityId: entityId,
       pluginId: pluginId,
       socketRaw: socket,
-      order: PluginPanelParser.intValue(object["order"]),
+      order: PluginPanelParser.orderValue(object["order"]),
       payload: payload,
       updatedAt: updatedAt
     )

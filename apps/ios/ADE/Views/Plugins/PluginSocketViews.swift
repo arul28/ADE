@@ -49,8 +49,10 @@ struct PluginRowBadgeCluster: View {
 /// precisely so a mis-tap right after the menu opens cannot land on one, and a
 /// plugin must not be able to push them back up under a moving finger.
 ///
-/// `danger` styles the entry; it does not grant a `role: .destructive` slot in
-/// the fenced section. Where a plugin's item sits is the host's call.
+/// `danger` styles the entry — SwiftUI paints a `.destructive` menu button in
+/// the system's destructive colour, the same answer desktop gives it. It does
+/// not move the entry into the fenced section below: the role changes how the
+/// item reads, never where it sits, and where it sits stays the host's call.
 ///
 /// The renderer owns gestures here, not the schema: menu entries only. A swipe
 /// action would need a `List` (`.swipeActions` works nowhere else) and would
@@ -71,7 +73,7 @@ struct PluginRowMenuItems: View {
       Divider()
       ForEach(items) { contribution in
         if let item = contribution.menuItem {
-          Button {
+          Button(role: Self.role(for: item)) {
             onInvoke(contribution)
           } label: {
             if let icon = item.icon, PluginSymbol.exists(icon) {
@@ -84,6 +86,13 @@ struct PluginRowMenuItems: View {
         }
       }
     }
+  }
+
+  /// A `danger` item asks for the product's destructive styling, which on a
+  /// menu button is the role rather than a foreground colour — a `Menu` draws
+  /// its own labels and ignores one.
+  static func role(for item: PluginRowMenuItemPayload) -> ButtonRole? {
+    item.danger ? .destructive : nil
   }
 }
 

@@ -108,7 +108,7 @@ export function PluginPanelHost({
         if (bindings.length > 0) {
           const results = await Promise.all(
             bindings.map(async (binding) => {
-              const fetched = await readPluginCollection(pluginId, binding.collection, {
+              const fetched = await readPluginCollection(pluginId, panelId, binding.collection, {
                 ...(binding.keyPrefix !== undefined ? { keyPrefix: binding.keyPrefix } : {}),
                 ...(binding.limit !== undefined ? { limit: binding.limit } : {}),
               });

@@ -465,7 +465,7 @@ describe("web plugin namespace", () => {
     mounted = mountAdapter(fake);
 
     await readPluginPanel("graph", "main");
-    const rows = await readPluginCollection("graph", "issues");
+    const rows = await readPluginCollection("graph", "main", "issues");
 
     // The defect this pins: the collection name was passed as the panel id, so
     // the subscription matched no panel, waited out the 8s read timeout and
@@ -501,7 +501,7 @@ describe("web plugin namespace", () => {
     mounted = mountAdapter(fake);
 
     await readPluginPanel("graph", "main");
-    expect(await readPluginCollection("graph", "issues", { keyPrefix: "ade/", limit: 1 }))
+    expect(await readPluginCollection("graph", "main", "issues", { keyPrefix: "ade/", limit: 1 }))
       .toEqual([{ key: "ade/1", value: 1 }]);
     expect(fake.pluginSubscribeCalls).toHaveLength(1);
   });
@@ -509,7 +509,7 @@ describe("web plugin namespace", () => {
   it("answers a collection read with no panel behind it empty rather than stalling", async () => {
     mounted = mountAdapter(fake);
 
-    expect(await readPluginCollection("graph", "issues")).toEqual([]);
+    expect(await readPluginCollection("graph", "main", "issues")).toEqual([]);
     // The panel stream is the only source of rows and it is keyed by panel, so
     // there is nothing to subscribe to here — subscribing to a panel named
     // after the collection is exactly the bug this replaced.

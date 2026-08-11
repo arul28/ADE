@@ -345,13 +345,13 @@ describe("plugin pane selection and layout", () => {
     const armed = build(panel([remove]));
     const refreshed = build(panel([{ component: "button", label: "Rebuild", onPress: { action: "rebuild" } }, remove]));
 
-    const key = pluginInteractiveKey(armed.interactives[0]!);
-    expect(pluginInteractiveKey(refreshed.interactives[1]!)).toBe(key);
-    expect(pluginInteractiveKey(refreshed.interactives[0]!)).not.toBe(key);
+    const key = pluginInteractiveKey(armed, armed.interactives[0]!);
+    expect(pluginInteractiveKey(refreshed, refreshed.interactives[1]!)).toBe(key);
+    expect(pluginInteractiveKey(refreshed, refreshed.interactives[0]!)).not.toBe(key);
 
     // Same action, different target: not the thing the user confirmed.
     const other = build(panel([{ ...remove, onPress: { ...remove.onPress, args: { id: "b" } } }]));
-    expect(pluginInteractiveKey(other.interactives[0]!)).not.toBe(key);
+    expect(pluginInteractiveKey(other, other.interactives[0]!)).not.toBe(key);
   });
 
   it("clamps a stale index instead of jumping to nothing", () => {
