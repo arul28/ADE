@@ -8,6 +8,11 @@ Marketplace shows.
 ```
 plugins/
   ade-graph/            gates the built-in Graph tab
+  ade-review/           gates the built-in Review tab
+  ade-history/          gates the built-in History tab
+  ade-linear/           gates the Linear pane in Work
+  ade-ios-sim/          gates the iOS Simulator pane in Work
+  ade-app-control/      gates the App Control pane in Work
   ade-log-viewer/       renders .log and .ndjson in the Files tab
   themes/
     ade-theme-paper/    warm paper light
@@ -44,7 +49,7 @@ names is a leftover, not a plugin.
   manifest is a request; what makes it true is the entry in the plugin directory
   (`registry/`), which carries a per-version sha256 the installer checks.
 
-## Keeping the seeded copies in step
+## Keeping the catalogue copies in step
 
 Two places describe these plugins and neither is generated:
 

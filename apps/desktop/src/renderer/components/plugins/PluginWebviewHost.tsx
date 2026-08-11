@@ -90,12 +90,13 @@ export function PluginWebviewHost({
       // Subframe failures are the page's own problem to report; only a failed
       // main frame means there is nothing on screen to look at.
       if (detail.isMainFrame === false) return;
-      setState({
-        status: "failed",
-        message: detail.errorDescription
-          ? `The page didn’t load (${detail.errorDescription}).`
-          : "The page didn’t load.",
-      });
+      // `errorDescription` is a Chromium code (`ERR_FILE_NOT_FOUND`), which is
+      // not a sentence anyone reading this card can use. It goes to the console
+      // for whoever is building the plugin; the card says the plain thing.
+      if (detail.errorDescription) {
+        console.warn("[plugin webview] load failed", pluginId, detail.errorDescription);
+      }
+      setState({ status: "failed", message: "The page didn’t load." });
     };
     const onGone = () => {
       setState({ status: "failed", message: "The page stopped responding." });

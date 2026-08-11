@@ -96,6 +96,12 @@ export function parsePluginRegistryContents(decoded: unknown): PluginRegistryFil
     // Version 1 automatically seeded bundled packages. Round 2 removes that
     // behavior for existing machines as well as fresh ones, so legacy builtin
     // records disappear silently. Local and git installs survive the upgrade.
+    //
+    // A version 1 file cannot tell a seeded package from one the user installed
+    // themselves by bare id — both were written as `builtin` — so this takes the
+    // deliberate ones with it. That is the conservative direction: a plugin
+    // nobody asked for is removed, and a plugin somebody wanted is one Install
+    // away in the Marketplace, which is where the seeded ones now live too.
     if (legacyRegistry && isRecord(raw) && isRecord(raw.source) && raw.source.kind === "builtin") continue;
     const record = parsePluginInstallRecord(pluginId, raw);
     if (record) plugins[pluginId] = record;

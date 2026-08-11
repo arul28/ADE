@@ -346,8 +346,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // Automations stay hidden there: neither has host-side actions, so both would
   // be dead nav entries.
   // A tool tab can be owned by a plugin (Graph is, via `ade-graph`): the page
-  // stays compiled in and routable, but the rail entry follows install state.
-  // `builtinTabs.ts` states the rules; every uncertainty resolves to showing it.
+  // stays compiled in, but every way to it — rail entry, route, deeplink —
+  // follows install state. `builtinTabs.ts` states the rules; every uncertainty
+  // resolves to HIDING it, so a rail item is only ever drawn on a positive fact.
   const builtinTabVisible = useVisibleBuiltinRoutes();
   const webMode = isWebClientMode();
   const toolItems = (webMode

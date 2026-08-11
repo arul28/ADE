@@ -29,10 +29,7 @@
  * in was hidden. `isBuiltinSurfaceVisible` is that one predicate.
  */
 
-import {
-  PLUGIN_BUILTIN_SURFACE_IDS,
-  type PluginBuiltinSurfaceId,
-} from "../../../shared/plugins/manifest";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
 export type BuiltinTabGate = {
@@ -145,5 +142,3 @@ export function builtinRouteForPluginRoute(
   if (!plugin?.enabled) return null;
   return claimedBuiltinGate(plugin)?.route ?? null;
 }
-
-export const BUILTIN_TAB_IDS: readonly PluginBuiltinSurfaceId[] = PLUGIN_BUILTIN_SURFACE_IDS;

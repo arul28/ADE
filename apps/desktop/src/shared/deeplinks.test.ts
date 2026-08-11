@@ -596,6 +596,24 @@ describe("parseDeeplink — plugin", () => {
     expect(target).toEqual({ kind: "plugin", pluginId: "jira", panelId: "issue" });
   });
 
+  // The ceiling is in BYTES on every other reader (`ade link --ctx`, iOS,
+  // `readPluginActionNavigation`). Counting UTF-16 units here would let one
+  // link be minted by the desktop and refused by the CLI that reads it.
+  it("measures the context ceiling in utf-8 bytes, not string length", () => {
+    // ~1.4k characters, ~4.2k bytes: under the ceiling by length, over it by
+    // the measure every other reader uses.
+    const wide = JSON.stringify({ note: "字".repeat(1400) });
+    expect(wide.length).toBeLessThan(2048);
+    const target = expectOk(parseDeeplink(`ade://plugin/jira/issue?ctx=${encodeURIComponent(wide)}`));
+    expect(target).toEqual({ kind: "plugin", pluginId: "jira", panelId: "issue" });
+    expect(buildDeeplink({
+      kind: "plugin",
+      pluginId: "jira",
+      panelId: "issue",
+      context: { note: "字".repeat(1400) },
+    }, { form: "ade" })).toBe("ade://plugin/jira/issue");
+  });
+
   it("round-trips through buildDeeplink in both forms", () => {
     const target = {
       kind: "plugin" as const,

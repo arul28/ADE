@@ -13,8 +13,12 @@ vi.mock("./PrReviewSubmitModal", () => ({
 }));
 
 import { PrDetailRightMetadataRail } from "./PrDetailRightMetadataRail";
+import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../../test/builtinSurfaces";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetBuiltinSurfacePlugins();
+});
 
 const pr = {
   id: "pr-1",
@@ -53,12 +57,25 @@ function renderRail() {
 
 describe("PrDetailRightMetadataRail — can-this-land column", () => {
   it("folds the review actions into the Reviewers section instead of a standalone pane", () => {
+    // A machine that HAS the Review plugin: the ADE review button is an entry
+    // point to the Review tab, so it only exists where that tab does.
+    seedBuiltinSurfacePlugins(["review"]);
     renderRail();
     const actions = screen.getByTestId("pr-detail-metadata-actions");
     // The two buttons used to be the LAST card in the rail — i.e. the card that
     // absorbed all the column's slack and produced the dead air.
     expect(screen.getByTestId("pr-metadata-section-people").contains(actions)).toBe(true);
     expect(actions.textContent).toContain("ADE review");
+    expect(actions.textContent).toContain("Submit review");
+  });
+
+  // An ADE review reports into the Review tab. On a machine without the plugin
+  // that owns that tab there is nowhere for the findings to land, so the button
+  // goes with it — while Submit review, which is GitHub's own, stays.
+  it("drops the ADE review button when the Review plugin is not installed", () => {
+    renderRail();
+    const actions = screen.getByTestId("pr-detail-metadata-actions");
+    expect(actions.textContent).not.toContain("ADE review");
     expect(actions.textContent).toContain("Submit review");
   });
 

@@ -410,6 +410,13 @@ function buildLinkPlan(args: string[]): LinkPlan {
     if (!pluginId || !panelId) {
       throw new CliDeeplinkUsageError("ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']");
     }
+    // A plugin panel has no web route — `targetToWebPath` answers null for this
+    // kind — so a `--web` link would round-trip fine and then land its reader on
+    // the welcome screen. Refused at minting, the same way the TUI refuses to
+    // offer a web link for a plugin row.
+    if (wantsWeb) {
+      throw new CliDeeplinkUsageError("Plugin panels open in the desktop app, so --web has no link to mint.");
+    }
     const context = parseCtxFlag(flags.valued.get("ctx"));
     return plan({
       kind: "plugin",

@@ -27,6 +27,7 @@ import { COLORS, MONO_FONT, SANS_FONT, floatingPane } from "../../lanes/laneDesi
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrChecksCard } from "./PrChecksCard";
 import { isBotLogin, reviewStateForLogin } from "./prMergeRailUtils";
+import { useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
 
 export type PrDetailRightMetadataRailProps = {
   pr: PrWithConflicts;
@@ -241,6 +242,10 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("APPROVE");
 
   const isOpenOrDraft = pr.state === "open" || pr.state === "draft";
+  // An ADE review run reports into the Review tab, so the button goes wherever
+  // that tab goes: on a machine without the plugin that owns it, starting a run
+  // would send findings to a page this ADE does not have.
+  const reviewSurfaceVisible = useBuiltinSurfaceVisible("review");
   const requestReviewEnabled = Boolean(pr.laneId && lane && isOpenOrDraft);
   const requestedReviewers = detail?.requestedReviewers ?? [];
   const requestedTeams = detail?.requestedTeams ?? [];
@@ -313,6 +318,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
               in the rail — i.e. the thing that absorbed all the column's slack. */}
           {isOpenOrDraft ? (
             <div className="mt-2 flex gap-1.5" data-testid="pr-detail-metadata-actions">
+              {reviewSurfaceVisible ? (
               <button
                 type="button"
                 onClick={() => setReviewDialogOpen(true)}
@@ -329,6 +335,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
                 <Sparkle size={11} weight="fill" />
                 ADE review
               </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setSubmitReviewOpen(true)}
@@ -469,7 +476,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
       />
 
       <PrRequestAiReviewDialog
-        open={reviewDialogOpen}
+        open={reviewDialogOpen && reviewSurfaceVisible}
         onOpenChange={setReviewDialogOpen}
         pr={pr}
         lane={lane}

@@ -423,7 +423,13 @@ function FeaturedRow({
                 >
                   {listing.displayName}
                 </span>
-                {state.kind !== "available" ? <QuietTag>Installed</QuietTag> : null}
+                {/* The same word the list rows use: a plugin that is turned off
+                    or has an update waiting is not simply "Installed". */}
+                {state.kind !== "available" ? (
+                  <QuietTag tone={state.kind === "update" ? "warning" : "muted"}>
+                    {installActionLabel(state)}
+                  </QuietTag>
+                ) : null}
               </span>
               <span
                 style={{
@@ -664,28 +670,51 @@ function ListingRow({
         <span style={{ display: "inline-flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
           <StarCount stars={stars} />
           <CoverageDots rows={coverage} />
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              if (actionable) onInstall();
-              else onOpen();
-            }}
-            data-tour={`plugin:marketplace.action-${listing.pluginId}`}
-            style={{
-              ...(actionable
-                ? outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })
-                : {
-                  ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }),
-                  background: "transparent",
-                  border: "1px solid transparent",
-                  color: COLORS.textDim,
-                }),
-              minWidth: 70,
-            }}
-          >
-            {installActionLabel(state)}
-          </button>
+          {canManage ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (actionable) onInstall();
+                else onOpen();
+              }}
+              data-tour={`plugin:marketplace.action-${listing.pluginId}`}
+              style={{
+                ...(actionable
+                  ? outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })
+                  : {
+                    ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }),
+                    background: "transparent",
+                    border: "1px solid transparent",
+                    color: COLORS.textDim,
+                  }),
+                minWidth: 70,
+              }}
+            >
+              {installActionLabel(state)}
+            </button>
+          ) : (
+            /* Nothing here can be pressed on a machine that cannot manage
+               plugins, so nothing here looks like it can. A button reading
+               "Install" that only opens the detail page — where the Install
+               button is absent — is the one thing this slot must not be. What
+               is left is a plain status word, and "available" has no status
+               worth a word. */
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                minWidth: 70,
+                height: 26,
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                color: COLORS.textDim,
+              }}
+            >
+              {state.kind === "available" ? "" : installActionLabel(state)}
+            </span>
+          )}
         </span>
       </div>
     </li>

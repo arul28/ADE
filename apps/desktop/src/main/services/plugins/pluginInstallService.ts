@@ -338,7 +338,9 @@ export type BuiltinPluginPackage = { pluginId: string; source: string; manifest:
  * be addressed by id. A directory with a manifest is a package and is never
  * descended into, so a category cannot shadow a package.
  */
-function listBuiltinPackages(builtinRoot: string, maxDepth = 1): BuiltinPluginPackage[] {
+const BUILTIN_CATEGORY_MAX_DEPTH = 1;
+
+function listBuiltinPackages(builtinRoot: string, maxDepth = BUILTIN_CATEGORY_MAX_DEPTH): BuiltinPluginPackage[] {
   const packages: BuiltinPluginPackage[] = [];
   const visit = (directory: string, depth: number): void => {
     let entries: fs.Dirent[];

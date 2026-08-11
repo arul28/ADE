@@ -37,7 +37,7 @@
 // branch, PR, or Linear issue — see DeeplinkEnvelope.
 
 import { isValidPluginId, isValidPluginManifestIdentifier } from "./plugins/manifest";
-import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES } from "./plugins/sdk";
+import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES, pluginUtf8ByteLength } from "./plugins/sdk";
 import type { AppNavigationTarget } from "./types/core";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
@@ -245,7 +245,11 @@ export function parseDeeplinkPluginContext(raw: string | null | undefined): Reco
   if (!raw) return undefined;
   // Measured before parsing: the cap has to bound what we decode, not what we
   // decoded, or an oversized value is only refused after it has been expanded.
-  if (raw.length > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return undefined;
+  // In BYTES, the same way `readPluginActionNavigation`, `ade link --ctx` and
+  // iOS all measure it — a string of CJK is three times longer in UTF-8 than in
+  // the units `String.length` counts, and the four readers of one link must not
+  // disagree about whether it fits.
+  if (pluginUtf8ByteLength(raw) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return undefined;
   let decoded: unknown;
   try {
     decoded = JSON.parse(raw) as unknown;
@@ -264,7 +268,7 @@ function appendPluginContextParam(params: URLSearchParams, context: Record<strin
   } catch {
     return;
   }
-  if (!json || json === "{}" || json.length > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return;
+  if (!json || json === "{}" || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return;
   params.set("ctx", json);
 }
 

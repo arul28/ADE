@@ -482,11 +482,15 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   const onChanged = (listener: (event: PluginChangeEvent) => void): (() => void) => {
     changeListeners.add(listener);
     const stopHostEvents = events.on("pluginsInvalidated", () => {
-      // The invalidation hint names tables, not what changed within them.
-      // "collections" is the widest of the kinds a subscriber refetches on, so
-      // reporting it is the honest coarse answer; claiming "installs" would
-      // under-refresh every panel.
+      // The invalidation hint names tables, not what changed within them, so
+      // BOTH kinds are reported rather than the widest one. Subscribers filter
+      // by kind: the panel hosts refetch on "collections" and ignore the rest,
+      // and the registry — which decides whether a gated surface exists at all
+      // — refetches on "installs" and ignores the rest. Reporting only
+      // "collections" left an open web tab showing a tab whose plugin had just
+      // been uninstalled on the machine.
       listener({ kind: "collections" });
+      listener({ kind: "installs" });
     });
     return () => {
       changeListeners.delete(listener);

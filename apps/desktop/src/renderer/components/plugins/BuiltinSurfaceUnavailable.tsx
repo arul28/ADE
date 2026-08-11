@@ -23,7 +23,7 @@ export function BuiltinSurfaceUnavailable({ title }: { title: string }) {
       <PuzzlePiece size={28} weight="duotone" className="text-muted-fg" aria-hidden />
       <div className="text-sm font-medium text-fg">{title} isn't part of this ADE</div>
       <p className="max-w-[380px] text-xs leading-relaxed text-muted-fg">
-        It comes from a plugin, and that plugin isn't installed on this computer.
+        It comes from a plugin that isn't installed on this computer.
       </p>
     </div>
   );
