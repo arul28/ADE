@@ -93,6 +93,9 @@ type ClaudeSessionRow = {
 
 export const STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS = 2 * 60 * 1000;
 
+/** Bounded so a large sweep cannot open a provider stop per session at once. */
+const SETTLE_TEARDOWN_CONCURRENCY = 4;
+
 const SESSION_COLUMNS = `
   s.id as id,
   s.lane_id as laneId,
@@ -398,7 +401,7 @@ export function createSessionService({
    * want to know which writer is still out there before deciding whether a
    * protocol-level token is justified.
    */
-  onRemoteSettleWrite?: (args: { columns: string[]; sessionCount: number }) => void;
+  onRemoteSettleWrite?: (args: { columns: string[]; changesetSessionCount: number }) => void;
   /** Fired only for residue attached to a settle that actually landed. */
   onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
 }) {
@@ -730,7 +733,6 @@ export function createSessionService({
       ids,
     ).map((row) => row.id);
     if (!newlySettled.length) return [];
-    const updatePlaceholders = newlySettled.map(() => "?").join(", ");
     const hasOutcome = Object.prototype.hasOwnProperty.call(options, "outcome");
     writeSettleLifecycle({
       intent: {
@@ -753,14 +755,6 @@ export function createSessionService({
     return newlySettled;
   };
 
-  /**
-   * Record what teardown could not confirm it stopped (§3d option 3).
-   *
-   * Keyed by session so a re-settle REPLACES the previous record rather than
-   * accumulating history the user has no way to clear. Never throws: the settle
-   * has already landed by this point, and losing a diagnostics row must not
-   * turn a successful settle into a failed one.
-   */
   const clearSettleResidue = (sessionId: string): void => {
     try {
       db.run("delete from session_settle_residue where session_id = ?", [sessionId]);
@@ -769,6 +763,14 @@ export function createSessionService({
     }
   };
 
+  /**
+   * Record what teardown could not confirm it stopped (§3d option 3).
+   *
+   * Keyed by session so a re-settle REPLACES the previous record rather than
+   * accumulating history the user has no way to clear. Never throws: the settle
+   * has already landed by this point, and losing a diagnostics row must not
+   * turn a successful settle into a failed one.
+   */
   const recordSettleResidue = (sessionId: string, items: SettleResidueItem[]): void => {
     try {
       db.run(
@@ -792,9 +794,6 @@ export function createSessionService({
    *
    * Teardown is real from step 3, and it is AWAITED inside the window.
    */
-  /** Bounded so a large sweep cannot open a provider stop per session at once. */
-  const SETTLE_TEARDOWN_CONCURRENCY = 4;
-
   const settleManyWithTeardown = async (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
@@ -810,12 +809,8 @@ export function createSessionService({
     // "the machine took too long to respond" while the settle ran on regardless.
     //
     // Bounded, so a fifty-session sweep cannot open fifty provider stops at once.
-    const perSession = new Map<string, { settled: string[]; aborted: SettleAbortedSession[] }>();
-    const queue = [...ids];
-
-    const settleOne = async (id: string): Promise<void> => {
-      const outcome: { settled: string[]; aborted: SettleAbortedSession[] } = { settled: [], aborted: [] };
-      perSession.set(id, outcome);
+    const settleOne = async (id: string): Promise<SettleSessionsOutcome> => {
+      const outcome: SettleSessionsOutcome = { settled: [], aborted: [] };
 
       const revisionBefore = settleLifecycle.readRevision(id);
       const begin = settleLifecycle.settling.begin(id, revisionBefore);
@@ -827,7 +822,7 @@ export function createSessionService({
         // poller marking a merge handled — would consume the merge on the
         // strength of someone else's in-flight settle that may yet abort.
         outcome.aborted.push({ sessionId: id, reason: "joined_in_flight" });
-        return;
+        return outcome;
       }
 
       try {
@@ -852,24 +847,24 @@ export function createSessionService({
         }
         if (teardownThrew) {
           outcome.aborted.push({ sessionId: id, reason: "teardown_failed" });
-          return;
+          return outcome;
         }
 
         const abortedBy = settleLifecycle.settling.abortedBy(id);
         if (abortedBy) {
           outcome.aborted.push({ sessionId: id, reason: abortedBy });
-          return;
+          return outcome;
         }
         // The revision catches everything the abort flag cannot: a settle-tuple
         // change from a path that never announced itself as a decision.
         if (settleLifecycle.readRevision(id) !== revisionBefore) {
           outcome.aborted.push({ sessionId: id, reason: "lifecycle_changed" });
-          return;
+          return outcome;
         }
 
         const changed = settleMany([id], options);
         outcome.settled.push(...changed);
-        if (changed.length && !teardown?.residue.length) {
+        if (changed.length && teardown?.confirmed && !teardown.residue.length) {
           // A settle that DID confirm everything must clear the previous
           // record, or the row keeps reporting "1 job could not be stopped"
           // from a settle two cycles ago, with a stale timestamp.
@@ -883,29 +878,22 @@ export function createSessionService({
           // exist.
           onSettleResidue?.({ provider: teardown.provider ?? null, items: teardown.residue });
         }
+        return outcome;
       } finally {
         settleLifecycle.settling.end(id, begin.token);
       }
     };
 
-    await Promise.all(
-      Array.from({ length: Math.min(SETTLE_TEARDOWN_CONCURRENCY, queue.length) }, async () => {
-        for (;;) {
-          const id = queue.shift();
-          if (id === undefined) return;
-          await settleOne(id);
-        }
-      }),
-    );
-
-    // Reassembled in the caller's order. `settled` is a changed-id list, and a
-    // caller comparing it against what it asked for should not see it shuffled
-    // by whichever teardown happened to finish first.
-    for (const id of ids) {
-      const outcome = perSession.get(id);
-      if (!outcome) continue;
-      settled.push(...outcome.settled);
-      aborted.push(...outcome.aborted);
+    // Chunked rather than a worker pool: results come back in request order for
+    // free, which matters because `settled` is a changed-id list a caller
+    // compares against what it asked for. Head-of-line blocking inside a chunk
+    // is not observable — every teardown is already hard-bounded.
+    for (let start = 0; start < ids.length; start += SETTLE_TEARDOWN_CONCURRENCY) {
+      const chunk = await Promise.all(ids.slice(start, start + SETTLE_TEARDOWN_CONCURRENCY).map(settleOne));
+      for (const outcome of chunk) {
+        settled.push(...outcome.settled);
+        aborted.push(...outcome.aborted);
+      }
     }
 
     return { settled, aborted };
@@ -1578,7 +1566,6 @@ export function createSessionService({
         ids,
       ).map((row) => row.id);
       if (!present.length) return [];
-      const updatePlaceholders = present.map(() => "?").join(", ");
       writeSettleLifecycle({
         intent: { kind: "override", value: normalized, source: "user" },
         sessionIds: present,
@@ -1805,7 +1792,7 @@ export function createSessionService({
       if (reconciled.length) {
         onRemoteSettleWrite?.({
           columns: [...new Set(reconciled)].sort(),
-          sessionCount: columnsBySession.size,
+          changesetSessionCount: columnsBySession.size,
         });
       }
     },
@@ -1859,7 +1846,6 @@ export function createSessionService({
     unsettleSessions(sessionIds: string[]): void {
       const ids = normalizeSessionIds(sessionIds);
       if (!ids.length) return;
-      const placeholders = ids.map(() => "?").join(", ");
       writeSettleLifecycle({
         intent: { kind: "unsettleDeclared" },
         sessionIds: ids,
@@ -1915,7 +1901,6 @@ export function createSessionService({
       ).map((row) => row.id);
       if (!present.length) return [];
       const snoozedAt = normalizeIsoTimestamp(opts.snoozedAt) ?? new Date().toISOString();
-      const updatePlaceholders = present.map(() => "?").join(", ");
       db.run(
         `
           update terminal_sessions
@@ -1923,7 +1908,7 @@ export function createSessionService({
               snoozed_at = ?,
               woke_at = null,
               woke_reason = null
-          where id in (${updatePlaceholders})
+          where id in (${present.map(() => "?").join(", ")})
         `,
         [until, snoozedAt, ...present],
       );

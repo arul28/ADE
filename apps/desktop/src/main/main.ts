@@ -2876,7 +2876,7 @@ app.whenReady().then(async () => {
     // this point, and the settle path must not depend on construction order.
     const settleTeardownRef: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
-      report: ((args: { columns: string[]; sessionCount: number }) => void) | null;
+      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
     } = { run: null, report: null, residue: null };
     const sessionService = createSessionService({
@@ -2888,7 +2888,7 @@ app.whenReady().then(async () => {
           ? await settleTeardownRef.run(sessionId, ctx)
           // Before the chat service is up there is no background work to stop,
           // so an empty teardown is the honest answer, not a skipped one.
-          : { residue: [] },
+          : { residue: [], confirmed: false },
     });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);

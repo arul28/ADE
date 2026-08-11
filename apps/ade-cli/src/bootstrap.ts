@@ -767,13 +767,13 @@ export async function createAdeRuntime(args: {
   // stopping nothing.
   const settleTeardownRef: {
     run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
-    report: ((args: { columns: string[]; sessionCount: number }) => void) | null;
+    report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
     residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
   } = { run: null, report: null, residue: null };
   const sessionService = createSessionService({
     db,
     runSettleTeardown: async (sessionId, ctx) =>
-      settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [] },
+      settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
     onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
     onSettleResidue: (args) => settleTeardownRef.residue?.(args),
   });

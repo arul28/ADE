@@ -192,6 +192,26 @@ describe("session settle teardown", () => {
     }]);
   });
 
+  it("does not claim a clean teardown when the CONFIRMATION read times out", async () => {
+    let call = 0;
+    const { run } = harness({
+      // The first read succeeds, so teardown proceeds and interrupts. The read
+      // that is supposed to CONFIRM the stop then hangs — and a timeout is not
+      // confirmation, however much it looks like one.
+      readActiveWork: vi.fn(async () => {
+        call += 1;
+        if (call === 1) return work({ backgroundTaskCount: 1 });
+        return await new Promise<SessionActiveWork>(() => {});
+      }),
+      expireProviderCall: async () => {},
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue, "an unconfirmed stop must never report as clean").not.toEqual([]);
+    expect(outcome.residue[0]?.reason).toBe("timeout");
+  });
+
   it("buckets residue counts so a large fleet cannot widen the analytics dimension", () => {
     expect(residueCountBucket(1)).toBe("1");
     expect(residueCountBucket(5)).toBe("2_5");

@@ -42,7 +42,7 @@ export type SettleTeardownWiringDeps = {
 
 export type SettleTeardownWiring = {
   runSettleTeardown: (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>;
-  onRemoteSettleWrite: (args: { columns: string[]; sessionCount: number }) => void;
+  onRemoteSettleWrite: (args: { columns: string[]; changesetSessionCount: number }) => void;
   onSettleResidue: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
 };
 
@@ -83,21 +83,21 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
       // no session id, task id, command, or error text.
       capture({
         action: "settle_teardown_residue",
-        outcome: items[0].reason,
+        outcome: items[0]?.reason ?? "failed",
         count_bucket: residueCountBucket(items.reduce((total, item) => total + item.count, 0)),
         ...(provider ? { provider } : {}),
       });
     },
-    onRemoteSettleWrite: ({ columns, sessionCount }) => {
+    onRemoteSettleWrite: ({ columns, changesetSessionCount }) => {
       // Not a warning and not an anomaly: a paired second desktop replicating
       // its own settles reaches this path by design. It is a RATE signal — how
       // much settle traffic arrives already-decided — and the column names are
       // a fixed set, so no session id or value is recorded.
-      deps.logger?.info("settle.remote_tuple_write_reconciled", { columns, sessionCount });
+      deps.logger?.info("settle.remote_tuple_write_reconciled", { columns, changesetSessionCount });
       capture({
         action: "settle_remote_write_reconciled",
         outcome: "partial",
-        count_bucket: residueCountBucket(sessionCount),
+        count_bucket: residueCountBucket(changesetSessionCount),
       });
     },
   };

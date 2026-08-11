@@ -75,6 +75,11 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
     expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
     expect(isAllowedAdeAction("session", "settleSession")).toBe(true);
+    // The residue read path. It was added to the CTO-only list but NOT to the
+    // allowlist, which silently refused every call — and left the settle design
+    // claiming a user-visible guarantee ("settled never quietly means something
+    // is still running") that nothing could actually reach.
+    expect(isAllowedAdeAction("session", "getSettleResidue")).toBe(true);
     expect(isAllowedAdeAction("session", "unsettleSession")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "settleSession")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "unsettleSession")).toBe(true);

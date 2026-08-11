@@ -66,6 +66,16 @@ export type SettleTeardownContext = {
  * the suspension point survivable.
  */
 export type SettleTeardownOutcome = {
+  /**
+   * True only when teardown actually ran AND confirmed the session went quiet.
+   *
+   * An empty `residue` is not the same claim: it is also what you get before the
+   * chat service exists, or when the confirmation read never came back. Only a
+   * confirmed-clean settle may erase a previous residue record — otherwise a
+   * settle that checked nothing deletes an accurate report of work that is
+   * still running.
+   */
+  confirmed: boolean;
   residue: SettleResidueItem[];
   /** For the residue analytics dimension. Null when the session has no chat. */
   provider?: string | null;
@@ -146,41 +156,38 @@ export function createSessionSettleTeardown(
   return async (sessionId, ctx): Promise<SettleTeardownOutcome> => {
     const residue: SettleResidueItem[] = [];
 
-    let readTimedOut = false;
-    const readWork = async (): Promise<SessionActiveWork | null> => {
-      const result = await withTimeout(deps.readActiveWork(sessionId), expireProviderCall)
+    // `{ok:false}` rather than collapsing a timeout to null: a timed-out read
+    // and "this is not a chat session" are both absences, and treating them the
+    // same is how a slow host settles while claiming a clean teardown. Making
+    // it a discriminated result forces every call site to decide.
+    const readWork = async (): Promise<{ ok: true; value: SessionActiveWork | null } | { ok: false }> =>
+      await withTimeout(deps.readActiveWork(sessionId), expireProviderCall)
         .catch(() => ({ ok: false }) as const);
-      if (!result.ok) {
-        readTimedOut = true;
-        return null;
-      }
-      return result.value;
-    };
 
-    const before = await readWork();
-    // A read that timed out looks exactly like "not a chat session" — null. If
-    // those were treated the same, a slow host would settle while claiming a
-    // clean teardown, which is the one outcome residue exists to make
-    // impossible. Report it instead of guessing.
-    if (readTimedOut) {
-      const residue: SettleResidueItem[] = [{
+    const timedOutResidue = (): SettleTeardownOutcome => ({
+      residue: [{
         kind: "background_tasks",
         reason: "timeout",
         count: 1,
         detail: "could not read what this session was running, so nothing was stopped",
-      }];
-      return { residue, provider: null };
-    }
+      }],
+      provider: null,
+      confirmed: false,
+    });
+
+    const first = await readWork();
+    if (!first.ok) return timedOutResidue();
+    const before = first.value;
     // Nothing to stop, or a session this service does not own (a plain
     // terminal). Either way there is no work to lose and no residue to report.
     if (!before || (!before.active && before.backgroundTaskCount === 0)) {
-      return { residue };
+      return { residue, confirmed: true };
     }
 
     const provider = before.provider;
     // Checked before the step, not after: the point of the abort is to stop
     // work we have NOT done yet.
-    if (ctx.isAborted()) return { residue };
+    if (ctx.isAborted()) return { residue, confirmed: false };
 
     let stopRejected = false;
     try {
@@ -199,9 +206,12 @@ export function createSessionSettleTeardown(
 
     // A turn that arrived while the stop was in flight wins. Do not spend the
     // confirmation budget re-reading a session the user is actively using.
-    if (ctx.isAborted()) return { residue };
+    if (ctx.isAborted()) return { residue, confirmed: false };
 
-    const after = await waitForQuiet(readWork, ctx);
+    const confirmed = await waitForQuiet(readWork, ctx);
+    // Same rule for the confirmation read: a timeout here is not confirmation.
+    if (!confirmed.ok) return timedOutResidue();
+    const after = confirmed.value;
     if (after && !ctx.isAborted()) {
       const reason = stopRejected
         ? "rejected" as const
@@ -229,7 +239,7 @@ export function createSessionSettleTeardown(
       }
     }
 
-    return { residue, provider };
+    return { residue, provider, confirmed: true };
   };
 
   /**
@@ -238,13 +248,13 @@ export function createSessionSettleTeardown(
    * `interrupt` would report residue for work that was about to stop anyway.
    */
   async function waitForQuiet(
-    read: () => Promise<SessionActiveWork | null>,
+    read: () => Promise<{ ok: true; value: SessionActiveWork | null } | { ok: false }>,
     ctx: SettleTeardownContext,
-  ): Promise<SessionActiveWork | null> {
+  ): Promise<{ ok: true; value: SessionActiveWork | null } | { ok: false }> {
     const deadline = now() + STOP_CONFIRM_TIMEOUT_MS;
     let delay = STOP_CONFIRM_POLL_MS;
     let latest = await read();
-    while (latest && (latest.active || latest.backgroundTaskCount > 0) && now() < deadline) {
+    while (latest.ok && latest.value && (latest.value.active || latest.value.backgroundTaskCount > 0) && now() < deadline) {
       if (ctx.isAborted()) return latest;
       await sleep(delay);
       // `getSessionSummary` resolves persisted state, model descriptors and a

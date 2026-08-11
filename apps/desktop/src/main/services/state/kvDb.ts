@@ -924,6 +924,23 @@ const SETTLE_TUPLE_COLUMNS: ReadonlySet<RemoteSettleTupleChange["column"]> = new
   "settle_source",
 ] as const);
 
+const settleTupleKey = (change: RemoteSettleTupleChange): string =>
+  `${change.sessionId}\u0000${change.column}`;
+
+function readSettleTupleColumn(
+  db: DatabaseSyncType,
+  sessionId: string,
+  column: RemoteSettleTupleChange["column"],
+): string | null {
+  const row = getRow<Record<string, unknown>>(
+    db,
+    `select ${column} as value from terminal_sessions where id = ?`,
+    [sessionId],
+  );
+  const value = row?.value;
+  return typeof value === "string" ? value : null;
+}
+
 function isSettleTupleChange(
   change: CrsqlChangeRow,
 ): change is CrsqlChangeRow & { cid: RemoteSettleTupleChange["column"] } {
@@ -4665,7 +4682,8 @@ export async function openKvDb(
       // the bypass being fixed. Let CRR converge the values; the chokepoint's
       // job here is the lifecycle revision, which is what makes an in-flight
       // settle notice and abort.
-      const remoteSettleTuple: RemoteSettleTupleChange[] = [];
+      const candidateSettleTuple: RemoteSettleTupleChange[] = [];
+      const settleTupleBefore = new Map<string, string | null>();
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
@@ -4690,7 +4708,13 @@ export async function openKvDb(
           let settleTupleChange: RemoteSettleTupleChange | null = null;
           if (remoteSettleTupleHandler && isSettleTupleChange(rawChange)) {
             const sessionId = decodeSingleTextCrsqlPrimaryKey(rawChange.pk);
-            if (sessionId) settleTupleChange = { sessionId, column: rawChange.cid };
+            if (sessionId) {
+              settleTupleChange = { sessionId, column: rawChange.cid };
+              const key = settleTupleKey(settleTupleChange);
+              if (!settleTupleBefore.has(key)) {
+                settleTupleBefore.set(key, readSettleTupleColumn(db, sessionId, rawChange.cid));
+              }
+            }
           }
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
@@ -4715,7 +4739,7 @@ export async function openKvDb(
           // not beat the local clock, which is exactly what a re-delivered
           // batch looks like. Reporting one of those would bump the revision
           // and abandon an in-flight settle over a duplicate packet.
-          if (settleTupleChange && result.changes > 0) remoteSettleTuple.push(settleTupleChange);
+          if (settleTupleChange) candidateSettleTuple.push(settleTupleChange);
         }
         if (purgeRetiredTerminalSessions(db) > 0) {
           touchedTables.add("terminal_sessions");
@@ -4730,6 +4754,20 @@ export async function openKvDb(
       // write inside this `BEGIN IMMEDIATE` would risk rolling back a peer's
       // whole batch over one session row. The values already landed, so a
       // failure here costs the revision bump, not the peer's decision.
+      // Only report a column whose VALUE actually moved.
+      //
+      // `sqlite3_changes` cannot answer this: `crsql_changes` is a virtual
+      // table, so SQLite counts the xUpdate call whether or not cr-sqlite
+      // discarded the row as a losing merge — `insert or ignore` never engages.
+      // Measured: re-applying an identical changeset still reports 1 change.
+      // Without a value comparison a re-delivered batch (the peer's outbound
+      // cursor only advances on an ok ack, so a dropped ack re-sends the same
+      // range) would bump the revision AND trip the abort, killing a user's
+      // in-flight settle over a duplicate packet carrying nothing new.
+      const remoteSettleTuple = candidateSettleTuple.filter((candidate) => {
+        const after = readSettleTupleColumn(db, candidate.sessionId, candidate.column);
+        return after !== (settleTupleBefore.get(settleTupleKey(candidate)) ?? null);
+      });
       if (remoteSettleTuple.length && remoteSettleTupleHandler) {
         try {
           remoteSettleTupleHandler(remoteSettleTuple);

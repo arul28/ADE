@@ -65,14 +65,14 @@ describe("settle race matrix", () => {
     // visible to teardown WHILE it ran rather than only afterwards.
     const teardownContexts: SettleTeardownContext[] = [];
     let residue: SettleResidueItem[] = [];
-    const remoteWrites: Array<{ columns: string[]; sessionCount: number }> = [];
+    const remoteWrites: Array<{ columns: string[]; changesetSessionCount: number }> = [];
     const service = createSessionService({
       db,
       onRemoteSettleWrite: (args) => { remoteWrites.push(args); },
       runSettleTeardown: async (sessionId, ctx) => {
         teardownContexts.push(ctx);
         await teardown(sessionId);
-        return { residue };
+        return { residue, confirmed: true };
       },
     });
     const setTeardown = (fn: (sessionId: string) => void | Promise<void>) => {
@@ -526,6 +526,10 @@ describe("settle race matrix", () => {
     const pending = service.settleSessionsReportingAborts(["session-3", "session-1", "session-2"]);
     // Let all three teardowns start before any finishes.
     await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    // Asserted BEFORE draining: serial teardown parks two of the three behind
+    // the first, and the drain below would then hang until vitest's timeout —
+    // a real failure, but reported as "test timed out" instead of as this.
+    expect(release.length, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
     while (release.length) release.pop()!();
     const outcome = await pending;
 
@@ -560,7 +564,7 @@ describe("settle race matrix", () => {
       expect(service.get("session-1")?.settledAt).toBe("2026-08-11T00:07:00.000Z");
       // And an in-flight settle can now see that the world moved.
       expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(revisionBefore);
-      expect(remoteWrites).toEqual([{ columns: ["settle_source", "settled_at"], sessionCount: 1 }]);
+      expect(remoteWrites).toEqual([{ columns: ["settle_source", "settled_at"], changesetSessionCount: 1 }]);
     });
 
     it("makes a peer reactivation abort an in-flight settle instead of being overwritten", async () => {
@@ -617,7 +621,7 @@ describe("settle race matrix", () => {
 
       // The missing row must not cost session-2 its revision bump — and the
       // report is ONE event for the batch, not one per session.
-      expect(remoteWrites).toEqual([{ columns: ["settled_at"], sessionCount: 2 }]);
+      expect(remoteWrites).toEqual([{ columns: ["settled_at"], changesetSessionCount: 2 }]);
     });
   });
 });

@@ -923,5 +923,18 @@ describe("inbound settle-tuple reconciliation hook", () => {
         ["peer-session"],
       )?.settled_at,
     ).toBe("2026-08-11T01:00:00.000Z");
+
+    // A re-delivered batch must report NOTHING. The peer's outbound cursor only
+    // advances on an ok ack, so a dropped ack re-sends the identical range —
+    // and reporting it would bump the lifecycle revision and trip the abort,
+    // killing a user's in-flight settle over a duplicate packet.
+    //
+    // `sqlite3_changes` cannot be used to detect this: `crsql_changes` is a
+    // virtual table, so SQLite counts the call even when cr-sqlite discards the
+    // row as a losing merge. That guard was tried and measured inert; this test
+    // is what caught it.
+    const seenAfterFirst = seen.length;
+    target.sync.applyChanges(changes);
+    expect(seen.length, "a duplicate changeset must not be reported again").toBe(seenAfterFirst);
   });
 });
