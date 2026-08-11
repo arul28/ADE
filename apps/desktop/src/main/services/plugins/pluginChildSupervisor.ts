@@ -77,6 +77,20 @@ const PLUGIN_CHILD_MAX_RESTART_DELAY_MS = 30_000;
 /** A child that stayed up this long is healthy; its restart count resets. */
 const PLUGIN_CHILD_HEALTHY_RUNTIME_MS = 60_000;
 
+/**
+ * Consecutive fast failures before the host stops reviving a plugin.
+ *
+ * Backoff alone never gives up, so a plugin that crashes on startup respawns
+ * every 30s forever — burning CPU, filling the log ring with the same trace,
+ * and leaving the UI in a permanent "starting" flicker that never resolves into
+ * something the user can act on. Five is enough to ride out a transient cause
+ * (a file being rewritten by `ade plugin dev`, a port not yet free) and few
+ * enough that a genuinely broken plugin settles into its dead state quickly.
+ * "Fast" means the child died before {@link PLUGIN_CHILD_HEALTHY_RUNTIME_MS},
+ * so a plugin that runs for a minute between crashes is never contained.
+ */
+export const PLUGIN_CHILD_MAX_FAST_FAILURES = 5;
+
 export function pluginChildRestartDelayMs(restartCount: number): number {
   const exponent = Math.min(Math.max(restartCount - 1, 0), 20);
   return Math.min(PLUGIN_CHILD_MAX_RESTART_DELAY_MS, PLUGIN_CHILD_INITIAL_RESTART_DELAY_MS * 2 ** exponent);
@@ -159,6 +173,7 @@ export function createPluginChildSupervisor(args: {
     emitPluginChange({ kind: "status", pluginId, status: next });
   };
   let restarts = 0;
+  let fastFailures = 0;
   let crashedAt: string | null = null;
   let disposed = false;
   let stopping = false;
@@ -297,6 +312,8 @@ export function createPluginChildSupervisor(args: {
     }
   };
 
+  const isContained = (): boolean => fastFailures >= PLUGIN_CHILD_MAX_FAST_FAILURES;
+
   const scheduleRestart = (): void => {
     if (disposed) return;
     const delay = pluginChildRestartDelayMs(restarts);
@@ -329,7 +346,9 @@ export function createPluginChildSupervisor(args: {
     // A child that stayed up long enough to be considered healthy starts its
     // backoff over, so a plugin that crashes once a day never inherits
     // yesterday's 30-second delay.
-    restarts = lifetimeMs >= PLUGIN_CHILD_HEALTHY_RUNTIME_MS ? 0 : restarts + 1;
+    const healthy = lifetimeMs >= PLUGIN_CHILD_HEALTHY_RUNTIME_MS;
+    restarts = healthy ? 0 : restarts + 1;
+    fastFailures = healthy ? 0 : fastFailures + 1;
     crashedAt = new Date(now()).toISOString();
     setStatus("crashed");
     const detail = summarizeStderr();
@@ -341,6 +360,20 @@ export function createPluginChildSupervisor(args: {
     appendLog({ at: crashedAt, level: "error", message });
     rejectPending(new PluginSdkError("plugin_crashed", message, { exitCode: code, signal }));
     settleReady(new PluginSdkError("plugin_crashed", message, { exitCode: code, signal }));
+    if (fastFailures >= PLUGIN_CHILD_MAX_FAST_FAILURES) {
+      // Containment. The status stays `crashed` rather than moving on to
+      // `restarting`, and that difference IS the contract: `restarting` means
+      // the host is still trying, `crashed` means it has stopped and the user
+      // has to act. The surfaces read exactly that to decide between a spinner
+      // and the dead state with Restart / View logs.
+      logger.warn("plugin.child_restart_contained", { pluginId, fastFailures, lifetimeMs });
+      appendLog({
+        at: crashedAt,
+        level: "error",
+        message: `Stopped restarting "${pluginId}" after ${fastFailures} failures in a row. Restart it to try again.`,
+      });
+      return;
+    }
     scheduleRestart();
   };
 
@@ -441,6 +474,17 @@ export function createPluginChildSupervisor(args: {
     }
     if (disposed) {
       return Promise.reject(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" is no longer running.`));
+    }
+    // A contained plugin is revived by replacing the supervisor (the host drops
+    // and rebuilds it on restart/enable/disable), never by another `invoke`.
+    // Auto-reviving here would make the fifth failure meaningless: the next
+    // call would start the crash loop over with no user ever seeing it.
+    if (isContained()) {
+      return Promise.reject(new PluginSdkError(
+        "plugin_crashed",
+        `Plugin "${pluginId}" stopped after ${fastFailures} failures in a row. Restart it to try again.`,
+        { fastFailures },
+      ));
     }
     if (child && status === "running") return Promise.resolve();
     // Single-flight, the `withSocketSpawnLock` analogue reduced to what this

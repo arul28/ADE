@@ -37,7 +37,7 @@ Host (daemon / main process):
 | File | Responsibility |
 |---|---|
 | `apps/desktop/src/main/services/plugins/pluginHostService.ts` | Machine-scoped shared singleton: load, enable/disable, config, panel and collection reads, the `plugin` domain implementation |
-| `apps/desktop/src/main/services/plugins/pluginChildSupervisor.ts` | Child spawn, env denylist, NDJSON framing, ready/invoke timeouts, stderr ring, exponential restart backoff, two-stage kill |
+| `apps/desktop/src/main/services/plugins/pluginChildSupervisor.ts` | Child spawn, env denylist, NDJSON framing, ready/invoke timeouts, stderr ring, exponential restart backoff, crash containment, two-stage kill |
 | `apps/desktop/src/main/services/plugins/pluginSdkServer.ts` | Serves the child's `sdk` frames — the host half of every SDK method |
 | `apps/desktop/src/main/services/plugins/childRuntime/pluginChildBootstrap.ts` | The child process: loads the entry module, installs the `ade` global, dispatches `invoke` |
 | `apps/desktop/src/main/services/plugins/pluginInstallService.ts` | Install from local path or git URL, `state.json` registry, plugin skill roots |
@@ -129,9 +129,16 @@ one supervised child process:
 - On exit the child restarts with backoff `min(30s, 1s × 2^(n-1))`. A child that
   stayed up **60s** is considered healthy and its restart counter resets, so a
   plugin that crashes once a day never inherits yesterday's 30-second delay.
-  There is no permanent dead state; the plugin's status reads `crashed` and the
-  last stderr tail lands in the log ring (500 lines) that `ade plugin logs`
-  reads.
+- Crashes are **contained**: after **5 consecutive fast failures** (each child
+  dying before the 60s healthy threshold) the host stops reviving the plugin.
+  The status stays `crashed` instead of moving on to `restarting`, and that
+  difference is the contract the surfaces read — `restarting` means the host is
+  still trying, `crashed` means it has given up and the user has to act. A
+  contained plugin refuses `invoke` with `plugin_crashed` rather than silently
+  resuming the loop; `plugin.reload` (the Restart button, `ade plugin reload`)
+  or an enable/disable cycle replaces the supervisor and revives it with a
+  clean counter. The last stderr tail lands in the log ring (500 lines) that
+  `ade plugin logs` reads.
 - Errors cross the boundary as structural objects with a `code`, never as
   stringified stacks.
 

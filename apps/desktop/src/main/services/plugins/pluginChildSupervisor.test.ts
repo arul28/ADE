@@ -8,6 +8,7 @@ import type { PluginManifest } from "../../../shared/plugins/manifest";
 import { PluginSdkError, type PluginSdkMethod } from "../../../shared/plugins/sdk";
 import {
   createPluginChildSupervisor,
+  PLUGIN_CHILD_MAX_FAST_FAILURES,
   pluginChildRestartDelayMs,
   sanitizePluginChildBaseEnv,
   type PluginChildSupervisor,
@@ -89,6 +90,17 @@ function fakeTimers(): { scheduled: ScheduledTimer[]; setTimeoutFn: typeof setTi
     return handle;
   }) as unknown as typeof setTimeout;
   return { scheduled, setTimeoutFn, clearTimeoutFn: (() => {}) as unknown as typeof clearTimeout };
+}
+
+/**
+ * Run and clear every queued timer. The array collects each `invoke`'s timeout
+ * alongside restart timers, so a test asserts on what draining them DOES rather
+ * than on how many are queued.
+ */
+function runScheduled(timers: { scheduled: ScheduledTimer[] }): void {
+  const queued = [...timers.scheduled];
+  timers.scheduled.length = 0;
+  for (const timer of queued) timer.run();
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -220,6 +232,77 @@ describe("pluginChildSupervisor", () => {
     // `status` from six places, and a re-announced value would make a client
     // refetch on every exit-path hop rather than on real transitions.
     expect(statuses.filter((status) => status === "crashed")).toHaveLength(1);
+  });
+
+  // Backoff alone never gives up. Without containment a plugin that dies on
+  // startup respawns every 30s forever and the surfaces never settle into a
+  // state the user can act on.
+  it("stops reviving a plugin that keeps failing fast, and says so", async () => {
+    const statuses: (string | undefined)[] = [];
+    subscribeToPluginChanges((event) => {
+      if (event.kind === "status") statuses.push(event.status);
+    });
+    const timers = fakeTimers();
+    // A constant clock makes every lifetime 0ms, so each exit is a "fast"
+    // failure by definition — the case containment exists for.
+    const supervisor = makeSupervisor("contained", {
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+      now: () => 1_000,
+    });
+
+    await supervisor.start();
+    for (let attempt = 1; attempt < PLUGIN_CHILD_MAX_FAST_FAILURES; attempt += 1) {
+      timers.scheduled.length = 0;
+      await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
+      // Still trying: the status says a restart is pending, and running the
+      // queued timers brings the child back.
+      expect(supervisor.status()).toBe("restarting");
+      runScheduled(timers);
+      await waitFor(() => supervisor.status() === "running");
+    }
+
+    timers.scheduled.length = 0;
+    await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
+
+    // The fifth fast failure contains it: the status stays terminal, and
+    // draining every queued timer does NOT bring the child back.
+    expect(supervisor.status()).toBe("crashed");
+    expect(statuses.at(-1)).toBe("crashed");
+    expect(supervisor.logs().at(-1)?.message).toContain("Stopped restarting");
+    runScheduled(timers);
+    expect(supervisor.status()).toBe("crashed");
+
+    // And it stays contained: another call must not quietly resume the loop.
+    await expect(supervisor.start()).rejects.toMatchObject({ code: "plugin_crashed" });
+    await expect(supervisor.invoke("greet", {})).rejects.toMatchObject({
+      message: expect.stringContaining("Restart it to try again"),
+    });
+    expect(supervisor.status()).toBe("crashed");
+  });
+
+  it("never contains a plugin that stays up between crashes", async () => {
+    const timers = fakeTimers();
+    let clock = 0;
+    const supervisor = makeSupervisor("healthy-between-crashes", {
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+      now: () => clock,
+    });
+
+    await supervisor.start();
+    for (let attempt = 0; attempt < PLUGIN_CHILD_MAX_FAST_FAILURES + 2; attempt += 1) {
+      timers.scheduled.length = 0;
+      // Every child lives well past the healthy threshold before dying, so the
+      // consecutive-failure run never builds up.
+      clock += 120_000;
+      await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
+      expect(supervisor.status()).toBe("restarting");
+      runScheduled(timers);
+      await waitFor(() => supervisor.status() === "running");
+    }
+
+    expect(supervisor.status()).toBe("running");
   });
 
   it("stops restarting once disposed", async () => {

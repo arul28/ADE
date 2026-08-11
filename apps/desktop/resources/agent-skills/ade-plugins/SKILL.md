@@ -359,7 +359,7 @@ Put a `SKILL.md` under `skills/<name>/` with `name` + `description` frontmatter 
 
 | Symptom | Cause and fix |
 |---|---|
-| Plugin shows as `crashed` | The child exited. `ade plugin logs <id> --text` — the crash line carries the exit status and the tail of stderr. It restarts automatically with backoff `min(30s, 1s × 2ⁿ)`; a child that stays up 60s resets the counter |
+| Plugin shows as `crashed` | The child exited. `ade plugin logs <id> --text` — the crash line carries the exit status and the tail of stderr. It restarts automatically with backoff `min(30s, 1s × 2ⁿ)`; a child that stays up 60s resets the counter. After 5 fast failures in a row the host stops reviving it and the status stays `crashed` — `ade plugin reload <id>` (or the Restart button) clears the counter and tries again |
 | Status stuck at `starting` | The child never sent `ready` within 20s. Usually a top-level throw in the entry module or a `require` of something not installed — check the logs |
 | An action hangs then fails | `plugin_timeout`: one `invoke` round-trip is capped at 60s. Do slow work in `activate` or an event handler and store the result |
 | A write fails with `plugin_budget_exceeded` | Read `detail.budget`, `detail.limit`, `detail.actual`. Prune with `ade.collections.delete`, or store less per row |
