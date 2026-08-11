@@ -80,6 +80,8 @@ import {
   isUnsupportedRecoveryActionError,
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
 } from "../chatRecovery";
+import type { PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
+import type { PluginPaneCollectionRow, PluginPanelFetch, PluginPanelRecord } from "./pluginPane";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 export { buildPtyContinuationLaunchFields };
@@ -1341,4 +1343,134 @@ export function deriveClaudeGoalFromEvents(
     }
   }
   return goal;
+}
+
+/* ── Plugins ────────────────────────────────────────────────────────────────
+ *
+ * One action domain, `plugin`, carrying `{pluginId, action}` in its args
+ * (design decision D1). The TUI only reads and invokes: installing a plugin is
+ * an operator act the daemon restricts to `ade plugin install` and the desktop
+ * app, so nothing here mutates the install set.
+ *
+ * Every reader degrades instead of throwing. A host that predates plugins
+ * answers "unsupported", which is a state the pane renders as a sentence — not
+ * an error, and never an empty pane.
+ */
+
+/**
+ * True for the daemon's "this action does not exist here" answer.
+ *
+ * Deliberately narrow, and deliberately does NOT match a permission denial:
+ * denials arrive as `policyDenied` with their own wording, and a reader that
+ * folded them into "unsupported" would silently show an old-host message to a
+ * user who is simply not allowed — the failure mode that made scope denials
+ * look like missing methods once before.
+ */
+export function isUnsupportedPluginActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\b(?:unsupported|unknown)\s+(?:ade\s+)?(?:method|action|domain|command)\b/i.test(message)
+    || /\b(?:method|action|domain|command)\s+(?:is\s+)?not supported\b/i.test(message)
+    || /\bplugin\.[A-Za-z]+\b.*\b(?:not supported|not available|not found)\b/i.test(message)
+  );
+}
+
+export type PluginRosterFetch =
+  | { state: "ok"; plugins: PluginSummary[] }
+  | { state: "unsupported" }
+  | { state: "error"; message: string };
+
+export async function listPlugins(
+  connection: AdeCodeConnection,
+  options: { includeDisabled?: boolean } = {},
+): Promise<PluginRosterFetch> {
+  try {
+    const plugins = await connection.action<PluginSummary[]>("plugin", "list", {
+      includeDisabled: options.includeDisabled ?? true,
+    });
+    return { state: "ok", plugins: Array.isArray(plugins) ? plugins : [] };
+  } catch (error) {
+    if (isUnsupportedPluginActionError(error)) return { state: "unsupported" };
+    return { state: "error", message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function readPluginPanel(
+  connection: AdeCodeConnection,
+  pluginId: string,
+  panelId: string,
+): Promise<PluginPanelFetch> {
+  try {
+    const record = await connection.action<PluginPanelRecord | null>("plugin", "getPanel", {
+      pluginId,
+      panelId,
+    });
+    return record ? { state: "ok", record } : { state: "missing" };
+  } catch (error) {
+    if (isUnsupportedPluginActionError(error)) return { state: "unsupported" };
+    return { state: "error", message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function readPluginCollection(
+  connection: AdeCodeConnection,
+  pluginId: string,
+  binding: { collection: string; keyPrefix?: string; limit?: number },
+): Promise<PluginPaneCollectionRow[]> {
+  try {
+    const rows = await connection.action<PluginPaneCollectionRow[]>("plugin", "getCollection", {
+      pluginId,
+      collection: binding.collection,
+      ...(binding.keyPrefix ? { keyPrefix: binding.keyPrefix } : {}),
+      ...(binding.limit ? { limit: binding.limit } : {}),
+    });
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    // A panel whose data failed to load still renders its structure, and each
+    // bound node says "nothing here yet" on its own line. Failing the whole
+    // panel over one collection would hide the parts that did load.
+    return [];
+  }
+}
+
+export async function invokePluginAction(
+  connection: AdeCodeConnection,
+  pluginId: string,
+  action: string,
+  args: Record<string, string | number | boolean> = {},
+): Promise<unknown> {
+  // MUTATING (D19): a plugin handler may write anything, so this one is allowed
+  // to reject and the caller surfaces the rejection.
+  return await connection.action<unknown>("plugin", "invoke", { pluginId, action, args });
+}
+
+/**
+ * Resolve what the user typed after `/plugin-view` to an installed plugin.
+ *
+ * Matching widens in confidence order — exact id, exact display name, then a
+ * unique prefix — so an unambiguous shorthand works while an ambiguous one
+ * falls through to the picker rather than opening the wrong plugin.
+ */
+export function resolvePluginByName(plugins: PluginSummary[], query: string): PluginSummary | null {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return null;
+  const byId = plugins.find((plugin) => plugin.pluginId.toLowerCase() === needle);
+  if (byId) return byId;
+  const byName = plugins.find((plugin) => plugin.displayName.trim().toLowerCase() === needle);
+  if (byName) return byName;
+  const prefixed = plugins.filter((plugin) => (
+    plugin.pluginId.toLowerCase().startsWith(needle)
+    || plugin.displayName.trim().toLowerCase().startsWith(needle)
+  ));
+  return prefixed.length === 1 ? (prefixed[0] ?? null) : null;
+}
+
+/**
+ * The panel `/plugin-view <name>` opens: the plugin's first tab surface, since
+ * that is the one it considers its front door. A plugin with no tab surface
+ * still has panels, so `main` is the documented default.
+ */
+export function defaultPluginPanelId(plugin: PluginSummary): string {
+  const tab = plugin.surfaces.find((surface) => surface.kind === "tab" && surface.panelId);
+  return tab?.panelId ?? plugin.surfaces[0]?.panelId ?? "main";
 }

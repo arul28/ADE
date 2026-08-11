@@ -14,6 +14,24 @@ describe("commands", () => {
     }));
   });
 
+  it("opens an ADE plugin panel without shadowing Claude's own /plugin", () => {
+    const pluginView = parseCommand("/plugin-view graph");
+    expect(pluginView?.name).toBe("/plugin-view");
+    expect(pluginView?.args).toBe("graph");
+    expect(pluginView ? commandPlacement(pluginView) : null).toBe("right");
+
+    // `/plugin` still belongs to Claude's plugin manager, provider-gated.
+    const claudePlugin = parseCommand("/plugin");
+    expect(claudePlugin?.name).toBe("/plugin");
+    expect(claudePlugin?.spec?.providers).toEqual(["claude"]);
+
+    expect(paletteCommands("/plugin")).toContainEqual(expect.objectContaining({
+      name: "/plugin-view",
+      source: "ade",
+      argumentHint: "[plugin]",
+    }));
+  });
+
   it("keeps the old Attention command as a non-advertised alias", () => {
     const parsed = parseCommand("/attention");
     expect(parsed?.name).toBe("/activity");

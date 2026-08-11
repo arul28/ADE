@@ -19,7 +19,7 @@ import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { MARKETPLACE_ICON, pluginIcon } from "../plugins/pluginIcons";
 import { revealLabel } from "../../lib/platform";
-import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
+import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
   accountAvatarImage,
   accountInitials,
@@ -348,21 +348,24 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))
     : mainItems.slice(4);
   const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
+  const showMarketplace = !webMode || WEB_CLIENT_TAB_PATHS.has(marketplaceItem.to);
 
   // Plugin tabs form a third group below the tool divider, with their own
   // separator, so the rail always reads as "core / ADE's own tools / yours".
   //
   // Read from the ROOT store on purpose: this component renders above
   // `AppStoreProvider`, and a project-scoped copy of the registry would not
-  // update when a plugin is installed. Hidden on web — a plugin's code runs on
-  // the machine that owns it, so the hosted client has nothing to show.
+  // update when a plugin is installed. Gated on the host rather than on the
+  // build: a tab appears only for a plugin the connected host reports as
+  // installed AND when that host can serve the panel behind it, so the hosted
+  // client never shows a nav item that opens an empty shell.
   const installedPlugins = useRootAppStore((s) => s.installedPlugins);
+  const canServePluginTabs = pluginTabsAvailable();
   const pluginItems = React.useMemo(
     () =>
-      webMode
-        ? []
-        : installedPlugins
-            .filter((plugin) => plugin.enabled && plugin.tabs.length > 0)
+      canServePluginTabs
+        ? installedPlugins
+            .filter((plugin) => plugin.enabled && (plugin.tabs?.length ?? 0) > 0)
             .map((plugin) => {
               const tab = plugin.tabs[0]!;
               return {
@@ -373,8 +376,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                 attention: plugin.attention === true,
                 description: `A tab from the ${plugin.displayName} plugin.`,
               };
-            }),
-    [installedPlugins, webMode],
+            })
+        : [],
+    [canServePluginTabs, installedPlugins],
   );
 
   return (
@@ -447,8 +451,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         {/* Marketplace sits between Chats and Account: like both of them it is a
             machine-level surface, so it stays reachable with no project open —
             which is exactly when someone is most likely to be adding a plugin.
-            Hidden on web, where plugins have no machine to run on. */}
-        {!webMode ? (
+            On the list for web: it reads and installs through the sync adapter,
+            so browsing and managing a machine's plugins works from a browser. */}
+        {showMarketplace ? (
           <SmartTooltip
             side="bottom"
             content={{

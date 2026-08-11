@@ -31,6 +31,7 @@ import type { UsageProviderSource, UsageProviderState } from "../../../desktop/s
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
 import type { ActivityPaneModel } from "./activityPane";
+import type { PluginPaneInput, PluginPaneModel } from "./pluginPane";
 
 export type RuntimeMode = "attached" | "embedded";
 
@@ -286,9 +287,22 @@ export type RightPaneContent =
         // "snooze-duration" rows are duration choices, not sessions: the ids are
         // SnoozeDurationKey values and the target session is held alongside the
         // pane state in app.tsx.
-        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration";
+        // "plugin-view" rows are installed plugins; the ids are plugin ids and
+        // activating one opens its panel in this same pane.
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration" | "plugin-view";
         ids: string[];
       };
+    }
+  | {
+      // A plugin's declarative panel, drawn by the Ink interpreter in
+      // pluginPane.ts. `state` is everything the model was built from, so a
+      // refresh or a field edit rebuilds both through one path and the two can
+      // never drift apart.
+      kind: "plugin-panel";
+      state: PluginPaneInput;
+      model: PluginPaneModel;
+      /** Set when an invoke failed, so the pane can say why without a modal. */
+      error?: string | null;
     }
   | { kind: "details"; title: string; body: string }
   | { kind: "context-usage"; title: string; usage: AgentChatContextUsage | null; error?: string | null }

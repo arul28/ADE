@@ -55,7 +55,7 @@ import {
 import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
-import { isWebClientMode } from "../../lib/webClientMode";
+import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -715,29 +715,31 @@ export function CommandPalette({
       },
       // Plugins the same way settings tabs are: generated from the registry, so
       // the palette can never offer a tab the rail does not have — or miss one
-      // the rail just gained.
-      ...(isWebClientMode()
+      // the rail just gained. Both halves therefore read the same two gates the
+      // rail reads: the Marketplace's web allowlist entry, and the host probe
+      // that says whether a plugin tab has anything behind it.
+      ...(isWebClientMode() && !WEB_CLIENT_TAB_PATHS.has("/marketplace")
         ? []
-        : [
-            {
-              id: "go-marketplace",
-              title: "Go to Marketplace",
-              hint: "Find plugins, themes, and extra tabs",
-              keywords: ["plugin", "plugins", "marketplace", "store", "theme", "extension"],
+        : [{
+          id: "go-marketplace",
+          title: "Go to Marketplace",
+          hint: "Find plugins, themes, and extra tabs",
+          keywords: ["plugin", "plugins", "marketplace", "store", "theme", "extension"],
+          group: "Navigation",
+          run: () => navigate("/marketplace"),
+        }]),
+      ...(pluginTabsAvailable()
+        ? installedPlugins
+            .filter((plugin) => plugin.enabled && (plugin.tabs?.length ?? 0) > 0)
+            .map((plugin) => ({
+              id: `go-plugin-${plugin.pluginId}`,
+              title: `Go to ${plugin.tabs[0]!.title || plugin.displayName}`,
+              hint: `${plugin.displayName} plugin`,
+              keywords: ["plugin", plugin.pluginId, plugin.displayName],
               group: "Navigation",
-              run: () => navigate("/marketplace"),
-            },
-            ...installedPlugins
-              .filter((plugin) => plugin.enabled && plugin.tabs.length > 0)
-              .map((plugin) => ({
-                id: `go-plugin-${plugin.pluginId}`,
-                title: `Go to ${plugin.tabs[0]!.title || plugin.displayName}`,
-                hint: `${plugin.displayName} plugin`,
-                keywords: ["plugin", plugin.pluginId, plugin.displayName],
-                group: "Navigation",
-                run: () => navigate(`/plugin/${plugin.pluginId}`),
-              })),
-          ]),
+              run: () => navigate(`/plugin/${plugin.pluginId}`),
+            }))
+        : []),
       // One command per settings *tab*, generated from the manifest. The
       // manifest reports only the tabs this renderer can serve, so the web
       // client stops offering Secrets, Providers, Storage and the rest —

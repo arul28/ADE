@@ -86,6 +86,12 @@ const APP_ROUTE_ROOTS = [
   "/settings",
   "/graph",
   "/chats",
+  // Machine-level like /chats: the Marketplace reads and installs through the
+  // sync adapter, so a reload on it must land in the App rather than the
+  // sign-in shell. `/plugin/:id` deliberately stays off this list — a plugin
+  // tab is gated on a host capability this static allowlist cannot probe, so a
+  // deep link to one would restore a nav entry the rail refuses to offer.
+  "/marketplace",
 ];
 
 function isAppRoute(pathname: string): boolean {

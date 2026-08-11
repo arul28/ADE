@@ -97,12 +97,18 @@ import {
   getSubagentTranscript,
   clearSessionWokeMarker,
   interruptChat,
+  defaultPluginPanelId,
+  invokePluginAction,
   killDroidWorker,
   latestGoal,
   latestTokenStats,
   listGitBranches,
   listLaneDiffStats,
+  listPlugins,
   listClaudePlugins,
+  readPluginCollection,
+  readPluginPanel,
+  resolvePluginByName,
   listClaudeOutputStyles,
   listChatSessions,
   listTerminalSessions,
@@ -368,6 +374,19 @@ import {
   buildActivityPaneModel,
   loadActivitySnapshot,
 } from "./activityPane";
+import {
+  buildPluginPaneModel,
+  cyclePluginFieldValue,
+  movePluginPaneSelection,
+  pluginBindingKey,
+  pluginFieldRawValue,
+  pluginFieldUsesComposer,
+  pluginFormValueKey,
+  pluginPaneBindings,
+  PLUGIN_PANE_TOO_NARROW,
+  type PluginPaneCollectionMap,
+  type PluginPaneInput,
+} from "./pluginPane";
 import {
   deletePromptSmartLinkBackward,
   deletePromptSmartLinkForward,
@@ -3274,6 +3293,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
+  // Armed confirm for a plugin action that declared `confirm`. Holds the
+  // interactive index the user has pressed Enter on once, so the second press
+  // runs it — the same two-step the form-discard Esc uses.
+  const pluginConfirmArmedRef = useRef<number | null>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -4612,6 +4635,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     ? MODEL_PICKER_RIGHT_PANE_MAX_WIDTH
     : RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
+  // What the right pane WOULD get if it opened right now. `rightPaneWidth` is 0
+  // while the pane is closed, so a command that is about to open it has to ask
+  // this instead — otherwise every first open looks like a too-narrow terminal.
+  const prospectiveRightPaneWidth = resolveRightPaneWidth(columns, true, drawerOpen, rightPaneMaxWidth);
   const centerWidth = resolveCenterPaneWidth(columns, drawerOpen, rightPaneWidth);
   const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(columns, MIN_CENTER_PANE_WIDTH));
   // Confirmed chip tokens in the prompt: mentions that were actually inserted
@@ -9650,6 +9677,223 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     openChatsListPane(rightChatsQueryRef.current, next);
   }, [openChatsListPane, rightChatsClosedExpanded]);
 
+  const pluginPaneContent = useCallback((
+    state: PluginPaneInput,
+    extra: { error?: string | null } = {},
+  ): Extract<RightPaneContent, { kind: "plugin-panel" }> => ({
+    kind: "plugin-panel",
+    state,
+    model: buildPluginPaneModel(state),
+    ...extra,
+  }), []);
+
+  /**
+   * Change the open panel's inputs and redraw. Model and inputs are rebuilt
+   * together through this one path, which is why they cannot drift.
+   */
+  const updatePluginPaneState = useCallback((
+    mutate: (state: PluginPaneInput) => PluginPaneInput,
+  ) => {
+    setRightPane((current) => (
+      current.kind === "plugin-panel"
+        ? pluginPaneContent(mutate(current.state), { error: null })
+        : current
+    ));
+  }, [pluginPaneContent]);
+
+  /**
+   * Fetch a panel and the collections it binds, then draw it.
+   *
+   * Polls on the activity pane's 10s cadence rather than subscribing: the
+   * daemon's plugin deltas are a Wave C sync-side protocol, and a poll on an
+   * open pane is the precedent this client already uses for live data. Any
+   * form values the user has typed survive a refresh, so a poll landing
+   * mid-edit cannot wipe the field they are in.
+   */
+  const loadPluginPane = useCallback(async (
+    target: { pluginId: string; displayName: string; panelId: string },
+    options: { announce?: boolean; open?: boolean } = {},
+  ): Promise<void> => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    const fetched = await readPluginPanel(conn, target.pluginId, target.panelId);
+    const collections: PluginPaneCollectionMap = new Map();
+    if (fetched.state === "ok") {
+      // Sequential on purpose: a panel binds a handful of collections at most
+      // and they share one socket, so a burst of parallel reads buys nothing
+      // and makes a slow plugin harder to read in the logs.
+      for (const binding of pluginPaneBindings(fetched.record.schema)) {
+        collections.set(
+          pluginBindingKey(binding),
+          await readPluginCollection(conn, target.pluginId, binding),
+        );
+      }
+    }
+    setRightPane((current) => {
+      const samePanel = current.kind === "plugin-panel"
+        && current.state.pluginId === target.pluginId
+        && current.state.panelId === target.panelId;
+      return pluginPaneContent({
+        pluginId: target.pluginId,
+        displayName: target.displayName,
+        panelId: target.panelId,
+        fetch: fetched,
+        collections,
+        values: samePanel ? current.state.values : {},
+        editing: samePanel ? current.state.editing ?? null : null,
+        width: prospectiveRightPaneWidth,
+      });
+    });
+    // Only an explicit open raises the pane. A poll that reopened a pane the
+    // user had closed would fight them every ten seconds.
+    if (options.open) setRightOpen(true);
+    if (options.announce) addNotice(`${target.displayName} refreshed.`, "info");
+  }, [addNotice, pluginPaneContent, prospectiveRightPaneWidth]);
+
+  const refreshPluginPane = useCallback(async (options: { announce?: boolean } = {}): Promise<void> => {
+    const current = rightPaneRef.current;
+    if (current.kind !== "plugin-panel") return;
+    await loadPluginPane({
+      pluginId: current.state.pluginId,
+      displayName: current.state.displayName,
+      panelId: current.state.panelId,
+    }, options);
+  }, [loadPluginPane]);
+
+  useEffect(() => {
+    if (rightPane.kind !== "plugin-panel" || !rightOpen || !connection) return;
+    const timer = setInterval(() => {
+      void refreshPluginPane();
+    }, 10_000);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [connection, refreshPluginPane, rightOpen, rightPane.kind]);
+
+  /**
+   * Open a plugin by the name the user typed, or list the installed plugins
+   * when they typed nothing (or something ambiguous). The picker is a plain
+   * list pane, so it inherits the arrow/Enter behaviour every other list has.
+   */
+  const openPluginPane = useCallback(async (query: string): Promise<void> => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    if (prospectiveRightPaneWidth === 0) {
+      // The right pane collapses below ~86 columns. Saying so beats opening a
+      // pane the layout will not draw.
+      addNotice(PLUGIN_PANE_TOO_NARROW, "info");
+      return;
+    }
+    const roster = await listPlugins(conn);
+    if (roster.state === "unsupported") {
+      setRightPane({
+        kind: "details",
+        title: "Plugins",
+        body: "This ADE host has no plugin support yet. Update it to install and view plugins.",
+      });
+      return;
+    }
+    if (roster.state === "error") {
+      setRightPane({ kind: "details", title: "Plugins", body: roster.message });
+      return;
+    }
+    const enabled = roster.plugins.filter((plugin) => plugin.enabled);
+    const match = query.trim() ? resolvePluginByName(enabled, query) : null;
+    if (match) {
+      setRightSelectionIndex(0);
+      await loadPluginPane({
+        pluginId: match.pluginId,
+        displayName: match.displayName,
+        panelId: defaultPluginPanelId(match),
+      }, { open: true });
+      return;
+    }
+    if (query.trim() && enabled.length > 0) {
+      addNotice(`No installed plugin matches "${query.trim()}".`, "info");
+    }
+    setRightSelectionIndex(0);
+    setRightPane({
+      kind: "list",
+      title: "Plugins",
+      rows: enabled.map((plugin) => {
+        const status = plugin.status === "running" ? "" : ` · ${plugin.status}`;
+        return `${plugin.displayName} · ${plugin.version}${status}`;
+      }),
+      emptyText: roster.plugins.length > 0
+        ? "Every installed plugin is disabled. Enable one with ade plugin enable."
+        : "No plugins installed. Add one with ade plugin install.",
+      action: { kind: "plugin-view", ids: enabled.map((plugin) => plugin.pluginId) },
+    });
+  }, [addNotice, loadPluginPane, prospectiveRightPaneWidth]);
+
+  /**
+   * Run whatever the selected row is: a button or list press invokes the
+   * plugin, a typed field takes over the composer, a select or toggle changes
+   * in place, and a submit sends the form's values as the action's args.
+   */
+  const activatePluginInteractive = useCallback(async (index: number): Promise<void> => {
+    const current = rightPaneRef.current;
+    if (current.kind !== "plugin-panel") return;
+    const interactive = current.model.interactives[index];
+    if (!interactive) return;
+    const conn = connectionRef.current;
+
+    if (interactive.kind === "field") {
+      const field = interactive.field;
+      if (pluginFieldUsesComposer(field.kind)) {
+        // Hand the field to the shared composer: panes in this client never own
+        // a text input, so typed values always come through the prompt line.
+        const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
+        stashActiveInput();
+        setPromptValue(raw);
+        updatePluginPaneState((state) => ({ ...state, editing: index }));
+        return;
+      }
+      const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
+      const next = cyclePluginFieldValue(field, raw, 1);
+      updatePluginPaneState((state) => ({
+        ...state,
+        values: { ...state.values, [pluginFormValueKey(interactive.formKey, field.id)]: next },
+      }));
+      return;
+    }
+
+    if (!conn) {
+      addNotice("ADE runtime is still connecting.", "error");
+      return;
+    }
+
+    const action = interactive.action;
+    if (action.confirm && pluginConfirmArmedRef.current !== index) {
+      pluginConfirmArmedRef.current = index;
+      addNotice(`${action.confirm} Press enter again to confirm.`, "info");
+      return;
+    }
+    pluginConfirmArmedRef.current = null;
+
+    const args: Record<string, string | number | boolean> = { ...(action.args ?? {}) };
+    if (interactive.kind === "submit") {
+      for (const field of interactive.fields) {
+        const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
+        if (field.kind === "toggle") args[field.id] = raw === "true";
+        else if (field.kind === "number") {
+          const parsed = Number(raw);
+          if (raw !== "" && Number.isFinite(parsed)) args[field.id] = parsed;
+        } else if (raw !== "") args[field.id] = raw;
+      }
+    }
+
+    updatePluginPaneState((state) => ({ ...state, editing: null }));
+    try {
+      await invokePluginAction(conn, current.state.pluginId, action.action, args);
+      addNotice(`${interactive.label} ran.`, "success");
+      await refreshPluginPane();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRightPane((pane) => (pane.kind === "plugin-panel" ? { ...pane, error: message } : pane));
+      addNotice(message, "error");
+    }
+  }, [addNotice, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
+
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
       void copyProjectSecret(selectedId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
@@ -9668,6 +9912,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       pendingSnoozeSessionIdRef.current = null;
       setRightPane({ kind: "empty" });
       void applySessionSnooze(sessionId, resolved.untilIso, resolved.confirmation);
+      return;
+    }
+    if (actionKind === "plugin-view") {
+      if (!selectedId) return;
+      // The picker row carries the plugin id; the panel it opens is resolved
+      // from the roster again so the pane never renders a stale panel id.
+      void openPluginPane(selectedId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
     }
     if (actionKind === "switch-lane") {
@@ -9711,6 +9962,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     copyProjectSecret,
     displaySessions,
     lanes,
+    openPluginPane,
     resumeClosedTerminalSession,
     selectActiveLaneId,
     selectActiveSessionId,
@@ -9926,6 +10178,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         });
         return;
       }
+      if (name === "/plugin-view") {
+        setRightPane({
+          kind: "details",
+          title: "Plugins",
+          body: "Plugins run on the machine ADE is connected to. Retry when the runtime is ready.",
+        });
+        return;
+      }
       if (name === "/feedback") {
         openFeedbackForm();
         return;
@@ -9977,6 +10237,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (name === "/activity") {
       setRightSelectionIndex(0);
       await refreshActivityPane();
+      return;
+    }
+    if (name === "/plugin-view") {
+      await openPluginPane(args);
       return;
     }
     if (name === "/keybindings") {
@@ -11189,7 +11453,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openPluginPane, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -12056,7 +12320,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ))
       .map((mention) => ({ type: isImageFilePath(mention.filePath!) ? "image" : "file", path: mention.filePath! }));
     const activeTerminalForBlankResume = activeTerminalSessionRef.current;
-    const emptyPromptSubmission = !text && rightPane.kind !== "form" && !promptAttachments.length;
+    // A plugin field owning the composer behaves like a form field: an empty
+    // submission clears it rather than being swallowed, and a value starting
+    // with "/" is text, not a command.
+    const pluginFieldIndex = rightPane.kind === "plugin-panel" ? rightPane.state.editing ?? null : null;
+    const emptyPromptSubmission = !text
+      && rightPane.kind !== "form"
+      && pluginFieldIndex === null
+      && !promptAttachments.length;
     const blankResumeRequest = emptyPromptSubmission
       && !pendingApproval
       && isTerminalSessionResumable(activeTerminalForBlankResume);
@@ -12064,7 +12335,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // Intercept ADE-owned slash commands before the connection gate so /model and
     // /plan work pre-chat (splash screen) where connectionRef.current is null.
     try {
-      if (text.startsWith("/") && rightPane.kind !== "form" && !pendingApproval) {
+      if (text.startsWith("/") && rightPane.kind !== "form" && pluginFieldIndex === null && !pendingApproval) {
         if (await interceptLocalSlashCommand(text)) {
           clearChatPromptDraft();
           return;
@@ -12120,6 +12391,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         await answerPendingInput(pendingApproval, value);
         return;
+      }
+      if (rightPane.kind === "plugin-panel" && pluginFieldIndex !== null) {
+        const interactive = rightPane.model.interactives[pluginFieldIndex];
+        if (interactive?.kind === "field") {
+          const valueKey = pluginFormValueKey(interactive.formKey, interactive.field.id);
+          updatePluginPaneState((state) => ({
+            ...state,
+            values: { ...state.values, [valueKey]: submittedValue },
+            editing: null,
+          }));
+          setPromptValue("");
+          // Land on the next thing to do — usually the next field, then submit.
+          setRightSelectionIndex(movePluginPaneSelection(rightPane.model, pluginFieldIndex, 1));
+          return;
+        }
       }
       if (rightPane.kind === "form" && !text.startsWith("/")) {
         const field = activeFormField;
@@ -12237,7 +12523,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startCliTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, setPromptValue, slashCommands, slashIndex, slashRows, startCliTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion, updatePluginPaneState]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
@@ -13242,6 +13528,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (action === "app:copyAdeDeeplink") {
+      // A plugin panel carries its own link in the schema's required fallback —
+      // the plugin's word on where this content lives in full. There is no
+      // `plugin` deeplink target to mint one from, so this is the only link.
+      const pluginPane = rightPaneRef.current;
+      if (activePaneRef.current === "details" && pluginPane.kind === "plugin-panel") {
+        const link = pluginPane.model.fallback?.deeplink;
+        if (!link) {
+          addNotice("This panel has no link to copy.", "info");
+          return true;
+        }
+        if (copyToClipboard(link)) addNotice("Plugin panel link copied", "success");
+        else addNotice(`Plugin panel link: ${link}`, "info");
+        return true;
+      }
       const row = resolveFocusedDeeplinkRow();
       if (!row) {
         addNotice("No lane or PR row is focused to copy a deeplink for.", "info");
@@ -13772,7 +14072,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     const pane = activePaneRef.current;
-    const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
+    const detailsFormActive = (pane === "details" && rightOpen && rightPane.kind === "form")
+      // A plugin field that has taken the composer types like a form field.
+      || (pane === "details" && rightOpen && rightPane.kind === "plugin-panel" && rightPane.state.editing != null);
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
     const pendingQuestionApproval = pendingApproval?.mode === "question" ? pendingApproval : null;
@@ -14713,6 +15015,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setChatScrollOffset(0);
         return;
       }
+      // A plugin panel unwinds its own state before it closes: first the field
+      // that borrowed the composer, then the panel back to the plugin picker,
+      // and only then does the generic close below take the pane down.
+      if (pane === "details" && rightOpen && rightPane.kind === "plugin-panel") {
+        if (rightPane.state.editing !== null && rightPane.state.editing !== undefined) {
+          updatePluginPaneState((state) => ({ ...state, editing: null }));
+          setPromptValue("");
+          return;
+        }
+        pluginConfirmArmedRef.current = null;
+        void openPluginPane("");
+        return;
+      }
       if (pane === "details" && rightOpen) {
         if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat" && confirmOrDiscardChatDraft()) {
           return;
@@ -15387,6 +15702,41 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (input.toLowerCase() === "r" && !key.ctrl && !key.meta) {
         void refreshActivityPane({ announce: true });
         return;
+      }
+    }
+
+    if (pane === "details" && rightOpen && rightPane.kind === "plugin-panel") {
+      const editingIndex = rightPane.state.editing ?? null;
+      const interactives = rightPane.model.interactives;
+      // While a field owns the composer, arrows and letters belong to the text
+      // being typed; only Enter (commit, handled by submitPrompt) and Esc
+      // (cancel, handled by the Esc ladder) reach the pane.
+      if (editingIndex === null) {
+        if (key.upArrow || key.downArrow) {
+          pluginConfirmArmedRef.current = null;
+          setRightSelectionIndex((index) => movePluginPaneSelection(rightPane.model, index, key.upArrow ? -1 : 1));
+          return;
+        }
+        if (key.leftArrow || key.rightArrow) {
+          const selected = interactives[rightSelectionIndex];
+          if (selected?.kind === "field" && !pluginFieldUsesComposer(selected.field.kind)) {
+            const raw = pluginFieldRawValue(selected.field, selected.formKey, rightPane.state.values);
+            const next = cyclePluginFieldValue(selected.field, raw, key.leftArrow ? -1 : 1);
+            updatePluginPaneState((state) => ({
+              ...state,
+              values: { ...state.values, [pluginFormValueKey(selected.formKey, selected.field.id)]: next },
+            }));
+            return;
+          }
+        }
+        if (key.return && interactives.length > 0) {
+          void activatePluginInteractive(rightSelectionIndex);
+          return;
+        }
+        if (input.toLowerCase() === "r" && !key.ctrl && !key.meta) {
+          void refreshPluginPane({ announce: true });
+          return;
+        }
       }
     }
 
@@ -17097,6 +17447,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	              width={rightPaneWidth}
               scrollOffsetRows={rightPaneScrollOffsetRows}
               subagentPaneViewState={subagentPaneViewState}
+              pluginEditingValue={rightPane.kind === "plugin-panel" && rightPane.state.editing != null ? prompt : null}
               modelPickerInputs={rightPaneModelPickerInputs}
               onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
             />

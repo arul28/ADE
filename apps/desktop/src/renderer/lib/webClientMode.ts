@@ -37,5 +37,35 @@ export const WEB_CLIENT_TAB_PATHS = new Set([
   "/cto",
   "/graph",
   "/history",
+  "/marketplace",
   "/settings",
 ]);
+
+/**
+ * Whether this renderer can render a plugin's own `/plugin/:id` tab.
+ *
+ * The Marketplace above is a list read through the sync adapter, so it works
+ * anywhere. A plugin tab is not: it renders a panel schema and the collection
+ * rows that schema binds, and a host serving neither leaves an empty shell
+ * behind a nav item — worse than no nav item at all. So the tab is offered only
+ * where those reads exist, which is a property of the connected host, not of
+ * the build: a hosted client gains the tabs the day its adapter serves panels,
+ * with no second edit here.
+ *
+ * The two branches are not symmetric on purpose. On desktop, a member either
+ * exists on the preload namespace or it does not. On web it always "exists":
+ * `webclient/adapter/infra/proxy.ts` answers every unimplemented member with a
+ * stub callable, so `typeof member === "function"` is not evidence there and a
+ * probe written that way would offer a tab backed by stubs returning null. Only
+ * a marker the adapter sets deliberately — and strictly `true`, since the stub
+ * itself is truthy — counts as a hosted host saying it can serve panels.
+ */
+export function pluginTabsAvailable(): boolean {
+  if (typeof window === "undefined") return false;
+  const plugins = (window as Window & {
+    ade?: { plugins?: Record<string, unknown> | null };
+  }).ade?.plugins;
+  if (!plugins) return false;
+  if (isWebClientMode()) return plugins.servesPluginPanels === true;
+  return typeof plugins.getPanel === "function" && typeof plugins.getCollection === "function";
+}

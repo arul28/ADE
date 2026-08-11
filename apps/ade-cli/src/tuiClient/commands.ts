@@ -81,6 +81,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"], category: "Model" },
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },
+  // Not `/plugin`: that name belongs to Claude's own plugin command above, and
+  // this opens an ADE plugin's panel in the right pane. No argument lists the
+  // installed plugins to pick from.
+  { name: "/plugin-view", description: "Open an installed ADE plugin's panel", placement: "right", argumentHint: "[plugin]", category: "Nav" },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right", category: "Nav" },
   { name: "/activity", description: "Show account-wide work that needs you", placement: "right", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },

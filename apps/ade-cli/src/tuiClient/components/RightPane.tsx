@@ -75,6 +75,7 @@ import {
   type FeedbackType,
 } from "../feedbackForm";
 import { ActivityPaneView } from "./ActivityPaneView";
+import { PluginPanelPane } from "./PluginPanelPane";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
 // pane build a giant row array on every scroll. The window only shows
@@ -1768,6 +1769,7 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
       // Flat key/value list — scrolls by row count.
       return content.rows.length;
     case "activity":
+    case "plugin-panel":
       // Selection keeps the focused account item visible; the pane owns its
       // compact window rather than participating in generic line scrolling.
       return 0;
@@ -2272,6 +2274,11 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: "STATUS" };
     case "activity":
       return { title: "ACTIVITY", hint: content.model.snapshot.scope === "machine" ? "THIS MACHINE" : "ACCOUNT" };
+    case "plugin-panel":
+      return {
+        title: content.model.title.toUpperCase(),
+        hint: content.model.status === "fallback" ? "LIMITED" : "PLUGIN",
+      };
     case "diff":
       return { title: content.title.toUpperCase() };
     case "list":
@@ -2304,12 +2311,19 @@ function RightPaneComponent({
   onModelPickerMeasureOrigin,
   scrollOffsetRows = 0,
   subagentPaneViewState = {},
+  pluginEditingValue = null,
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
   activeFormField?: number;
   selectedIndex?: number;
   focused?: boolean;
+  /**
+   * Live composer text for the plugin field currently being typed. Passed down
+   * rather than folded into the pane model so a keystroke redraws one row
+   * instead of re-parsing the whole panel schema.
+   */
+  pluginEditingValue?: string | null;
   activeProvider?: AdeCodeProvider | null;
   width?: number;
   scrollOffsetRows?: number;
@@ -2367,6 +2381,15 @@ function RightPaneComponent({
 
       {content.kind === "activity" ? (
         <ActivityPaneView content={content} selectedIndex={selectedIndex} width={paneWidth} />
+      ) : null}
+
+      {content.kind === "plugin-panel" ? (
+        <PluginPanelPane
+          content={content}
+          selectedIndex={selectedIndex}
+          width={paneWidth}
+          editingValue={pluginEditingValue}
+        />
       ) : null}
 
       {content.kind === "status" ? (
