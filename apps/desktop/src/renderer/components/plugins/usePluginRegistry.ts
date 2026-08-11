@@ -43,6 +43,12 @@ function themeDefinitionFor(
 export function usePluginRegistrySync(): void {
   const plugins = useRootAppStore((state) => state.installedPlugins);
   const pluginThemeId = useRootAppStore((state) => state.pluginThemeId);
+  // Bumped by the web client whenever its federated adapter swaps target
+  // (machine connect, project/tab switch). That swap carries no install or
+  // status event of its own, so without this dependency the registry would
+  // keep answering for whichever machine was active when this effect first
+  // ran. Always 0 on desktop Electron, so the effect there only ever runs once.
+  const pluginAdapterGeneration = useRootAppStore((state) => state.pluginAdapterGeneration);
 
   React.useEffect(() => {
     void rootAppStoreApi.getState().refreshInstalledPlugins();
@@ -52,7 +58,7 @@ export function usePluginRegistrySync(): void {
       if (event.kind !== "installs" && event.kind !== "status") return;
       void rootAppStoreApi.getState().refreshInstalledPlugins();
     });
-  }, []);
+  }, [pluginAdapterGeneration]);
 
   React.useEffect(() => {
     const next = themeDefinitionFor(plugins, pluginThemeId);

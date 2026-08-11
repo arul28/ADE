@@ -316,6 +316,7 @@ would advertise something the reader may have deliberately removed.
 | Desktop renderer | Opens `/plugin/<id>?panel=…` when the plugin is installed **and** enabled and the registry has resolved. Anything else is a refusal toast naming the plugin. |
 | Hosted web client | No route at all. `targetToWebPath` returns null and callers fall back to the welcome surface; the ADE Code TUI and iOS therefore mint only the `ade://` form for panels. |
 | ADE Code TUI | `Ctrl+Y` over an open panel copies the `ade://` link; the web-link sibling says panels are desktop-only. |
+| iOS | No project open bounces to the send-to-Mac card, same as any other cross-machine link. With a project open, it awaits the paired machine's presence answer for that plugin (a cold-launch tap can arrive before the machine has reported what it has installed) and, if the wait comes up empty, shows a named refusal alert rather than opening nothing. |
 | `ade link plugin` | Mints the link without checking whether the plugin is installed anywhere — a link is a coordinate, and the receiving install is what decides. |
 
 ## Portable envelopes and the resolution ladder

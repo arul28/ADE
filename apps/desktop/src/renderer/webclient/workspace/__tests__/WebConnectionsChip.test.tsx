@@ -115,6 +115,7 @@ function renderChip(
     notice: null,
     dismissNotice: vi.fn(),
     consumePendingProjectPath: () => null,
+    consumePendingLinearIssueTarget: () => null,
     signIn: vi.fn(),
     signOut: vi.fn(),
     retryDirectory: vi.fn(),

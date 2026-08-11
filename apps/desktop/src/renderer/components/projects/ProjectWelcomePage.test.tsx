@@ -210,6 +210,7 @@ function renderWebWelcome(
     notice: null,
     dismissNotice: vi.fn(),
     consumePendingProjectPath: () => null,
+    consumePendingLinearIssueTarget: () => null,
     signIn,
     signOut: vi.fn(async () => {}),
     retryDirectory,

@@ -23,6 +23,47 @@ import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { listInstalledPlugins } from "../../lib/pluginRuntimeBridge";
+import { pluginSocketsAvailable } from "../../components/plugins/sockets/contributionBridge";
+import { builtinGateForSurface } from "../../components/plugins/builtinTabs";
+import { showToast } from "../../components/app/toast/toastStore";
+
+/** Whether the `ade-linear` plugin is installed and enabled on this machine. */
+async function linearSurfaceAvailable(): Promise<boolean> {
+  if (!pluginSocketsAvailable()) return false;
+  const ownerId = builtinGateForSurface("linear").ownerPluginId;
+  const plugins = await listInstalledPlugins();
+  return plugins.some((plugin) => plugin.pluginId === ownerId && plugin.enabled);
+}
+
+/**
+ * The same refusal `refuseGatedTarget` shows on desktop (`App.tsx`), for the
+ * two web boot paths that resolve a `linear-issue` target before the shared
+ * `App` — and its dispatchTarget — have mounted.
+ */
+function refuseLinearIssueTarget(): void {
+  showToast({
+    title: "Linear isn't part of this ADE",
+    message: "It comes from a plugin that isn't installed on this computer.",
+    tone: "info",
+  });
+}
+
+async function openOrRefuseLinearIssueTarget(target: {
+  issueIdentifier: string;
+  branch?: string | null;
+}): Promise<void> {
+  if (await linearSurfaceAvailable()) {
+    requestLinearIssueQuickView({
+      issueIdentifier: target.issueIdentifier,
+      branch: target.branch ?? null,
+      source: "deeplink",
+    });
+  } else {
+    refuseLinearIssueTarget();
+  }
+}
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -314,6 +355,14 @@ export function WebClientRoot({
     federatedAccountKeyRef.current = accountKey;
     federatedAdapterDisposeRef.current = adapter.subscribeActiveAdapter(() => {
       setActiveAdapterGeneration((current) => current + 1);
+      // The plugin registry lives in the root app store, loaded dynamically
+      // like `App` itself below — this fires on every target swap (machine
+      // connect, project/tab switch), so `usePluginRegistrySync` refetches
+      // instead of continuing to answer for whichever machine was active
+      // when it first mounted.
+      void import("../../state/appStore").then(({ rootAppStoreApi }) => {
+        rootAppStoreApi.getState().bumpPluginAdapterGeneration();
+      });
     });
     setFederatedAdapter(adapter);
     setWorkspaceGeneration((current) => current + 1);
@@ -428,9 +477,22 @@ export function WebClientRoot({
       const { restored } = await installFederatedAdapter(snapshot);
       if (disposed) return;
       const restoredTarget = readStashedTarget();
-      // A target with no web route (a plugin panel) falls through to the same
-      // answer as no target at all rather than inventing a route for it.
-      const restoredPath = restoredTarget ? targetToWebPath(restoredTarget) : null;
+      // A `linear-issue` target has no web route of its own — see
+      // `openOrRefuseLinearIssueTarget` — so it is resolved directly here
+      // rather than through `targetToWebPath`, which would otherwise hand
+      // back a `/work?linearIssue=…` URL nothing on the receiving end reads.
+      // Only when `restored` bypasses the welcome page entirely: otherwise
+      // the target stays stashed for `ProjectWelcomePage` to resolve once the
+      // user picks a project, and resolving it here too would dispatch twice.
+      if (restored && restoredTarget?.kind === "linear-issue" && !disposed) {
+        void openOrRefuseLinearIssueTarget(restoredTarget);
+      }
+      // A target with no web route (a plugin panel, or a linear-issue target
+      // handled above) falls through to the same answer as no target at all
+      // rather than inventing a route for it.
+      const restoredPath = restoredTarget && restoredTarget.kind !== "linear-issue"
+        ? targetToWebPath(restoredTarget)
+        : null;
       const initialPath = restored
         ? restoredPath
           ?? (isAppRoute(path) ? `${path}${window.location.search}` : WELCOME_PATH)
@@ -496,6 +558,13 @@ export function WebClientRoot({
         pendingTargetRef.current = null;
         stashTarget(null);
         return targetToWebPath(target);
+      },
+      consumePendingLinearIssueTarget() {
+        const target = pendingTargetRef.current ?? readStashedTarget();
+        if (!target || target.kind !== "linear-issue") return null;
+        pendingTargetRef.current = null;
+        stashTarget(null);
+        return { issueIdentifier: target.issueIdentifier, branch: target.branch ?? null };
       },
       signIn,
       async signOut() {

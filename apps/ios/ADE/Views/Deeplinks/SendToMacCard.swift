@@ -119,7 +119,7 @@ struct SendToMacTarget: Equatable, Identifiable {
         self.kind = .other
       }
     case "plugin":
-      if parts.count >= 2,
+      if parts.count == 2,
          ADEDeepLinkURLParsing.isValidPluginId(parts[0]),
          ADEDeepLinkURLParsing.isValidPluginPanelId(parts[1]) {
         self.kind = .plugin(pluginId: parts[0], panelId: parts[1])

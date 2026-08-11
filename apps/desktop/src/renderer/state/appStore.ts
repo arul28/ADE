@@ -1185,6 +1185,15 @@ export type AppState = {
   installedPlugins: InstalledPlugin[];
   /** False until the first `refreshInstalledPlugins` resolves. */
   pluginsLoaded: boolean;
+  /**
+   * Bumped whenever the web client's federated adapter swaps to a different
+   * target (machine connect, project/tab switch). `usePluginRegistrySync`
+   * depends on it to re-fetch the registry: the swap itself carries no
+   * install/enable event of its own, so without this the rail would keep
+   * showing the previous machine's plugins until one happened to occur.
+   * Desktop Electron never bumps it, so it is inert there.
+   */
+  pluginAdapterGeneration: number;
   pluginThemeId: string | null;
   pluginViewState: PluginViewState;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -1343,6 +1352,8 @@ export type AppState = {
   setInstalledPlugins: (plugins: InstalledPlugin[]) => void;
   /** Pull the registry from the host. Resolves even when the host has no plugin surface. */
   refreshInstalledPlugins: () => Promise<void>;
+  /** See `pluginAdapterGeneration`. */
+  bumpPluginAdapterGeneration: () => void;
   setPluginThemeId: (pluginId: string | null) => void;
   /** Remember which panel a plugin tab was last showing. */
   setLastPluginPanel: (pluginId: string, panelId: string) => void;
@@ -1606,6 +1617,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   installedPlugins: [],
   pluginsLoaded: false,
+  pluginAdapterGeneration: 0,
   pluginThemeId: initialUserPreferences.pluginThemeId,
   pluginViewState: initialUserPreferences.pluginViewState,
   dictationPhase: "idle",
@@ -2138,6 +2150,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const plugins = await listInstalledPlugins();
     set({ installedPlugins: plugins, pluginsLoaded: true });
   },
+  bumpPluginAdapterGeneration: () =>
+    set((prev) => ({ pluginAdapterGeneration: prev.pluginAdapterGeneration + 1 })),
   setPluginThemeId: (pluginId) =>
     set((prev) => {
       const value = normalizePluginThemeId(pluginId);

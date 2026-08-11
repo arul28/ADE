@@ -19,15 +19,15 @@
     "the tag, and never edited afterwards."
   ],
   "plugins": {
-    "ade-graph": { "repo": "https://github.com/arul28/ade-graph", "checksums": {} },
-    "ade-review": { "repo": "https://github.com/arul28/ade-review", "checksums": {} },
-    "ade-history": { "repo": "https://github.com/arul28/ade-history", "checksums": {} },
-    "ade-linear": { "repo": "https://github.com/arul28/ade-linear", "checksums": {} },
-    "ade-ios-sim": { "repo": "https://github.com/arul28/ade-ios-sim", "checksums": {} },
-    "ade-app-control": { "repo": "https://github.com/arul28/ade-app-control", "checksums": {} },
-    "ade-log-viewer": { "repo": "https://github.com/arul28/ade-log-viewer", "checksums": {} },
-    "ade-theme-paper": { "repo": "https://github.com/arul28/ade-theme-paper", "checksums": {} },
-    "ade-theme-ink": { "repo": "https://github.com/arul28/ade-theme-ink", "checksums": {} },
-    "ade-theme-contrast": { "repo": "https://github.com/arul28/ade-theme-contrast", "checksums": {} }
+    "ade-graph": { "repo": "https://github.com/arul28/ade-graph", "checksums": { "1.0.0": "f1e84d156c7af4fce4fdc42c25446e982deca4fbda9d6489430b490b86debcc8" } },
+    "ade-review": { "repo": "https://github.com/arul28/ade-review", "checksums": { "1.0.0": "3ae617ec717bd73c3dd25d9625d1f813bd553a87078e1f9b9a7302ab363cd90f" } },
+    "ade-history": { "repo": "https://github.com/arul28/ade-history", "checksums": { "1.0.0": "241a2a21dc932f32c1e653b1298ea3d98f53fb68dc90c31ca4eddf87c6076570" } },
+    "ade-linear": { "repo": "https://github.com/arul28/ade-linear", "checksums": { "1.0.0": "5178d028d994ad9497630b898b2d4c05a7e7999726a800e5c3c672992bab932d" } },
+    "ade-ios-sim": { "repo": "https://github.com/arul28/ade-ios-sim", "checksums": { "1.0.0": "8523a703fc1c3cb2dde158134e516d4d149bc77eb2af92ba32e58cccf5d0b57c" } },
+    "ade-app-control": { "repo": "https://github.com/arul28/ade-app-control", "checksums": { "1.0.0": "c8d8b0a9fc6e76ba3b7cecc9836ff0e81075690d20a7720e85a4f63b3c6bbfee" } },
+    "ade-log-viewer": { "repo": "https://github.com/arul28/ade-log-viewer", "checksums": { "1.0.0": "3d386fecc6a79634133c4871dc858b91248c0d9de2fd816396e59c86d984bd8c" } },
+    "ade-theme-paper": { "repo": "https://github.com/arul28/ade-theme-paper", "checksums": { "1.0.0": "3368d735b474c3df2679d9b6eb4ac0539135c25104f1163e748f8a9c8956dca4" } },
+    "ade-theme-ink": { "repo": "https://github.com/arul28/ade-theme-ink", "checksums": { "1.0.0": "f3629aff74df060b3b8d1dcb09acf56b1062039303c24a0066c97f283d83fcfe" } },
+    "ade-theme-contrast": { "repo": "https://github.com/arul28/ade-theme-contrast", "checksums": { "1.0.0": "482c3817176d0fcd0a29cf3600838161da44ae51642ae3e6802a8ca5b57c99f9" } }
   }
 }

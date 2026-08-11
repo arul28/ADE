@@ -18,6 +18,14 @@ export type WebWorkspaceContextValue = {
   notice: string | null;
   dismissNotice(): void;
   consumePendingProjectPath(): string | null;
+  /**
+   * Pulls a pending `linear-issue` deeplink target off the queue, or null when
+   * the pending target (if any) is not one. Callers check this BEFORE
+   * `consumePendingProjectPath`, which has no way to open the Linear quick
+   * view itself and would otherwise silently degrade the same target to a
+   * `/work?linearIssue=…` route nothing on the receiving end reads.
+   */
+  consumePendingLinearIssueTarget(): { issueIdentifier: string; branch: string | null } | null;
   signIn(): void;
   signOut(): Promise<void>;
   retryDirectory(): Promise<void>;

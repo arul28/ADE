@@ -16,6 +16,9 @@ import {
   type RecentProjectGroup,
 } from "../app/projectTabGrouping";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { showToast } from "../app/toast/toastStore";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
@@ -42,6 +45,7 @@ export function ProjectWelcomePage() {
   const navigate = useNavigate();
   const workspace = useOptionalWebWorkspace();
   const webMode = isWebClientMode() && workspace != null;
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
@@ -197,7 +201,30 @@ export function ProjectWelcomePage() {
         try {
           const targetId = await workspace.connectMachineEntry(machine);
           await workspace.adapter.openProject(targetId, projectId);
-          navigate(workspace.consumePendingProjectPath() ?? "/work");
+          // A `linear-issue` target has no web route of its own, so it is
+          // resolved here directly rather than through
+          // `consumePendingProjectPath` — which would otherwise hand back a
+          // `/work?linearIssue=…` URL nothing reads — the same honest refusal
+          // `refuseGatedTarget` shows on desktop when the plugin is missing.
+          const linearTarget = workspace.consumePendingLinearIssueTarget();
+          if (linearTarget) {
+            if (linearSurfaceVisible) {
+              requestLinearIssueQuickView({
+                issueIdentifier: linearTarget.issueIdentifier,
+                branch: linearTarget.branch,
+                source: "deeplink",
+              });
+            } else {
+              showToast({
+                title: "Linear isn't part of this ADE",
+                message: "It comes from a plugin that isn't installed on this computer.",
+                tone: "info",
+              });
+            }
+            navigate("/work");
+          } else {
+            navigate(workspace.consumePendingProjectPath() ?? "/work");
+          }
         } catch (error) {
           setRowError(error instanceof Error ? error.message : String(error));
         } finally {
@@ -205,7 +232,7 @@ export function ProjectWelcomePage() {
         }
       })();
     },
-    [navigate, webMachineByKey, workspace],
+    [linearSurfaceVisible, navigate, webMachineByKey, workspace],
   );
 
   // Why the hosted client is showing no machines, in the account's own words.

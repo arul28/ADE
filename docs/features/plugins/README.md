@@ -316,6 +316,15 @@ receive a typed read-only context object — a projection with the handful of
 fields a plugin's UI needs, never a handle to the lane's worktree, the PR's
 token, or the session's transcript.
 
+The lane row's Linear issue badge (`LinearIssueBadge`) is not a `row-badge`
+socket contribution, and stays ungated by the plugin registry on purpose even
+though `ade-linear` is an installable, disableable plugin: which Linear issue a
+lane implements is core lane metadata (`lane.linearIssue`), not something a
+plugin adds, and the badge's two actions — the external link to Linear and a
+core chat entry point — belong to neither. Uninstalling or disabling
+`ade-linear` hides that plugin's own surfaces (its pane, its `linear-issue`
+deeplink target) but never the badge.
+
 ### Themes
 
 Theme plugins omit `entry` entirely and run no code. The engine injects a single
@@ -410,8 +419,10 @@ oversight:
 - **The registry is not yet a standalone repository.** Extraction is a manual
   step documented in [registry/README.md](../../../registry/README.md), and the
   crawler workflow is deliberately not under `.github/workflows/`.
-- **`official.json` sha256 slots are empty until release tagging.** Only real
-  digests are ever recorded.
+- **`official.json` sha256 slots fill in only when a version is tagged**, and
+  the in-repo copy is synced by hand from the published registry rather than
+  regenerated — only real digests are ever recorded, but nothing keeps this
+  file current automatically.
 - **No `plugins.recommended` in per-project `ade.yaml`.** Installs are
   per-machine in v1.
 

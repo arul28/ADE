@@ -136,7 +136,7 @@ final class DeepLinkRouter {
     case "plugin":
       // `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]` — a panel of
       // an installed plugin. Both ids are fatal when malformed; `ctx` is not.
-      guard pathComponents.count >= 2,
+      guard pathComponents.count == 2,
             ADEDeepLinkURLParsing.isValidPluginId(pathComponents[0]),
             ADEDeepLinkURLParsing.isValidPluginPanelId(pathComponents[1])
       else { return }

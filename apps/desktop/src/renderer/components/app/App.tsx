@@ -33,7 +33,12 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { usePluginRegistrySync } from "../plugins/usePluginRegistry";
 import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
-import { builtinGateForRoute, isBuiltinSurfaceVisible, isBuiltinTabVisible } from "../plugins/builtinTabs";
+import {
+  builtinGateForRoute,
+  isBuiltinSurfaceVisible,
+  isBuiltinTabVisible,
+  type BuiltinGateInput,
+} from "../plugins/builtinTabs";
 import { resolvePluginDeeplinkRouting } from "./pluginDeeplinkRoute";
 import { BuiltinRouteGuard } from "../plugins/BuiltinRouteGuard";
 import { showToast } from "./toast/toastStore";
@@ -370,6 +375,29 @@ function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): 
   params.delete("externalOpen");
   const search = params.toString();
   return `${location.pathname}${search ? `?${search}` : ""}${location.hash ?? ""}`;
+}
+
+/**
+ * A route safe to write to `projectRouteStorage`.
+ *
+ * Restoring a stored route later navigates straight to it (see the read at
+ * `readStoredProjectRoute` below), with no gate in between — that read trusts
+ * whatever was written. So the gate belongs here, at write time: a route whose
+ * owning builtin surface is KNOWN unavailable — plugin support present,
+ * registry loaded, owner not installed-and-enabled — persists as `/work`
+ * instead, so a later restore lands somewhere real rather than a dead tab.
+ *
+ * "Known" is the load-bearing word. Before the registry has loaded,
+ * `isBuiltinSurfaceVisible` also answers false — that is "do not know yet",
+ * not "unavailable", and clobbering a perfectly good stored route because the
+ * registry hasn't resolved on this particular render would be its own bug.
+ */
+function persistableSurfaceRoute(route: string, gateInput: BuiltinGateInput): string {
+  const gate = builtinGateForRoute(route);
+  if (!gate) return route;
+  const knownUnavailable =
+    gateInput.pluginSupport && gateInput.pluginsLoaded && !isBuiltinSurfaceVisible(gate.builtinId, gateInput);
+  return knownUnavailable ? "/work" : route;
 }
 
 type ProjectSurfaceEntry = {
@@ -801,6 +829,15 @@ function ProjectTabHost() {
     ];
   }, [activeSurfaceKey]);
 
+  // Read through a ref for the same reason `builtinGateInputRef` further down
+  // does: these two route-persistence effects must not re-fire every time the
+  // plugin registry ticks, only when the surface/location actually changes.
+  // A second subscription rather than hoisting that later one, since it is
+  // declared well after these effects and other hooks sit between the two.
+  const routePersistGateInput = useBuiltinGateInput();
+  const routePersistGateInputRef = React.useRef(routePersistGateInput);
+  routePersistGateInputRef.current = routePersistGateInput;
+
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
     const preload = () => {
@@ -836,8 +873,9 @@ function ProjectTabHost() {
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
     if (previousSurfaceKey && currentRoute) {
-      writeStoredProjectRoute(previousSurfaceKey, currentRoute);
-      setRoutesBySurfaceKey((prev) => ({ ...prev, [previousSurfaceKey]: currentRoute }));
+      const persistRoute = persistableSurfaceRoute(currentRoute, routePersistGateInputRef.current);
+      writeStoredProjectRoute(previousSurfaceKey, persistRoute);
+      setRoutesBySurfaceKey((prev) => ({ ...prev, [previousSurfaceKey]: persistRoute }));
     }
     previousActiveSurfaceKeyRef.current = activeSurfaceKey;
     if (!activeSurfaceKey) return;
@@ -845,8 +883,9 @@ function ProjectTabHost() {
       currentRoute &&
       currentRoute !== "/onboarding";
     if (!previousSurfaceKey && shouldKeepInitialRoute) {
-      writeStoredProjectRoute(activeSurfaceKey, currentRoute);
-      setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === currentRoute ? prev : { ...prev, [activeSurfaceKey]: currentRoute }));
+      const persistRoute = persistableSurfaceRoute(currentRoute, routePersistGateInputRef.current);
+      writeStoredProjectRoute(activeSurfaceKey, persistRoute);
+      setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === persistRoute ? prev : { ...prev, [activeSurfaceKey]: persistRoute }));
       return;
     }
     const nextRoute = routesBySurfaceKey[activeSurfaceKey] ?? readStoredProjectRoute(activeSurfaceKey) ?? "/work";
@@ -865,8 +904,9 @@ function ProjectTabHost() {
     if (pending?.surfaceKey === activeSurfaceKey && pending.route === route) {
       pendingNavigationRef.current = null;
     }
-    writeStoredProjectRoute(activeSurfaceKey, route);
-    setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
+    const persistRoute = persistableSurfaceRoute(route, routePersistGateInputRef.current);
+    writeStoredProjectRoute(activeSurfaceKey, persistRoute);
+    setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === persistRoute ? prev : { ...prev, [activeSurfaceKey]: persistRoute }));
   }, [activeSurfaceKey, location]);
 
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
