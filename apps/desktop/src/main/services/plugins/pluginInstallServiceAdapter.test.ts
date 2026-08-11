@@ -128,3 +128,88 @@ describe("pluginInstallServiceAdapter", () => {
     });
   });
 });
+
+describe("record detail for peers", () => {
+  it("carries manifest tabs and theme so a peer can render what it cannot read", async () => {
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          surfaces: [
+            { kind: "tab", id: "graph", title: "Graph", panelId: "main", icon: "network" },
+            { kind: "pane", id: "side", title: "Side", panelId: "side" },
+          ],
+          theme: { tokens: { dark: { "--color-accent": "#5b8def" } } },
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    // Panes are not tabs; only tab surfaces become navigable entries.
+    expect(record.tabs).toEqual([
+      { id: "graph", title: "Graph", panelId: "main", icon: "network" },
+    ]);
+    expect(record.theme).toEqual({
+      displayName: "Graph",
+      tokens: { dark: { "--color-accent": "#5b8def" } },
+    });
+  });
+
+  it("says a plugin is definitively not a theme when the manifest declares none", async () => {
+    const { service } = stubInstallService({ list: () => [installed()] });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record.tabs).toEqual([]);
+    expect(record.theme).toBeNull();
+  });
+
+  // Absent and empty mean different things here: an unreadable manifest means
+  // this host cannot see the answer, and claiming "no tabs, not a theme" would
+  // be a statement we have no basis for.
+  it("omits tabs and theme entirely when the manifest could not be parsed", async () => {
+    const { service } = stubInstallService({ list: () => [installed({ manifest: null })] });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record).not.toHaveProperty("tabs");
+    expect(record).not.toHaveProperty("theme");
+  });
+
+  it("reports the supervisor's real status, collapsing only what a reader cannot draw", async () => {
+    const { service } = stubInstallService({ list: () => [installed()] });
+    const cases = [
+      ["running", "running"],
+      ["starting", "starting"],
+      ["restarting", "starting"],
+      ["crashed", "crashed"],
+      ["idle", "stopped"],
+      ["stopped", "stopped"],
+      ["no-entry", "none"],
+    ] as const;
+
+    for (const [hostStatus, expected] of cases) {
+      const adapter = createPluginInstallServiceAdapter({
+        install: service,
+        runtimeStatus: () => hostStatus,
+      });
+      const [record] = await adapter.list();
+      expect(record.status).toBe(expected);
+    }
+  });
+
+  // The guess this exists to prevent: `enabled` is registry state, so an
+  // enabled-but-crashed plugin would report "running" and show a green dot.
+  it("omits status rather than inferring it from enabled", async () => {
+    const { service } = stubInstallService({ list: () => [installed()] });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record.enabled).toBe(true);
+    expect(record).not.toHaveProperty("status");
+  });
+});

@@ -1,10 +1,12 @@
 import type {
   PluginInstallRecord as SyncPluginInstallRecord,
+  PluginRecordRuntimeStatus as SyncPluginRecordRuntimeStatus,
+  PluginRecordTab as SyncPluginRecordTab,
   PluginInstallService as SyncPluginInstallService,
   PluginInstallSource as SyncPluginInstallSource,
 } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import type { PluginPresenceRow } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
-import type { PluginInstallSource } from "../../../shared/plugins/sdk";
+import type { PluginInstallSource, PluginRuntimeStatus } from "../../../shared/plugins/sdk";
 import type { PluginInstalledPlugin, PluginInstallService } from "./pluginInstallService";
 
 /**
@@ -26,8 +28,55 @@ function describeSource(source: PluginInstallSource): string {
   return "builtin";
 }
 
-function toSyncRecord(installed: PluginInstalledPlugin): SyncPluginInstallRecord {
+/**
+ * Host status -> the union a peer understands.
+ *
+ * The host tracks more states than the record carries because it owns the
+ * child; a reader only needs to know what to draw. `restarting` collapses into
+ * `starting` (the host is still trying, so a spinner is right) while `crashed`
+ * stays distinct, because that is the one state the user has to act on — and
+ * after crash containment it is also terminal.
+ */
+function toRecordStatus(status: PluginRuntimeStatus): SyncPluginRecordRuntimeStatus {
+  switch (status) {
+    case "running":
+      return "running";
+    case "starting":
+    case "restarting":
+      return "starting";
+    case "crashed":
+      return "crashed";
+    case "idle":
+    case "stopped":
+      return "stopped";
+    case "no-entry":
+      return "none";
+    default:
+      return "none";
+  }
+}
+
+function toRecordTabs(installed: PluginInstalledPlugin): SyncPluginRecordTab[] {
+  return (installed.manifest?.surfaces ?? [])
+    .filter((surface) => surface.kind === "tab")
+    .map((surface) => ({
+      id: surface.id,
+      title: surface.title,
+      panelId: surface.panelId,
+      icon: surface.icon ?? null,
+    }));
+}
+
+function toSyncRecord(
+  installed: PluginInstalledPlugin,
+  runtimeStatus?: (pluginId: string) => PluginRuntimeStatus | null,
+): SyncPluginInstallRecord {
   const manifest = installed.manifest;
+  // Absent means "this host cannot see it", which the reader renders as
+  // unknown. Only a manifest we actually parsed lets us say "no tabs" or "not a
+  // theme" — with an unreadable manifest, an empty array would be a claim we
+  // have no basis for. Same rule for status: no reader supplied, no answer.
+  const status = runtimeStatus?.(installed.record.pluginId) ?? null;
   return {
     pluginId: installed.record.pluginId,
     version: manifest?.version ?? installed.record.version,
@@ -39,6 +88,13 @@ function toSyncRecord(installed: PluginInstalledPlugin): SyncPluginInstallRecord
     accent: manifest?.accent ?? "",
     source: describeSource(installed.record.source),
     installedAt: installed.record.installedAt,
+    ...(status ? { status: toRecordStatus(status) } : {}),
+    ...(manifest
+      ? {
+        tabs: toRecordTabs(installed),
+        theme: manifest.theme ? { displayName: manifest.displayName, tokens: manifest.theme.tokens } : null,
+      }
+      : {}),
   };
 }
 
@@ -46,10 +102,18 @@ export function createPluginInstallServiceAdapter(deps: {
   install: PluginInstallService;
   /** Fired after any install-state change, so presence can republish. */
   onChanged?: () => void;
+  /**
+   * Live child status, straight from the supervisor. Optional: a host that
+   * cannot answer leaves `status` off the record rather than guessing from
+   * `enabled`, which would put a green dot next to a crashed plugin.
+   */
+  runtimeStatus?: (pluginId: string) => PluginRuntimeStatus | null;
 }): SyncPluginInstallService {
   const changed = (): void => {
     deps.onChanged?.();
   };
+  const record = (installed: PluginInstalledPlugin): SyncPluginInstallRecord =>
+    toSyncRecord(installed, deps.runtimeStatus);
 
   return {
     async install(source: SyncPluginInstallSource): Promise<SyncPluginInstallRecord> {
@@ -67,7 +131,7 @@ export function createPluginInstallServiceAdapter(deps: {
           ...(source.ref ? { ref: source.ref } : {}),
         });
       changed();
-      return toSyncRecord(installed);
+      return record(installed);
     },
 
     async uninstall(pluginId: string): Promise<{ removed: boolean }> {
@@ -79,24 +143,24 @@ export function createPluginInstallServiceAdapter(deps: {
     async setEnabled(pluginId: string, enabled: boolean): Promise<SyncPluginInstallRecord> {
       const installed = deps.install.setEnabled(pluginId, enabled);
       changed();
-      return toSyncRecord(installed);
+      return record(installed);
     },
 
     async list(): Promise<SyncPluginInstallRecord[]> {
-      return deps.install.list().map(toSyncRecord);
+      return deps.install.list().map(record);
     },
   };
 }
 
 /** The presence row for one installed plugin, from the same display fields. */
 export function toPluginPresenceRow(installed: PluginInstalledPlugin): PluginPresenceRow {
-  const record = toSyncRecord(installed);
+  const syncRecord = toSyncRecord(installed);
   return {
-    pluginId: record.pluginId,
-    version: record.version,
-    enabled: record.enabled,
-    displayName: record.displayName,
-    icon: record.icon,
-    accent: record.accent,
+    pluginId: syncRecord.pluginId,
+    version: syncRecord.version,
+    enabled: syncRecord.enabled,
+    displayName: syncRecord.displayName,
+    icon: syncRecord.icon,
+    accent: syncRecord.accent,
   };
 }
