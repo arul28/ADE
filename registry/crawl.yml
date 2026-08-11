@@ -1,0 +1,63 @@
+# Registry crawler.
+#
+# NOT ACTIVE IN THIS REPOSITORY. It lives at `registry/crawl.yml` on purpose:
+# anything under `.github/workflows/` runs here, and this workflow belongs to the
+# standalone `ade-plugins-registry` repository, where it is checked in as
+# `.github/workflows/crawl.yml`. See ../registry/README.md, "Extraction".
+#
+# Free by construction: a scheduled Action in a public repository, writing a
+# static JSON file that GitHub then serves and caches. No worker, no database,
+# no dependency install.
+
+name: Rebuild plugin index
+
+on:
+  schedule:
+    # Every six hours. The index is a discovery aid, not a source of truth about
+    # what is installed, so freshness is worth very little and commits are noise.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+  push:
+    # A curation change should take effect without waiting for the next tick.
+    branches: [main]
+    paths:
+      - "featured.json"
+      - "official.json"
+      - "scripts/crawl.mjs"
+
+concurrency:
+  group: rebuild-plugin-index
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rebuild index.json
+        env:
+          # The default job token: enough for repository search and public
+          # `contents` reads, and it lifts the crawl off the 60/hour
+          # unauthenticated ceiling.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/crawl.mjs
+
+      - name: Commit when the index changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- index.json; then
+            echo "index.json unchanged"
+            exit 0
+          fi
+          git config user.name "ade-registry-bot"
+          git config user.email "ade-registry-bot@users.noreply.github.com"
+          git add index.json
+          git commit -m "chore: rebuild plugin index"
+          git push

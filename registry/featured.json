@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "notes": [
+    "The Marketplace hero row. Curated by hand, never computed from install counts —",
+    "a popularity-ranked hero is a feedback loop that only ever shows what is already",
+    "on top, and the row is the one place a new plugin can be seen.",
+    "The crawler copies `featured: true` onto matching index entries and ignores ids",
+    "it cannot find, so removing a plugin from the registry cannot leave a dead hero card."
+  ],
+  "featured": ["graph", "history", "video-viewer"]
+}

@@ -127,6 +127,17 @@ function signRequest(
   return `sha256=${signature}`;
 }
 
+/**
+ * The canonical signer, for callers outside this module.
+ *
+ * Exported rather than copied because the base string is a contract with the
+ * worker: a second implementation that drifts by one byte fails as
+ * "unauthorized", which is the hardest possible way to find a formatting bug.
+ * Used by the plugin install ping (`services/plugins/pluginInstallPing.ts`),
+ * which signs the same machine identity but is not part of the push pipeline.
+ */
+export { signRequest as signPushRelayRequest };
+
 type RelayResponse = { ok: boolean; status: number; body: Record<string, unknown> | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

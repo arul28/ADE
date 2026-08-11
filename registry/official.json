@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "notes": [
+    "The Official set, and the digests ADE vouches for.",
+    "",
+    "`official` is set HERE and nowhere else. A plugin's own manifest may claim",
+    "`\"official\": true` — anyone can write that — so the crawler ignores the manifest's",
+    "claim and takes the flag from this file. Being official is a statement ADE makes",
+    "about a plugin, not one the plugin makes about itself.",
+    "",
+    "`checksums` maps a released version to the sha256 of that version's source tree",
+    "(see README, 'Official signing'). The installer refuses a version whose bytes",
+    "disagree with a published digest; a version with no digest installs as unverified.",
+    "The maps start empty: a digest is added when a version is tagged, computed from",
+    "the tag, and never edited afterwards."
+  ],
+  "plugins": {
+    "graph": { "repo": "https://github.com/ade-plugins/graph", "checksums": {} },
+    "history": { "repo": "https://github.com/ade-plugins/history", "checksums": {} },
+    "video-viewer": { "repo": "https://github.com/ade-plugins/video-viewer", "checksums": {} },
+    "slate-theme": { "repo": "https://github.com/ade-plugins/slate-theme", "checksums": {} },
+    "ember-theme": { "repo": "https://github.com/ade-plugins/ember-theme", "checksums": {} },
+    "paper-theme": { "repo": "https://github.com/ade-plugins/paper-theme", "checksums": {} }
+  }
+}

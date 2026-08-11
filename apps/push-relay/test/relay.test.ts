@@ -47,6 +47,13 @@ class FakeD1Statement {
 }
 
 type RevokedMachineRow = { user_id: string; machine_key: string; revoked_at: string };
+type PluginInstallRow = {
+  plugin_id: string;
+  machine_key: string;
+  version: string;
+  first_seen_at: string;
+  updated_at: string;
+};
 
 class FakeD1Database {
   machines: MachineRow[] = [];
@@ -54,6 +61,7 @@ class FakeD1Database {
   activityTokens: ActivityTokenRow[] = [];
   suppressions: SuppressionRow[] = [];
   revokedMachines: RevokedMachineRow[] = [];
+  pluginInstalls: PluginInstallRow[] = [];
   rateCounters = new Map<string, { window_start: number; count: number; updated_at: string }>();
   private nextBatchFailureIndex: number | null = null;
 
@@ -168,6 +176,20 @@ class FakeD1Database {
         )
         .map((row) => ({ ...row })) as T[];
     }
+    if (sql.includes("from plugin_installs")) {
+      // `count(*) group by plugin_id` — the primary key is (plugin_id,
+      // machine_key), so one machine contributes exactly one row per plugin.
+      const [limit] = values as [number];
+      const totals = new Map<string, number>();
+      for (const row of this.pluginInstalls) {
+        totals.set(row.plugin_id, (totals.get(row.plugin_id) ?? 0) + 1);
+      }
+      return [...totals]
+        .map(([plugin_id, installs]) => ({ plugin_id, installs }))
+        .sort((left, right) =>
+          right.installs - left.installs || left.plugin_id.localeCompare(right.plugin_id))
+        .slice(0, limit) as T[];
+    }
     return [];
   }
 
@@ -278,6 +300,32 @@ class FakeD1Database {
       this.devices = this.devices.filter(
         (row) => !(row.machine_key === machineKey && row.device_id === deviceId),
       );
+      return;
+    }
+    if (sql.includes("insert into plugin_installs")) {
+      const [pluginId, machineKey, version, firstSeenAt, updatedAt] = values as string[];
+      const existing = this.pluginInstalls.find(
+        (row) => row.plugin_id === pluginId && row.machine_key === machineKey,
+      );
+      if (existing) {
+        // Mirrors `do update set version, updated_at` — first_seen_at is never
+        // rewritten, so a re-ping cannot make an old install look new.
+        existing.version = version;
+        existing.updated_at = updatedAt;
+        return;
+      }
+      this.pluginInstalls.push({
+        plugin_id: pluginId,
+        machine_key: machineKey,
+        version,
+        first_seen_at: firstSeenAt,
+        updated_at: updatedAt,
+      });
+      return;
+    }
+    if (sql.startsWith("delete from plugin_installs")) {
+      const [cutoff] = values as string[];
+      this.pluginInstalls = this.pluginInstalls.filter((row) => row.updated_at >= cutoff);
       return;
     }
     if (sql.includes("insert into live_activity_tokens")) {
@@ -1437,6 +1485,133 @@ describe("push relay", () => {
     );
     expect(blocked.status).toBe(403);
     expect(await blocked.json()).toMatchObject({ code: "machine_revoked" });
+  });
+
+  describe("plugin install pings", () => {
+    const ping = (body: unknown, machineKey = MACHINE_KEY, secret = SECRET) =>
+      signedRequest({
+        method: "POST",
+        path: `/machines/${machineKey}/plugin-installs`,
+        body,
+        secret,
+      });
+
+    it("counts one install per machine however many times it is reported", async () => {
+      const env = makeEnv(db, undefined);
+      await claimMachine(db, env);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await handleRequest(await ping({ pluginId: "graph", version: "1.0.0" }), env);
+        expect(response.status).toBe(200);
+      }
+      // A reinstall, an upgrade and a retried fire-and-forget ping are all the
+      // same fact: this machine has the plugin.
+      expect(await handleRequest(await ping({ pluginId: "graph", version: "1.1.0" }), env)).toBeTruthy();
+      expect(db.pluginInstalls).toHaveLength(1);
+      expect(db.pluginInstalls[0]).toMatchObject({
+        plugin_id: "graph",
+        machine_key: MACHINE_KEY,
+        version: "1.1.0",
+      });
+      // first_seen_at survives the upgrade; only updated_at moves.
+      expect(db.pluginInstalls[0]!.first_seen_at <= db.pluginInstalls[0]!.updated_at).toBe(true);
+    });
+
+    it("refuses an unsigned ping", async () => {
+      const env = makeEnv(db, undefined);
+      await claimMachine(db, env);
+      const response = await handleRequest(
+        new Request(`https://push.example/machines/${MACHINE_KEY}/plugin-installs`, {
+          method: "POST",
+          body: JSON.stringify({ pluginId: "graph", version: "1.0.0" }),
+        }),
+        env,
+      );
+      expect(response.status).toBe(401);
+      expect(db.pluginInstalls).toHaveLength(0);
+    });
+
+    it("refuses a ping from a machine removed from the account", async () => {
+      const env = makeEnv(db, undefined);
+      await claimMachine(db, env);
+      db.revokedMachines.push({
+        user_id: "user-1",
+        machine_key: MACHINE_KEY,
+        revoked_at: new Date().toISOString(),
+      });
+      const response = await handleRequest(await ping({ pluginId: "graph", version: "1.0.0" }), env);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: "machine_revoked" });
+      expect(db.pluginInstalls).toHaveLength(0);
+    });
+
+    it("refuses ids and versions the app itself would refuse", async () => {
+      const env = makeEnv(db, undefined);
+      await claimMachine(db, env);
+      const rejected = [
+        { pluginId: "../escape", version: "1.0.0" },
+        { pluginId: "Graph", version: "1.0.0" },
+        { pluginId: "graph", version: "latest" },
+        { pluginId: "graph" },
+        {},
+      ];
+      for (const body of rejected) {
+        expect((await handleRequest(await ping(body), env)).status).toBe(400);
+      }
+      expect(db.pluginInstalls).toHaveLength(0);
+    });
+
+    it("rate limits a signed machine that floods pings", async () => {
+      const env: PushRelayEnv = { ...makeEnv(db, undefined), PLUGIN_INSTALL_RATE_LIMIT_PER_MIN: "2" };
+      await claimMachine(db, env);
+      expect((await handleRequest(await ping({ pluginId: "graph", version: "1.0.0" }), env)).status).toBe(200);
+      expect((await handleRequest(await ping({ pluginId: "history", version: "1.0.0" }), env)).status).toBe(200);
+      const limited = await handleRequest(await ping({ pluginId: "video-viewer", version: "1.0.0" }), env);
+      expect(limited.status).toBe(429);
+      expect(db.pluginInstalls.map((row) => row.plugin_id)).toEqual(["graph", "history"]);
+    });
+
+    it("publishes totals only, with no machine identity and a cache header", async () => {
+      const env = makeEnv(db, undefined);
+      const otherMachine = "b".repeat(32);
+      const otherSecret = "t".repeat(48);
+      await claimMachine(db, env);
+      await handleRequest(
+        new Request(`https://push.example/machines/${otherMachine}/claim`, {
+          method: "POST",
+          body: JSON.stringify({ secret: otherSecret }),
+        }),
+        env,
+      );
+      await handleRequest(await ping({ pluginId: "graph", version: "1.0.0" }), env);
+      await handleRequest(await ping({ pluginId: "graph", version: "1.0.0" }, otherMachine, otherSecret), env);
+      await handleRequest(await ping({ pluginId: "history", version: "1.0.0" }), env);
+
+      const response = await handleRequest(
+        new Request("https://push.example/plugins/installs"),
+        env,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toContain("max-age=");
+      const body = await response.json() as { counts: Array<{ pluginId: string; installs: number }> };
+      expect(body.counts).toEqual([
+        { pluginId: "graph", installs: 2 },
+        { pluginId: "history", installs: 1 },
+      ]);
+      // The endpoint is unauthenticated, so the response must not be able to
+      // tell anyone WHICH machines have a plugin.
+      expect(JSON.stringify(body)).not.toContain(MACHINE_KEY);
+      expect(JSON.stringify(body)).not.toContain(otherMachine);
+    });
+
+    it("does not answer the public counts route for a write", async () => {
+      const env = makeEnv(db, undefined);
+      const response = await handleRequest(
+        new Request("https://push.example/plugins/installs", { method: "POST" }),
+        env,
+      );
+      expect(response.status).toBe(404);
+    });
   });
 
   it("never runs the fan-out Attention sweeps from a user-facing request", async () => {

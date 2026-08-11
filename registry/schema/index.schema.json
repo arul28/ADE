@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ade-plugins/ade-plugins-registry/main/schema/index.schema.json",
+  "title": "ADE plugin registry index",
+  "description": "The document the crawler writes and every ADE install reads. Kept in step with apps/desktop/src/shared/plugins/registryIndex.ts, which is the enforcing copy — this file documents the contract and lets the crawler validate before publishing.",
+  "type": "object",
+  "required": ["version", "generatedAt", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Index shape version. Readers accept a higher number and degrade field by field rather than refusing the document.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "generatedAt": {
+      "description": "When the crawler produced this document.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "pluginId": {
+      "description": "Lowercase kebab-case. Also a directory name, a secret namespace, a sync primary key and a CLI word.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "httpsUrl": {
+      "description": "https only, and no credentials in the authority — an entry is third-party text and these URLs reach git.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://[^@/\\s]+(/[^\\s]*)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "surface": {
+      "enum": ["work", "lanes", "files", "prs", "automations", "cto"]
+    },
+    "socket": {
+      "enum": [
+        "toolbar-action",
+        "row-badge",
+        "row-menu-item",
+        "detail-section",
+        "empty-state",
+        "filter-chip",
+        "file-viewer"
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "required": ["pluginId", "displayName", "description", "author", "version", "repo"],
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": { "$ref": "#/$defs/pluginId" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": {
+          "description": "One line. Longer text belongs in the readme.",
+          "type": "string",
+          "maxLength": 300
+        },
+        "author": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "version": { "$ref": "#/$defs/version" },
+        "repo": {
+          "description": "Canonical repository URL — where the crawler found the plugin.",
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "source": {
+          "description": "Installable source, when it differs from repo. Readers fall back to repo.",
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "changelogUrl": { "$ref": "#/$defs/httpsUrl" },
+        "icon": { "type": "string", "maxLength": 64 },
+        "accent": { "type": "string", "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+        "official": {
+          "description": "Curated by ADE. Set from official.json, never from the plugin's own manifest.",
+          "type": "boolean"
+        },
+        "featured": {
+          "description": "Set from featured.json. The hero row is curated, not computed.",
+          "type": "boolean"
+        },
+        "isTheme": { "type": "boolean" },
+        "surfaces": {
+          "description": "Core surfaces the plugin extends. Facet metadata; the installed manifest stays authoritative.",
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/surface" }
+        },
+        "sockets": {
+          "type": "array",
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/socket" }
+        },
+        "adds": {
+          "description": "Short lines for the install modal when the entry publishes no manifest.",
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 120 }
+        },
+        "installs": {
+          "description": "Distinct machines that reported installing this plugin. Omit when never measured — readers render an omitted count as nothing, never as zero.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "stars": { "type": "integer", "minimum": 0 },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "readme": { "type": "string", "maxLength": 32768 },
+        "checksums": {
+          "description": "version -> sha256 over the plugin's source tree. Published for official entries; the installer refuses a mismatch.",
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "$ref": "#/$defs/version" },
+          "additionalProperties": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  }
+}

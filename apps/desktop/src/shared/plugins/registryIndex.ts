@@ -1,0 +1,385 @@
+/**
+ * The plugin directory's index contract.
+ *
+ * ADE's directory is a static `index.json` in a public repository, rebuilt by a
+ * scheduled job that crawls the `ade-plugin` GitHub topic (design decision
+ * D16). That choice buys free hosting and edge caching, and it costs exactly
+ * one thing: the file is assembled from third-party repositories, so every byte
+ * in it is attacker-controlled. This module is the gate that runs before any of
+ * it reaches a cache, a UI, or an installer.
+ *
+ * The rules it enforces:
+ *
+ * 1. **Reject the entry, never the index.** One malformed repository is a
+ *    routine event in a crawled directory. It costs its own entry and nothing
+ *    else — an index that fails whole would let any published plugin take the
+ *    Marketplace down.
+ * 2. **Ids and URLs are validated here, once.** The plugin id is the same path
+ *    component `manifest.ts` guards, and a directory-supplied source URL is the
+ *    argument an installer hands to `git`. Both are checked at the boundary so
+ *    no downstream caller has to remember to.
+ * 3. **Checksums gate Official, and only Official.** An entry marked official
+ *    carries a `sha256` per version; the installer verifies it before running
+ *    anything. A community entry has none, and is honestly labelled as such
+ *    rather than silently treated as vouched-for.
+ *
+ * Pure module — no Node built-ins, no Electron — because the daemon validates
+ * with it and the renderer holds the same types.
+ */
+
+import { isValidPluginId, isValidPluginVersion } from "./manifest";
+import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
+
+/** Shape version of the index contract implemented by this file. */
+export const PLUGIN_REGISTRY_INDEX_VERSION = 1;
+
+/**
+ * Ceilings. The index is fetched on a user-facing path and cached to disk, so
+ * every one of these is a cost bound rather than a taste judgement: a directory
+ * that grew a megabyte of readme per entry would be paid for on every cold
+ * start, on every machine.
+ */
+export const PLUGIN_REGISTRY_LIMITS = {
+  /** Refuse the whole document above this — a directory, not a data set. */
+  maxBytes: 2 * 1024 * 1024,
+  maxEntries: 2_000,
+  maxDescriptionChars: 300,
+  maxReadmeChars: 32 * 1024,
+  maxAddsLines: 12,
+  maxUrlChars: 512,
+  /** Per entry. Enough for a long-lived plugin's release history. */
+  maxChecksumVersions: 64,
+} as const;
+
+/**
+ * Hex SHA-256. Accepted in either case and stored lowercased — `sha256sum` and
+ * `shasum` print lowercase, PowerShell's `Get-FileHash` prints uppercase, and
+ * treating one of them as a tampered digest would be a false alarm on the one
+ * check that must never cry wolf.
+ */
+const SHA256_HEX_PATTERN = /^[a-fA-F0-9]{64}$/;
+
+export type PluginRegistryEntry = {
+  pluginId: string;
+  displayName: string;
+  description: string;
+  author: string;
+  /** The version the directory offers, not necessarily anyone's installed one. */
+  version: string;
+  /** Canonical repository URL — what the crawler found. */
+  repo: string;
+  /**
+   * The installable source. Same value as {@link repo} today; kept a separate
+   * field because the Marketplace reads `source` and a future entry may point
+   * installs at a mirror without moving where the crawler looks.
+   */
+  source: string;
+  icon: string | null;
+  accent: string | null;
+  official: boolean;
+  featured: boolean;
+  isTheme: boolean;
+  /** Core surfaces the plugin extends. Drives the gallery's facet chips. */
+  surfaces: PluginSurfaceId[];
+  /** Socket kinds it fills. Facet metadata; the manifest remains authoritative. */
+  sockets: PluginSocketKind[];
+  /** Short "Adds:" lines for an entry that publishes no manifest. */
+  adds: string[];
+  /** Measured by the directory. Null when it has never measured them. */
+  installs: number | null;
+  stars: number | null;
+  publishedAt: string | null;
+  updatedAt: string | null;
+  changelogUrl: string | null;
+  readme: string | null;
+  /**
+   * `version -> sha256 hex` over the plugin's source tree. Present for official
+   * entries; an empty map means the directory vouches for nothing.
+   */
+  checksums: Record<string, string>;
+};
+
+export type PluginRegistryIndex = {
+  version: number;
+  generatedAt: string | null;
+  entries: PluginRegistryEntry[];
+};
+
+export type PluginRegistryParseResult = {
+  index: PluginRegistryIndex | null;
+  /** Fatal: the document itself was unusable. */
+  errors: string[];
+  /** One per dropped entry, with the reason. */
+  warnings: string[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function text(value: unknown, maxChars: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > maxChars) return null;
+  return trimmed;
+}
+
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
+function isoDate(value: unknown): string | null {
+  const raw = text(value, 64);
+  if (!raw) return null;
+  return Number.isFinite(Date.parse(raw)) ? raw : null;
+}
+
+/**
+ * A URL the app is willing to show or hand to `git`.
+ *
+ * `https` only, and no credentials in the authority: a directory entry is
+ * third-party text, and `https://user:token@host/repo` in a source field is how
+ * a crawled index would get an installer to leak or replay a credential. `http`
+ * is refused outright rather than warned about — the index is public and there
+ * is no case for fetching a plugin over plaintext.
+ */
+export function isSafeRegistryUrl(value: unknown): value is string {
+  const raw = text(value, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  if (!raw) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  if (url.username || url.password) return false;
+  return url.hostname.length > 0;
+}
+
+export function isValidPluginChecksum(value: unknown): value is string {
+  return typeof value === "string" && SHA256_HEX_PATTERN.test(value);
+}
+
+function parseChecksums(raw: unknown, drop: (reason: string) => void): Record<string, string> {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) {
+    drop("checksums is not an object");
+    return {};
+  }
+  const checksums: Record<string, string> = {};
+  let kept = 0;
+  for (const [version, digest] of Object.entries(raw)) {
+    if (kept >= PLUGIN_REGISTRY_LIMITS.maxChecksumVersions) break;
+    if (!isValidPluginVersion(version) || !isValidPluginChecksum(digest)) continue;
+    checksums[version] = (digest as string).toLowerCase();
+    kept += 1;
+  }
+  return checksums;
+}
+
+function parseStringList(raw: unknown, maxEntries: number, maxChars: number): string[] {
+  if (!Array.isArray(raw)) return [];
+  const lines: string[] = [];
+  for (const value of raw) {
+    if (lines.length >= maxEntries) break;
+    const line = text(value, maxChars);
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * Read one directory entry, or explain why it was refused.
+ *
+ * Identity — a valid plugin id, a valid version, a usable repository URL — is
+ * required; everything else degrades field by field. An entry with no source is
+ * dropped rather than shown, because a Marketplace row whose install button
+ * cannot work is worse than a row that is missing.
+ */
+export function parsePluginRegistryEntry(
+  raw: unknown,
+): { entry: PluginRegistryEntry } | { reason: string } {
+  if (!isRecord(raw)) return { reason: "entry is not an object" };
+
+  const pluginId = text(raw.pluginId, 64) ?? text(raw.name, 64);
+  if (!pluginId || !isValidPluginId(pluginId)) return { reason: "pluginId is missing or not a plugin id" };
+
+  const version = text(raw.version, 64);
+  if (!version || !isValidPluginVersion(version)) {
+    return { reason: `${pluginId}: version is missing or not major.minor.patch` };
+  }
+
+  const repo = text(raw.repo, PLUGIN_REGISTRY_LIMITS.maxUrlChars)
+    ?? text(raw.repository, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  if (!repo || !isSafeRegistryUrl(repo)) return { reason: `${pluginId}: repo is missing or not an https URL` };
+
+  const sourceRaw = text(raw.source, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const source = sourceRaw && isSafeRegistryUrl(sourceRaw) ? sourceRaw : repo;
+
+  const changelogUrl = text(raw.changelogUrl, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+  const dropped: string[] = [];
+  const checksums = parseChecksums(raw.checksums, (reason) => dropped.push(reason));
+
+  const surfaces = PLUGIN_SURFACE_IDS.filter((surface) =>
+    Array.isArray(raw.surfaces) && raw.surfaces.includes(surface));
+  const sockets = PLUGIN_SOCKET_KINDS.filter((socket) =>
+    Array.isArray(raw.sockets) && raw.sockets.includes(socket));
+
+  return {
+    entry: {
+      pluginId,
+      displayName: text(raw.displayName, 120) ?? pluginId,
+      description: text(raw.description, PLUGIN_REGISTRY_LIMITS.maxDescriptionChars) ?? "",
+      author: text(raw.author, 120) ?? "Unknown",
+      version,
+      repo,
+      source,
+      icon: text(raw.icon, 64),
+      accent: text(raw.accent, 32),
+      official: raw.official === true,
+      featured: raw.featured === true,
+      isTheme: raw.isTheme === true,
+      surfaces,
+      sockets,
+      adds: parseStringList(raw.adds, PLUGIN_REGISTRY_LIMITS.maxAddsLines, 120),
+      installs: count(raw.installs),
+      stars: count(raw.stars),
+      publishedAt: isoDate(raw.publishedAt),
+      updatedAt: isoDate(raw.updatedAt),
+      changelogUrl: changelogUrl && isSafeRegistryUrl(changelogUrl) ? changelogUrl : null,
+      readme: text(raw.readme, PLUGIN_REGISTRY_LIMITS.maxReadmeChars),
+      checksums,
+    },
+  };
+}
+
+/**
+ * Validate a decoded index document.
+ *
+ * A document whose `version` is newer than this build's is accepted, not
+ * refused: entries are parsed field by field, so a future index degrades to the
+ * fields this build understands. Refusing it would make every registry change a
+ * flag day across every installed ADE.
+ */
+export function parsePluginRegistryIndex(raw: unknown): PluginRegistryParseResult {
+  const warnings: string[] = [];
+  if (!isRecord(raw)) return { index: null, errors: ["index must be a JSON object"], warnings };
+
+  const version = typeof raw.version === "number" && Number.isInteger(raw.version) && raw.version > 0
+    ? raw.version
+    : null;
+  if (version === null) return { index: null, errors: ["index.version must be a positive integer"], warnings };
+
+  if (!Array.isArray(raw.entries)) return { index: null, errors: ["index.entries must be an array"], warnings };
+  if (raw.entries.length > PLUGIN_REGISTRY_LIMITS.maxEntries) {
+    return {
+      index: null,
+      errors: [`index.entries holds ${raw.entries.length} entries, above the ${PLUGIN_REGISTRY_LIMITS.maxEntries} ceiling`],
+      warnings,
+    };
+  }
+
+  const entries: PluginRegistryEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of raw.entries) {
+    const parsed = parsePluginRegistryEntry(candidate);
+    if ("reason" in parsed) {
+      warnings.push(`entry dropped: ${parsed.reason}`);
+      continue;
+    }
+    // First writer wins on a duplicate id. The alternative — last wins — lets a
+    // later entry silently shadow an official one with the same id.
+    if (seen.has(parsed.entry.pluginId)) {
+      warnings.push(`entry dropped: duplicate pluginId "${parsed.entry.pluginId}"`);
+      continue;
+    }
+    seen.add(parsed.entry.pluginId);
+    entries.push(parsed.entry);
+  }
+
+  return {
+    index: { version, generatedAt: isoDate(raw.generatedAt), entries },
+    errors: [],
+    warnings,
+  };
+}
+
+/** Parse index JSON text. A syntax error is fatal and reported as an error. */
+export function parsePluginRegistryIndexJson(source: string): PluginRegistryParseResult {
+  if (source.length > PLUGIN_REGISTRY_LIMITS.maxBytes) {
+    return {
+      index: null,
+      errors: [`index is ${source.length} bytes, above the ${PLUGIN_REGISTRY_LIMITS.maxBytes} byte ceiling`],
+      warnings: [],
+    };
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source);
+  } catch (error) {
+    return {
+      index: null,
+      errors: [`index is not valid JSON: ${error instanceof Error ? error.message : String(error)}`],
+      warnings: [],
+    };
+  }
+  return parsePluginRegistryIndex(decoded);
+}
+
+/* ── Official signing ───────────────────────────────────────────────────── */
+
+export type PluginChecksumVerdict =
+  /** The directory published a digest for this version and it matched. */
+  | { kind: "verified" }
+  /** No digest published. Community plugins live here; not an error. */
+  | { kind: "unverified"; reason: string }
+  /** A digest was published and the bytes disagree. Always fatal. */
+  | { kind: "mismatch"; expected: string; actual: string };
+
+/**
+ * Compare a computed digest against what the directory vouches for.
+ *
+ * Called by the install service after it has the plugin's bytes on disk and
+ * before it runs any of them. The three verdicts are deliberately distinct:
+ * "nobody vouched" and "the voucher disagrees" are different facts, and
+ * collapsing them would either block every community plugin or let a tampered
+ * official one through.
+ */
+export function verifyPluginChecksum(args: {
+  entry: Pick<PluginRegistryEntry, "official" | "checksums">;
+  version: string;
+  /** Lowercase hex SHA-256 the installer computed over the fetched tree. */
+  actual: string;
+}): PluginChecksumVerdict {
+  const expected = args.entry.checksums[args.version];
+  if (!expected) {
+    return {
+      kind: "unverified",
+      reason: args.entry.official
+        ? `the directory publishes no checksum for version ${args.version}`
+        : "community plugins are not checksummed by the directory",
+    };
+  }
+  if (!isValidPluginChecksum(args.actual)) {
+    return { kind: "mismatch", expected, actual: String(args.actual) };
+  }
+  return args.actual.toLowerCase() === expected
+    ? { kind: "verified" }
+    : { kind: "mismatch", expected, actual: args.actual.toLowerCase() };
+}
+
+/**
+ * True when an entry must be checksum-verified before it may be installed.
+ *
+ * Official entries with a published digest are the only ones this build
+ * enforces. An official entry whose version is not in the map yet (a release
+ * the crawler has not indexed) installs as unverified rather than failing —
+ * the digest is a tamper check on the directory's own claim, not a licence.
+ */
+export function requiresChecksumVerification(
+  entry: Pick<PluginRegistryEntry, "official" | "checksums">,
+  version: string,
+): boolean {
+  return entry.official && typeof entry.checksums[version] === "string";
+}

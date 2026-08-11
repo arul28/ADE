@@ -41,6 +41,10 @@ export type PushRelayEnv = {
   IP_RATE_LIMIT_PER_MIN?: string;
   /** `/claim` requests allowed per IP per 60s (unauthenticated-write gate). */
   CLAIM_RATE_LIMIT_PER_MIN?: string;
+  /** Plugin install pings allowed per machine per 60s. */
+  PLUGIN_INSTALL_RATE_LIMIT_PER_MIN?: string;
+  /** Days an install row survives without being re-reported. */
+  PLUGIN_INSTALL_RETENTION_DAYS?: string;
   /** Clerk JWKS endpoint used to verify account-scoped Attention bearer tokens. */
   CLERK_JWKS_URL?: string;
   /** Expected Clerk issuer for account-scoped Attention bearer tokens. */
@@ -135,6 +139,13 @@ type DeliveryOutcome = {
 
 const MACHINE_KEY_PATTERN = /^[a-f0-9]{32,64}$/i;
 const DEVICE_ID_PATTERN = /^[a-zA-Z0-9._:-]{4,128}$/;
+// Kept byte-identical to `PLUGIN_ID_PATTERN` / `PLUGIN_VERSION_PATTERN` in
+// apps/desktop/src/shared/plugins/manifest.ts. The worker cannot import from the
+// app (separate build, separate deploy), so this is a deliberate copy: an id the
+// app would refuse must never become a row here, or the directory would count
+// installs for a plugin that cannot exist.
+const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+const PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const APNS_TOKEN_PATTERN = /^[a-f0-9]{32,512}$/i;
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_PUBLISH_ITEMS = 32;
@@ -162,6 +173,20 @@ const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
 // (idempotent reclaims are rare), so 10/min/IP is generous for legit pairing
 // bursts and near-zero for a spammer trying to grow the machines table.
 const DEFAULT_CLAIM_RATE_LIMIT_PER_MIN = 10;
+// A machine installs a plugin by hand, one at a time. 30/min is generous for
+// someone setting up a fresh machine and leaves no room for a signed machine to
+// use the ping as a write amplifier against its own account's D1 rows.
+const DEFAULT_PLUGIN_INSTALL_RATE_LIMIT_PER_MIN = 30;
+// An install that has not been re-reported in half a year is from a machine
+// that stopped running ADE. Counting it forever would make the directory's
+// numbers grow monotonically and mean nothing.
+const DEFAULT_PLUGIN_INSTALL_RETENTION_DAYS = 180;
+// The public counts endpoint is unauthenticated, so its answer is bounded
+// before it is cached. A directory larger than this has other problems.
+const MAX_PLUGIN_INSTALL_COUNT_ROWS = 1_000;
+// The only consumer is a crawler on a six-hour schedule; five minutes of edge
+// cache costs nothing and takes the endpoint off the origin entirely.
+const PLUGIN_INSTALL_COUNTS_CACHE_SECONDS = 300;
 const RATE_WINDOW_SECONDS = 60;
 const RATE_COUNTER_RETENTION_MINUTES = 15;
 
@@ -708,6 +733,15 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   await env.DB
     .prepare("delete from rate_counters where bucket like 'budget:%' and updated_at < ?")
     .bind(budgetCutoff)
+    .run();
+  const pluginDays = Number(env.PLUGIN_INSTALL_RETENTION_DAYS ?? DEFAULT_PLUGIN_INSTALL_RETENTION_DAYS);
+  const pluginRetentionDays = Number.isFinite(pluginDays)
+    ? Math.max(30, Math.trunc(pluginDays))
+    : DEFAULT_PLUGIN_INSTALL_RETENTION_DAYS;
+  const pluginCutoff = new Date(Date.now() - pluginRetentionDays * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from plugin_installs where updated_at < ?")
+    .bind(pluginCutoff)
     .run();
   await pruneAttentionState(env);
 }
@@ -1292,6 +1326,100 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   });
 }
 
+/**
+ * Record that a machine installed a plugin.
+ *
+ * The whole payload is `{pluginId, version}`. That is not a starting point — it
+ * is the contract: the directory needs a count per plugin and nothing else, and
+ * anything richer arriving here would be a usage log the product never asked
+ * for. The row is keyed by (plugin, machine) so re-reporting is idempotent, and
+ * the caller treats the whole call as fire-and-forget, which is why every
+ * failure below answers rather than retries.
+ */
+async function handlePluginInstallPing(
+  request: Request,
+  env: PushRelayEnv,
+  machineKey: string,
+): Promise<Response> {
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  const auth = await assertMachineAuthorized(request, env, machineKey, body);
+  if ("response" in auth) return auth.response;
+  // A removed machine keeps a valid signature. It must not keep voting in the
+  // directory's counts.
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
+
+  // Per-machine, after authentication: the signature is what makes this bucket
+  // meaningful, and rate-limiting before it would let an unsigned flood consume
+  // a real machine's allowance.
+  const limit = positiveIntEnv(
+    env.PLUGIN_INSTALL_RATE_LIMIT_PER_MIN,
+    DEFAULT_PLUGIN_INSTALL_RATE_LIMIT_PER_MIN,
+  );
+  const gate = await checkRateLimit(env, `plugin-install:${machineKey}`, limit, RATE_WINDOW_SECONDS);
+  if (!gate.allowed) {
+    logEvent("rate_limited", { scope: "plugin_install", machineKey: machineKey.slice(0, 8), limit });
+    return rateLimitedResponse();
+  }
+
+  const payload = parseBodyJson(body);
+  if (!payload) return json({ ok: false, error: "invalid json" }, { status: 400 });
+  const pluginId = readString(payload, "pluginId");
+  const version = readString(payload, "version");
+  if (!PLUGIN_ID_PATTERN.test(pluginId) || !PLUGIN_VERSION_PATTERN.test(version)) {
+    return json({ ok: false, error: "pluginId and version are required" }, { status: 400 });
+  }
+
+  const now = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert into plugin_installs(plugin_id, machine_key, version, first_seen_at, updated_at)
+      values (?, ?, ?, ?, ?)
+      on conflict(plugin_id, machine_key) do update set
+        version = excluded.version,
+        updated_at = excluded.updated_at
+    `)
+    .bind(pluginId, machineKey, version, now, now)
+    .run();
+  return json({ ok: true });
+}
+
+/**
+ * Per-plugin install totals. Public, unauthenticated, counts only.
+ *
+ * Unauthenticated because the numbers are published in the directory anyway and
+ * the crawler that reads them holds no credential; safe because the answer
+ * carries no machine, account, or version — one integer per plugin id. The
+ * general per-IP gate and the daily spend cap have already run by the time this
+ * is reached, and the cache header keeps the scheduled reader off the origin.
+ */
+async function handlePluginInstallCounts(env: PushRelayEnv): Promise<Response> {
+  const rows = await env.DB
+    .prepare(`
+      select plugin_id, count(*) as installs
+      from plugin_installs
+      group by plugin_id
+      order by installs desc, plugin_id asc
+      limit ?
+    `)
+    .bind(MAX_PLUGIN_INSTALL_COUNT_ROWS)
+    .all<{ plugin_id: string; installs: number }>();
+  return json(
+    {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      counts: (rows.results ?? []).map((row) => ({
+        pluginId: row.plugin_id,
+        installs: Number(row.installs) || 0,
+      })),
+    },
+    { headers: { "cache-control": `public, max-age=${PLUGIN_INSTALL_COUNTS_CACHE_SECONDS}` } },
+  );
+}
+
 function routeMachine(pathname: string): { machineKey: string; rest: string[] } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length >= 2 && parts[0] === "machines") {
@@ -1423,6 +1551,12 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     return withAllowedAccountCors(attentionAccountResponse);
   }
 
+  // Public, before the machine router: this route has no machine key in its
+  // path because it is about no machine — it returns per-plugin totals.
+  if (url.pathname === "/plugins/installs" && request.method === "GET") {
+    return await handlePluginInstallCounts(env);
+  }
+
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);
   const { machineKey, rest } = route;
@@ -1456,6 +1590,9 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   }
   if (rest.length === 1 && rest[0] === "publish" && request.method === "POST") {
     return await handlePublish(request, env, machineKey);
+  }
+  if (rest.length === 1 && rest[0] === "plugin-installs" && request.method === "POST") {
+    return await handlePluginInstallPing(request, env, machineKey);
   }
   if (rest.length === 1 && rest[0] === "attention" && request.method === "POST") {
     const body = await request.arrayBuffer();

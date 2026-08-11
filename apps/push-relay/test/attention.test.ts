@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -212,15 +212,13 @@ class SqliteD1Database {
   constructor(path = ":memory:", migrate = true) {
     this.native = new DatabaseSync(path);
     if (migrate) {
-      for (const migration of [
-        "../migrations/0001_push_registrations.sql",
-        "../migrations/0002_rate_and_budget.sql",
-        "../migrations/0003_account_attention.sql",
-        "../migrations/0004_device_registration_generation.sql",
-        "../migrations/0005_activity_feed.sql",
-        "../migrations/0006_machine_revocation.sql",
-      ]) {
-        this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
+      // Read the directory rather than listing files here. A hand-maintained
+      // list silently omits every migration added after it was last edited, and
+      // the failure lands on whichever test happens to touch the new table —
+      // far from the change that caused it.
+      const migrationsDirectory = new URL("../migrations/", import.meta.url);
+      for (const migration of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql")).sort()) {
+        this.native.exec(readFileSync(new URL(migration, migrationsDirectory), "utf8"));
       }
       this.native.exec(
         readFileSync(
