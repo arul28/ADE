@@ -7290,7 +7290,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer),
             allowLegacyUpgrade: true,
             pairingCodeNoun: "PIN",
-            notSignedInCode: "auth_failed",
+            notSignedInCode: "account_not_signed_in",
           });
           if (accountResult.kind === "stale") return true;
           if (accountResult.kind === "rejected") {

@@ -2599,6 +2599,14 @@ describe("browser sync connection and client", () => {
       code: "host_update_required" as const,
       message: "Update ADE on that machine to connect.",
     },
+    {
+      code: "account_not_signed_in" as const,
+      message: "The computer you're connecting to is not signed in to an ADE account.",
+    },
+    {
+      code: "account_verification_failed" as const,
+      message: "The computer you're connecting to could not verify its ADE account session.",
+    },
   ]) {
     it(`keeps the pairing when the host rejects with ${scenario.code}`, async () => {
       const storage = new MemoryStorage();

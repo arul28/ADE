@@ -231,9 +231,11 @@ const HELLO_CODE_FAILURES: Record<
   repair_required: "pairing",
   // Desktop→desktop dials with `auth.kind: "paired"`, so the host's generic
   // `auth_failed` here is always a pairing-record rejection — including from
-  // hosts too old to send `repair_required`. Account problems arrive as
-  // `relay_account_required`, which has its own row.
+  // hosts too old to send `repair_required`. Account problems use their own
+  // authentication codes; `relay_account_required` remains the relay-only form.
   auth_failed: "pairing",
+  account_not_signed_in: "authentication",
+  account_verification_failed: "authentication",
   relay_account_required: "authentication",
   // The host is fine and the pairing is fine — it just cannot verify ADE
   // accounts yet. "Pair it again" would send the user in circles; the update

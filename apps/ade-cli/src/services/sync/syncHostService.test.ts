@@ -4156,8 +4156,8 @@ describe("sync host account authentication", () => {
         "signed-out account hello_error",
       );
       expect(signedOutRejected.payload).toMatchObject({
-        code: "auth_failed",
-        message: expect.stringMatching(/not signed in.*Sign in on this computer/i),
+        code: "account_not_signed_in",
+        message: expect.stringMatching(/computer you're connecting to.*not signed in.*Sign in on that computer/i),
       });
 
       const pinClient = await openAccountClient(port);

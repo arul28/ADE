@@ -173,14 +173,26 @@ describe("paired runtime endpoint routes", () => {
     // account session repaired. Both used to arrive as `auth_failed`.
     expect(classifyPairedRuntimeFailure(
       new PairedRuntimeHelloRejectedError(
-        "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
+        "The computer you're connecting to cannot verify ADE accounts. Update ADE there, then try again.",
         "host_update_required",
       ),
     )).toBe("protocol");
     expect(classifyPairedRuntimeFailure(
       new PairedRuntimeHelloRejectedError(
-        "The ADE account session on this machine changed while connecting. Try again.",
+        "The ADE account session on the computer you're connecting to changed while connecting. Try again.",
         "account_session_changed",
+      ),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "The computer you're connecting to is not signed in to an ADE account. Sign in on that computer, then try again.",
+        "account_not_signed_in",
+      ),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "The computer you're connecting to could not verify its ADE account session.",
+        "account_verification_failed",
       ),
     )).toBe("authentication");
   });

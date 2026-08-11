@@ -990,8 +990,11 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    or the generic `auth_failed` (what older hosts send for the same cause).
    Both mean the saved pairing is no longer usable, so every pairing decision
    asks that one function instead of comparing against a single code string.
-   The newer `host_update_required` and `account_session_changed` codes are
-   deliberately *not* in that set: neither is a reason to destroy a pairing.
+   The newer `account_not_signed_in`, `account_verification_failed`,
+   `host_update_required`, and `account_session_changed` codes are deliberately
+   *not* in that set: none is a reason to destroy a pairing. iOS keeps the
+   host's target-specific message so the user is told which computer needs
+   attention.
 3. Send local `db_version` plus the per-host-DB cursor map
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the

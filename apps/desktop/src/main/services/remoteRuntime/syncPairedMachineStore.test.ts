@@ -831,7 +831,9 @@ describe("DesktopPairedMachineStore", () => {
             return ws as unknown as WebSocket;
           },
         },
-      )).rejects.toThrow(/relay relay\.example:.*relay refused/i);
+      )).rejects.toThrow(
+        "Could not reach Legacy Studio. Make sure it's awake and ADE is open, then try again.",
+      );
     } finally {
       warn.mockRestore();
     }
@@ -1031,7 +1033,11 @@ describe("DesktopPairedMachineStore", () => {
       },
     );
 
-    await expect(pairing).rejects.toThrow(expectedError);
+    await expect(pairing).rejects.toThrow(
+      responseAead
+        ? expectedError
+        : "Could not connect to Cipher Studio. Update ADE on that computer, then try again.",
+    );
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
@@ -1359,8 +1365,10 @@ describe("DesktopPairedMachineStore", () => {
         }) as unknown as WebSocket,
       },
     );
-    // The host's real reason is surfaced, not the identity-verification error.
-    await expect(pairing).rejects.toThrow(/Try again in 3 minutes/);
+    // The host's real retry window is kept, without exposing the route details.
+    await expect(pairing).rejects.toThrow(
+      "Could not connect to Expected host. Too many failed authentication attempts. Try again in 3 minutes.",
+    );
     await expect(pairing).rejects.not.toMatchObject({
       code: "account_host_identity_verification_failed",
     });
@@ -1424,7 +1432,7 @@ describe("DesktopPairedMachineStore", () => {
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
-  it("aggregates every failed adoption route with its kind and host", async () => {
+  it("summarizes failed adoption routes without exposing the route dump in the headline", async () => {
     const signing = generateKeyPairSync("ed25519");
     const openedEndpoints: string[] = [];
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1448,6 +1456,7 @@ describe("DesktopPairedMachineStore", () => {
     };
 
     let failure: Error | null = null;
+    let warning: unknown = null;
     try {
       await new DesktopPairedMachineStore().pairWithAccountMachine(
         machine,
@@ -1467,12 +1476,21 @@ describe("DesktopPairedMachineStore", () => {
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error));
     } finally {
+      warning = warn.mock.calls[0]?.[1] ?? null;
       warn.mockRestore();
     }
 
-    expect(failure?.message).toMatch(/relay relay\.example:/);
-    expect(failure?.message).toMatch(/tailnet 100\.75\.20\.63:/);
-    expect(failure?.message).toMatch(/lan unavailable-studio\.local:/);
+    expect(failure?.message).toBe(
+      "Could not reach Unavailable Studio. Make sure it's awake and ADE is open, then try again.",
+    );
+    expect(failure?.message).not.toMatch(/relay|tailnet|100\.75\.20\.63|unavailable-studio/i);
+    expect(warning).toMatchObject({
+      attempts: [
+        { kind: "lan", host: "unavailable-studio.local", failure: "unreachable" },
+        { kind: "tailnet", host: "100.75.20.63", failure: "unreachable" },
+        { kind: "relay", host: "relay.example", failure: "unreachable" },
+      ],
+    });
     expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "ws://unavailable-studio.local:8787/",
       "ws://100.75.20.63:8787/",
@@ -1481,6 +1499,56 @@ describe("DesktopPairedMachineStore", () => {
     expect(endpointCorrelationId(openedEndpoints[0]!)).toBeNull();
     expect(endpointCorrelationId(openedEndpoints[1]!)).toBeNull();
     expect(endpointCorrelationId(openedEndpoints[2]!)).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("names the account machine when the target is signed out", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-signed-out",
+      deviceId: "host-signed-out",
+      name: "Arul's Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "wss://relay.example/connect/machine-signed-out" },
+      ],
+    };
+
+    let failure: Error | null = null;
+    try {
+      await new DesktopPairedMachineStore().pairWithAccountMachine(
+        machine,
+        "laptop-account-token",
+        "MacBook Pro",
+        {
+          accountOwnerUserId: "account-user",
+          relayBaseUrls: ["https://relay.example"],
+          createWebSocket: () => new FakeWebSocket((text, ws) => {
+            const envelope = parseSyncEnvelope(wsDataToText(text));
+            if (envelope.type !== "hello") return;
+            ws.receive(encodeSyncEnvelope({
+              type: "hello_error",
+              requestId: envelope.requestId,
+              payload: {
+                code: "account_not_signed_in",
+                message: "The computer you're connecting to is not signed in to an ADE account. Sign in on that computer, then try again.",
+              },
+            }));
+          }) as unknown as WebSocket,
+        },
+      );
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(failure?.message).toBe(
+      "Could not connect to Arul's Mac Studio. Arul's Mac Studio is not signed in to the same ADE account. Open ADE on that computer, sign in, then try again.",
+    );
+    expect(failure?.message).not.toMatch(/sign out|this device|relay/i);
   });
 
   it.each([

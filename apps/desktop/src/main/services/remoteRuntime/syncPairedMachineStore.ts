@@ -15,6 +15,7 @@ import type {
 import type {
   SyncPairingHostIdentity,
   SyncAccountChallengeOkPayload,
+  SyncHelloErrorPayload,
   SyncHelloPayload,
   SyncPairingResultPayload,
   SyncPeerMetadata,
@@ -95,6 +96,18 @@ class AccountPairingAuthorizationError extends Error {
   readonly code = "account_session_changed";
 }
 
+class AccountMachineHelloRejectedError extends Error {
+  readonly code = "account_machine_hello_rejected";
+
+  constructor(
+    message: string,
+    readonly helloCode: SyncHelloErrorPayload["code"] | null,
+  ) {
+    super(message);
+    this.name = "AccountMachineHelloRejectedError";
+  }
+}
+
 const HOST_IDENTITY_VERIFICATION_ERROR =
   "Host identity verification failed — the machine may be running an older ADE.";
 const ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR =
@@ -124,6 +137,7 @@ function parseDirectoryEd25519PublicKey(value: string): Buffer {
 type AccountMachineAdoptionFailure = {
   route: AccountMachineAdoptionRoute;
   reason: string;
+  helloCode: SyncHelloErrorPayload["code"] | null;
 };
 
 function emitAccountMachineAdoptionStage(
@@ -152,46 +166,118 @@ function accountMachineAdoptionRouteHost(route: AccountMachineAdoptionRoute): st
   }
 }
 
-function formatAccountMachineAdoptionFailure(
-  failure: AccountMachineAdoptionFailure,
-): string {
-  return `${failure.route.kind} ${accountMachineAdoptionRouteHost(failure.route)}: ${
-    boundedInlineText(failure.reason, 160)
-  }`;
-}
-
 /**
- * Adoption's own message classifier. The canonical one is
- * `classifyPairedRuntimeFailure` in `pairedRuntimeRoutes.ts` — prefer it for
- * anything that dials an already-paired machine, since it reads the host's
- * structured `hello_error.code` before falling back to prose.
- *
- * Adoption is deliberately NOT expressed through it: this flow has no hello
- * code to read, and it orders the prose rules differently on purpose. "Pair it
- * again" is a first-class outcome here (adoption is the repair), a credential
- * word outranks a transport word (a token failure mid-dial is an auth problem,
- * not a dead route), and `cipher` reads as identity. Routing these strings
- * through the canonical classifier would answer "unknown"/"unreachable"
- * instead, so the two stay separate until one of them has tests to hold the
- * merged behavior in place.
+ * Account adoption has a different meaning from a saved paired dial: account
+ * authentication is being used to establish the pairing, so a host rejection
+ * must describe the target account state rather than suggest that the local
+ * pairing is stale. Prefer the structured hello code; prose is only a fallback
+ * for older hosts and transport-level errors.
  */
 function classifyAccountMachineAdoptionFailure(
-  reason: string,
+  failure: AccountMachineAdoptionFailure,
 ): RemoteRuntimeConnectionAttemptFailure {
+  switch (failure.helloCode) {
+    case "account_not_signed_in":
+    case "account_verification_failed":
+    case "account_session_changed":
+    case "relay_account_required":
+      return "authentication";
+    case "repair_required":
+      return "pairing";
+    case "host_update_required":
+    case "invalid_hello":
+    case "protocol_version_mismatch":
+      return "protocol";
+    case "connection_attempt_superseded":
+      return "superseded";
+    default:
+      break;
+  }
+
+  const reason = failure.reason;
   if (/timed? out|timeout/i.test(reason)) return "timeout";
   // Adoption is how a stale pairing gets repaired, so a host that says the
   // pairing is the problem is naming the very thing this flow fixes.
   if (/pair (?:it|this) again|no longer valid|not paired/i.test(reason)) {
     return "pairing";
   }
-  if (/auth|token|credential|proof|forbidden|unauthorized/i.test(reason)) {
+  if (
+    /auth|token|credential|proof|forbidden|unauthorized|sign(?:ed)?[ -]?in|account.*(?:verify|session)|(?:verify|session).*account/i.test(reason)
+  ) {
     return "authentication";
   }
+  if (/older ADE|compatible cipher|update (?:it|ADE)/i.test(reason)) return "protocol";
   if (/identity|signature|device id|cipher/i.test(reason)) return "identity";
   if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|refused/i.test(reason)) {
     return "unreachable";
   }
   return "unknown";
+}
+
+const ACCOUNT_ADOPTION_FAILURE_PRECEDENCE: readonly RemoteRuntimeConnectionAttemptFailure[] = [
+  "authentication",
+  "pairing",
+  "identity",
+  "capability",
+  "protocol",
+  "superseded",
+  "timeout",
+  "unreachable",
+  "unknown",
+];
+
+function dominantAccountMachineAdoptionFailure(
+  failures: readonly AccountMachineAdoptionFailure[],
+): RemoteRuntimeConnectionAttemptFailure {
+  const seen = new Set(failures.map(classifyAccountMachineAdoptionFailure));
+  return ACCOUNT_ADOPTION_FAILURE_PRECEDENCE.find((failure) => seen.has(failure)) ?? "unknown";
+}
+
+function accountMachineAdoptionFailureMessage(
+  machine: AdeAccountMachine,
+  failures: readonly AccountMachineAdoptionFailure[],
+): string {
+  const machineName = accountMachineDisplayName(machine) ?? "that computer";
+  const dominant = dominantAccountMachineAdoptionFailure(failures);
+  const targetIsSignedOut = failures.some((failure) =>
+    failure.helloCode === "account_not_signed_in"
+    || failure.helloCode === "relay_account_required"
+    || /not signed in|signed out/i.test(failure.reason)
+  );
+
+  if (dominant === "authentication" && targetIsSignedOut) {
+    return `Could not connect to ${machineName}. ${machineName} is not signed in to the same ADE account. `
+      + "Open ADE on that computer, sign in, then try again.";
+  }
+  const retryLaterFailure = failures.find((failure) =>
+    /try again in\s+\d+\s+(?:second|minute|hour)/i.test(failure.reason)
+  );
+  switch (dominant) {
+    case "authentication":
+      if (retryLaterFailure) {
+        return `Could not connect to ${machineName}. ${boundedInlineText(retryLaterFailure.reason, 240)}`;
+      }
+      return `Could not connect to ${machineName}. ADE could not verify the account on that computer. `
+        + "Open ADE there and check that it is signed in to the same ADE account, then try again.";
+    case "pairing":
+      return `Could not connect to ${machineName}. Its saved pairing for this device is no longer valid. `
+        + "Pair it again, then try again.";
+    case "identity":
+      return `Could not verify the identity of ${machineName}. Check that its account entry is current, `
+        + "then try again.";
+    case "capability":
+    case "protocol":
+      return `Could not connect to ${machineName}. Update ADE on that computer, then try again.`;
+    case "superseded":
+      return `Another connection to ${machineName} took over. Try again.`;
+    case "timeout":
+      return `Could not connect to ${machineName} in time. Make sure ADE is open on that computer, `
+        + "then try again.";
+    case "unreachable":
+      return `Could not reach ${machineName}. Make sure it's awake and ADE is open, then try again.`;
+    default:
+      return `Could not connect to ${machineName}. Open ADE on that computer and try again.`;
+  }
 }
 
 function nowIso(): string {
@@ -966,6 +1052,7 @@ export class DesktopPairedMachineStore {
         failures.push({
           route,
           reason: error instanceof Error ? error.message : String(error),
+          helloCode: null,
         });
         continue;
       }
@@ -1136,11 +1223,14 @@ export class DesktopPairedMachineStore {
         connection.send("hello", hello, requestId);
         const envelope = await response;
         if (envelope.type === "hello_error") {
-          const payload = envelope.payload as { message?: unknown };
-          throw new Error(
-            typeof payload.message === "string" && payload.message.trim()
+          const payload = envelope.payload as Partial<SyncHelloErrorPayload> | null;
+          throw new AccountMachineHelloRejectedError(
+            typeof payload?.message === "string" && payload.message.trim()
               ? payload.message.trim()
               : "Account authentication was rejected.",
+            typeof payload?.code === "string"
+              ? payload.code as SyncHelloErrorPayload["code"]
+              : null,
           );
         }
         let helloOk: PairedRuntimeHelloOkPayload;
@@ -1229,6 +1319,9 @@ export class DesktopPairedMachineStore {
         failures.push({
           route,
           reason: error instanceof Error ? error.message : String(error),
+          helloCode: error instanceof AccountMachineHelloRejectedError
+            ? error.helloCode
+            : null,
         });
       } finally {
         connection.close(1000, "Account pairing finished.");
@@ -1239,26 +1332,15 @@ export class DesktopPairedMachineStore {
       attempts: failures.slice(0, MAX_ROUTE_ATTEMPTS).map((failure) => ({
         kind: failure.route.kind,
         host: accountMachineAdoptionRouteHost(failure.route),
-        failure: classifyAccountMachineAdoptionFailure(failure.reason),
+        failure: classifyAccountMachineAdoptionFailure(failure),
+        ...(failure.helloCode ? { helloCode: failure.helloCode } : {}),
+        reason: boundedInlineText(failure.reason, 200),
       })),
       omittedAttemptCount: Math.max(0, failures.length - MAX_ROUTE_ATTEMPTS),
     });
-    // Unlike the paired dial loop, adoption's per-route reasons are specific
-    // and actionable in their own right ("update that computer", "try again in
-    // 3 minutes"), so collapsing them into one generic sentence would lose the
-    // instruction. They stay, bounded and joined.
-    const visibleFailures = failures.slice(0, MAX_ROUTE_ATTEMPTS)
-      .map(formatAccountMachineAdoptionFailure);
-    if (failures.length > MAX_ROUTE_ATTEMPTS) {
-      visibleFailures.push(
-        `${failures.length - MAX_ROUTE_ATTEMPTS} more route attempts failed`,
-      );
-    }
-    throw new Error(
-      `Could not connect to ${accountMachineDisplayName(machine) ?? machine.machineKey} with your ADE account. ${
-        visibleFailures.join("; ")
-      }`,
-    );
+    // The route list is diagnostic data, not a headline. Keep it in the bounded
+    // warning above and give the account row one target-specific next step.
+    throw new Error(accountMachineAdoptionFailureMessage(machine, failures));
   }
 
   private read(): DesktopPairedMachinesFile {

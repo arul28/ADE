@@ -30,14 +30,14 @@ import { evaluatePairedHelloDpop, syncDpopFailureMessage, type SyncDpopNonceCach
 export const SYNC_REPAIR_REQUIRED_MESSAGE = "This device is not paired with this machine, or its saved"
   + " pairing is no longer valid. Pair it again.";
 
-export const SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE = "The ADE account session on this machine changed"
-  + " while connecting. Try again.";
+export const SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE = "The ADE account session on the computer you're"
+  + " connecting to changed while connecting. Try again.";
 
-export const SYNC_ACCOUNT_VERIFY_UNAVAILABLE_MESSAGE = "This machine cannot verify ADE accounts."
-  + " Update ADE on this computer, then try again.";
+export const SYNC_ACCOUNT_VERIFY_UNAVAILABLE_MESSAGE = "The computer you're connecting to cannot verify"
+  + " ADE accounts. Update ADE there, then try again.";
 
-export const SYNC_ACCOUNT_NOT_SIGNED_IN_MESSAGE = "This machine is not signed in to an ADE account."
-  + " Sign in on this computer, then try again.";
+export const SYNC_ACCOUNT_NOT_SIGNED_IN_MESSAGE = "The computer you're connecting to is not signed in"
+  + " to an ADE account. Sign in on that computer, then try again.";
 
 export const SYNC_ACCOUNT_DEVICE_MISMATCH_MESSAGE = "The account identity in this connection did not"
   + " match the device that sent it.";
@@ -48,11 +48,12 @@ export const SYNC_ACCOUNT_KEYLESS_RECORD_MESSAGE = "This device's saved pairing 
 export const SYNC_ACCOUNT_OTHER_OWNER_MESSAGE = "This device is already paired to this machine under"
   + " a different ADE account.";
 
-export const SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE = "This machine could not save the new pairing"
-  + " for this device. Try again.";
+export const SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE = "The computer you're connecting to could not"
+  + " save the new pairing for this device. Try again.";
 
-export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "This machine could not verify your ADE account"
-  + " session. Sign out and back in on this device, then try again.";
+export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connecting to could not verify"
+  + " its ADE account session. Open ADE there and check that it is signed in to the same ADE account,"
+  + " then try again.";
 
 export type SyncAccountHelloAuth = Extract<SyncHelloPayload["auth"], { kind: "account" }>;
 
@@ -111,8 +112,9 @@ export type SyncAccountHelloAuthOptions = {
   /** "PIN" on the project host, "code" on the brain — same instruction, local wording. */
   pairingCodeNoun: string;
   /**
-   * Code carried when this machine holds no account session at all. The brain
-   * answers `relay_account_required` because its only account route is Relay.
+   * Code carried when this machine holds no account session at all. The project
+   * host uses `account_not_signed_in`; the brain answers `relay_account_required`
+   * because its only account route is Relay.
    */
   notSignedInCode: SyncHelloErrorPayload["code"];
 };
@@ -298,6 +300,6 @@ export async function authenticateSyncAccountHello(
         ? (error as { code: string }).code
         : "verification_failed",
     });
-    return reject(SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE);
+    return reject(SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE, "account_verification_failed");
   }
 }
