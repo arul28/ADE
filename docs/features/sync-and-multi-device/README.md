@@ -1150,8 +1150,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `linear_workflow_run_events`, `worker_agent_runs`,
   `worker_agent_cost_events`, `pack_events`, and `cto_session_logs`, and the
   cross-machine usage rollups `usage_machine_rollups` /
-  `usage_machine_rollup_meta`, which must replicate desktop-to-desktop but
-  reach the phone through `usage.getAdeStats` instead — are
+  `usage_machine_rollup_meta` plus the deleted-lane aggregates
+  `lane_usage_tombstones`, all three of which must replicate desktop-to-desktop
+  but reach the phone through `usage.getAdeStats` instead (the tombstone table
+  is not even in the phone's `DatabaseBootstrap.sql`, so iOS drops its rows on
+  arrival) — are
   filtered from phone changesets while ack watermarks still advance; the event
   logs exist in the phone's `DatabaseBootstrap.sql` so an inbound row would
   still apply, but there is no Swift read path for any of them), compact reseeding for replica phones

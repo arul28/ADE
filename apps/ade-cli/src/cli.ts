@@ -705,7 +705,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | stats | refresh | budget  Read provider quota, token/cost stats, and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs

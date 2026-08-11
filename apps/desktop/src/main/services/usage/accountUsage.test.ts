@@ -2258,4 +2258,43 @@ describe("local account machine identity", () => {
       fs.rmSync(secretsDir, { recursive: true, force: true });
     }
   });
+
+  it("recovers from a Windows delete-pending create race instead of throwing", () => {
+    const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-identity-race-"));
+    const deviceIdPath = path.join(secretsDir, "sync-device-id");
+    // The real race: this process finds no id, and its exclusive create loses
+    // to a sibling that wrote the file a moment earlier. On Windows that
+    // failure arrives as EPERM, not EEXIST. Treating it as fatal would throw
+    // out of the identity resolver, and the caller's fallback for a thrown
+    // identity is to publish nothing — the machine vanishes from the account
+    // directory. Only reachable on a macOS/Linux runner because the platform
+    // is injected.
+    const writeFileSync = vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => {
+      fs.appendFileSync(deviceIdPath, "winner-device-id\n");
+      throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+    });
+    try {
+      const identity = getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "loser-device-id",
+        platform: "win32",
+      });
+      expect(identity.deviceId).toBe("winner-device-id");
+
+      // The same failure on a POSIX platform is a genuine error, not a race,
+      // and must surface rather than be swallowed.
+      fs.rmSync(deviceIdPath, { force: true });
+      writeFileSync.mockImplementationOnce(() => {
+        throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+      });
+      expect(() => getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "loser-device-id",
+        platform: "darwin",
+      })).toThrow(/EPERM/);
+    } finally {
+      writeFileSync.mockRestore();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+    }
+  });
 });

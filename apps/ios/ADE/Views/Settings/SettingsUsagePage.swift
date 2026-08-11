@@ -48,12 +48,17 @@ struct SettingsUsagePageModel: Equatable {
     let providerSummaries = stats.providers ?? []
     var totalCost = 0.0
     var rows: [SettingsUsageProviderRow] = []
+    // Only the providers that survive the guard below reach the screen, so only
+    // their rate cards may describe what is on it — a provider with nothing in
+    // range must not flip the note to "mixed".
+    var countedPricingSources: [String] = []
     rows.reserveCapacity(providerSummaries.count)
     for summary in providerSummaries {
       let cost = max(0, summary.rangeCostUsd ?? 0)
       let tokens = summary.totalTokens
         ?? ((summary.inputTokens ?? 0) + (summary.outputTokens ?? 0) + (summary.cachedTokens ?? 0))
       guard cost > 0 || tokens > 0 else { continue }
+      if let pricingSource = summary.pricingSource { countedPricingSources.append(pricingSource) }
       totalCost += cost
       rows.append(
         SettingsUsageProviderRow(
@@ -103,7 +108,7 @@ struct SettingsUsagePageModel: Equatable {
     model.cacheSharePercent = totalTokens > 0 ? Double(min(cached, totalTokens)) / Double(totalTokens) * 100 : 0
     model.anyEstimated = rows.contains { $0.estimation.isEstimated }
     model.ratesNote = adeUsageRatesNote(
-      sources: providerSummaries.compactMap(\.pricingSource),
+      sources: countedPricingSources,
       pricingUpdatedAt: stats.pricingUpdatedAt
     )
     model.chart = ADEUsageChartModel.build(

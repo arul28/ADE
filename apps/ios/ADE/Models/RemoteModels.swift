@@ -5397,8 +5397,8 @@ struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
 
 struct MobileAdeUsageStats: Decodable, Equatable {
   var generatedAt: String
-  /// Scope the provider metrics were computed at ("machine" | "project"). Absent
-  /// on legacy hosts.
+  /// Scope the provider metrics were computed at ("account" | "machine" |
+  /// "project"). Absent on legacy hosts, which are always machine-scoped.
   var scope: String?
   var summary: MobileAdeUsageSummary
   var clients: [MobileAdeUsageClientSummary]?

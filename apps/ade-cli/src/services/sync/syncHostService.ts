@@ -344,6 +344,15 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   // model rows to it is pure churn.
   "usage_machine_rollups",
   "usage_machine_rollup_meta",
+  // The one aggregate row a deleted lane leaves behind. Replicates
+  // desktop-to-desktop for the same reason the deletes it replaces do, but the
+  // phone has no `lane_usage_tombstones` in `DatabaseBootstrap.sql` and no read
+  // path for it — iOS drops every row for an unknown table on arrival (see the
+  // `hasTable` guard in `Database.applyChangesLocked`). Sending them is work on
+  // both ends for data the phone provably discards; the phone's lifetime
+  // counters come from the host over `usage.getAdeStats`, which reads this
+  // table locally.
+  "lane_usage_tombstones",
 ]);
 
 // Tables the host alone is authoritative for. `sync_cluster_state` is the

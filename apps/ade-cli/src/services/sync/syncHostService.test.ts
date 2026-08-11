@@ -6759,6 +6759,9 @@ describe("outbound changeset ack retries", () => {
         // phone reads usage over `usage.getAdeStats` and never queries these.
         "usage_machine_rollups",
         "usage_machine_rollup_meta",
+        // Deleted-lane aggregate rows: no iOS schema and no read path, so the
+        // phone would drop every one of them on arrival.
+        "lane_usage_tombstones",
       ]));
 
       peer.ws.send(encodeSyncEnvelope({
