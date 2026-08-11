@@ -884,6 +884,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
   "local_storage_lifecycle_runs",
+  // Host-local settle concurrency token. Never replicated: it is meaningless
+  // off the host that issued it, and putting it on the CRR `terminal_sessions`
+  // row would add a per-column clock entry to the per-output-chunk write path.
+  "session_lifecycle_revisions",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -3805,6 +3809,25 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       next_scan_at text,
       archived_automatically integer not null default 0,
       updated_at text not null
+    )
+  `);
+
+  // Host-local concurrency token for the session settle lifecycle. Every
+  // mutation of the settle tuple (`settled_at` / `settle_override` /
+  // `settle_source`) bumps the row's revision in the same transaction, so a
+  // settle decision taken at t0 can be applied conditionally on nothing having
+  // moved since.
+  //
+  // Deliberately LOCAL-ONLY rather than a column on `terminal_sessions`: that
+  // table is a CRR, its settle row is rewritten per terminal output chunk, and
+  // cr-sqlite clocks are per column — a revision column would add a clock entry
+  // to the highest-frequency write in the product, for a value no other device
+  // can use. Only the host runs the chokepoint, so only the host needs the
+  // token. Keyed by session id alone so the bump stays one atomic statement.
+  db.run(`
+    create table if not exists session_lifecycle_revisions (
+      session_id text primary key,
+      revision integer not null default 0
     )
   `);
 

@@ -4,8 +4,9 @@
 to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
 and the race-matrix tests have been seen to pass.
 
-**Step 0 is implemented** — see "Host enforcement for pre-fix clients" in
-§3c-i for the host-side half.
+**Steps 0 and 1 are implemented.** Step 0's host-side half is "Host enforcement
+for pre-fix clients" in §3c-i; step 1 is the chokepoint and revision in §3a,
+whose implemented shape is recorded at the end of that section.
 
 Settle currently writes a lifecycle column and stops nothing. A session filed as
 "done" can still own a background shell, a subagent fleet, or a Cursor cloud run
@@ -29,10 +30,34 @@ Companion reading: `README.md` (canonical phase, settle semantics),
 
 ## 1. Every path that writes or clears `settled_at`
 
-All line numbers are `apps/desktop/src/main/services/sessions/sessionService.ts`
-at merge of #1059 (`6d9ff5771`). **Seven distinct paths mutate the column, and
-only three of them are named "settle" or "unsettle".** That asymmetry is the
-whole problem: teardown was wired to the three obvious ones.
+Verified against `apps/desktop/src/main/services/sessions/sessionService.ts` at
+implementation of step 1. The counts below correct the ones this section
+originally carried; the shape of the argument is unchanged, and the corrections
+make it stronger.
+
+**Ten call paths mutate the settle lifecycle, and only three are named "settle"
+or "unsettle".** That asymmetry is the whole problem: teardown was wired to the
+three obvious ones. Precisely:
+
+- **10 call paths** — W1-W3 and C1-C7 below.
+- **9 of them assign `settled_at`**, in **10 SQL statements** (W2 has two
+  branches). W3 is the exception: see below.
+- **5 of the 7 clearers are implicit** — C3, C4, C5, C6, and C7 are not named
+  "unsettle" and a reader looking for settle logic will not find them.
+- **All of them live in this one file.** A repo-wide search for a
+  `settled_at` / `settle_override` / `settle_source` assignment finds nothing
+  outside it, which is what makes a single chokepoint achievable at all.
+
+**W3 never touches `settled_at`.** `setSettleOverride` / `setSettleOverrides`
+assign `settle_override` and `settle_source` only — they merely *read*
+`settled_at` inside a `case` to decide the source. But a `'settled'` pin makes a
+row read as settled at the declared-settle tier regardless, so a revision keyed
+to `settled_at` alone would be blind to a change that alters the settle decision
+completely. This is finding 13 in §4 — *verify the field a guard reads actually
+changes on the event it guards* — reappearing in the inventory itself.
+
+The chokepoint therefore owns the whole **settle tuple** (`settled_at`,
+`settle_override`, `settle_source`), and the revision moves on any of them.
 
 ### 1a. Writers (set `settled_at`)
 
@@ -40,7 +65,7 @@ whole problem: teardown was wired to the three obvious ones.
 |---|---|---|---|
 | W1 | `:694` | `settleMany` (private; backs `settleSessions` `:1531` and `settleSessionsWithOutcome` `:1535`) | `registry.ts:2171` (`session.settleSessions`) · `registerIpc.ts:6989` (`sessions.settleMany`) · `syncRemoteCommandService.ts:4132` (`session.settleSessions`) · `prMergeAutoSettlementService.ts:188` (PR-merge auto-settle) |
 | W2 | `:1430`, `:1445` | `settleSession` (single) | `ctoOperatorTools.ts:555` (CTO operator tool) · `settleTerminalSession.ts` → `registry.ts:2119`, `registerIpc.ts` (`sessions.settle`), `syncRemoteCommandService.ts` (`session.settleSession`) |
-| W3 | `:1491`, `:1518` | `setSettleOverride` / `setSettleOverrides` (`'settled'` pin behaves as a declared settle) | row menus and bulk actions via the registry/IPC lifecycle surface |
+| W3 | `:1491`, `:1518` | `setSettleOverride` / `setSettleOverrides` — assigns `settle_override` / `settle_source` only, **never `settled_at`**, but a `'settled'` pin behaves as a declared settle | row menus and bulk actions via the registry/IPC lifecycle surface |
 
 ### 1b. Clearers (set `settled_at = null`)
 
@@ -54,9 +79,11 @@ whole problem: teardown was wired to the three obvious ones.
 | C6 | `:1737` | `markLastTurnFailed` | `agentChatService.ts:13590` | **no** |
 | C7 | `:1709` | `requestAttention` | `registry.ts:2059` (`ade chat ask`) | **no** |
 
-**Four of seven clearers are implicit.** C4 is on the hottest path in the
+**Five of seven clearers are implicit.** C4 is on the hottest path in the
 product — it runs per terminal output chunk. Any design that requires a hook,
-a pre-read, or a second statement at every clear site pays that cost on C4.
+a pre-read, or a second statement at every clear site pays that cost on C4. The
+implemented bump is a single `insert … on conflict` against a two-column,
+PK-keyed, non-replicated table, with no pre-read.
 
 ---
 
@@ -107,6 +134,26 @@ have. It must be:
 A settle then becomes: read revision `r₀` → tear down → write **conditionally**
 on the revision still being `r₀`. One `where` clause replaces every ad-hoc guard,
 at every entry point, for free.
+
+**As implemented (step 1).** `writeSettleLifecycle` in `sessionService` is the
+only writer of the settle tuple, and `settleLifecycleChokepoint.test.ts` enforces
+that by scanning the source for any assignment outside the tuple generator — the
+guarantee belongs to the writer, so it has to be impossible to add an eleventh
+path without the test failing.
+
+The revision lives in `session_lifecycle_revisions`, a local-only table added to
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`, bumped by a single
+`insert … on conflict do update set revision = revision + 1` immediately adjacent
+to the column write. `AdeDb` exposes no transaction helper and an explicit
+`BEGIN` could nest inside a caller's, so adjacency is what guarantees ordering:
+the runtime is single-threaded, the bump cannot throw (it falls back to an
+in-memory counter), and the revision is host-local, so no reader can observe the
+column write without the bump. The failure direction that matters — a column
+change the revision never saw — is the one this rules out.
+
+`sessionService.getSettleLifecycleRevision(sessionId)` is the read side. It
+returns 0 for a session with no recorded mutation, which callers must treat as a
+real value rather than as absent.
 
 ### 3b. An explicit `settling` state
 
@@ -377,7 +424,7 @@ three, and that is why it produced a defect every round.
    pending-UI state instead, and the host drops those columns from inbound phone
    changesets. Until this landed, a revision-guarded write was defeatable by CRR
    merge, so the chokepoint would have provided a guarantee it did not have.
-1. Land the chokepoint + lifecycle revision (3a) **alone**, with no teardown.
+1. **Landed.** The chokepoint + lifecycle revision (3a), with no teardown.
    It is pure refactor with a testable invariant: no `settled_at` mutation
    outside one function, and every mutation bumps the revision. The revision
    goes in a local-only table (§3c-ii).
