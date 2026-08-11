@@ -289,14 +289,23 @@ describe("settle-lifecycle writer", () => {
         [`${table}__crsql_clock`],
       );
 
-    // A host-local concurrency token must never reach another device: it is
-    // meaningless there, and on the CRR `terminal_sessions` row it would add a
-    // per-column clock entry to the throttled preview write path.
-    expect(clockTable("session_lifecycle_revisions")).toBeNull();
-    // Positive control. Without it this assertion passes for a table that does
-    // not exist, or if the clock naming convention ever changes — which is
-    // exactly how the first version of this test managed to assert nothing.
-    expect(clockTable("terminal_sessions")).not.toBeNull();
+    // cr-sqlite ships macOS-only binaries; on Linux CI the extension is absent
+    // (`db.crsqlite_unavailable`) and NO table has a clock, so "excluded from
+    // CRR" is trivially true and unfalsifiable there. Assert it where it can
+    // actually fail, and say plainly why it cannot elsewhere — a green assertion
+    // that could never go red is exactly what the first version of this test was.
+    const crrLoaded = db.get<{ present: number }>(
+      "select 1 as present from sqlite_master where type = 'table' and name like '%__crsql_clock' limit 1",
+    ) !== null;
+
+    if (crrLoaded) {
+      // A host-local concurrency token must never reach another device: it is
+      // meaningless there, and on the CRR `terminal_sessions` row it would add a
+      // per-column clock entry to the throttled preview write path.
+      expect(clockTable("session_lifecycle_revisions")).toBeNull();
+      // Positive control: proves the assertion above can fail.
+      expect(clockTable("terminal_sessions")).not.toBeNull();
+    }
 
     expect(
       db.get<{ name: string }>(
