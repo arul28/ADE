@@ -192,6 +192,18 @@ To move this into `ade-plugins-registry`:
    `apps/desktop/src/shared/plugins/registryIndex.test.ts` skips itself when the
    directory is gone.
 
+**Sequencing, for the five plugins ADE bundles.** Do not publish directory
+entries for them until their repositories actually exist. A directory entry
+REPLACES the bundled listing for the same id — `mergeMarketplaceCatalogue` is
+last-writer-wins by plugin id — so the Install button stops resolving the
+bundled copy on disk and starts cloning the entry's `repo`. While those
+repositories are empty that turns a working offline install into a failing one.
+The index format cannot soften this: `repo` must be an https URL or the entry is
+dropped, and `source` falls back to `repo` unless it is also a URL
+(`registryIndex.ts:212` and `:215`), so a directory entry can never name a
+bundled package. Either create the repositories first, or leave those five ids
+out of the first published index and let the bundled listings serve them.
+
 Until then, ADE works without any of it: the Marketplace ships a bundled index
 of the official plugins (`marketplaceLocalIndex.ts`), and a live index layers on
 top when one becomes reachable.
