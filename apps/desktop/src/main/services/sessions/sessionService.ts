@@ -381,6 +381,17 @@ export function createSessionService({
    */
   runSettleTeardown?: (sessionId: string) => void;
 }) {
+  // Refuse an async teardown HERE, at wiring time, not when a settle runs.
+  // Detecting it after invocation is too late: the body has already started, and
+  // its unowned continuation can go on stopping processes after the settling
+  // window closed — losing the work AND the settle. TypeScript's void-return
+  // rule makes `async (id) => {}` assignable, so this is the only boundary that
+  // can catch it before it does damage.
+  if (runSettleTeardown && runSettleTeardown.constructor.name === "AsyncFunction") {
+    throw new Error(
+      "runSettleTeardown must be synchronous: the settle path must be made async before teardown can await anything.",
+    );
+  }
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
 
@@ -761,14 +772,10 @@ export function createSessionService({
       if (begin.kind === "joined") continue;
       try {
         const teardownResult = runSettleTeardown?.(id) as unknown;
-        // The seam is synchronous in step 2 and MUST stay so until the settle
-        // path is made async. An async teardown would return here immediately,
-        // the checks below would run against a world where nothing had been
-        // stopped yet, and `finally` would close the window while the real
-        // teardown was still emitting output — which C4/C5 would then no longer
-        // swallow, clearing the settle that just landed. TypeScript's void-return
-        // rule lets an async callback through silently, so this is a loud guard
-        // rather than a type.
+        // Backstop for a SYNC function that returns a promise — the
+        // `AsyncFunction` check at construction cannot see that shape. Still
+        // after-the-fact, but such a function has at least run its synchronous
+        // body to completion, so the damage is bounded to whatever it deferred.
         if (teardownResult && typeof (teardownResult as { then?: unknown }).then === "function") {
           throw new Error(
             "runSettleTeardown returned a promise: the settle path must be made async before teardown can await anything.",

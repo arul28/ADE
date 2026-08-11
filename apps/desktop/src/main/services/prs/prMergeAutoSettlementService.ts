@@ -62,9 +62,16 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
-  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts" | "getSettleLifecycleRevision">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
+  /**
+   * The lifecycle revision each session had when its auto-settle last aborted.
+   * Instance-scoped, so it lives exactly as long as the poller — a module-level
+   * map would leak across services and across tests.
+   */
+  const abortedRevisions = new Map<string, number>();
+
   /**
    * The currently open or draft PRs in the previous snapshot, so a merge we
    * WATCHED can be told apart from one that was already history when it arrived.
@@ -194,6 +201,20 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
+        // Do not retry while the activity that won the race is still in
+        // progress. The abort signal is edge-triggered — a turn that is STILL
+        // running will not trip it again — so an unconditional retry would, in
+        // step 3, stop the very work that beat the first attempt, once per poll.
+        // The revision is the available "something changed since" signal, and it
+        // is the mechanism this whole design is built on.
+        const revisionAtLastAbort = abortedRevisions.get(session.id);
+        if (
+          revisionAtLastAbort !== undefined
+          && args.sessionService.getSettleLifecycleRevision(session.id) === revisionAtLastAbort
+        ) {
+          abandonedThisPr = true;
+          continue;
+        }
         const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
           settledAt: polledAt,
@@ -203,8 +224,10 @@ export function createPrMergeAutoSettlementService(args: {
         if (settleResult.aborted.length) {
           // The session became active while the settle was in flight. Leaving
           // the PR unhandled is the point: a later pass retries, instead of this
-          // merge being consumed by a settle that never landed.
+          // merge being consumed by a settle that never landed. Record the
+          // revision so that retry waits for the session to actually change.
           abandonedThisPr = true;
+          abortedRevisions.set(session.id, args.sessionService.getSettleLifecycleRevision(session.id));
         }
       }
 
