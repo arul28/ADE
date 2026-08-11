@@ -26,6 +26,12 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
+import { createSettleTeardownWiring } from "../../desktop/src/main/services/sessions/settleTeardownWiring";
+import type {
+  SettleResidueItem,
+  SettleTeardownContext,
+  SettleTeardownOutcome,
+} from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -755,7 +761,30 @@ export async function createAdeRuntime(args: {
   // services. Session changes still use it once publishing is attached.
   let pushPublisherForPtySignals: PushPublisherService | null = null;
   let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
-  const sessionService = createSessionService({ db });
+  // Late-bound: the chat service that owns the work is constructed further
+  // down. Without this the brain — which owns phone sync, remote commands and
+  // the PR-merge poller in a normal install — would settle sessions while
+  // stopping nothing.
+  const settleTeardownRef: {
+    run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+    report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
+    residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
+  } = { run: null, report: null, residue: null };
+  const sessionService = createSessionService({
+    db,
+    runSettleTeardown: async (sessionId, ctx) =>
+      settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
+    onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
+    onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+  });
+  // Inbound settle-tuple writes get this host's lifecycle revision, so an
+  // in-flight settle can see a peer's decision and abandon rather than
+  // overwrite it. Registered here because the DB layer must not know what a
+  // settle means — and because the brain, not the desktop, is where changesets
+  // are actually applied in a normal install.
+  db.sync.setRemoteSettleTupleHandler((changes) => {
+    sessionService.reconcileRemoteSettleTuple(changes);
+  });
   sessionService.onChanged((event) => {
     pushEvent("runtime", { type: "terminal_session_changed", event });
     const session = sessionService.get(event.sessionId);
@@ -1249,6 +1278,16 @@ export async function createAdeRuntime(args: {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
+    const settleWiring = createSettleTeardownWiring({
+      agentChatService,
+      logger,
+      analytics: productAnalyticsService ?? null,
+      // The brain is the non-GUI runtime surface, matching its other analytics.
+      surface: "api",
+    });
+    settleTeardownRef.run = settleWiring.runSettleTeardown;
+    settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
+    settleTeardownRef.residue = settleWiring.onSettleResidue;
   }
   autoRebaseActivityReady = true;
   void autoRebaseService

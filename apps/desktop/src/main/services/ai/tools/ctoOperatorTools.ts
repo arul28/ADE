@@ -554,7 +554,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ sessionId, outcome }) => {
       try {
-        const result = deps.sessionService.settleSessionReportingAbort(sessionId, {
+        const result = await deps.sessionService.settleSessionReportingAbort(sessionId, {
           ...(outcome ? { outcome } : {}),
           source: "operator",
         });

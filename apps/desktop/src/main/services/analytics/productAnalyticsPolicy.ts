@@ -93,7 +93,7 @@ const STRING_PROPERTIES = new Set([
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
-  "tool_error_kind", "crash_reason",
+  "tool_error_kind", "crash_reason", "count_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -120,6 +120,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "mention_expanded",
   "transaction_failed",
   "scope_selected",
+  // Settle teardown: work a settle could not confirm it stopped, and a peer
+  // settle-tuple write that had to be reconciled through the chokepoint.
+  "settle_teardown_residue",
+  "settle_remote_write_reconciled",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -132,7 +136,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_project_opened: new Set(["route_kind", "source", "mode", "connection_state"]),
   ade_feature_used: new Set([
     "feature", "action", "outcome", "source", "mode", "provider", "model_family", "duration_bucket", "connection_state",
-    "bytes_freed", "files_compressed",
+    "bytes_freed", "files_compressed", "count_bucket",
   ]),
   ade_work_session_started: new Set(["feature", "action", "outcome", "source", "mode", "provider"]),
   ade_work_session_completed: new Set([
@@ -183,6 +187,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
     "partial", "failed", "idle_only", "immediate",
+    // Settle teardown could not confirm a stop (design 3d). `timeout` above
+    // covers the third case. Coarse on purpose: never the task or its error.
+    "no_stop_control", "rejected",
     // Which half of a post-update transaction did not land. `swap` is
     // deliberately absent: the app half is already reported by
     // `ade_update_install_did_not_land`, so only the brain half is new signal.
@@ -194,12 +201,15 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // widened, so the scope control can never carry free text.
     "machine", "project", "account",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
     "grok", "local", "other",
   ]),
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
+  // Bucketed, never a raw count: a fleet that fails to stop must not become a
+  // high-cardinality dimension.
+  count_bucket: new Set(["1", "2_5", "6_plus"]),
   route_kind: new Set(["desktop", "web"]),
   connection_state: new Set(["connected", "disconnected", "pairing", "direct", "relay", "error"]),
   drop_reason: new Set([

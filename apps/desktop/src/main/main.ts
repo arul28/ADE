@@ -85,6 +85,8 @@ import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecyc
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import { createSessionService } from "./services/sessions/sessionService";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/sessionSettleTeardown";
+import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
@@ -2870,9 +2872,33 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
     });
 
-    const sessionService = createSessionService({ db });
+    // Late-bound: the chat service that owns the work does not exist yet at
+    // this point, and the settle path must not depend on construction order.
+    const settleTeardownRef: {
+      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
+      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
+    } = { run: null, report: null, residue: null };
+    const sessionService = createSessionService({
+      db,
+      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
+      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      runSettleTeardown: async (sessionId, ctx) =>
+        settleTeardownRef.run
+          ? await settleTeardownRef.run(sessionId, ctx)
+          // Before the chat service is up there is no background work to stop,
+          // so an empty teardown is the honest answer, not a skipped one.
+          : { residue: [], confirmed: false },
+    });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
+    });
+    // Inbound settle-tuple writes go through the chokepoint instead of landing
+    // raw, so a peer's decision gains this host's revision, settling window and
+    // abort semantics (R7). Registered here because the DB layer must not know
+    // what a settle means.
+    db.sync.setRemoteSettleTupleHandler((changes) => {
+      sessionService.reconcileRemoteSettleTuple(changes);
     });
     const processRegistry = createProcessRegistryService({
       db,
@@ -3600,6 +3626,17 @@ app.whenReady().then(async () => {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
+    {
+      const wiring = createSettleTeardownWiring({
+        agentChatService,
+        logger,
+        analytics: productAnalyticsService ?? null,
+        surface: "desktop",
+      });
+      settleTeardownRef.run = wiring.runSettleTeardown;
+      settleTeardownRef.report = wiring.onRemoteSettleWrite;
+      settleTeardownRef.residue = wiring.onSettleResidue;
+    }
     autoRebaseActivityReady = true;
     void autoRebaseService
       .refreshActiveRebaseNeeds("activity_services_ready")

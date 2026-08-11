@@ -119,6 +119,32 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Settle teardown records two things at the session-service owner boundary, both
+on the existing `ade_feature_used` event with `feature: "work"`.
+
+`action: "settle_teardown_residue"` fires when a settle landed but a stop could
+not be confirmed (the design's 3d option 3). It carries `provider`, a coarse
+`outcome` reason (`no_stop_control`, `timeout`, or `rejected`) and a bucketed
+`count_bucket` (`1`, `2_5`, `6_plus`). **One event per settle, never one per
+failed job** — a fleet that fails to stop must not become a burst — and the
+bucket exists so a large fleet cannot widen the dimension either. No session id,
+task id, command, or error text is recorded; the human-readable residue detail
+stays on the local diagnostics row and never enters the payload.
+
+`action: "settle_remote_write_reconciled"` fires when an inbound changeset
+carried settle-tuple columns and the session layer re-asserted them through the
+chokepoint. It carries the coarse `outcome` and a bucketed `count_bucket` of how
+many sessions one changeset covered.
+
+It is a **rate** signal, not an anomaly signal. A paired second desktop
+replicating its own settles reaches this path by design, so a non-zero rate is
+expected wherever two desktops are paired; what it measures is how much settle
+traffic arrives already-decided, which is the evidence needed before anyone
+designs a protocol-level concurrency token. **One event per changeset, never one
+per session** — a bulk settle on the peer arrives as a single apply covering N
+sessions, and reporting each would turn one remote action into an N-event
+burst.
+
 Applying an update is one transaction — app swap, background service reinstalled,
 service restarted, service answering — and the brain half failing (the app
 updated but the background service never came back) is its own product-level

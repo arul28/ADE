@@ -88,7 +88,7 @@ export async function settleTerminalSession(args: {
     if (!dismissed) return false;
   }
 
-  const result = args.sessionService.settleSessionReportingAbort(
+  const result = await args.sessionService.settleSessionReportingAbort(
     args.sessionId,
     {
       ...(args.opts?.outcome ? { outcome: args.opts.outcome } : {}),

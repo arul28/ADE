@@ -143,3 +143,14 @@ export function resolveSubagentCapability(
   }
   return NO_SUBAGENT_CAPABILITY;
 }
+
+/**
+ * Runtimes that cannot stop an individual piece of background work at all.
+ *
+ * A Codex chat has no per-subagent stop, so a settle teardown reports its
+ * leftover work as `no_stop_control` rather than as a stop that failed — a
+ * different fact, and the reason the residue reason field exists. Declared
+ * here with the other per-runtime facts rather than as a `provider === "codex"`
+ * check inside the teardown, which is what this module exists to prevent.
+ */
+export const PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL: ReadonlySet<string> = new Set(["codex"]);
