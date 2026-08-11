@@ -4185,6 +4185,77 @@ describe("sync host account authentication", () => {
     }
   });
 
+  it("keeps project-host pairing-write failures out of account verification errors", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const pairPeerViaAccount = vi.spyOn(pairingStore, "pairPeerViaAccount")
+      .mockImplementation(() => {
+        throw new Error("pairing store write failed");
+      });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const peer = {
+        deviceId: "project-host-pairing-write-failure",
+        deviceName: "Project host test peer",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "project-host-pairing-write-failure-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const accountToken = await mintAccountToken();
+      const dpopKey = makeDpopKeyPair();
+      const client = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(client);
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      const rejection = await waitForValue(
+        () => client.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "project-host pairing-write hello_error",
+      );
+      expect(rejection.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/could not save the new pairing/i),
+      });
+      expect((rejection.payload as { message: string }).message)
+        .not.toMatch(/could not verify/i);
+      expect(pairPeerViaAccount).toHaveBeenCalledTimes(1);
+    } finally {
+      pairPeerViaAccount.mockRestore();
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
   // A re-pair used to overwrite the device's working secret the instant the
   // host answered, two round trips before the device could persist the reply.
   // Dropping the socket in that gap — the ordinary outcome on a flaky network —
@@ -4436,6 +4507,96 @@ describe("sync host account authentication", () => {
         (hello.payload as { accountPairing?: { secret?: string } }).accountPairing?.secret,
       ).toBeTruthy();
     } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
+  it("projectless brain keeps pairing-write failures out of account verification errors", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    resetBrainMachineSyncStoresForTests();
+    const stores = resolveBrainMachineSyncStores(secretsDir);
+    const pairPeerViaAccount = vi.spyOn(stores.pairingStore, "pairPeerViaAccount")
+      .mockImplementation(() => {
+        throw new Error("pairing store write failed");
+      });
+    const deviceKey = makeDpopKeyPair();
+    const accountToken = await mintAccountToken();
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }),
+        getAccessToken: async () => "host-account-lease",
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "relay-bridge",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const peer = {
+        deviceId: "projectless-pairing-write-failure",
+        deviceName: "Projectless test peer",
+        platform: "unknown",
+        deviceType: "browser",
+        siteId: "projectless-pairing-write-failure-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const opened = await openAccountClient((server.address() as AddressInfo).port);
+      client = opened.ws;
+      sendAccountHello({
+        ws: opened.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: deviceKey.privateKey,
+          publicKeyX963: deviceKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      const rejection = await waitForValue(
+        () => opened.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "projectless pairing-write hello_error",
+      );
+      expect(rejection.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/could not save the new pairing/i),
+      });
+      expect((rejection.payload as { message: string }).message)
+        .not.toMatch(/could not verify/i);
+      expect(pairPeerViaAccount).toHaveBeenCalledTimes(1);
+    } finally {
+      pairPeerViaAccount.mockRestore();
       client?.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       cleanup();

@@ -222,6 +222,20 @@ describe("paired runtime endpoint routes", () => {
     expect(pairedRuntimeFailureMessage("authentication", "Mac Studio")).toBe(
       "Sign in to ADE to connect through the relay.",
     );
+    expect(pairedRuntimeFailureMessage(
+      "authentication",
+      "Mac Studio",
+      "account_not_signed_in",
+    )).toBe(
+      "Mac Studio is not signed in to an ADE account. Sign in there, then try again.",
+    );
+    expect(pairedRuntimeFailureMessage(
+      "authentication",
+      "Mac Studio",
+      "account_verification_failed",
+    )).toBe(
+      "Mac Studio could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.",
+    );
     // No attempts recorded at all still produces a sentence, not an empty one.
     expect(dominantPairedRuntimeFailure([])).toBe("unknown");
     expect(pairedRuntimeFailureMessage("unknown", null)).toContain("that computer");

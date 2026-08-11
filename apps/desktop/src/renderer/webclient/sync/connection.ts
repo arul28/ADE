@@ -1382,6 +1382,10 @@ export class SyncConnection {
       && (
         error.code === "attributed_auth_failed"
         || error.code === "terminal_auth_failed"
+        || error.code === "relay_account_required"
+        || error.code === "host_update_required"
+        || error.code === "account_not_signed_in"
+        || error.code === "account_verification_failed"
         || error.code === "invalidation_only_v1_unsupported"
         || error.code === "protocol_version_mismatch"
       );

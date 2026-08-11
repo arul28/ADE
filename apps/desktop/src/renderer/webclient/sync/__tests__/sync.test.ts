@@ -2645,6 +2645,58 @@ describe("browser sync connection and client", () => {
     });
   }
 
+  for (const code of ["account_not_signed_in", "account_verification_failed"] as const) {
+    it(`preserves terminal account errors when a later candidate fails (${code})`, async () => {
+      vi.stubGlobal("location", { protocol: "http:", hostname: "example.test" });
+      const storage = new MemoryStorage();
+      const message = code === "account_not_signed_in"
+        ? "The computer you're connecting to is not signed in to an ADE account."
+        : "The computer you're connecting to could not verify its ADE account session.";
+      const environment = await makeEnvironment(storage, {
+        relayUrl: null,
+        lastGoodEndpoint: null,
+        explicitWssEndpoints: [],
+        addressCandidates: [
+          { host: "192.168.1.10", kind: "lan" },
+          { host: "studio.example.ts.net", kind: "tailscale" },
+        ],
+      });
+      const script = createSocketFactory((socket, envelope) => {
+        if (envelope.type !== "hello") return;
+        if (socket.url.includes("192.168.1.10")) {
+          socket.serverSend({
+            type: "hello_error",
+            requestId: envelope.requestId,
+            payload: {
+              code,
+              message,
+              host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
+            },
+          });
+          return;
+        }
+        socket.serverSend({
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: {
+            code: "auth_failed",
+            message: "A later route failed.",
+          },
+        });
+      });
+      const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+      const endpoints = [
+        { url: "ws://192.168.1.10:8787", kind: "candidate" as const, dialable: true },
+        { url: "ws://studio.example.ts.net:8787", kind: "candidate" as const, dialable: true },
+      ];
+
+      await expect(connection.connect(environment, endpoints)).rejects.toMatchObject({ code });
+      expect(script.sockets).toHaveLength(1);
+      expect(connection.getStatus().error).toBe(message);
+      connection.dispose();
+    });
+  }
+
   it("disconnects a revoked Relay lease while preserving direct reconnect trust", async () => {
     const storage = new MemoryStorage();
     await makeEnvironment(storage, {

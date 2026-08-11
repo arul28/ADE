@@ -1322,7 +1322,7 @@ describe("DesktopPairedMachineStore", () => {
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
-  it("surfaces a host challenge decline as a route failure without leaking a hello", async () => {
+  it("keeps retry guidance without exposing route details from a challenge decline", async () => {
     // A host that declines to issue a challenge (e.g. rate-limit cooldown) is
     // NOT an identity-proof failure: adoption must report the host's real reason
     // and never send a sealed hello — but it must not be conflated with the
@@ -1360,15 +1360,18 @@ describe("DesktopPairedMachineStore", () => {
           ws.receive(encodeSyncEnvelope({
             type: "account_challenge_error",
             requestId: envelope.requestId,
-            payload: { message: "Too many failed authentication attempts. Try again in 3 minutes." },
+            payload: {
+              message: "relay ade-tunnel-relay.arulsharma1028.workers.dev: Too many failed authentication attempts. Try again in 3 minutes.",
+            },
           }));
         }) as unknown as WebSocket,
       },
     );
     // The host's real retry window is kept, without exposing the route details.
     await expect(pairing).rejects.toThrow(
-      "Could not connect to Expected host. Too many failed authentication attempts. Try again in 3 minutes.",
+      "Could not connect to Expected host. Try again in 3 minutes.",
     );
+    await expect(pairing).rejects.not.toThrow(/ade-tunnel-relay|relay\.example|endpoint/i);
     await expect(pairing).rejects.not.toMatchObject({
       code: "account_host_identity_verification_failed",
     });

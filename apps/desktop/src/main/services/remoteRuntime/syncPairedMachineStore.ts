@@ -249,13 +249,15 @@ function accountMachineAdoptionFailureMessage(
     return `Could not connect to ${machineName}. ${machineName} is not signed in to the same ADE account. `
       + "Open ADE on that computer, sign in, then try again.";
   }
-  const retryLaterFailure = failures.find((failure) =>
-    /try again in\s+\d+\s+(?:second|minute|hour)/i.test(failure.reason)
-  );
+  const retryLaterReason = failures
+    .map((failure) =>
+      failure.reason.match(/\btry again in\s+\d+\s+(?:second|minute|hour)s?\b/i)?.[0],
+    )
+    .find((reason): reason is string => reason != null);
   switch (dominant) {
     case "authentication":
-      if (retryLaterFailure) {
-        return `Could not connect to ${machineName}. ${boundedInlineText(retryLaterFailure.reason, 240)}`;
+      if (retryLaterReason) {
+        return `Could not connect to ${machineName}. ${retryLaterReason}.`;
       }
       return `Could not connect to ${machineName}. ADE could not verify the account on that computer. `
         + "Open ADE there and check that it is signed in to the same ADE account, then try again.";

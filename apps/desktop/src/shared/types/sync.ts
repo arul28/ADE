@@ -1110,7 +1110,9 @@ export type SyncHelloErrorPayload =
        *
        * The specific codes below it exist because `auth_failed` reads as "pair
        * it again" on every client, and that is the wrong instruction for a host
-       * that is signed out (`account_not_signed_in`), cannot verify accounts yet
+       * that is signed out (`account_not_signed_in`), cannot verify the account
+       * session (`account_verification_failed` — check sign-in and account
+       * configuration there), is too old to verify accounts
        * (`host_update_required` — update it there), or whose account session
        * moved under the handshake (`account_session_changed` — sign in, then
        * retry). None of those is a reason to destroy a saved pairing.

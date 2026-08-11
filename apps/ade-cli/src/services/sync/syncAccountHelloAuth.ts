@@ -51,6 +51,9 @@ export const SYNC_ACCOUNT_OTHER_OWNER_MESSAGE = "This device is already paired t
 export const SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE = "The computer you're connecting to could not"
   + " save the new pairing for this device. Try again.";
 
+export const SYNC_ACCOUNT_COMMIT_FAILED_MESSAGE = "The computer you're connecting to could not"
+  + " finish saving the account pairing. Try again.";
+
 export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connecting to could not verify"
   + " its ADE account session. Open ADE there and check that it is signed in to the same ADE account,"
   + " then try again.";
@@ -166,11 +169,22 @@ export async function authenticateSyncAccountHello(
       // `auth_failed` here reads as "pair it again" on every client.
       return reject(SYNC_ACCOUNT_VERIFY_UNAVAILABLE_MESSAGE, "host_update_required");
     }
-    const attestation = await options.verifyAccountAttestation({
-      token: auth.accountToken,
-      expectedUserId: authorization.userId,
-      config,
-    });
+    let attestation: VerifiedAccountAttestation;
+    try {
+      attestation = await options.verifyAccountAttestation({
+        token: auth.accountToken,
+        expectedUserId: authorization.userId,
+        config,
+      });
+    } catch (error) {
+      logger.warn(`${logPrefix}.account_attestation_rejected`, {
+        deviceId: auth.deviceId,
+        reason: typeof (error as { code?: unknown } | null)?.code === "string"
+          ? (error as { code: string }).code
+          : "verification_failed",
+      });
+      return reject(SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE, "account_verification_failed");
+    }
     if (!isPeerCurrent()) return { kind: "stale" };
     const commitAuthorization = await options.captureAccountAuthorization();
     if (!isPeerCurrent()) return { kind: "stale" };
@@ -268,10 +282,21 @@ export async function authenticateSyncAccountHello(
       // acknowledgement to arm, and staging deliberately withholds elevations,
       // so a staged adoption would leave the record local for exactly as long
       // as the bug it fixes.
-      const paired = pairingStore.pairPeerViaAccount(peer, attestation, {
-        dpopPublicKey: existingPairingRecord ? null : auth.dpop?.publicKey ?? null,
-        runtimeHostGrant: auth.runtimeHostGrant ?? null,
-      });
+      let paired: ReturnType<SyncPairingStore["pairPeerViaAccount"]>;
+      try {
+        paired = pairingStore.pairPeerViaAccount(peer, attestation, {
+          dpopPublicKey: existingPairingRecord ? null : auth.dpop?.publicKey ?? null,
+          runtimeHostGrant: auth.runtimeHostGrant ?? null,
+        });
+      } catch (error) {
+        logger.warn(`${logPrefix}.account_pairing_write_failed`, {
+          deviceId: auth.deviceId,
+          reason: typeof (error as { code?: unknown } | null)?.code === "string"
+            ? (error as { code: string }).code
+            : "pairing_write_failed",
+        });
+        return reject(SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE);
+      }
       // Read-only: this confirms the record we just wrote is readable, and must
       // not be mistaken for the device proving it received the secret (which is
       // what promotes a staged rotation).
@@ -294,12 +319,12 @@ export async function authenticateSyncAccountHello(
       };
     });
   } catch (error) {
-    logger.warn(`${logPrefix}.account_auth_rejected`, {
+    logger.warn(`${logPrefix}.account_commit_failed`, {
       deviceId: auth.deviceId,
       reason: typeof (error as { code?: unknown } | null)?.code === "string"
         ? (error as { code: string }).code
-        : "verification_failed",
+        : "commit_failed",
     });
-    return reject(SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE, "account_verification_failed");
+    return reject(SYNC_ACCOUNT_COMMIT_FAILED_MESSAGE);
   }
 }

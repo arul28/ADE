@@ -299,6 +299,11 @@ const FAILURE_PRECEDENCE: readonly RemoteRuntimeConnectionAttemptFailure[] = [
   "unknown",
 ];
 
+export type PairedRuntimeAccountHelloCode = Extract<
+  SyncHelloErrorPayload["code"],
+  "account_not_signed_in" | "account_verification_failed"
+>;
+
 export function dominantPairedRuntimeFailure(
   attempts: readonly RemoteRuntimeConnectionAttempt[],
 ): RemoteRuntimeConnectionAttemptFailure {
@@ -316,12 +321,19 @@ export function dominantPairedRuntimeFailure(
 export function pairedRuntimeFailureMessage(
   failure: RemoteRuntimeConnectionAttemptFailure,
   machineNameValue: string | null | undefined,
+  accountHelloCode?: PairedRuntimeAccountHelloCode | null,
 ): string {
   const machine = machineNameValue?.trim() || "that computer";
   switch (failure) {
     case "pairing":
       return `${machine} says this device's pairing is out of date — pair it again.`;
     case "authentication":
+      if (accountHelloCode === "account_not_signed_in") {
+        return `${machine} is not signed in to an ADE account. Sign in there, then try again.`;
+      }
+      if (accountHelloCode === "account_verification_failed") {
+        return `${machine} could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.`;
+      }
       return "Sign in to ADE to connect through the relay.";
     case "identity":
       return `A different computer answered at ${machine}'s saved address — try again.`;
