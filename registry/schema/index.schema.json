@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/ade-plugins/ade-plugins-registry/main/schema/index.schema.json",
   "title": "ADE plugin registry index",
-  "description": "The document the crawler writes and every ADE install reads. Kept in step with apps/desktop/src/shared/plugins/registryIndex.ts, which is the enforcing copy — this file documents the contract and lets the crawler validate before publishing.",
+  "description": "The document the crawler writes and every ADE install reads. Kept in step with apps/desktop/src/shared/plugins/registryIndex.ts, which is the enforcing copy — this file documents the contract and lets the crawler validate before publishing. Objects stay open (additionalProperties true) and only identity is required, because that is what the enforcing parser does: it accepts an index from a newer registry and degrades field by field. A schema that refused unknown fields would make every registry change a flag day across every installed ADE, and would have failed a document the app itself accepts.",
   "type": "object",
-  "required": ["version", "generatedAt", "entries"],
-  "additionalProperties": false,
+  "required": ["version", "entries"],
+  "additionalProperties": true,
   "properties": {
     "version": {
       "description": "Index shape version. Readers accept a higher number and degrade field by field rather than refusing the document.",
@@ -59,8 +59,8 @@
     },
     "entry": {
       "type": "object",
-      "required": ["pluginId", "displayName", "description", "author", "version", "repo"],
-      "additionalProperties": false,
+      "required": ["pluginId", "version", "repo"],
+      "additionalProperties": true,
       "properties": {
         "pluginId": { "$ref": "#/$defs/pluginId" },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
@@ -103,7 +103,7 @@
           "items": { "$ref": "#/$defs/socket" }
         },
         "adds": {
-          "description": "Short lines for the install modal when the entry publishes no manifest.",
+          "description": "Short lines for the install modal when the entry publishes no manifest. NOT written by the crawler: what a plugin adds is product copy the app derives from the facts below (surfaces, sockets, isTheme). Read, and permitted for a hand-curated entry, so a directory that wants to say more can.",
           "type": "array",
           "maxItems": 12,
           "items": { "type": "string", "maxLength": 120 }

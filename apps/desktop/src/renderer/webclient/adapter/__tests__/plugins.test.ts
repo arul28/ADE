@@ -11,10 +11,13 @@ import {
   setPluginEnabled,
   installPlugin,
   listInstalledPlugins,
+  readPluginCollection,
   readPluginPanel,
   readPluginPresence,
   pluginsAvailable,
+  subscribeToPluginChanges,
 } from "../../../lib/pluginRuntimeBridge";
+import { pluginTabsAvailable } from "../../../lib/webClientMode";
 import { createAdeWebAdapter } from "../index";
 
 const project: ProjectInfo = { rootPath: "/repo", displayName: "Repo", baseRef: "main" };
@@ -409,6 +412,141 @@ describe("web plugin namespace", () => {
     // A one-shot read must not leave a stream open behind it.
     await Promise.resolve();
     expect(fake.pluginUnsubscribeCalls).toEqual([{ pluginId: "graph", panelId: "main" }]);
+  });
+
+  it("serves a collection read from the panel snapshot the reader just took", async () => {
+    fake.panelSnapshots.set("graph/main", {
+      seq: 1,
+      pluginId: "graph",
+      panelId: "main",
+      panel: {
+        pluginId: "graph",
+        panelId: "main",
+        title: "Issues",
+        icon: "",
+        surface: "work",
+        schemaJson: '{"kind":"table","data":{"collection":"issues"}}',
+        vocabVersion: 1,
+        updatedAt: "",
+      },
+      rows: [
+        { collection: "issues", key: "ade/1", valueJson: '{"title":"First"}', updatedAt: "" },
+        { collection: "issues", key: "ade/2", valueJson: '{"title":"Second"}', updatedAt: "" },
+        { collection: "notes", key: "n1", valueJson: '"other"', updatedAt: "" },
+      ],
+    });
+    mounted = mountAdapter(fake);
+
+    await readPluginPanel("graph", "main");
+    const rows = await readPluginCollection("graph", "issues");
+
+    // The defect this pins: the collection name was passed as the panel id, so
+    // the subscription matched no panel, waited out the 8s read timeout and
+    // answered empty on a plugin whose rows were in the snapshot already.
+    expect(rows).toEqual([
+      { key: "ade/1", value: { title: "First" } },
+      { key: "ade/2", value: { title: "Second" } },
+    ]);
+    expect(fake.pluginSubscribeCalls).toEqual([{ pluginId: "graph", panelId: "main" }]);
+  });
+
+  it("narrows a collection read by key prefix and limit without asking the host again", async () => {
+    fake.panelSnapshots.set("graph/main", {
+      seq: 1,
+      pluginId: "graph",
+      panelId: "main",
+      panel: {
+        pluginId: "graph",
+        panelId: "main",
+        title: "Issues",
+        icon: "",
+        surface: "work",
+        schemaJson: '{"kind":"table","data":{"collection":"issues"}}',
+        vocabVersion: 1,
+        updatedAt: "",
+      },
+      rows: [
+        { collection: "issues", key: "ade/1", valueJson: "1", updatedAt: "" },
+        { collection: "issues", key: "ade/2", valueJson: "2", updatedAt: "" },
+        { collection: "issues", key: "other/1", valueJson: "3", updatedAt: "" },
+      ],
+    });
+    mounted = mountAdapter(fake);
+
+    await readPluginPanel("graph", "main");
+    expect(await readPluginCollection("graph", "issues", { keyPrefix: "ade/", limit: 1 }))
+      .toEqual([{ key: "ade/1", value: 1 }]);
+    expect(fake.pluginSubscribeCalls).toHaveLength(1);
+  });
+
+  it("answers a collection read with no panel behind it empty rather than stalling", async () => {
+    mounted = mountAdapter(fake);
+
+    expect(await readPluginCollection("graph", "issues")).toEqual([]);
+    // The panel stream is the only source of rows and it is keyed by panel, so
+    // there is nothing to subscribe to here — subscribing to a panel named
+    // after the collection is exactly the bug this replaced.
+    expect(fake.pluginSubscribeCalls).toEqual([]);
+  });
+
+  it("offers plugin tabs only while the host serves the plugin reads behind them", async () => {
+    mounted = mountAdapter(fake);
+    (globalThis as unknown as { window: { __adeWebClient?: boolean } }).window.__adeWebClient = true;
+
+    // On web every member "exists" under the fallback proxy, so the desktop's
+    // `typeof getPanel === "function"` probe proves nothing; only this marker,
+    // set deliberately by the adapter, may turn the tabs on.
+    expect(pluginTabsAvailable()).toBe(true);
+
+    fake.descriptors = [];
+    expect(pluginTabsAvailable()).toBe(false);
+  });
+
+  it("refuses a read on a host with no plugin support instead of reporting none installed", async () => {
+    fake.descriptors = [];
+    mounted = mountAdapter(fake);
+    const plugins = (globalThis as unknown as {
+      window: { ade: { plugins: { list?: () => Promise<unknown>; presence?: () => Promise<unknown> } } };
+    }).window.ade.plugins;
+
+    // The members are hidden entirely on a host that serves neither, which is
+    // what the capability probe reads. The typed refusal below is the second
+    // line: between a host handoff and the next descriptor refresh the call can
+    // still be made, and "[]" would render as "you have no plugins installed"
+    // on a computer that cannot have any.
+    expect(plugins.list).toBeUndefined();
+    expect(plugins.presence).toBeUndefined();
+
+    fake.descriptors = descriptors(ALL_PLUGIN_ACTIONS);
+    const list = plugins.list;
+    fake.commandErrors.set("plugins.list", Object.assign(new Error("Plugins are not available on this computer."), {
+      code: "plugins_unavailable",
+    }));
+    await expect(list?.()).rejects.toThrow(/not available on this computer/);
+  });
+
+  it("tells its own subscribers about an install it just made", async () => {
+    fake.commandResults.set("plugins.install", {
+      pluginId: "graph",
+      version: "1.2.0",
+      enabled: true,
+      displayName: "Graph",
+      icon: "",
+      accent: "",
+      source: "git",
+      installedAt: "2026-08-11T00:00:00.000Z",
+    });
+    mounted = mountAdapter(fake);
+    const seen: string[] = [];
+    const stop = subscribeToPluginChanges((event) => seen.push(event.kind));
+
+    await installPlugin({ source: "https://example.test/graph.git" });
+
+    // The host's own invalidation arrives when the plugin tables replicate —
+    // after this resolves, and never at all when the install landed on another
+    // machine. Without this the coverage rail sits on its cached read.
+    expect(seen).toEqual(["installs"]);
+    stop();
   });
 
   it("degrades a malformed panel schema to null instead of blanking the read", async () => {

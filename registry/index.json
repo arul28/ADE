@@ -1,6 +1,23 @@
 {
   "version": 1,
   "generatedAt": "2026-08-11T00:00:00.000Z",
+  "notes": [
+    "SEED. Written by hand, and the only hand-written index there will ever be:",
+    "once this directory is extracted into `ade-plugins-registry` (README,",
+    "'Extraction') the crawler owns this file and hand edits are overwritten.",
+    "",
+    "It carries the plugins ADE bundles, so an install with no network still",
+    "recognises them by id. What it deliberately does NOT carry is anything the",
+    "crawler would have measured: no install counts, no stars, no published or",
+    "updated dates. An omitted count renders as nothing; a zero would render as a",
+    "measurement, and nobody has measured these.",
+    "",
+    "`repo` names the repository each plugin will be published at. Those",
+    "repositories do not exist yet — the packages currently live in this",
+    "repository under `plugins/`, and the Marketplace installs them from the copy",
+    "bundled in the app. Until the org is published, an install driven from THIS",
+    "file would have nothing to clone."
+  ],
   "entries": [
     {
       "pluginId": "ade-graph",
@@ -16,12 +33,7 @@
       "featured": true,
       "isTheme": false,
       "surfaces": [],
-      "sockets": [],
-      "adds": ["Graph tab"],
-      "installs": 0,
-      "stars": 0,
-      "publishedAt": "2026-08-11T00:00:00.000Z",
-      "updatedAt": "2026-08-11T00:00:00.000Z"
+      "sockets": []
     },
     {
       "pluginId": "ade-log-viewer",
@@ -37,12 +49,7 @@
       "featured": true,
       "isTheme": false,
       "surfaces": ["files"],
-      "sockets": ["file-viewer"],
-      "adds": ["One addition to Files", "Runs code on this machine"],
-      "installs": 0,
-      "stars": 0,
-      "publishedAt": "2026-08-11T00:00:00.000Z",
-      "updatedAt": "2026-08-11T00:00:00.000Z"
+      "sockets": ["file-viewer"]
     },
     {
       "pluginId": "ade-theme-paper",
@@ -58,12 +65,7 @@
       "featured": true,
       "isTheme": true,
       "surfaces": [],
-      "sockets": [],
-      "adds": ["A colour theme"],
-      "installs": 0,
-      "stars": 0,
-      "publishedAt": "2026-08-11T00:00:00.000Z",
-      "updatedAt": "2026-08-11T00:00:00.000Z"
+      "sockets": []
     },
     {
       "pluginId": "ade-theme-ink",
@@ -79,12 +81,7 @@
       "featured": false,
       "isTheme": true,
       "surfaces": [],
-      "sockets": [],
-      "adds": ["A colour theme"],
-      "installs": 0,
-      "stars": 0,
-      "publishedAt": "2026-08-11T00:00:00.000Z",
-      "updatedAt": "2026-08-11T00:00:00.000Z"
+      "sockets": []
     },
     {
       "pluginId": "ade-theme-contrast",
@@ -100,12 +97,7 @@
       "featured": false,
       "isTheme": true,
       "surfaces": [],
-      "sockets": [],
-      "adds": ["A colour theme"],
-      "installs": 0,
-      "stars": 0,
-      "publishedAt": "2026-08-11T00:00:00.000Z",
-      "updatedAt": "2026-08-11T00:00:00.000Z"
+      "sockets": []
     }
   ]
 }

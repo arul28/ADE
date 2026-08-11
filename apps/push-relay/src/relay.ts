@@ -43,6 +43,8 @@ export type PushRelayEnv = {
   CLAIM_RATE_LIMIT_PER_MIN?: string;
   /** Plugin install pings allowed per machine per 60s. */
   PLUGIN_INSTALL_RATE_LIMIT_PER_MIN?: string;
+  /** Distinct plugins one machine may claim for the first time per 24h. */
+  PLUGIN_INSTALL_DAILY_CLAIM_CAP?: string;
   /** Days an install row survives without being re-reported. */
   PLUGIN_INSTALL_RETENTION_DAYS?: string;
   /** Clerk JWKS endpoint used to verify account-scoped Attention bearer tokens. */
@@ -177,6 +179,11 @@ const DEFAULT_CLAIM_RATE_LIMIT_PER_MIN = 10;
 // someone setting up a fresh machine and leaves no room for a signed machine to
 // use the ping as a write amplifier against its own account's D1 rows.
 const DEFAULT_PLUGIN_INSTALL_RATE_LIMIT_PER_MIN = 30;
+// Distinct plugins one machine may claim for the first time in 24h. The
+// directory is a handful of plugins and a real machine installs a few; 50 is
+// far above any honest setup and far below the breadth a machine would need to
+// move a popularity sort. See the note in `handlePluginInstallPing`.
+const DEFAULT_PLUGIN_INSTALL_DAILY_CLAIM_CAP = 50;
 // An install that has not been re-reported in half a year is from a machine
 // that stopped running ADE. Counting it forever would make the directory's
 // numbers grow monotonically and mean nothing.
@@ -1374,17 +1381,53 @@ async function handlePluginInstallPing(
   }
 
   const now = new Date().toISOString();
-  await env.DB
+  // Re-reporting a plugin this machine already claimed is always accepted: it
+  // is what keeps a live machine's row from ageing out of the retention window,
+  // and it can never change the count.
+  const refreshed = await env.DB
+    .prepare("update plugin_installs set version = ?, updated_at = ? where plugin_id = ? and machine_key = ?")
+    .bind(version, now, pluginId, machineKey)
+    .run();
+  if ((refreshed.meta?.changes ?? 0) > 0) return json({ ok: true, counted: true });
+
+  // A NEW claim is capped per machine per day.
+  //
+  // One row per (plugin, machine) already means a machine cannot inflate any
+  // single plugin's count past one. What it does not bound is BREADTH: one
+  // signed machine claiming thousands of ids adds one install to each, which is
+  // enough to reorder a popularity sort built out of small numbers. The cap is
+  // sized well above a real setup — nobody installs 50 plugins in a day — so it
+  // costs an honest machine nothing and makes a sybil need thousands of
+  // registered machines rather than one.
+  //
+  // The gate is part of the insert rather than a read followed by a write, so
+  // two concurrent pings cannot both observe the same under-cap count.
+  const claimCap = positiveIntEnv(
+    env.PLUGIN_INSTALL_DAILY_CLAIM_CAP,
+    DEFAULT_PLUGIN_INSTALL_DAILY_CLAIM_CAP,
+  );
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const claimed = await env.DB
     .prepare(`
       insert into plugin_installs(plugin_id, machine_key, version, first_seen_at, updated_at)
-      values (?, ?, ?, ?, ?)
+      select ?1, ?2, ?3, ?4, ?4
+      where (
+        select count(*) from plugin_installs where machine_key = ?2 and first_seen_at >= ?5
+      ) < ?6
       on conflict(plugin_id, machine_key) do update set
         version = excluded.version,
         updated_at = excluded.updated_at
     `)
-    .bind(pluginId, machineKey, version, now, now)
+    .bind(pluginId, machineKey, version, now, since, claimCap)
     .run();
-  return json({ ok: true });
+  const counted = (claimed.meta?.changes ?? 0) > 0;
+  if (!counted) {
+    logEvent("plugin_install_claim_capped", { machineKey: machineKey.slice(0, 8), cap: claimCap });
+  }
+  // Answered 200 either way: the ping is fire-and-forget on the client, an
+  // error here would only produce log noise on a machine that did nothing
+  // wrong, and `counted` says plainly what happened.
+  return json({ ok: true, counted });
 }
 
 /**

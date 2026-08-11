@@ -15,8 +15,15 @@
  *   4. merges stars (GitHub) and installs (the relay's public counts);
  *   5. stamps `official` / `featured` from the curated files, never from the
  *      plugin's own manifest;
- *   6. writes `index.json` only if the content actually changed, so a quiet week
+ *   6. validates the assembled document against `schema/index.schema.json`;
+ *   7. writes `index.json` only if the content actually changed, so a quiet week
  *      produces no commits.
+ *
+ * What it deliberately does NOT do is describe a plugin in prose. The install
+ * modal's "Adds:" lines are product copy, and a crawler that writes them owns a
+ * second, silently diverging copy of wording the app already derives from the
+ * manifest. The index publishes facts — surfaces, socket kinds, theme — and the
+ * app says what they mean.
  *
  * Every network answer here is third-party text. Nothing is copied into the
  * index without passing the same checks ADE applies when it reads the result
@@ -25,6 +32,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+
+import { validateAgainstSchema } from "./validateSchema.mjs";
 
 const ROOT = path.join(import.meta.dirname, "..");
 const TOPIC = "ade-plugin";
@@ -39,7 +48,6 @@ const LIMITS = {
   maxManifestBytes: 256 * 1024,
   maxReadmeChars: 32 * 1024,
   maxDescriptionChars: 300,
-  maxAddsLines: 12,
   requestTimeoutMs: 20_000,
 };
 
@@ -174,7 +182,14 @@ function buildEntry({ repository, manifest, curated, stars, installs }) {
   // repo publishing a manifest with that name is refused outright rather than
   // demoted to a community entry, because a community "graph" beside the
   // official one is exactly the confusion the binding exists to prevent.
-  const official = curated.official.plugins?.[pluginId] ?? null;
+  //
+  // The lookup is a Map, not a plain-object index, and that is a security
+  // property rather than a style choice: `plugins["constructor"]` on an object
+  // literal resolves up the prototype chain to a truthy function, so a
+  // repository publishing `{"name": "constructor"}` — a valid plugin id — would
+  // be stamped `official: true` with no checksums, which installs as
+  // "vouched-for by ADE, verified against nothing".
+  const official = curated.official.get(pluginId) ?? null;
   if (official && typeof official.repo === "string" && official.repo !== repo) {
     return { reason: `${repository.full_name}: id "${pluginId}" is bound to ${official.repo}` };
   }
@@ -202,7 +217,6 @@ function buildEntry({ repository, manifest, curated, stars, installs }) {
     isTheme,
     surfaces,
     sockets: socketKinds,
-    adds: describeAdds(manifest).slice(0, LIMITS.maxAddsLines),
   };
   const icon = trimmed(manifest.icon, 64);
   if (icon) entry.icon = icon;
@@ -218,35 +232,40 @@ function buildEntry({ repository, manifest, curated, stars, installs }) {
   return { entry };
 }
 
-/** The install modal's "Adds:" lines, counted from what the manifest declared. */
-function describeAdds(manifest) {
-  const lines = [];
-  const surfaces = Array.isArray(manifest.surfaces) ? manifest.surfaces : [];
-  for (const surface of surfaces) {
-    const title = trimmed(surface?.title, 60);
-    if (!title) continue;
-    lines.push(surface.kind === "pane" ? `${title} pane` : `${title} tab`);
+/**
+ * The curated files, as lookups that cannot be reached through a prototype.
+ *
+ * `official.json` is hand-edited and trusted; the ids it is looked up BY come
+ * from third-party manifests, which is what makes `Object.hasOwn` filtering and
+ * a Map the difference between "is this id in the Official set" and "does this
+ * string resolve to anything on Object.prototype".
+ */
+function readCuratedFiles() {
+  const featuredFile = readJsonFile("featured.json", { featured: [] });
+  const officialFile = readJsonFile("official.json", { plugins: {} });
+  const officialRaw = officialFile.plugins && typeof officialFile.plugins === "object"
+    ? officialFile.plugins
+    : {};
+  const official = new Map();
+  for (const pluginId of Object.keys(officialRaw)) {
+    if (!Object.hasOwn(officialRaw, pluginId)) continue;
+    if (!PLUGIN_ID_PATTERN.test(pluginId)) {
+      warn(`official.json: "${pluginId}" is not a plugin id`);
+      continue;
+    }
+    const record = officialRaw[pluginId];
+    if (!record || typeof record !== "object") continue;
+    official.set(pluginId, record);
   }
-  const sockets = Array.isArray(manifest.sockets) ? manifest.sockets : [];
-  if (sockets.length > 0) {
-    lines.push(sockets.length === 1 ? "One addition to a core tab" : `${sockets.length} additions to core tabs`);
-  }
-  if (Array.isArray(manifest.cli) && manifest.cli.length > 0) lines.push("Terminal commands");
-  if (Array.isArray(manifest.skills) && manifest.skills.length > 0) lines.push("Agent skills");
-  if (manifest.theme && typeof manifest.theme === "object") lines.push("A colour theme");
-  if (manifest.collections && Object.keys(manifest.collections).length > 0) {
-    const synced = Object.values(manifest.collections).some((collection) => collection?.sync === true);
-    lines.push(synced ? "Stores data, and syncs it to your other devices" : "Stores data on this machine");
-  }
-  if (typeof manifest.entry === "string" && manifest.entry.length > 0) lines.push("Runs code on this machine");
-  return lines;
+  const featured = new Set(
+    (Array.isArray(featuredFile.featured) ? featuredFile.featured : [])
+      .filter((pluginId) => typeof pluginId === "string" && PLUGIN_ID_PATTERN.test(pluginId)),
+  );
+  return { featured, official };
 }
 
 async function main() {
-  const curated = {
-    featured: new Set(readJsonFile("featured.json", { featured: [] }).featured ?? []),
-    official: readJsonFile("official.json", { plugins: {} }),
-  };
+  const curated = readCuratedFiles();
   const previous = readJsonFile("index.json", null);
 
   const [repositories, installCounts] = await Promise.all([
@@ -308,8 +327,7 @@ async function main() {
 
   entries.sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 
-  const missing = Object.keys(curated.official.plugins ?? {})
-    .filter((pluginId) => !claimed.has(pluginId));
+  const missing = [...curated.official.keys()].filter((pluginId) => !claimed.has(pluginId));
   if (missing.length > 0) {
     console.warn(`official plugins not found in the topic: ${missing.join(", ")}`);
   }
@@ -328,6 +346,21 @@ async function main() {
     generatedAt: new Date().toISOString(),
     entries,
   };
+
+  // The published contract, checked before anything is published against it.
+  // Every install in the world fetches this file, and the enforcing parser on
+  // the reading side drops what it cannot understand SILENTLY — an entry that
+  // stops meeting the contract would simply vanish from the Marketplace with
+  // nothing anywhere saying why. Failing the run is how that becomes visible,
+  // and it costs a crawl rather than a release.
+  const schema = readJsonFile(path.join("schema", "index.schema.json"), null);
+  if (!schema) throw new Error("schema/index.schema.json is missing; refusing to publish an unchecked index");
+  const violations = validateAgainstSchema(index, schema);
+  if (violations.length > 0) {
+    for (const violation of violations.slice(0, 20)) console.error(`invalid: ${violation}`);
+    throw new Error(`assembled index does not match schema/index.schema.json (${violations.length} problems)`);
+  }
+
   fs.writeFileSync(path.join(ROOT, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
   console.log(`wrote index.json with ${entries.length} entries (${warnings.length} skipped)`);
 }

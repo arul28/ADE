@@ -40,9 +40,12 @@ class FakeD1Statement {
     return { results: this.db.all<T>(this.sql, this.values) };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.db.run(this.sql, this.values);
-    return { success: true };
+  // `meta.changes` is the real D1 shape, and the plugin-install path branches on
+  // it: a write that the daily claim cap suppressed reports zero rows changed,
+  // which is how the handler tells "counted" from "not counted".
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    const changes = this.db.run(this.sql, this.values);
+    return { success: true, meta: { changes: changes ?? 0 } };
   }
 }
 
@@ -193,7 +196,8 @@ class FakeD1Database {
     return [];
   }
 
-  run(sql: string, values: unknown[]): void {
+  /** Returns rows changed where a caller reads it; undefined otherwise. */
+  run(sql: string, values: unknown[]): number | undefined {
     if (sql.startsWith("insert into rate_counters")) {
       const [bucket, windowStart, updatedAt] = values as [string, number, string];
       const existing = this.rateCounters.get(bucket);
@@ -302,26 +306,45 @@ class FakeD1Database {
       );
       return;
     }
+    if (sql.startsWith("update plugin_installs set version")) {
+      const [version, updatedAt, pluginId, machineKey] = values as string[];
+      const existing = this.pluginInstalls.find(
+        (row) => row.plugin_id === pluginId && row.machine_key === machineKey,
+      );
+      if (!existing) return 0;
+      // first_seen_at is never rewritten, so a re-ping cannot make an old
+      // install look new.
+      existing.version = version;
+      existing.updated_at = updatedAt;
+      return 1;
+    }
     if (sql.includes("insert into plugin_installs")) {
-      const [pluginId, machineKey, version, firstSeenAt, updatedAt] = values as string[];
+      // `insert ... select ... where (count of this machine's claims since ?5)
+      // < ?6` — the daily new-claim cap, gated inside the statement so two
+      // concurrent pings cannot both pass it.
+      const [pluginId, machineKey, version, now, since, cap] = values as [
+        string, string, string, string, string, number,
+      ];
       const existing = this.pluginInstalls.find(
         (row) => row.plugin_id === pluginId && row.machine_key === machineKey,
       );
       if (existing) {
-        // Mirrors `do update set version, updated_at` — first_seen_at is never
-        // rewritten, so a re-ping cannot make an old install look new.
         existing.version = version;
-        existing.updated_at = updatedAt;
-        return;
+        existing.updated_at = now;
+        return 1;
       }
+      const claimedToday = this.pluginInstalls.filter(
+        (row) => row.machine_key === machineKey && row.first_seen_at >= since,
+      ).length;
+      if (claimedToday >= cap) return 0;
       this.pluginInstalls.push({
         plugin_id: pluginId,
         machine_key: machineKey,
         version,
-        first_seen_at: firstSeenAt,
-        updated_at: updatedAt,
+        first_seen_at: now,
+        updated_at: now,
       });
-      return;
+      return 1;
     }
     if (sql.startsWith("delete from plugin_installs")) {
       const [cutoff] = values as string[];
@@ -1569,6 +1592,51 @@ describe("push relay", () => {
       const limited = await handleRequest(await ping({ pluginId: "video-viewer", version: "1.0.0" }), env);
       expect(limited.status).toBe(429);
       expect(db.pluginInstalls.map((row) => row.plugin_id)).toEqual(["graph", "history"]);
+    });
+
+    it("caps how many plugins one machine can claim in a day, and keeps refreshing the ones it has", async () => {
+      const env: PushRelayEnv = {
+        ...makeEnv(db, undefined),
+        PLUGIN_INSTALL_DAILY_CLAIM_CAP: "2",
+        PLUGIN_INSTALL_RATE_LIMIT_PER_MIN: "100",
+      };
+      await claimMachine(db, env);
+
+      for (const pluginId of ["graph", "history"]) {
+        const accepted = await handleRequest(await ping({ pluginId, version: "1.0.0" }), env);
+        expect(await accepted.json()).toMatchObject({ ok: true, counted: true });
+      }
+
+      // One machine cannot inflate any single plugin's count — the row is keyed
+      // by (plugin, machine). What the cap bounds is BREADTH: claiming a
+      // thousand ids adds one install to each, which is enough to reorder a
+      // popularity sort built out of small numbers.
+      const capped = await handleRequest(await ping({ pluginId: "video-viewer", version: "1.0.0" }), env);
+      expect(capped.status).toBe(200);
+      expect(await capped.json()).toMatchObject({ ok: true, counted: false });
+      expect(db.pluginInstalls.map((row) => row.plugin_id)).toEqual(["graph", "history"]);
+
+      // A machine at the cap still keeps its own rows alive: re-reporting is
+      // what stops them ageing out of the retention window, and it can never
+      // change a count.
+      const refreshed = await handleRequest(await ping({ pluginId: "graph", version: "1.1.0" }), env);
+      expect(await refreshed.json()).toMatchObject({ ok: true, counted: true });
+      expect(db.pluginInstalls[0]).toMatchObject({ plugin_id: "graph", version: "1.1.0" });
+
+      // The cap is per machine, so a second real computer is unaffected.
+      const otherMachine = "c".repeat(32);
+      const otherSecret = "s".repeat(48);
+      db.machines.push({
+        machine_key: otherMachine,
+        secret: otherSecret,
+        created_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+      });
+      const elsewhere = await handleRequest(
+        await ping({ pluginId: "video-viewer", version: "1.0.0" }, otherMachine, otherSecret),
+        env,
+      );
+      expect(await elsewhere.json()).toMatchObject({ ok: true, counted: true });
     });
 
     it("publishes totals only, with no machine identity and a cache header", async () => {

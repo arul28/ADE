@@ -47,12 +47,82 @@ export const PLUGIN_REGISTRY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_FILE = ".index-cache.json";
 const FETCH_TIMEOUT_MS = 15_000;
 
+/**
+ * Read a response body, giving up the moment it passes the ceiling.
+ *
+ * `await response.text()` buffers the WHOLE body before anything can check its
+ * size, which makes the ceiling a check on a string that is already in memory —
+ * a directory (or anything answering on its URL) could hand a machine gigabytes
+ * and be refused only after it had all been read. The declared length is
+ * checked first because a well-behaved server makes the refusal free; the
+ * streamed cap is what covers a server that declares nothing or lies.
+ *
+ * Returns null when the body is too large. Falls back to `text()` only when the
+ * response exposes no stream — the cap still applies, it is just applied late.
+ */
+async function readBodyWithin(response: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(response.headers?.get?.("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+
+  const body = response.body as ReadableStream<Uint8Array> | null | undefined;
+  if (!body || typeof body.getReader !== "function") {
+    const text = await response.text();
+    return text.length > maxBytes ? null : text;
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) return null;
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    // Releases the connection whether the read finished or was abandoned.
+    try {
+      await reader.cancel();
+    } catch {
+      // A stream that is already done rejects cancel on some runtimes.
+    }
+  }
+}
+
 export type PluginRegistryFetchResult = {
   entries: PluginRegistryEntry[];
   /** When the index was last confirmed current — a 304 counts. */
   fetchedAt: string | null;
   origin: "network" | "cache";
+  /**
+   * True when THIS call reached the directory and it answered — a 200 with a
+   * new body, or a 304 confirming the bytes already held. False when the answer
+   * came out of the cache without asking, or after the network failed.
+   *
+   * `origin` cannot carry this: a revalidated index is still served from cache
+   * and reads `"cache"`, which is right for "where did these bytes come from"
+   * and wrong for "is this current". The difference matters exactly once, and
+   * it matters a lot — see {@link PluginRegistryService.resolveEntryForVerification}.
+   */
+  confirmed: boolean;
 };
+
+/**
+ * What the directory says about one plugin, for a caller that must not proceed
+ * on a guess.
+ *
+ * Three answers, deliberately distinct. `absent` means the directory answered
+ * and does not list this plugin; `unreachable` means nobody answered, which is
+ * NOT the same thing and must never be read as "no checksum published".
+ */
+export type PluginRegistryEntryRead =
+  | { status: "entry"; entry: PluginRegistryEntry }
+  | { status: "absent" }
+  | { status: "unreachable" };
 
 type PluginRegistryCacheFile = {
   version: 1;
@@ -73,6 +143,21 @@ export type PluginRegistryService = {
   fetchIndex(options?: { refresh?: boolean }): Promise<PluginRegistryFetchResult | null>;
   /** The cached index without touching the network. Null when cold. */
   readCachedIndex(): PluginRegistryFetchResult | null;
+  /**
+   * One plugin's entry, confirmed against the directory on this call.
+   *
+   * For the install path's checksum gate, and the reason it does not just read
+   * the cache: the digest is a tamper check on the directory's claim, so an
+   * answer that never left the machine proves nothing about it. A cold cache
+   * would say "no checksum published" for a plugin the directory does vouch
+   * for, which turns "verify official installs" into "verify official installs
+   * on machines that happen to have browsed the Marketplace recently".
+   *
+   * Answering `unreachable` rather than falling back to the cache is what lets
+   * the caller decide — the honest choice for an OFFICIAL plugin is to refuse
+   * the install, and only the caller knows the plugin is official.
+   */
+  resolveEntryForVerification(pluginId: string): Promise<PluginRegistryEntryRead>;
   /** Drop the cache. Used by `ade plugin` troubleshooting, not by the UI. */
   clearCache(): void;
 };
@@ -165,17 +250,32 @@ export function createPluginRegistryService(args: {
     index: PluginRegistryIndex,
     fetchedAt: string,
     origin: "network" | "cache",
-  ): PluginRegistryFetchResult => ({ entries: index.entries, fetchedAt, origin });
+    confirmed = false,
+  ): PluginRegistryFetchResult => ({ entries: index.entries, fetchedAt, origin, confirmed });
 
   const readCachedIndex = (): PluginRegistryFetchResult | null => {
     const cached = readCacheFile(cachePath, indexUrl);
     return cached ? toResult(cached.index, cached.fetchedAt, "cache") : null;
   };
 
-  return {
+  const service: PluginRegistryService = {
     indexUrl,
     cachePath,
     readCachedIndex,
+
+    async resolveEntryForVerification(pluginId: string): Promise<PluginRegistryEntryRead> {
+      let result: PluginRegistryFetchResult | null = null;
+      try {
+        result = await service.fetchIndex({ refresh: true });
+      } catch {
+        // `fetchIndex` handles its own failures; this is belt and braces so a
+        // verification read can never throw into an install.
+        result = null;
+      }
+      if (!result?.confirmed) return { status: "unreachable" };
+      const entry = result.entries.find((row) => row.pluginId === pluginId);
+      return entry ? { status: "entry", entry } : { status: "absent" };
+    },
     clearCache(): void {
       try {
         fs.rmSync(cachePath, { force: true });
@@ -204,16 +304,19 @@ export function createPluginRegistryService(args: {
           // freshness window can be short without costing bandwidth.
           const fetchedAt = now().toISOString();
           writeCache({ ...cached, fetchedAt });
-          return toResult(cached.index, fetchedAt, "cache");
+          return toResult(cached.index, fetchedAt, "cache", true);
         }
         if (!response.ok) {
           args.logger.debug("plugin.registry_fetch_rejected", { status: response.status });
           return cached ? toResult(cached.index, cached.fetchedAt, "cache") : null;
         }
 
-        const body = await response.text();
-        if (body.length > PLUGIN_REGISTRY_LIMITS.maxBytes) {
-          args.logger.warn("plugin.registry_index_too_large", { bytes: body.length });
+        const body = await readBodyWithin(response, PLUGIN_REGISTRY_LIMITS.maxBytes);
+        if (body === null) {
+          args.logger.warn("plugin.registry_index_too_large", {
+            maxBytes: PLUGIN_REGISTRY_LIMITS.maxBytes,
+            declared: response.headers?.get?.("content-length") ?? null,
+          });
           return cached ? toResult(cached.index, cached.fetchedAt, "cache") : null;
         }
         const decoded = safeJsonParse<unknown>(body, null);
@@ -239,7 +342,7 @@ export function createPluginRegistryService(args: {
           fetchedAt,
           index: parsed.index,
         });
-        return toResult(parsed.index, fetchedAt, "network");
+        return toResult(parsed.index, fetchedAt, "network", true);
       } catch (error) {
         args.logger.debug("plugin.registry_fetch_failed", {
           message: error instanceof Error ? error.message : String(error),
@@ -250,4 +353,6 @@ export function createPluginRegistryService(args: {
       }
     },
   };
+
+  return service;
 }

@@ -36,8 +36,13 @@ function entry(pluginId: string): Record<string, unknown> {
 }
 
 function jsonResponse(body: string, init: { status?: number; etag?: string } = {}): Response {
-  return new Response(body, {
-    status: init.status ?? 200,
+  const status = init.status ?? 200;
+  // 304 is a null-body status: `new Response("", {status: 304})` THROWS, which
+  // a stub that builds one turns into a rejected fetch — i.e. the offline path,
+  // not the revalidation path. Every "treats 304 as current" case here was
+  // silently testing the wrong branch until this passed null.
+  return new Response(status === 304 || status === 204 ? null : body, {
+    status,
     headers: init.etag ? { etag: init.etag } : {},
   });
 }
@@ -156,6 +161,99 @@ describe("plugin registry service", () => {
 
     expect(await registry.fetchIndex()).toBeNull();
     expect(fs.existsSync(cachePath)).toBe(false);
+  });
+
+  it("refuses an oversized index by its declared length, before draining the body", async () => {
+    let pulls = 0;
+    const fetchImpl = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new TextEncoder().encode("x".repeat(1024 * 1024)));
+        },
+      }),
+      { headers: { "content-length": String(64 * 1024 * 1024) } },
+    ));
+    const registry = service(fetchImpl as unknown as typeof fetch);
+
+    expect(await registry.fetchIndex()).toBeNull();
+    // The defect this pins: `await response.text()` buffered the whole body and
+    // THEN measured it, so the ceiling only ever refused something the machine
+    // had already read into memory. One pull is the stream filling its own
+    // one-chunk queue at construction; anything past that would be this code
+    // reading a body it had already been told was too big.
+    expect(pulls).toBeLessThanOrEqual(1);
+    expect(logger.warn).toHaveBeenCalledWith("plugin.registry_index_too_large", expect.anything());
+  });
+
+  it("stops reading a body that passes the ceiling without declaring its length", async () => {
+    let chunks = 0;
+    const fetchImpl = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks += 1;
+          controller.enqueue(new TextEncoder().encode("x".repeat(256 * 1024)));
+        },
+      }),
+    ));
+    const registry = service(fetchImpl as unknown as typeof fetch);
+
+    expect(await registry.fetchIndex()).toBeNull();
+    // 2 MiB ceiling at 256 KiB a chunk: it gives up shortly after crossing it
+    // rather than reading whatever the server feels like sending.
+    expect(chunks).toBeLessThanOrEqual(16);
+  });
+
+  describe("resolving an entry for checksum verification", () => {
+    it("answers from a directory read confirmed on this call", async () => {
+      const fetchImpl = vi.fn(async () => jsonResponse(indexBody([entry("graph")]), { etag: "v1" }));
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      // Warm the cache first: the point is that the verification read does NOT
+      // settle for it, because a digest that never left the machine proves
+      // nothing about what the directory currently vouches for.
+      await registry.fetchIndex();
+      const read = await registry.resolveEntryForVerification("graph");
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(read).toMatchObject({ status: "entry" });
+    });
+
+    it("counts a 304 as confirmation — the bytes are current, that is the question", async () => {
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        return headers["if-none-match"] === "v1"
+          ? jsonResponse("", { status: 304 })
+          : jsonResponse(indexBody([entry("graph")]), { etag: "v1" });
+      });
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      await registry.fetchIndex();
+      expect(await registry.resolveEntryForVerification("graph")).toMatchObject({ status: "entry" });
+    });
+
+    it("says a directory it could not reach is unreachable, never 'no checksum published'", async () => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(jsonResponse(indexBody([entry("graph")]), { etag: "v1" }))
+        .mockRejectedValue(new Error("offline"));
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      await registry.fetchIndex();
+      // The cache still holds a good index — `fetchIndex` serves it, and that is
+      // right for browsing. It is wrong for verification: "the directory does
+      // not vouch for this version" and "nobody answered" are different facts,
+      // and only the caller knows that the second one must refuse an official
+      // install rather than install it unverified.
+      expect(await registry.fetchIndex()).toMatchObject({ origin: "cache" });
+      expect(await registry.resolveEntryForVerification("graph")).toEqual({ status: "unreachable" });
+    });
+
+    it("distinguishes a plugin the directory does not list from one it could not read", async () => {
+      const fetchImpl = vi.fn(async () => jsonResponse(indexBody([entry("graph")])));
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      expect(await registry.resolveEntryForVerification("nobody")).toEqual({ status: "absent" });
+    });
   });
 
   it("ignores a cache written for a different registry URL", async () => {

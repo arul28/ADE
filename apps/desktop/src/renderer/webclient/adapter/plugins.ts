@@ -14,6 +14,7 @@ import type {
   SyncPluginSnapshotPayload,
 } from "../../../shared/types/sync";
 import type { AdapterInfra } from "./types";
+import { codedError } from "../../../shared/codedError";
 import { markHonestSurface } from "./infra/proxy";
 import { unavailableOnHost } from "./misc";
 
@@ -54,11 +55,59 @@ import { unavailableOnHost } from "./misc";
 const PANEL_READ_TIMEOUT_MS = 8_000;
 
 /**
+ * How long a panel snapshot's rows stay readable by a collection read, and how
+ * many panels' rows are kept. Sized for the one flow that exists: a panel read
+ * immediately followed by one collection read per binding in that panel's
+ * schema (`PluginPanelHost`). Long enough that a slow render still finds them,
+ * short enough that a collection read never answers from a stale panel.
+ */
+const PANEL_ROWS_TTL_MS = 15_000;
+const PANEL_ROWS_MAX_PANELS = 32;
+
+/**
+ * The typed refusal the desktop path raises when a host has no plugin service —
+ * `PLUGIN_SERVICE_UNAVAILABLE_CODE` in
+ * `ade-cli/src/services/plugins/pluginInstallServiceRef.ts`. Copied rather than
+ * imported: the renderer does not import from the CLI. It is spelled the same
+ * on purpose, so a reader can tell "this computer has no plugin support" from
+ * "no plugins are installed" no matter which transport answered.
+ */
+const PLUGINS_UNAVAILABLE_CODE = "plugins_unavailable";
+
+/** A read this transport cannot serve. Never an empty result — see above. */
+function pluginsUnavailable(): () => never {
+  return () => {
+    throw codedError("Plugins are not available on this computer.", PLUGINS_UNAVAILABLE_CODE);
+  };
+}
+
+/**
  * The subset of the bridge's contract this transport can serve, expressed with
  * the bridge's own types. Members are optional because the getters below omit
  * the ones the connected host does not serve.
  */
 export type WebPluginBridge = {
+  /**
+   * Marks a hosted client that can actually render a plugin's own tab —
+   * `pluginTabsAvailable()` in `renderer/lib/webClientMode.ts` reads it and
+   * offers the tab only when it is strictly `true`. It exists because on web
+   * every member "exists" (the fallback proxy answers unimplemented members
+   * with a stub callable), so a `typeof member === "function"` probe proves
+   * nothing there and a marker the adapter sets deliberately is the only
+   * honest signal.
+   */
+  readonly servesPluginPanels?: boolean;
+  /**
+   * Whether this transport can act on a machine OTHER than the connected one.
+   *
+   * A declared value, not something the bridge infers from `install` and
+   * `presence` being callable — see the marker's note in
+   * `renderer/lib/pluginRuntimeBridge.ts`. It is true here for a reason
+   * specific to this transport: the calls below FORWARD `machineKey` to the
+   * host, which routes it and refuses loudly when it cannot. The desktop
+   * preload publishes false because it rejects `machineKey` outright.
+   */
+  readonly remoteInstall?: boolean;
   readonly list?: () => Promise<InstalledPlugin[]>;
   readonly getPanel?: (input: { pluginId: string; panelId: string }) => Promise<PluginPanelRecord | null>;
   readonly getCollection?: (input: {
@@ -143,6 +192,59 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   const { client, commands, events } = infra;
 
   /**
+   * Rows from the panels this client has read recently, keyed by plugin+panel.
+   *
+   * The bridge asks for a collection by NAME — `{pluginId, collection}` — with
+   * no panel in the input, and the sync protocol has no such read: the only way
+   * a browser peer ever sees collection rows is `plugin_subscribe`, which is
+   * keyed by PANEL. Subscribing with the collection name in the panel slot is
+   * what the first cut did, and it matched no panel, waited out the timeout and
+   * answered empty on a plugin whose data was right there.
+   *
+   * So the contract is: a collection read is served from the last panel read
+   * for that plugin. That is honest because a panel snapshot already carries
+   * every collection its schema binds (`buildPluginPanelView` on the host), and
+   * complete because `PluginPanelHost` reads the panel and only then reads the
+   * bindings that panel declared. A collection read with no panel read behind
+   * it has nothing to answer from and says so by answering empty.
+   */
+  const panelRows = new Map<string, { rows: SyncPluginCollectionRow[]; at: number }>();
+
+  const stashKey = (pluginId: string, panelId: string): string => `${pluginId} ${panelId}`;
+
+  const stashRows = (pluginId: string, panelId: string, rows: SyncPluginCollectionRow[]): void => {
+    const now = Date.now();
+    for (const [key, value] of panelRows) {
+      if (now - value.at > PANEL_ROWS_TTL_MS) panelRows.delete(key);
+    }
+    panelRows.delete(stashKey(pluginId, panelId));
+    panelRows.set(stashKey(pluginId, panelId), { rows, at: now });
+    while (panelRows.size > PANEL_ROWS_MAX_PANELS) {
+      const oldest = panelRows.keys().next().value as string | undefined;
+      if (!oldest) break;
+      panelRows.delete(oldest);
+    }
+  };
+
+  /** Rows for one collection, newest panel read first. */
+  const stashedRows = (pluginId: string, collection: string): SyncPluginCollectionRow[] => {
+    const now = Date.now();
+    const prefix = `${pluginId} `;
+    const fresh = [...panelRows.entries()]
+      .filter(([key, value]) => key.startsWith(prefix) && now - value.at <= PANEL_ROWS_TTL_MS)
+      .reverse();
+    for (const [, value] of fresh) {
+      // An empty collection contributes no rows to a snapshot, so "this panel
+      // had none" and "this panel does not bind it" are the same bytes here.
+      // Falling through to the next panel costs nothing in the first case and
+      // is the whole point in the second.
+      const rows = value.rows.filter((row) => row.collection === collection);
+      if (rows.length > 0) return rows;
+    }
+    return [];
+  };
+
+  /**
    * One snapshot from the view-scoped panel stream, then unsubscribe.
    *
    * The bridge asks for panels and collections as one-shot reads, and a browser
@@ -170,7 +272,13 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       const timer = setTimeout(() => finish(null), PANEL_READ_TIMEOUT_MS);
       try {
         unsubscribe = client.subscribePluginPanel(pluginId, panelId, {
-          snapshot: (payload) => finish(payload),
+          snapshot: (payload) => {
+            // Every snapshot carries the rows for every collection the panel
+            // binds; keeping them is what lets the collection reads that follow
+            // be answered at all.
+            stashRows(pluginId, panelId, payload.rows ?? []);
+            finish(payload);
+          },
           error: () => finish(null),
         });
       } catch {
@@ -179,11 +287,16 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     });
   }
 
+  // Reads refuse with the typed `plugins_unavailable` rather than resolving an
+  // empty list. The two are not the same fact: "this computer has no plugin
+  // support" is a state the Marketplace can explain, and flattening it to `[]`
+  // renders it as "you have no plugins installed" — an invitation to install
+  // one on a host that cannot.
   const list = async (): Promise<InstalledPlugin[]> => {
-    const result = await commands.call<{ plugins?: RemotePluginRecord[] } | null>(
+    const result = await commands.call<{ plugins?: RemotePluginRecord[] }>(
       "plugins.list",
       {},
-      { fallback: () => null, idempotent: true },
+      { fallback: pluginsUnavailable(), idempotent: true },
     );
     return (result?.plugins ?? []).map(toInstalledPlugin);
   };
@@ -216,22 +329,21 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     keyPrefix?: string;
     limit?: number;
   }): Promise<PluginCollectionRow[]> => {
-    // The panel stream carries every collection its schema binds, so the read
-    // filters client-side rather than asking the host for a narrower slice —
-    // the rows are already bounded by the host's snapshot ceiling.
-    const snapshot = await readSnapshot(input.pluginId, input.collection);
-    const rows = (snapshot?.rows ?? [])
-      .filter((row) => row.collection === input.collection)
+    // Served from the panel snapshot this client already read — see `panelRows`
+    // above for why there is no host read to make here. `keyPrefix` and `limit`
+    // are applied client-side; the rows are already bounded by the host's
+    // per-snapshot ceiling, so this narrows an answer rather than trusting one.
+    const rows = stashedRows(input.pluginId, input.collection)
       .filter((row) => !input.keyPrefix || row.key.startsWith(input.keyPrefix))
       .map(toCollectionRow);
     return typeof input.limit === "number" ? rows.slice(0, Math.max(0, input.limit)) : rows;
   };
 
   const presence = async (): Promise<PluginPresenceRow[]> => {
-    const result = await commands.call<{ machines?: RemotePresenceRow[] } | null>(
+    const result = await commands.call<{ machines?: RemotePresenceRow[] }>(
       "plugins.presenceMatrix",
       {},
-      { fallback: () => null, idempotent: true },
+      { fallback: pluginsUnavailable(), idempotent: true },
     );
     return (result?.machines ?? []).map((row) => ({
       machineKey: row.machineKey,
@@ -242,6 +354,29 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       online: row.online,
       isThisMachine: row.isThisMachine,
     }));
+  };
+
+  /**
+   * A change this client caused, reported to its own subscribers.
+   *
+   * The host's `pluginsInvalidated` broadcast is what normally drives a
+   * refetch, and it arrives when the plugin tables replicate — which is after
+   * the install call resolves, and not at all when the install landed on ANOTHER
+   * machine (its rows reach this client through the directory, on its own
+   * schedule). The coverage rail's read is cached for a few seconds either way,
+   * so without this the reader watches a successful install for several seconds
+   * with nothing to show for it.
+   */
+  const changeListeners = new Set<(event: PluginChangeEvent) => void>();
+  const announceLocalChange = (event: PluginChangeEvent): void => {
+    commands.invalidateCache(["plugins."]);
+    for (const listener of [...changeListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // One subscriber's render failure must not stop the others hearing it.
+      }
+    }
   };
 
   // Mutations pass `idempotent: false`, which is what makes an unserved action
@@ -256,6 +391,14 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       // The bridge names a SOURCE STRING; the wire names a source KIND. A
       // filesystem path cannot be installed from a browser — there is no shared
       // filesystem — so a non-URL source is a git source or nothing.
+      //
+      // VERSION → REF, everywhere. A directory entry's `version` is the tag its
+      // release was cut from, and the only thing an installer can do with a
+      // version is check that tag out — so this is the one mapping in the
+      // product: `PluginInstallRequest.version` becomes the git `ref`, and
+      // nothing downstream re-interprets it. (The desktop path must agree; a
+      // path that DROPS the version silently installs the default branch, which
+      // is how "install 1.2.0" ends up running whatever main holds today.)
       {
         kind: "git",
         url: input.source,
@@ -266,6 +409,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       },
       { fallback: unavailableOnHost("Installing plugins isn't available on this computer."), idempotent: false },
     );
+    announceLocalChange({ kind: "installs", pluginId: record.pluginId });
     return {
       pluginId: record.pluginId,
       version: record.version,
@@ -273,14 +417,17 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     };
   };
 
-  const uninstall = async (input: { pluginId: string; machineKey?: string }): Promise<unknown> =>
-    await commands.call<unknown>("plugins.uninstall", {
+  const uninstall = async (input: { pluginId: string; machineKey?: string }): Promise<unknown> => {
+    const result = await commands.call<unknown>("plugins.uninstall", {
       pluginId: input.pluginId,
       ...(input.machineKey ? { machineKey: input.machineKey } : {}),
     }, {
       fallback: unavailableOnHost("Removing plugins isn't available on this computer."),
       idempotent: false,
     });
+    announceLocalChange({ kind: "installs", pluginId: input.pluginId });
+    return result;
+  };
 
   const setEnabled = async (input: {
     pluginId: string;
@@ -302,18 +449,48 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
         idempotent: false,
       },
     );
+    announceLocalChange({ kind: "installs", pluginId: input.pluginId });
   };
 
-  const onChanged = (listener: (event: PluginChangeEvent) => void): (() => void) =>
-    events.on("pluginsInvalidated", () => {
+  const onChanged = (listener: (event: PluginChangeEvent) => void): (() => void) => {
+    changeListeners.add(listener);
+    const stopHostEvents = events.on("pluginsInvalidated", () => {
       // The invalidation hint names tables, not what changed within them.
       // "collections" is the widest of the kinds a subscriber refetches on, so
       // reporting it is the honest coarse answer; claiming "installs" would
       // under-refresh every panel.
       listener({ kind: "collections" });
     });
+    return () => {
+      changeListeners.delete(listener);
+      stopHostEvents();
+    };
+  };
 
   return markHonestSurface<WebPluginBridge>({
+    /**
+     * Gated on `plugins.list` rather than declared unconditionally.
+     *
+     * There is no descriptor for the panel subscription itself — panels ride
+     * `plugin_subscribe`, not a remote command — so the honest proxy is the
+     * command that ships in the same release: a host advertising `plugins.list`
+     * is a host from the plugin release train, and it is also the read that
+     * says WHICH plugins have tabs. A host without it can serve neither, and a
+     * tab offered there would be an empty shell behind a nav item. Re-evaluated
+     * per access, because a project handoff can change the connected host while
+     * the page stays open.
+     */
+    get servesPluginPanels() {
+      return commands.hasAction("plugins.list");
+    },
+    /**
+     * Both halves: the action that performs the work, and the matrix that names
+     * the machine to perform it on. Without the matrix there is no other
+     * machine to point at, so offering the arm would be offering a dead control.
+     */
+    get remoteInstall() {
+      return commands.hasAction("plugins.install") && commands.hasAction("plugins.presenceMatrix");
+    },
     get list() {
       return commands.hasAction("plugins.list") ? list : undefined;
     },
