@@ -123,6 +123,10 @@ export const parentShouldWakeForChildTurn = (args: {
   const dispatchedThisTurn = history.some((envelope) => {
     const event = envelope.event;
     return event.type === "user_message"
+      // A queued row carries the *running* turn's id, so a parent message that
+      // arrived mid-turn and has not been delivered yet would otherwise look
+      // like the dispatch of a turn it never started.
+      && event.deliveryState !== "queued"
       && event.turnId === turnId
       && stampedByParent(event, parentSessionId);
   });

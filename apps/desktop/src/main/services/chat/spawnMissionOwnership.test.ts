@@ -142,6 +142,21 @@ describe("parentShouldWakeForChildTurn", () => {
     expect(shouldWake(history, "t1")).toBe(true);
   });
 
+  it("does not wake for a parent message still queued behind someone else's turn", () => {
+    // The queued row carries the running turn's id. Counting it would wake the
+    // parent for a turn a human started, before the parent's own message ran.
+    const history = [
+      humanMessage("t1"),
+      userMessage({
+        turnId: "t1",
+        steerId: "s1",
+        deliveryState: "queued",
+        metadata: { spawnDispatch: { parentSessionId: PARENT, dispatchedAt: "2026-08-11T00:05:00.000Z" } },
+      }),
+    ];
+    expect(shouldWake(history, "t1")).toBe(false);
+  });
+
   it("stays quiet for a child with no parent-dispatched history at all", () => {
     expect(shouldWake([humanMessage("t1")], "t1")).toBe(false);
     expect(shouldWake([], "t1")).toBe(false);
