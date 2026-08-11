@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { CheckCircle, X, XCircle } from "@phosphor-icons/react";
+import React, { useMemo, useState } from "react";
+import { CheckCircle, XCircle } from "@phosphor-icons/react";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
-import { ProviderLogo } from "../shared/ProviderLogos";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { OAuthConnectModal } from "./OAuthConnectModal";
+import { ProviderDetailDialog } from "./providerSectionPrimitives";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -73,7 +72,6 @@ export function OpenCodeProviderDetailModal({
   const [keyValue, setKeyValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
 
   const statusLabel = provider.connected
     ? "Connected"
@@ -83,25 +81,8 @@ export function OpenCodeProviderDetailModal({
         ? "Sign-in available"
         : "Not connected";
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !oauthOpen) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, oauthOpen]);
-
-  // Move focus into the dialog so keyboard users aren't typing under the overlay.
-  useEffect(() => {
-    if (oauthOpen) return;
-    const node = dialogRef.current;
-    if (!node) return;
-    const previous = document.activeElement as HTMLElement | null;
-    node.focus();
-    return () => {
-      previous?.focus?.();
-    };
-  }, [oauthOpen]);
+  // Escape, focus-in, and focus-restore are owned by ProviderDetailDialog,
+  // which stands down while the nested OAuth modal is open.
 
   const save = async () => {
     const trimmed = keyValue.trim();
@@ -133,68 +114,13 @@ export function OpenCodeProviderDetailModal({
 
   return (
     <>
-      {createPortal(
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ background: "rgba(0,0,0,0.70)" }}
-          onClick={onClose}
-        >
-          <div
-            ref={dialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label={`${provider.name} provider`}
-            tabIndex={-1}
-            className="w-full max-w-md max-h-[85vh] overflow-y-auto outline-none"
-            style={{
-              background: COLORS.cardBgSolid,
-              border: `1px solid ${COLORS.outlineBorder}`,
-              boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
-            }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "0 16px",
-                height: 52,
-                borderBottom: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                <ProviderLogo family={provider.id} size={24} />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
-                    {provider.name}
-                  </div>
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                    {statusLabel}
-                    {typeof provider.modelCount === "number" ? ` · ${provider.modelCount} models` : ""}
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={onClose}
-                style={{
-                  border: `1px solid ${COLORS.border}`,
-                  background: "transparent",
-                  color: COLORS.textSecondary,
-                  width: 26,
-                  height: 26,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                }}
-              >
-                <X size={13} weight="bold" />
-              </button>
-            </div>
-
+      <ProviderDetailDialog
+        providerId={provider.id}
+        title={provider.name}
+        subtitle={`${statusLabel}${typeof provider.modelCount === "number" ? ` \u00b7 ${provider.modelCount} models` : ""}`}
+        suspended={oauthOpen}
+        onClose={onClose}
+      >
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
               {error ? (
                 <div
@@ -401,10 +327,7 @@ export function OpenCodeProviderDetailModal({
                 </div>
               ) : null}
             </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      </ProviderDetailDialog>
 
       {oauthOpen ? (
         <OAuthConnectModal

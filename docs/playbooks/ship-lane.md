@@ -510,7 +510,7 @@ Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If 
 
 ### 0.4 Post initial bot pings
 
-See Phase 4 rules. Do not ping GitHub Copilot. Add `@greptile` and `@coderabbit`
+See Phase 4 rules. Do not ping GitHub Copilot or `@codex`. Add `@greptile` and `@coderabbit`
 only when the diff touches more than 250 files. Stack mode uses the same rules —
 a stacked layer is reviewed like any other PR, and its review feedback is the
 lane's to address.
@@ -1009,7 +1009,7 @@ git diff --stat
 QUALITY_COMMIT_MESSAGE="ship: iteration 6 (force-finalize, review skipped) — fix $CI_JOBS"
 ```
 
-Post the Phase 4 bot ping (a force-finalize push is a re-push → `@codex review`). Update state:
+Run Phase 4 (a force-finalize push sends a ping only on a >250-file diff). Update state:
 
 ```json
 {
@@ -1043,18 +1043,12 @@ There is no second force-finalize. Iteration 6 is one shot at landing the lane.
 
 ## Phase 4 — Post-push bot pings
 
-Runs after **any** push. Never ping GitHub Copilot. The ping depends on whether
-this is the initial PR push or a later fix iteration:
+Runs after **any** push. **Never ping GitHub Copilot and never ping `@codex`** —
+neither is an expected review signal for this repo, so a ping only adds noise
+and a bot the loop then has to reason about. No push, initial or fix-iteration,
+gets a direct review ping.
 
-- **Initial push** (Phase 0, PR just created): no direct review ping.
-
-- **Subsequent fix-iteration re-pushes:**
-
-```bash
-gh pr comment "$PR_NUMBER" --body "@codex review"
-```
-
-If the PR touches more than 250 files (on any push):
+The one exception, if the PR touches more than 250 files (on any push):
 
 ```bash
 FILE_COUNT=$(gh pr diff "$PR_NUMBER" --name-only | wc -l | tr -d ' ')
@@ -1065,6 +1059,8 @@ fi
 ```
 
 These are separate comments (not a single body) so each bot handler parses its own mention reliably.
+
+On a diff of 250 files or fewer, Phase 4 posts nothing and falls straight through to Phase 5.
 
 ---
 

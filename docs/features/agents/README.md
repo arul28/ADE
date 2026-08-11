@@ -12,7 +12,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, search, injection sections). |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
-| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. |
+| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... --type <subagent|peer>` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and must choose a type, while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. The file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
 | `apps/ade-cli/src/services/account/accountAuthService.ts` | Optional ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. |
@@ -204,9 +204,12 @@ Pi's own `ModelRuntime.login` through `piAuthService.ts` and renders whatever Pi
 asks for — an auth URL, a device code with a copyable user code, a text or
 secret field, or a choice list — as ADE cards. ADE relays the user's answers and
 never reads, stores, or logs a credential; Pi's own `AuthStorage` owns
-`auth.json`. Pi's terminal `/login` remains available beside the in-app flow and
-is the only path when the Pi SDK is unavailable (missing package, or a Node
-older than `PI_SDK_MIN_NODE`). See
+`auth.json`. ADE does not drive Pi's terminal `/login`: that path typed
+`/login` into Pi's TUI after a fixed delay, which raced Pi's startup and usually
+submitted empty lines. When the Pi SDK is unavailable (missing package, or a
+Node older than `PI_SDK_MIN_NODE`) the card states the terminal instruction
+instead of running it, and a Pi sign-in requested from anywhere else in the app
+opens Settings → Providers rather than spawning a terminal. See
 [Agent Routing › Pi sign-in](../chat/agent-routing.md#pi-sign-in).
 
 ### ADE account auth for agents and CI

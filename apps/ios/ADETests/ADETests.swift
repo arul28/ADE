@@ -19264,6 +19264,68 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
   }
 
+  /// Chat accents, and the bubble-fill classification they drive, are mirrored
+  /// from `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts`. Drift
+  /// here means the same runtime reads as a different colour on each platform.
+  func testProviderChatAccentsAndBubbleClassificationMirrorDesktop() {
+    func rgb(_ color: Color) -> UInt32 {
+      var (r, g, b, a): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+      UIColor(color)
+        .resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        .getRed(&r, green: &g, blue: &b, alpha: &a)
+      return (UInt32(r * 255 + 0.5) << 16) | (UInt32(g * 255 + 0.5) << 8) | UInt32(b * 255 + 0.5)
+    }
+
+    let perRuntime: [String: UInt32] = [
+      "claude": 0xD97706,
+      "codex": 0xE7E5E4,
+      "opencode": 0x739CEE,
+      "cursor": 0x13120C,
+      "droid": 0xD46C2E,
+      "pi": 0x181C25,
+    ]
+    for (provider, expected) in perRuntime {
+      XCTAssertEqual(rgb(ADEColor.providerChatAccent(for: provider)), expected, provider)
+    }
+    // Distinct values, or two runtimes are indistinguishable in the transcript.
+    XCTAssertEqual(Set(perRuntime.values).count, perRuntime.count)
+
+    // Aliases ride the same accent as their runtime.
+    XCTAssertEqual(rgb(ADEColor.providerChatAccent(for: "anthropic")), 0xD97706)
+    XCTAssertEqual(rgb(ADEColor.providerChatAccent(for: "openai")), 0xE7E5E4)
+    XCTAssertEqual(rgb(ADEColor.providerChatAccent(for: "factory")), 0xD46C2E)
+    XCTAssertEqual(rgb(ADEColor.providerChatAccent(for: "PI")), 0x181C25)
+
+    // Claude and Codex keep the original violet-mixed bubble; nothing else does.
+    for provider in ["claude", "anthropic", "codex", "openai"] {
+      XCTAssertTrue(
+        ADEColor.chatAccentKeepsOriginalBubble(ADEColor.providerChatAccent(for: provider)),
+        provider
+      )
+    }
+    for provider in ["opencode", "cursor", "droid", "factory", "pi"] {
+      XCTAssertFalse(
+        ADEColor.chatAccentKeepsOriginalBubble(ADEColor.providerChatAccent(for: provider)),
+        provider
+      )
+    }
+
+    // Only the near-black accents take the lifted fill; the rest paint their
+    // own accent, so a re-coloured provider is visible as its own colour.
+    for provider in ["cursor", "pi"] {
+      XCTAssertTrue(
+        ADEColor.isDeepChatAccent(ADEColor.providerChatAccent(for: provider)),
+        provider
+      )
+    }
+    for provider in ["claude", "codex", "opencode", "droid"] {
+      XCTAssertFalse(
+        ADEColor.isDeepChatAccent(ADEColor.providerChatAccent(for: provider)),
+        provider
+      )
+    }
+  }
+
   func testDynamicWorkModelCatalogBuildsFromLiveHostModels() {
     let groups = workModelCatalogGroups(
       availableModelsByProvider: [

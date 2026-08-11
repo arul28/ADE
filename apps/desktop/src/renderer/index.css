@@ -2774,6 +2774,7 @@ button:active, [role="button"]:active {
 }
 
 .ade-chat-message-card-user {
+  /* Kept in sync with CHAT_USER_BUBBLE_GRADIENT_DEFAULT in chatSurfaceTheme.ts. */
   background: var(--chat-user-bubble-gradient,
     linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));
   border-color: color-mix(in srgb, var(--chat-accent) 26%, rgba(255, 255, 255, 0.14));

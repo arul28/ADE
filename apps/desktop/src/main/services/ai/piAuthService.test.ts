@@ -230,6 +230,7 @@ describe("piAuthService", () => {
     });
 
     cancelPiLogin({ providerId: "xai" });
+    await vi.advanceTimersByTimeAsync(2_000);
     await started;
   });
 
@@ -244,15 +245,88 @@ describe("piAuthService", () => {
 
     cancelPiLogin({ providerId: "xai" });
 
+    // The prompt is released at once so Pi stops waiting on the user; only the
+    // final outcome waits out the grace window.
     expect(worker.respondToUi).toHaveBeenCalledWith("req-9", { ok: false, error: "Sign-in cancelled." });
     expect(worker.cancelLogin).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
     await expect(started).resolves.toEqual({ ok: false, error: "Sign-in cancelled." });
     expect(events.at(-1)).toEqual({ providerId: "xai", state: "error", error: "Sign-in cancelled." });
     expect(worker.release).toHaveBeenCalledTimes(1);
     expect(__getActivePiLoginProviderIdsForTests()).toEqual([]);
   });
 
-  it("times out an abandoned flow and releases the worker", async () => {
+  // Pi persists the credential before its login call returns, so a cancel can
+  // land on a sign-in that already worked. Reporting that as a failure told
+  // the user to redo something that was done, while the provider quietly
+  // showed up connected later.
+  it("reports a login that completed while the cancel was in flight as a success", async () => {
+    const events = collectEvents();
+    const worker = createFakeWorker();
+    installWorker(worker);
+
+    const started = startPiLogin({ providerId: "xai" });
+    await flush();
+    cancelPiLogin({ providerId: "xai" });
+    worker.finishLogin();
+    await flush();
+
+    await expect(started).resolves.toEqual({ ok: true });
+    expect(events.at(-1)).toEqual({ providerId: "xai", state: "success" });
+    expect(worker.release).toHaveBeenCalledTimes(1);
+    expect(__getActivePiLoginProviderIdsForTests()).toEqual([]);
+
+    // The grace timer must not settle the already-finished flow a second time.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(events.at(-1)).toEqual({ providerId: "xai", state: "success" });
+    expect(worker.release).toHaveBeenCalledTimes(1);
+  });
+
+  // A supersede is an internal handoff. Announcing it as an error settled the
+  // replacement attempt that was already on screen: the renderer cleared the
+  // new flow card and latched the provider, so the sign-in the user had just
+  // started could never report its own result.
+  it("supersedes a flow without announcing an outcome for the replacement", async () => {
+    const events = collectEvents();
+    const first = createFakeWorker();
+    installWorker(first);
+    const started = startPiLogin({ providerId: "xai" });
+    await flush();
+
+    const second = createFakeWorker();
+    installWorker(second);
+    const replacement = startPiLogin({ providerId: "xai" });
+    await flush();
+
+    expect(first.cancelLogin).toHaveBeenCalledTimes(1);
+    expect(first.release).toHaveBeenCalledTimes(1);
+    await expect(started).resolves.toEqual({ ok: false, error: "Sign-in was superseded by a newer attempt." });
+    expect(events.filter((event) => event.state === "error")).toEqual([]);
+
+    second.finishLogin();
+    await flush();
+    await expect(replacement).resolves.toEqual({ ok: true });
+    expect(events.at(-1)).toEqual({ providerId: "xai", state: "success" });
+  });
+
+  // Aborting the login can make Pi reject with its own abort text before the
+  // grace timer fires; the user asked to stop, so that is what they are told.
+  it("reports a cancel as a cancel even when Pi rejects with its own error", async () => {
+    const events = collectEvents();
+    const worker = createFakeWorker();
+    installWorker(worker);
+
+    const started = startPiLogin({ providerId: "xai" });
+    await flush();
+    cancelPiLogin({ providerId: "xai" });
+    worker.failLogin(new Error("AbortError: operation was aborted"));
+    await flush();
+
+    await expect(started).resolves.toEqual({ ok: false, error: "Sign-in cancelled." });
+    expect(events.at(-1)).toEqual({ providerId: "xai", state: "error", error: "Sign-in cancelled." });
+  });
+
+  it("times out an abandoned flow and releases the worker", async () =>{
     const events = collectEvents();
     const worker = createFakeWorker();
     installWorker(worker);
@@ -303,7 +377,7 @@ describe("piAuthService", () => {
     const restarted = startPiLogin({ providerId: "xai" });
     await flush();
 
-    await expect(started).resolves.toEqual({ ok: false, error: "Sign-in cancelled." });
+    await expect(started).resolves.toEqual({ ok: false, error: "Sign-in was superseded by a newer attempt." });
     expect(first.release).toHaveBeenCalledTimes(1);
     expect(__getActivePiLoginProviderIdsForTests()).toEqual(["xai"]);
 

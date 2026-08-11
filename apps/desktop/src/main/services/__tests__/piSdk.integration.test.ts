@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "../ai/piInstallation";
 import { PI_APPROVAL_ALLOW } from "../chat/piSdkEventMapper";
+import { classifyPiSessionFile, piSessionRootForEnvironment } from "../chat/piSessionStore";
 import {
   acquirePiSdkConnection,
   releasePiSdkConnection,
@@ -25,7 +26,7 @@ type Fixture = {
   root: string;
   cwd: string;
   agentDir: string;
-  sessionDir: string;
+  sessionRoot: string;
   modelPath: string;
 };
 
@@ -124,10 +125,14 @@ function createFixture(options?: { configured?: boolean; modelId?: string }): Fi
   tempRoots.push(root);
   const cwd = path.join(root, "worktree");
   const agentDir = path.join(root, "agent");
-  const sessionDir = path.join(root, "sessions");
+  // Mirror a real Pi profile: the store root holds one directory per working
+  // directory, and every session file lives inside one of those. A flat
+  // sessionRoot beside agentDir is a layout Pi never produces, and testing
+  // against it hid the fact that ADE authorized the wrong root entirely.
+  const sessionRoot = path.join(agentDir, "sessions");
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(agentDir, { recursive: true });
-  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.mkdirSync(sessionRoot, { recursive: true });
   const modelId = options?.modelId ?? "test-model";
   const provider: Record<string, unknown> = {
     baseUrl: `${serverBaseUrl}/v1`,
@@ -147,7 +152,7 @@ function createFixture(options?: { configured?: boolean; modelId?: string }): Fi
   if (options?.configured !== false) provider.apiKey = "ade-local-test-key";
   const modelPath = path.join(agentDir, "models.json");
   fs.writeFileSync(modelPath, JSON.stringify({ providers: { "ade-local": provider } }));
-  return { root, cwd, agentDir, sessionDir, modelPath };
+  return { root, cwd, agentDir, sessionRoot, modelPath };
 }
 
 function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
@@ -157,13 +162,14 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   askUserTool?: boolean;
   approvalTools?: string[];
   extensions?: boolean;
+  sessionStorageDir?: string;
 }): {
   poolKey: string;
   packageRoot: string;
   packageEntry: string;
   cwd: string;
   agentDir: string;
-  sessionDir: string;
+  sessionRoot: string;
   modelRef: { provider: string; id: string };
   thinkingLevel: string;
   systemPrompt: string;
@@ -172,6 +178,7 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   askUserTool?: boolean;
   approvalTools?: string[];
   extensions?: boolean;
+  sessionStorageDir?: string;
   baseEnv: NodeJS.ProcessEnv;
 } {
   const installation = resolvePiInstallation({
@@ -188,7 +195,7 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
     packageEntry: installation.packageEntry,
     cwd: fixture.cwd,
     agentDir: fixture.agentDir,
-    sessionDir: fixture.sessionDir,
+    sessionRoot: fixture.sessionRoot,
     modelRef: { provider: "ade-local", id: options?.modelId ?? "test-model" },
     thinkingLevel: "off",
     systemPrompt: "You are the isolated ADE Pi integration test model.",
@@ -197,6 +204,7 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
     ...(options?.askUserTool ? { askUserTool: true } : {}),
     ...(options?.approvalTools ? { approvalTools: options.approvalTools } : {}),
     ...(options?.extensions ? { extensions: true } : {}),
+    ...(options?.sessionStorageDir ? { sessionStorageDir: options.sessionStorageDir } : {}),
     baseEnv: {
       PATH: process.env.PATH ?? "",
       HOME: fixture.root,
@@ -215,11 +223,27 @@ async function acquireTracked(fixture: Fixture, poolKey: string, options?: Param
   return tracked;
 }
 
+/** Every native session under the store root, at whatever depth Pi nested it. */
 function sessionFiles(fixture: Fixture): string[] {
-  return fs.readdirSync(fixture.sessionDir)
-    .filter((name) => name.endsWith(".jsonl"))
-    .map((name) => path.join(fixture.sessionDir, name))
-    .filter((filePath) => fs.lstatSync(filePath).isFile());
+  const found: string[] = [];
+  const pending = [fixture.sessionRoot];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(filePath);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(filePath);
+    }
+  }
+  return found.sort();
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("Timed out waiting for the installed Pi worker to flush its session.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 async function disposeConnection(connection: { poolKey: string; generation: number; pooled: PiSdkPooled }): Promise<void> {
@@ -303,6 +327,72 @@ describeInstalledPi("installed Pi SDK worker", () => {
     expect(sessionFiles(fixture)).toEqual([]);
   });
 
+  // The shipped bug in one test: ADE authorized a session root that Pi never
+  // writes into, and validated the worker's session path before Pi had created
+  // the file. Both halves are asserted against the real installed Pi.
+  it("creates its session inside the authorized store and authorizes it before Pi writes the file", async () => {
+    const fixture = createFixture();
+    const connection = await acquireTracked(fixture, `store:${Date.now()}`);
+    const planned = connection.pooled.sessionFile!;
+
+    expect(path.isAbsolute(planned)).toBe(true);
+    // Pi nests one directory per working directory beneath the store root.
+    expect(path.relative(fixture.sessionRoot, planned).split(path.sep).length).toBe(2);
+    // Nothing on disk yet: Pi flushes on the first assistant message.
+    expect(fs.existsSync(planned)).toBe(false);
+    expect(sessionFiles(fixture)).toEqual([]);
+    expect(classifyPiSessionFile({
+      filePath: planned,
+      cwd: fixture.cwd,
+      sessionId: connection.pooled.sessionId,
+      sessionRoot: fixture.sessionRoot,
+    }).state).toBe("pending");
+
+    await connection.pooled.sendPrompt({ prompt: "write the session header" });
+    await nextRequest();
+    await waitFor(() => fs.existsSync(planned));
+
+    expect(sessionFiles(fixture).map((file) => fs.realpathSync(file))).toEqual([fs.realpathSync(planned)]);
+    expect(classifyPiSessionFile({
+      filePath: planned,
+      cwd: fixture.cwd,
+      sessionId: connection.pooled.sessionId,
+      sessionRoot: fixture.sessionRoot,
+    })).toEqual({ state: "authorized", filePath: fs.realpathSync(planned) });
+    // The store root ADE authorizes is exactly the one Pi's own CLI resolves.
+    expect(piSessionRootForEnvironment({ PI_CODING_AGENT_DIR: fixture.agentDir })).toBe(fixture.sessionRoot);
+  });
+
+  // The other half of the store contract: when the user configured a session
+  // directory, Pi uses it flat and verbatim, and ADE must authorize that same
+  // directory rather than the profile default.
+  it("writes into a user-configured session directory when one is set", async () => {
+    const fixture = createFixture();
+    const configured = path.join(fixture.root, "configured-sessions");
+    fs.mkdirSync(configured, { recursive: true });
+    const connection = await acquireTracked(fixture, `configured:${Date.now()}`, {
+      sessionStorageDir: configured,
+    });
+    const planned = connection.pooled.sessionFile!;
+
+    expect(path.dirname(planned)).toBe(configured);
+    await connection.pooled.sendPrompt({ prompt: "write the session header" });
+    await nextRequest();
+    await waitFor(() => fs.existsSync(planned));
+
+    expect(classifyPiSessionFile({
+      filePath: planned,
+      cwd: fixture.cwd,
+      sessionId: connection.pooled.sessionId,
+      sessionRoot: configured,
+    })).toEqual({ state: "authorized", filePath: fs.realpathSync(planned) });
+    expect(sessionFiles(fixture)).toEqual([]);
+    expect(piSessionRootForEnvironment({
+      PI_CODING_AGENT_DIR: fixture.agentDir,
+      PI_CODING_AGENT_SESSION_DIR: configured,
+    })).toBe(configured);
+  });
+
   it("initializes an isolated profile, prompts with an image, reports auth, and preserves thinking levels", async () => {
     const fixture = createFixture();
     const connection = await acquireTracked(fixture, `integration:${Date.now()}`);
@@ -355,7 +445,7 @@ describeInstalledPi("installed Pi SDK worker", () => {
     await disposeConnection(byFile);
 
     const stalePointer = await acquireTracked(fixture, `resume:stale:${Date.now()}`, {
-      session: { sessionFile: path.join(fixture.sessionDir, "missing.jsonl"), sessionId: original.sessionId },
+      session: { sessionFile: path.join(fixture.sessionRoot, "missing.jsonl"), sessionId: original.sessionId },
     });
     expect(fs.realpathSync(stalePointer.pooled.sessionFile!)).toBe(fs.realpathSync(original.sessionFile));
     expect(stalePointer.pooled.sessionId).toBe(original.sessionId);
@@ -375,7 +465,7 @@ describeInstalledPi("installed Pi SDK worker", () => {
     expect(sessionFiles(fixture)).toEqual(before);
 
     if (process.platform !== "win32") {
-      const symlink = path.join(fixture.sessionDir, "linked.jsonl");
+      const symlink = path.join(fixture.sessionRoot, "linked.jsonl");
       fs.symlinkSync(outside, symlink);
       await expect(acquirePiSdkConnection(installedPiArgs(fixture, `invalid:symlink:${Date.now()}`, {
         session: { sessionFile: symlink },

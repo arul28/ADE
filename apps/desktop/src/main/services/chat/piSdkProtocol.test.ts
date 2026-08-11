@@ -31,8 +31,27 @@ describe("Pi SDK protocol", () => {
         agentDir: "/Users/example/.pi/agent",
         modelRef: "anthropic/claude-sonnet",
         thinkingLevel: "medium",
+        sessionRoot: "/Users/example/.pi/agent/sessions",
+        sessionStorageDir: "/Users/example/pi-sessions",
       },
     })).toBeNull();
+
+    // The store root and the directory Pi writes into are separate fields;
+    // both must be validated, or a rename can silently unhook one of them.
+    const initBase = {
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "init" as const,
+      requestId: "init-2",
+      payload: { packageRoot: "/p", cwd: "/c", agentDir: "/a" },
+    };
+    expect(validatePiSdkWorkerRequest({
+      ...initBase,
+      payload: { ...initBase.payload, sessionRoot: 5 },
+    })).toMatch(/sessionRoot/u);
+    expect(validatePiSdkWorkerRequest({
+      ...initBase,
+      payload: { ...initBase.payload, sessionStorageDir: 5 },
+    })).toMatch(/sessionStorageDir/u);
   });
 
   it("rejects malformed worker responses before they reach the pool", () => {

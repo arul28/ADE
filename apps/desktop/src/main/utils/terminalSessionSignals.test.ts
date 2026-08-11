@@ -83,6 +83,11 @@ describe("terminalSessionSignals", () => {
     expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
     expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("opencode-orchestrated")).toBe("opencode --continue");
+    // Pi has no safe default. `pi --continue` means "the most recent session
+    // for this directory", and chat and the tracked CLI share one native Pi
+    // store — a brand new terminal reopened a four-day-old transcript, and the
+    // user's typed message went into it. Pi resumes only by a captured id.
+    expect(defaultResumeCommandForTool("pi")).toBeNull();
     expect(defaultResumeCommandForTool("shell")).toBeNull();
   });
 

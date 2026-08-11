@@ -2,7 +2,7 @@ import React from "react";
 import { ChatMarkdown } from "../chat/chatMarkdown";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "../chat/ChatSurfaceShell";
-import { providerChatAccent } from "../chat/chatSurfaceTheme";
+import { PROVIDER_CHAT_ACCENTS, providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ChatWorkLogBlock } from "../chat/ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "../chat/chatTranscriptRows";
 import {
@@ -10,7 +10,7 @@ import {
   CHAT_USER_MESSAGE_CARD_STYLE,
 } from "../chat/chatTranscriptChrome";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
-import { DroidLogo } from "../shared/ProviderLogos";
+import { DroidLogo, PiLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import type { ChatChromeTint, ChatShellGeometry, ChatTranscriptDensity, ThemeId } from "../../state/appStore";
 
@@ -94,6 +94,7 @@ const PREVIEW_PROVIDER_META = {
   opencode: { name: "OpenCode", Logo: OpenCodeLogo },
   cursor: { name: "Cursor", Logo: CursorAgentLogo },
   droid: { name: "Droid", Logo: DroidLogo },
+  pi: { name: "Pi", Logo: PiLogo },
 } as const;
 
 type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;
@@ -108,6 +109,7 @@ const PREVIEW_USAGE_MODEL: Record<
   opencode: { Logo: OpenCodeLogo, label: "local · runtime" },
   cursor: { Logo: CursorAgentLogo, label: "cursor · auto" },
   droid: { Logo: DroidLogo, label: "droid · factory" },
+  pi: { Logo: PiLogo, label: "pi · xai / grok" },
 };
 
 /** Mirrors `event.type === "done"` usage footer in `AgentChatMessageList` (completed turn). */
@@ -281,13 +283,9 @@ function SharedAppearanceTranscript({
   );
 }
 
-const PREVIEW_COLUMNS: ReadonlyArray<{ provider: PreviewProviderKey; fallbackAccent: string }> = [
-  { provider: "codex", fallbackAccent: "#E7E5E4" },
-  { provider: "claude", fallbackAccent: "#D97706" },
-  { provider: "opencode", fallbackAccent: "#2563EB" },
-  { provider: "cursor", fallbackAccent: "#A78BFA" },
-  { provider: "droid", fallbackAccent: "#8B5CF6" },
-];
+const PREVIEW_COLUMNS: ReadonlyArray<{ provider: PreviewProviderKey; fallbackAccent: string }> = (
+  ["codex", "claude", "opencode", "cursor", "droid", "pi"] as const
+).map((provider) => ({ provider, fallbackAccent: PROVIDER_CHAT_ACCENTS[provider]! }));
 
 export function ChatAppearancePreview({
   theme,
@@ -305,8 +303,8 @@ export function ChatAppearancePreview({
   return (
     <div
       data-theme={theme}
-      // 5 runtimes: 1-up on narrow, 2-up at lg, 3-up at xl (5 wraps cleanly; forcing
-      // 5 across would make each column unreadably narrow).
+      // 6 runtimes: 1-up on narrow, 2-up at lg, 3-up at xl — two even rows of
+      // three, which is why the sixth tile slots in without a layout change.
       className="grid w-full min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[repeat(2,minmax(0,1fr))] xl:grid-cols-[repeat(3,minmax(0,1fr))]"
     >
       {PREVIEW_COLUMNS.map(({ provider, fallbackAccent }) => (

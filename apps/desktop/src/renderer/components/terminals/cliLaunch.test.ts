@@ -948,6 +948,31 @@ describe("buildTrackedCliStartupCommand", () => {
       });
     });
 
+    // `--continue` means "the most recent session for this directory". Since
+    // chat and the tracked CLI share one native Pi store, that could be another
+    // terminal's session or an ADE chat's — terminals were silently reopening
+    // days-old transcripts. With no captured id, start fresh instead.
+    it("resumes Pi only by captured session id, never by --continue", () => {
+      const withId = buildTrackedCliResumeLaunchCommand({
+        provider: "pi",
+        targetKind: "session",
+        targetId: "019fecac-13b8-7a10-9f24-c9f3afa33120",
+        launch: { permissionMode: "full-auto", model: "pi/xai/grok-4.5" },
+      });
+      expect(withId.args).toContain("--session");
+      expect(withId.args).toContain("019fecac-13b8-7a10-9f24-c9f3afa33120");
+      expect(withId.args).not.toContain("--continue");
+
+      const withoutId = buildTrackedCliResumeLaunchCommand({
+        provider: "pi",
+        targetKind: "session",
+        targetId: null,
+        launch: { permissionMode: "full-auto", model: "pi/xai/grok-4.5" },
+      });
+      expect(withoutId.args).not.toContain("--continue");
+      expect(withoutId.args).not.toContain("--session");
+    });
+
     it("launches Pi with safe model/thinking argv, ADE guidance, and skill environment", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "pi",

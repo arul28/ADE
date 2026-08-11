@@ -41,6 +41,17 @@ export type { PiAuthStatusEvent, PiLoginProvider } from "../../../shared/types/c
  */
 const PI_LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * How long a cancel waits for an in-flight login to report its own outcome.
+ *
+ * A cancel can land after Pi has already persisted the credential and is only
+ * finishing its bookkeeping. Tearing the worker down at once turns that into a
+ * reported failure over a sign-in that actually worked — the user is told to
+ * retry something already done. Pi's own reply wins if it arrives inside this
+ * window; otherwise the cancel settles as a cancel.
+ */
+const PI_LOGIN_CANCEL_GRACE_MS = 2_000;
+
 export type PiLoginResult = { ok: true } | { ok: false; error: string };
 
 type AcquiredWorker = { pooled: PiSdkPooled; release: () => void };
@@ -86,7 +97,11 @@ type ActiveFlow = {
   pooled: PiSdkPooled;
   /** The prompt Pi is currently blocked on, if any. */
   pendingRequestId: string | null;
-  finish: (result: PiLoginResult) => void;
+  finish: (result: PiLoginResult, options?: { silent?: boolean }) => void;
+  /** Stop the flow, giving Pi the grace window to report a completed login. */
+  cancel: () => void;
+  /** Stop the flow at once, for a replacement attempt that must not wait. */
+  supersede: () => void;
 };
 const activeFlows = new Map<string, ActiveFlow>();
 /** Monotonic per-provider claim, so a superseded start can detect it lost. */
@@ -209,7 +224,7 @@ export async function startPiLogin(args: {
 }): Promise<PiLoginResult> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
-  cancelPiLogin({ providerId });
+  supersedePiLogin(providerId);
   // Acquiring a worker is async, so two starts for the same provider can both
   // get past the cancel above. Claim the provider synchronously and re-check
   // after the await, or the loser would orphan a worker nobody releases.
@@ -237,24 +252,58 @@ export async function startPiLogin(args: {
   return await new Promise<PiLoginResult>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
     const flow: ActiveFlow = {
       pooled,
       pendingRequestId: null,
-      finish: (result) => {
+      finish: (result, options) => {
         if (settled) return;
         settled = true;
         if (activeFlows.get(providerId) === flow) activeFlows.delete(providerId);
         if (timer) clearTimeout(timer);
+        const cancelling = graceTimer !== null;
+        if (graceTimer) clearTimeout(graceTimer);
         pooled.bridge.onUiRequest = null;
         pooled.bridge.onUiNotice = null;
         pooled.bridge.onUiCancel = null;
         release();
-        emit(result.ok
-          ? { providerId, state: "success" }
-          : { providerId, state: "error", error: result.error });
-        resolve(result);
+        // A supersede is an internal handoff, not an outcome. Announcing it
+        // would settle the replacement attempt that is already on screen: the
+        // renderer would clear the new flow card and latch its provider, so
+        // the sign-in the user just started could never report its own result.
+        if (!options?.silent) {
+          // Aborting the login can make Pi reject with its own internal abort
+          // text before the grace timer fires. The user asked to stop; report
+          // that, not Pi's plumbing.
+          emit(result.ok
+            ? { providerId, state: "success" }
+            : { providerId, state: "error", error: cancelling ? "Sign-in cancelled." : result.error });
+        }
+        resolve(result.ok || !cancelling ? result : { ok: false, error: "Sign-in cancelled." });
+      },
+      cancel: () => {
+        if (settled || graceTimer) return;
+        stopPi();
+        graceTimer = setTimeout(
+          () => flow.finish({ ok: false, error: "Sign-in cancelled." }),
+          PI_LOGIN_CANCEL_GRACE_MS,
+        );
+        graceTimer.unref?.();
+      },
+      supersede: () => {
+        if (settled) return;
+        stopPi();
+        flow.finish({ ok: false, error: "Sign-in was superseded by a newer attempt." }, { silent: true });
       },
     };
+    /** Release Pi's side: answer any open prompt, then abort the login. */
+    function stopPi(): void {
+      if (flow.pendingRequestId) {
+        pooled.respondToUi(flow.pendingRequestId, { ok: false, error: "Sign-in cancelled." });
+        flow.pendingRequestId = null;
+      }
+      pooled.cancelLogin();
+    }
     activeFlows.set(providerId, flow);
 
     pooled.bridge.onUiRequest = (requestId, payload) => {
@@ -302,21 +351,36 @@ export function submitPiLoginPrompt(args: {
   return { ok: true };
 }
 
-/** Stop an in-flight sign-in (if any), release its worker, and settle it. */
+/**
+ * Stop an in-flight sign-in (if any) and settle it.
+ *
+ * Settling is not instantaneous: Pi gets a short grace window to report a
+ * login it had already completed, so a cancel racing a successful grant is
+ * reported as the success it was. See `PI_LOGIN_CANCEL_GRACE_MS`.
+ */
 export function cancelPiLogin(args: { providerId: string }): void {
-  const providerId = args.providerId.trim();
-  // Claiming a fresh generation cancels a start that is still acquiring its
-  // worker: it has no flow to find yet, so without this the cancel is a no-op
-  // and the sign-in the user stopped runs on holding a worker.
+  const providerId = claimProviderGeneration(args.providerId);
+  activeFlows.get(providerId)?.cancel();
+}
+
+/**
+ * Stop the outgoing flow for a provider a replacement is about to start.
+ * Module-private: skipping the grace window is only ever right when another
+ * attempt is taking over, never when a renderer asks to cancel.
+ */
+function supersedePiLogin(providerId: string): void {
+  activeFlows.get(claimProviderGeneration(providerId))?.supersede();
+}
+
+/**
+ * Claiming a fresh generation stops a start that is still acquiring its worker:
+ * it has no flow to find yet, so without this the cancel is a no-op and the
+ * sign-in the user stopped runs on holding a worker.
+ */
+function claimProviderGeneration(rawProviderId: string): string {
+  const providerId = rawProviderId.trim();
   startGenerations.set(providerId, (startGenerations.get(providerId) ?? 0) + 1);
-  const flow = activeFlows.get(providerId);
-  if (!flow) return;
-  if (flow.pendingRequestId) {
-    flow.pooled.respondToUi(flow.pendingRequestId, { ok: false, error: "Sign-in cancelled." });
-    flow.pendingRequestId = null;
-  }
-  flow.pooled.cancelLogin();
-  flow.finish({ ok: false, error: "Sign-in cancelled." });
+  return providerId;
 }
 
 // --- Test hooks ------------------------------------------------------------

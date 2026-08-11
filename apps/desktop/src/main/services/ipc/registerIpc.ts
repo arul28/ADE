@@ -19,6 +19,7 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
   AttentionNotchSettings,
@@ -1928,49 +1929,6 @@ export function registerIpc({
   const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
-
-  // Channel-aware redaction: these channels carry sensitive payloads
-  // (commands, env vars, typed text, terminal data) that must NOT land in
-  // structured trace logs. Redact by replacing the field with `[redacted]`
-  // before the generic summarizer descends into the args.
-  const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
-    [IPC.appControlLaunch]: new Set(["command", "env"]),
-    [IPC.appControlLaunchInTerminal]: new Set(["command", "env"]),
-    [IPC.appControlTypeText]: new Set(["text"]),
-    [IPC.appControlDispatchKey]: new Set(["text", "unmodifiedText", "key", "code"]),
-    [IPC.terminalWrite]: new Set(["data"]),
-    [IPC.ptySendToSession]: new Set(["text"]),
-    [IPC.ptyWrite]: new Set(["data"]),
-    [IPC.appOpenExternal]: new Set(["url"]),
-    [IPC.builtInBrowserNavigate]: new Set(["url"]),
-    [IPC.builtInBrowserCreateTab]: new Set(["url"]),
-    [IPC.builtInBrowserShowPanel]: new Set(["url"]),
-    [IPC.transcriptionTranscribe]: new Set(["pcm"]),
-    [IPC.accountPollLogin]: new Set(["sessionId"]),
-    [IPC.accountCancelLogin]: new Set(["sessionId"]),
-    [IPC.accountPairMachine]: new Set(["machineKey"]),
-    [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
-    [IPC.accountRemoveMachine]: new Set(["machineKey"]),
-    [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
-    [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
-    // A Pi sign-in prompt answer is the credential itself when Pi asks for an
-    // API key, so it must never reach a verbose IPC trace.
-    [IPC.aiPiLoginSubmit]: new Set(["value"]),
-  };
-
-  const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
-    const redactKeys = ipcChannelRedactionMap[channel];
-    if (!redactKeys || redactKeys.size === 0) return args;
-    return args.map((arg) => {
-      if (!arg || typeof arg !== "object" || Array.isArray(arg)) return arg;
-      const record = arg as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const [key, val] of Object.entries(record)) {
-        out[key] = redactKeys.has(key) ? "[redacted]" : val;
-      }
-      return out;
-    });
-  };
 
   const shouldRedactIpcKey = (key: string | undefined): boolean => {
     if (!key) return false;

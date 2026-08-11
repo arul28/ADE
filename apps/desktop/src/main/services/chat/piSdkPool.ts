@@ -105,7 +105,8 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   poolKey: string;
   cwd: string;
   agentDir: string;
-  sessionDir?: string | null;
+  sessionRoot?: string | null;
+  sessionStorageDir?: string | null;
   modelRef?: PiSdkModelRef | null;
   thinkingLevel?: string | null;
   systemPrompt?: string | null;
@@ -221,7 +222,8 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     ...(args.packageEntry ? { packageEntry: args.packageEntry } : {}),
     cwd: args.cwd,
     agentDir: args.agentDir,
-    sessionDir: args.sessionDir ?? null,
+    sessionRoot: args.sessionRoot ?? null,
+    sessionStorageDir: args.sessionStorageDir ?? null,
     modelRef: args.modelRef ?? null,
     thinkingLevel: args.thinkingLevel ?? null,
     systemPrompt: args.systemPrompt ?? null,

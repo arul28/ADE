@@ -21,10 +21,10 @@ import {
 } from "./discoveryUtils";
 import { commandArrayToLine } from "../../../shared/shell";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
-import { piSessionDirectoryForEnvironment } from "../chat/piSessionLease";
+import { piSessionRootForEnvironment } from "../chat/piSessionStore";
 
 function piSessionsDir(args: ExternalSessionDiscoveryArgs): string {
-  return piSessionDirectoryForEnvironment(args.env ?? process.env);
+  return piSessionRootForEnvironment(args.env ?? process.env);
 }
 
 function sessionTitle(records: Record<string, unknown>[]): string | null {

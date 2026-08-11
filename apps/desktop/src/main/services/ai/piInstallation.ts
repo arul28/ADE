@@ -10,6 +10,7 @@ import {
   encodePiRegistryId,
 } from "../../../shared/modelRegistry";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
+import type { AiPiProviderAuthSource, AiPiProviderStatus } from "../../../shared/types/config";
 
 export { PI_SDK_MIN_NODE } from "../chat/piSdkProtocol";
 export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent" as const;
@@ -30,29 +31,6 @@ export type PiInstallation = {
   blocker: string | null;
 };
 
-export type PiProviderAuthSource =
-  | "stored"
-  | "runtime"
-  | "environment"
-  | "fallback"
-  | "models_json_key"
-  | "models_json_command"
-  | null;
-
-export type PiProfileProvider = {
-  id: string;
-  name: string;
-  modelCount: number;
-  availableModelCount: number;
-  configured: boolean;
-  authType: "api-key" | "oauth" | "local" | "unknown" | null;
-  authMethods: Array<"api-key" | "oauth" | "local">;
-  authSource?: PiProviderAuthSource;
-  authLabel?: string | null;
-  subscription?: boolean;
-  loginLabel?: string | null;
-  authExpiresAt?: number | null;
-};
 
 export type PiProfileInventory = {
   installed: boolean;
@@ -67,7 +45,7 @@ export type PiProfileInventory = {
   modelsPath: string;
   modelsStorePath: string;
   blocker: string | null;
-  providers: PiProfileProvider[];
+  providers: AiPiProviderStatus[];
   availableModelIds: string[];
   stale: boolean;
   authFileDetected: boolean;
@@ -216,7 +194,27 @@ export function resolvePiInstallation(env: NodeJS.ProcessEnv = process.env): PiI
   };
 }
 
-function authSummary(value: unknown): { type: PiProfileProvider["authType"]; expiresAt?: number | null } {
+/** Loopback hosts are the tell for "a model server the user runs themselves". */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
+
+/**
+ * The base URL of a provider served from this machine, or `null`.
+ *
+ * Deliberately host-based rather than key-based: a placeholder API key means
+ * nothing, and a remote provider reached through a custom `baseUrl` proxy is
+ * still a remote provider the user must authenticate to.
+ */
+function loopbackBaseUrl(value: unknown): string | null {
+  const raw = nonEmpty(value);
+  if (!raw) return null;
+  try {
+    return LOOPBACK_HOSTS.has(new URL(raw).hostname.toLowerCase()) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function authSummary(value: unknown): { type: AiPiProviderStatus["authType"]; expiresAt?: number | null } {
   const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
   if (!record) return { type: null };
   const type = nonEmpty(record.type)?.toLowerCase();
@@ -239,7 +237,7 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
     ? models.providers as Record<string, unknown>
     : {};
   const ids = new Set<string>();
-  const providers = new Map<string, PiProfileProvider>();
+  const providers = new Map<string, AiPiProviderStatus>();
   for (const [providerId, raw] of Object.entries(modelProviders)) {
     const provider = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
     const list = Array.isArray(provider.models) ? provider.models : [];
@@ -248,8 +246,20 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
       if (id) ids.add(encodePiRegistryId("default", providerId, id));
     }
     const authInfo = authSummary(auth[providerId]);
+    // A loopback base URL wins over everything, including a stored auth entry.
+    // LM Studio ships `apiKey: "lmstudio"` in models.json — a placeholder its
+    // OpenAI-compatible endpoint requires and ignores — so keying off the
+    // presence of a key classified a server the user runs as an API provider,
+    // offered to "sign in" to it, and reported it connected on the strength of
+    // a config file rather than a reachable server.
+    const localBaseUrl = loopbackBaseUrl(provider.baseUrl);
+    // A stored auth entry still wins: it is the one piece of evidence that the
+    // provider really has an interactive credential. Only the *placeholder*
+    // key case — a loopback server with no auth-store entry, which is what LM
+    // Studio ships — is reclassified, so a provider behind a local gateway
+    // does not lose its sign-in.
     const authType = authInfo.type
-      ?? (provider.apiKey ? "api-key" as const : provider.baseUrl ? "local" as const : null);
+      ?? (localBaseUrl ? "local" as const : provider.apiKey ? "api-key" as const : provider.baseUrl ? "local" as const : null);
     providers.set(providerId, {
       id: providerId,
       name: nonEmpty(provider.name) ?? providerId,
@@ -258,6 +268,9 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
       configured: Boolean(auth[providerId]) || Boolean(provider.apiKey) || Boolean(provider.baseUrl),
       authType,
       authMethods: authType === "api-key" || authType === "oauth" || authType === "local" ? [authType] : [],
+      // Only for local providers: it is the endpoint the user runs, and the
+      // one thing that distinguishes "a server you host" from "a key you paste".
+      ...(localBaseUrl ? { baseUrl: localBaseUrl } : {}),
       ...(provider.apiKey ? { authSource: "models_json_key" as const } : {}),
       ...(authInfo.expiresAt !== undefined ? { authExpiresAt: authInfo.expiresAt } : {}),
     });
@@ -300,7 +313,7 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
 }
 
 function providerAuthSourcePath(
-  source: PiProviderAuthSource | undefined,
+  source: AiPiProviderAuthSource | undefined,
   installation: PiInstallation,
 ): string | undefined {
   if (source === "stored") return installation.authPath;
@@ -314,7 +327,7 @@ function runtimeRecord(value: unknown): Record<string, unknown> | null {
 
 function runtimeAuthType(
   value: Record<string, unknown> | null,
-  fallback: PiProfileProvider | undefined,
+  fallback: AiPiProviderStatus | undefined,
 ): "api-key" | "oauth" | "local" | null {
   const type = nonEmpty(value?.type)?.toLowerCase();
   if (type === "oauth" || type === "token") return "oauth";
@@ -324,8 +337,8 @@ function runtimeAuthType(
 
 function runtimeAuthSource(
   value: Record<string, unknown> | null,
-  fallback: PiProfileProvider | undefined,
-): PiProviderAuthSource {
+  fallback: AiPiProviderStatus | undefined,
+): AiPiProviderAuthSource {
   const source = nonEmpty(value?.source);
   if (source === "stored" || source === "runtime" || source === "environment"
     || source === "fallback" || source === "models_json_key" || source === "models_json_command") {
@@ -349,7 +362,9 @@ export function piModelDescriptorsFromInventory(inventory: PiProfileInventory) {
       profileId: decoded.profileId,
       displayName: `${provider?.name ?? decoded.providerId} / ${decoded.modelId}`,
       ...(provider?.authMethods.length ? { authTypes: provider.authMethods } : {}),
-      color: "#F97316",
+      // Pi's chat accent, so a Pi model reads as Pi wherever the per-model
+      // colour is used instead of the provider accent.
+      color: "#181C25",
     })];
   });
 }
@@ -387,14 +402,17 @@ export async function probePiProfileInventory(
     });
     const runtimeAuth = await acquired.pooled.requestAuth().catch(() => []);
     const fallbackProvidersById = new Map(fallback.providers.map((provider) => [provider.id, provider] as const));
-    const providersById = new Map<string, PiProfileProvider>();
+    const providersById = new Map<string, AiPiProviderStatus>();
 
     for (const item of Array.isArray(runtimeAuth) ? runtimeAuth : []) {
       const runtime = runtimeRecord(item);
       const providerId = nonEmpty(runtime?.id);
       if (!providerId) continue;
       const fallbackProvider = fallbackProvidersById.get(providerId);
-      const authType = runtimeAuthType(runtime, fallbackProvider);
+      // A loopback provider stays local only when Pi's runtime has no auth
+      // type of its own to report.
+      const authType = runtimeAuthType(runtime, fallbackProvider)
+        ?? (fallbackProvider?.authType === "local" ? "local" as const : null);
       const authMethods: Array<"api-key" | "oauth" | "local"> = fallbackProvider?.authMethods
         ?? (authType ? [authType] : []);
       providersById.set(providerId, {
@@ -405,6 +423,9 @@ export async function probePiProfileInventory(
         configured: Boolean(runtimeConfigured(runtime) || fallbackProvider?.configured || (availableCounts.get(providerId) ?? 0) > 0),
         authType,
         authMethods,
+        // Pi's live provider list carries no endpoint, so the profile-file
+        // reading is the only source of a local provider's base URL.
+        ...(fallbackProvider?.baseUrl ? { baseUrl: fallbackProvider.baseUrl } : {}),
         authSource: runtimeAuthSource(runtime, fallbackProvider),
         authLabel: nonEmpty(runtime?.label) ?? fallbackProvider?.authLabel ?? null,
         subscription: fallbackProvider?.subscription === true,
@@ -468,7 +489,7 @@ export async function probePiProfileInventory(
 }
 
 export function providerPathForPiAuthSource(
-  source: PiProviderAuthSource | undefined,
+  source: AiPiProviderAuthSource | undefined,
   installation: PiInstallation,
 ): string | undefined {
   return providerAuthSourcePath(source, installation);
