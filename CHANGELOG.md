@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.58] - 2026-08-11
+
+### Performance
+
+- Chat events are compacted before syncing; heavy PR detail loads on demand instead of pre-syncing to every device.
+- Compressed sync frames ship as binary; streamed replies fold before replay (up to 79% less transfer on thread open).
+- iOS: instant send echo (including images), stable scroll during history loads, up to 39x faster streaming renders.
+- Desktop threads prefetch older history and no longer shift while pages load.
+- Fewer git subprocesses per refresh; GitHub requests back off correctly when rate-limited; never-pushed branches skip the API.
+- Local database retention with paced deletes; renderer crash auto-recovery.
+
+### Chat
+
+- Per-turn collapsed file-change summaries with lane-relative paths and Undo; live "Editing..." indicator; no per-edit clutter.
+- File names in chat open the Files tab in the chat's lane, honoring line numbers.
+- Chat mention tags, prompt history, PR pane, usage tracking upgrade, pasted-image compression.
+
+### Agents
+
+- Pi added as a first-class agent harness.
+- Background-work liveness (working/monitoring) surfaces on the Work list, top bar, dock badge, and mobile.
+- Settle now stops the session's monitors, background shells, and subagent fleets (terminals stay open); unconfirmable stops are recorded visibly; a new turn aborts an in-flight settle.
+- Subagent completions reliably wake the parent chat, including scheduler-started turns.
+
+### iOS
+
+- Pairing distinguishes "never paired" from "saved key unreadable" and offers Repair.
+
 ## [1.2.57] - 2026-08-06
 
 ### Settings
@@ -1499,6 +1527,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58
 [1.2.57]: https://github.com/arul28/ADE/compare/v1.2.56...v1.2.57
 [1.2.56]: https://github.com/arul28/ADE/compare/v1.2.55...v1.2.56
 [1.2.55]: https://github.com/arul28/ADE/compare/v1.2.54...v1.2.55
