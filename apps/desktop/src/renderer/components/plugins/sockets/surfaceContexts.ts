@@ -10,6 +10,7 @@
  */
 
 import type {
+  PluginAutomationContext,
   PluginFileContext,
   PluginLaneContext,
   PluginPrContext,
@@ -78,6 +79,21 @@ export function pluginSessionContext(session: {
     title: session.title ?? "",
     provider: session.provider ?? null,
     status: session.status ?? null,
+  };
+}
+
+export function pluginAutomationContext(rule: {
+  id: string;
+  name?: string | null;
+  enabled?: boolean;
+}): PluginAutomationContext {
+  return {
+    kind: "automation",
+    id: rule.id,
+    // An unnamed rule renders as "Untitled automation" in the list; a plugin
+    // showing a blank name for the same row would look like a plugin bug.
+    name: rule.name?.trim() || "Untitled automation",
+    enabled: rule.enabled !== false,
   };
 }
 

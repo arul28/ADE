@@ -8,10 +8,7 @@ import { formatDate } from "../../../lib/format";
 import { buildRuleSentence } from "../automationCopy";
 import { sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog";
 import { RuleSentence } from "./RuleSentence";
-import { PluginRowBadges } from "../../plugins/sockets";
-import type { PluginSurfaceOnlyContext } from "../../../../shared/plugins/context";
-
-const AUTOMATIONS_SURFACE_CONTEXT: PluginSurfaceOnlyContext = { kind: "surface", surface: "automations" };
+import { PluginRowBadges, pluginAutomationContext } from "../../plugins/sockets";
 
 function statusDotColor(status: string | null, running: boolean): string {
   if (running) return "bg-amber-400";
@@ -109,11 +106,7 @@ export function RuleRow({
             </span>
             <span aria-hidden>·</span>
             <span>Last {formatDate(rule.lastRunAt, "never")}</span>
-            {/* Automations have no typed per-entity context in the v1 contract
-                (`shared/plugins/context.ts` covers PR, lane, session and file),
-                so a badge here is the plugin's surface-level declaration rather
-                than a value computed for this rule. */}
-            <PluginRowBadges surface="automations" context={AUTOMATIONS_SURFACE_CONTEXT} />
+            <PluginRowBadges surface="automations" context={pluginAutomationContext(rule)} />
           </div>
         </div>
 

@@ -4,6 +4,7 @@ import { splitPluginRowBadges } from "../../../../shared/plugins/sockets";
 import type { PluginLaneContext, PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { resolveViewerKind } from "../../files/v2/viewerRegistry";
 import type { PluginContributionRow, PluginSocketSource } from "./contributionBridge";
+import { pluginAutomationContext } from "./surfaceContexts";
 import {
   buildContributionSet,
   buildPluginMenuEntries,
@@ -165,6 +166,90 @@ describe("static and dynamic merge", () => {
       "lanes",
     );
     expect(selectContributions(set, "toolbar-action").map((entry) => entry.payload.label)).toEqual(["Lanes"]);
+  });
+});
+
+describe("socketId identity", () => {
+  const twoBadges = source("graph", [
+    { socket: "row-badge", surface: "lanes", id: "ahead", label: "Ahead" },
+    { socket: "row-badge", surface: "lanes", id: "stack", label: "Stack" },
+  ]);
+
+  it("replaces only the declaration the row fills, not the plugin's others", () => {
+    const set = buildContributionSet(
+      [twoBadges],
+      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead" }],
+      "lanes",
+    );
+
+    // "stack" was declared and never published for this lane; it must survive.
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["3 ahead", "Stack"]);
+  });
+
+  it("honours the per-contribution toggle on published rows, not just declarations", () => {
+    // The user switched "ahead" off. Filtering only the static side would leave
+    // the published badge on screen and make the switch look broken.
+    const set = buildContributionSet(
+      [{ ...twoBadges, disabledContributions: ["ahead"] }],
+      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead" }],
+      "lanes",
+    );
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["Stack"]);
+  });
+
+  it("drops a row that names a different surface", () => {
+    const set = buildContributionSet(
+      [twoBadges],
+      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead", surface: "prs" }],
+      "lanes",
+    );
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["Ahead", "Stack"]);
+  });
+
+  it("falls back to per-plugin replacement on a host that sends no socketId", () => {
+    // Such a host can only express one contribution per plugin per socket, so
+    // its row replaces both declarations rather than sitting beside the
+    // placeholder it exists to fill in.
+    const set = buildContributionSet(
+      [twoBadges],
+      [laneBadgeRow("graph", { text: "3 ahead", tone: "accent" })],
+      "lanes",
+    );
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["3 ahead"]);
+  });
+});
+
+describe("automation entities", () => {
+  it("keys an automation context on its id, matching the row's entity id", () => {
+    const set = buildContributionSet(
+      [source("graph", [])],
+      [
+        {
+          entityKind: "automation",
+          entityId: "rule-7",
+          pluginId: "graph",
+          socket: "row-badge",
+          socketId: "state",
+          payload: { text: "ran 2m ago", tone: "success" },
+          updatedAt: null,
+        },
+      ],
+      "automations",
+    );
+
+    const context = pluginAutomationContext({ id: "rule-7", name: "Nightly", enabled: true });
+    expect(selectContributions(set, "row-badge", context).map((entry) => entry.payload.text))
+      .toEqual(["ran 2m ago"]);
+    expect(selectContributions(set, "row-badge", pluginAutomationContext({ id: "rule-8" }))).toEqual([]);
+  });
+
+  it("names an unnamed rule the way the list does", () => {
+    expect(pluginAutomationContext({ id: "rule-7", name: "  " }).name).toBe("Untitled automation");
+    expect(pluginAutomationContext({ id: "rule-7" }).enabled).toBe(true);
   });
 });
 

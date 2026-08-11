@@ -21,6 +21,7 @@ export {
   useSurfaceContributions,
 } from "./useSurfaceContributions";
 export {
+  pluginAutomationContext,
   pluginFileContext,
   pluginLaneContext,
   pluginPrContext,

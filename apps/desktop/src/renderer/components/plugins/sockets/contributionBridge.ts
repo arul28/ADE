@@ -50,6 +50,15 @@ export type PluginContributionRow = {
   entityId: string;
   pluginId: string;
   socket: PluginSocketKind;
+  /**
+   * The manifest socket this row fills. Optional because an older host cannot
+   * name it, but load-bearing where present: it is the row's identity for
+   * ordering, for replacing the right declaration, and for honouring the
+   * per-contribution toggle.
+   */
+  socketId?: string;
+  /** The row's own surface. Absent on an older host; never guessed. */
+  surface?: PluginSurfaceId;
   payload: unknown;
   updatedAt?: string | null;
 };
@@ -222,11 +231,15 @@ export async function readSurfaceContributionRows(
     const entityKindValue = stringOrNull(entry.entityKind);
     const socket = stringOrNull(entry.socket);
     if (!pluginId || !entityId || !entityKindValue || !socket) continue;
+    const socketId = stringOrNull(entry.socketId);
+    const rowSurface = stringOrNull(entry.surface);
     rows.push({
       entityKind: entityKindValue as PluginEntityKind,
       entityId,
       pluginId,
       socket: socket as PluginSocketKind,
+      ...(socketId ? { socketId } : {}),
+      ...(rowSurface ? { surface: rowSurface as PluginSurfaceId } : {}),
       payload: entry.payload ?? entry.payload_json ?? null,
       updatedAt: stringOrNull(entry.updatedAt),
     });
