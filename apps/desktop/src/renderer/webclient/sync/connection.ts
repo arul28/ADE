@@ -1334,7 +1334,7 @@ export class SyncConnection {
       this.setStatus({ state: "error", error: payload.message });
       return new SyncConnectionError(payload.message, "relay_account_required", payload);
     }
-    // Neither of these is a reason to destroy a saved pairing, so they must not
+    // These account/host states are not a reason to destroy a saved pairing, so they must not
     // reach the `auth_failed` status that WebMachineSessionManager treats as a
     // signal to invalidate the environment. The account session moving under a
     // handshake is transient — keep reconnecting. A host too old to verify
@@ -1348,6 +1348,14 @@ export class SyncConnection {
       this.shouldReconnect = false;
       this.setStatus({ state: "error", error: payload.message });
       return new SyncConnectionError(payload.message, "host_update_required", payload);
+    }
+    if (
+      payload.code === "account_not_signed_in"
+      || payload.code === "account_verification_failed"
+    ) {
+      this.shouldReconnect = false;
+      this.setStatus({ state: "error", error: payload.message });
+      return new SyncConnectionError(payload.message, payload.code, payload);
     }
     const attributedToPairing = payload.host?.deviceId === environment.hostDeviceId;
     this.consecutiveAuthFailures += 1;
@@ -1374,6 +1382,10 @@ export class SyncConnection {
       && (
         error.code === "attributed_auth_failed"
         || error.code === "terminal_auth_failed"
+        || error.code === "relay_account_required"
+        || error.code === "host_update_required"
+        || error.code === "account_not_signed_in"
+        || error.code === "account_verification_failed"
         || error.code === "invalidation_only_v1_unsupported"
         || error.code === "protocol_version_mismatch"
       );

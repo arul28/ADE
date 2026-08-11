@@ -3791,6 +3791,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(invalidates("repair_required"))
 
     XCTAssertFalse(invalidates("host_update_required"))
+    XCTAssertFalse(invalidates("account_not_signed_in"))
+    XCTAssertFalse(invalidates("account_verification_failed"))
     XCTAssertFalse(invalidates("account_session_changed"))
     XCTAssertFalse(invalidates("invalid_hello"))
     XCTAssertFalse(invalidates("connection_attempt_superseded"))

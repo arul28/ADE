@@ -2431,13 +2431,14 @@ private let syncRespondingHostNameKey = "ADERespondingHostName"
 /// the saved pairing is no longer usable — so every pairing decision reads
 /// this instead of comparing against a single code.
 ///
-/// Deliberately NOT every rejection code. A host that cannot verify accounts
-/// yet (`host_update_required`) or whose account session moved under the
-/// handshake (`account_session_changed`) is still the machine this phone is
-/// paired with, and neither is a reason to drop the pairing. Any code this
-/// list does not name — including ones added to the host after this build
-/// shipped — falls through to "show the host's message, keep the pairing,
-/// keep retrying".
+/// Deliberately NOT every rejection code. A host that is signed out
+/// (`account_not_signed_in`), cannot verify accounts yet
+/// (`account_verification_failed` or `host_update_required`), or whose account
+/// session moved under the handshake (`account_session_changed`) is still the
+/// machine this phone is paired with, and none of those is a reason to drop
+/// the pairing. Any code this list does not name — including ones added to the
+/// host after this build shipped — falls through to "show the host's message,
+/// keep the pairing, keep retrying".
 private func syncCodeIsPairingRejection(_ code: String?) -> Bool {
   code == "auth_failed" || code == "repair_required"
 }

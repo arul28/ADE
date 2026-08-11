@@ -30,10 +30,12 @@ import {
   orderPairedCandidates,
   pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
+  type PairedRuntimeAccountHelloCode,
   type PairedRuntimeEndpointCandidate,
 } from "./pairedRuntimeRoutes";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
@@ -122,6 +124,7 @@ export async function bootstrapPairedRuntime(args: {
   const attemptRecorder = createRouteAttemptRecorder();
   const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
+  let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
@@ -226,6 +229,16 @@ export async function bootstrapPairedRuntime(args: {
           failure: "authentication",
         });
         continue;
+      }
+      if (
+        error instanceof PairedRuntimeHelloRejectedError
+        && (
+          error.helloCode === "account_not_signed_in"
+          || error.helloCode === "account_verification_failed"
+        )
+        && accountHelloCode == null
+      ) {
+        accountHelloCode = error.helloCode;
       }
       const failure = classifyPairedRuntimeFailure(error);
       markEndpointFailed(candidate, failure);
@@ -395,7 +408,7 @@ export async function bootstrapPairedRuntime(args: {
   };
   // A skipped relay leg only wins when nothing more actionable was found; a
   // host that rejected the pairing outranks "you aren't signed in".
-  if (relayAuthError && failure === "authentication") {
+  if (relayAuthError && failure === "authentication" && accountHelloCode == null) {
     throw new PairedRuntimeRelayAuthRequiredError(
       relayAuthError.message,
       relayAuthError.cause,
@@ -403,7 +416,7 @@ export async function bootstrapPairedRuntime(args: {
     );
   }
   throw new PairedRuntimeTransportUnavailableError(
-    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name),
+    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name, accountHelloCode),
     undefined,
     diagnostic,
   );

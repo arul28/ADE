@@ -2435,6 +2435,8 @@ pattern-matching it is a defect. `SyncHelloErrorPayload` (in
 | --- | --- | --- |
 | `repair_required` | The host has no usable pairing record for this device. | Pair again. This is the one rejection the user can act on directly. |
 | `auth_failed` | The older, generic form of the same thing. | Treat exactly as `repair_required`. |
+| `account_not_signed_in` | The target computer is not signed in to an ADE account. | Sign in to the same ADE account on that computer. Never destroy a saved pairing. |
+| `account_verification_failed` | The target computer could not verify its ADE account session. | Check ADE's account state on that computer, then retry. Never destroy a saved pairing. |
 | `host_update_required` | The host cannot verify ADE accounts yet. | Update ADE **on that machine**. Never destroy a saved pairing. |
 | `account_session_changed` | The host's account session moved under the handshake, or the ingress cannot finish this sign-in shape. | Sign in / retry. Never destroy a saved pairing. |
 | `relay_account_required` | The route needs an account-authenticated hello. | Sign in on this device. |
@@ -2442,11 +2444,13 @@ pattern-matching it is a defect. `SyncHelloErrorPayload` (in
 | `invalid_hello` | The payload was malformed. | Client bug or version skew. |
 | `protocol_version_mismatch` | Version floor/ceiling, as above. | Update the side named by `updateTarget`. |
 
-`host_update_required` and `account_session_changed` exist because
+`account_not_signed_in`, `account_verification_failed`,
+`host_update_required`, and `account_session_changed` exist because
 `auth_failed` reads as "pair again" on every client, and that is the wrong — and
-destructive — instruction for a host that simply cannot verify accounts yet or
-whose session moved mid-handshake. Where a rejection *can* legitimately lead a
-client to drop a saved pairing, the host also attributes itself with
+destructive — instruction for a target whose account is unavailable, whose
+session cannot be verified, whose host is too old, or whose session moved
+mid-handshake. Where a rejection *can* legitimately lead a client to drop a
+saved pairing, the host also attributes itself with
 `hello_error.host: { deviceId, name }`, and the client only acts when that
 identity matches the pairing it holds.
 
@@ -2514,16 +2518,16 @@ is the host-observed `direct | relay` truth after authentication; controllers
 use it for diagnostics/policy rather than inferring the path solely from a
 cached candidate label.
 
-`SyncHelloErrorPayload.code` is trimmed to `auth_failed |
-invalid_hello`. An `auth_failed` payload also carries an optional
-`host: { deviceId, name }` naming the machine that rejected the hello —
-both the project host and the brain-level fallback handler send it. This
-is the client's only safe basis for destroying a saved pairing: a phone
-drops its credentials **only** when the rejecting `host.deviceId` matches
-the paired machine's identity. An unattributed rejection (older host, or
-a stranger machine reached over a reused DHCP lease / mDNS alias / stale
-Tailscale candidate) keeps the pairing and the client moves on to other
-routes. `SyncPairingResultPayload.error.code` is one of
+The `hello_error` union includes the pairing, account, protocol, and route
+codes in the table above. An `auth_failed` payload also carries an optional
+`host: { deviceId, name }` naming the machine that rejected the hello — both
+the project host and the brain-level fallback handler send it. This is the
+client's only safe basis for destroying a saved pairing: a phone drops its
+credentials **only** when the rejecting `host.deviceId` matches the paired
+machine's identity. An unattributed rejection (older host, or a stranger
+machine reached over a reused DHCP lease / mDNS alias / stale Tailscale
+candidate) keeps the pairing and the client moves on to other routes.
+`SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
 
 Heartbeat interval is 60 seconds. Desktop peers close after **two**
@@ -2893,7 +2897,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Account publication + relay for a machine with no registered project | Implemented (`projectlessSyncSnapshot`, `machineRelayTunnel`, `runServe` publisher snapshot fallback) |
 | One hello parser + one account-hello gate chain across both ingresses | Implemented (`syncHelloProtocol`, `syncAccountHelloAuth`) |
 | Machine-level pairing PIN / device forget / DPoP posture on a projectless brain | Implemented (`brainMachineSyncStores`, `ProjectlessSyncControls`, `withSyncService`) |
-| Code-first `hello_error` classification with non-destructive `host_update_required` / `account_session_changed` | Implemented (desktop `classifyPairedRuntimeFailure`, web `SyncConnection`, iOS `syncCodeIsPairingRejection`) |
+| Code-first `hello_error` classification with non-destructive account/session/host-state codes | Implemented (`account_not_signed_in`, `account_verification_failed`, `host_update_required`, and `account_session_changed` across desktop, web, and iOS) |
 | Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
 | Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |

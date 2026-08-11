@@ -231,9 +231,11 @@ const HELLO_CODE_FAILURES: Record<
   repair_required: "pairing",
   // Desktop→desktop dials with `auth.kind: "paired"`, so the host's generic
   // `auth_failed` here is always a pairing-record rejection — including from
-  // hosts too old to send `repair_required`. Account problems arrive as
-  // `relay_account_required`, which has its own row.
+  // hosts too old to send `repair_required`. Account problems use their own
+  // authentication codes; `relay_account_required` remains the relay-only form.
   auth_failed: "pairing",
+  account_not_signed_in: "authentication",
+  account_verification_failed: "authentication",
   relay_account_required: "authentication",
   // The host is fine and the pairing is fine — it just cannot verify ADE
   // accounts yet. "Pair it again" would send the user in circles; the update
@@ -297,6 +299,11 @@ const FAILURE_PRECEDENCE: readonly RemoteRuntimeConnectionAttemptFailure[] = [
   "unknown",
 ];
 
+export type PairedRuntimeAccountHelloCode = Extract<
+  SyncHelloErrorPayload["code"],
+  "account_not_signed_in" | "account_verification_failed"
+>;
+
 export function dominantPairedRuntimeFailure(
   attempts: readonly RemoteRuntimeConnectionAttempt[],
 ): RemoteRuntimeConnectionAttemptFailure {
@@ -314,12 +321,19 @@ export function dominantPairedRuntimeFailure(
 export function pairedRuntimeFailureMessage(
   failure: RemoteRuntimeConnectionAttemptFailure,
   machineNameValue: string | null | undefined,
+  accountHelloCode?: PairedRuntimeAccountHelloCode | null,
 ): string {
   const machine = machineNameValue?.trim() || "that computer";
   switch (failure) {
     case "pairing":
       return `${machine} says this device's pairing is out of date — pair it again.`;
     case "authentication":
+      if (accountHelloCode === "account_not_signed_in") {
+        return `${machine} is not signed in to an ADE account. Sign in there, then try again.`;
+      }
+      if (accountHelloCode === "account_verification_failed") {
+        return `${machine} could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.`;
+      }
       return "Sign in to ADE to connect through the relay.";
     case "identity":
       return `A different computer answered at ${machine}'s saved address — try again.`;
