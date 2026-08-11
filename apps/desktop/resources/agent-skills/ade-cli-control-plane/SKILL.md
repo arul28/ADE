@@ -105,10 +105,13 @@ The type controls what happens to the parent when the child finishes: a
 `subagent` turn wakes or steers the parent, a `peer` turn only leaves a quiet
 completion note. `--no-parent` creates an unparented top-level session.
 
-For persistent Work chats, every parent-dispatched subagent turn reports back
-with its child turn id and latest assistant summary. ADE steers an active parent
-or wakes an idle parent. A turn sent directly by the human leaves a quiet note
-because the human already owns that interaction. The persisted parent link and
+For persistent Work chats, a subagent turn reports back with its child turn id
+and latest assistant summary whenever the parent still owns the child's
+mission — including turns the child's own scheduled wakeups start, so a long
+self-paced mission still reports when it actually finishes. ADE steers an active
+parent or wakes an idle parent. Once a human messages the child directly,
+ownership moves to the human and completions become quiet notes until the parent
+dispatches again. The persisted parent link and
 turn metadata survive brain restarts; a delivery failure retries and then
 becomes a visible warning in the child. Every child receives
 `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance as a recovery path.
@@ -169,10 +172,10 @@ a chat you do not own:
 Prefer **harness-tracked** delegation and wait on the tracked handle — do not
 background a raw CLI and then guess at its state:
 
-- **ADE Work-chat subagents:** spawn with `--type subagent`; every
-  parent-dispatched completed turn wakes or steers the parent. Read the bounded
-  transcript after that signal when you need more detail. You never poll a
-  transcript in a loop.
+- **ADE Work-chat subagents:** spawn with `--type subagent`; every completed
+  turn wakes or steers the parent while the parent owns the mission. Read the
+  bounded transcript after that signal when you need more detail. You never poll
+  a transcript in a loop.
 - **Tracked provider CLI subagents:** wait with `ade chat wait <session> --for
   idle|terminal --timeout-ms <ms>` or require an explicit direct report through
   `$ADE_PARENT_CHAT_SESSION_ID`.

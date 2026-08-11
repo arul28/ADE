@@ -1553,10 +1553,16 @@ describe("listTerminalSessions", () => {
 
 describe("sendChatMessage", () => {
   it("forwards chat text unchanged and waits until the shared runtime has accepted the turn", async () => {
-    const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
+    const calls: Array<{ domain: string; action: string; args: unknown }> = [];
     const connection = {
-      actionList: async (domain: string, action: string, argsList: unknown[]) => {
-        calls.push({ domain, action, argsList });
+      // Positional invocation of chat message actions is rejected by the host
+      // (it would carry caller metadata past the trusted-provenance rewrite),
+      // so this must stay on the object form.
+      actionList: async () => {
+        throw new Error("chat.sendMessage must not use the positional action form");
+      },
+      action: async (domain: string, action: string, args: unknown) => {
+        calls.push({ domain, action, args });
       },
     } as unknown as AdeCodeConnection;
 
@@ -1566,10 +1572,7 @@ describe("sendChatMessage", () => {
       {
         domain: "chat",
         action: "sendMessage",
-        argsList: [
-          { sessionId: "chat-1", text: "hello" },
-          { awaitDispatch: true },
-        ],
+        args: { sessionId: "chat-1", text: "hello" },
       },
     ]);
     expect(JSON.stringify(calls)).not.toContain("control plane for ADE state");

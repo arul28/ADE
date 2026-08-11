@@ -197,6 +197,20 @@ export type AgentChatSpawnDispatchMetadata = {
   dispatchedAt: string;
 };
 
+export type AgentChatAgentRelayMetadata = {
+  /** Trusted caller session, derived from its bound identity. */
+  fromSessionId: string;
+};
+
+export type AgentChatHostContinuationMetadata = {
+  reason:
+    | "provider_schedule_cleanup"
+    | "plan_followup"
+    | "interrupted_turn_recovery"
+    | "continuity_recovery"
+    | "cto_intro";
+};
+
 export type AgentChatContinuityRecovery = {
   state: "required" | "reconstructed";
   reason: AgentChatResumeFailureKind;
@@ -505,6 +519,13 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   spawnCompletion?: AgentChatSpawnCompletion;
   /** Marks a child turn as parent-dispatched so completion may wake the parent. */
   spawnDispatch?: AgentChatSpawnDispatchMetadata;
+  /** Marks a message another bound agent (a grandchild reporting in, a sibling,
+   * or the session itself) sent to this chat. Coordination, not a new mission. */
+  agentRelay?: AgentChatAgentRelayMetadata;
+  /** Marks a host-authored prompt that continues or repairs the chat's own work
+   * rather than assigning new work, so it never reassigns ownership of a
+   * spawned child's current mission. */
+  hostContinuation?: AgentChatHostContinuationMetadata;
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */

@@ -92,6 +92,7 @@ import {
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
+import { parentShouldWakeForChildTurn } from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -6273,7 +6274,7 @@ function buildSpawnSelfReportGuidance(
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. ADE automatically wakes your parent after parent-requested turns and includes your latest assistant summary. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. While your parent owns your current mission, ADE automatically wakes it after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. If a human messages you directly, completions become quiet notes until your parent dispatches again. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -23811,6 +23812,9 @@ export function createAgentChatService(args: {
       void sendMessage({
         sessionId: managed.session.id,
         text: followup.followupText,
+        // Continues this chat's own plan, so it must not take a spawned
+        // child's mission away from its parent.
+        metadata: { hostContinuation: { reason: "plan_followup" } },
       }).catch((error) => {
         logger.warn("agent_chat.plan_followup_dispatch_failed", {
           sessionId: managed.session.id,
@@ -29554,7 +29558,8 @@ export function createAgentChatService(args: {
   /**
    * Child chat sessions spawned with a parent lineage. The relationship lives
    * on the persisted child session, while parent-dispatch causality lives on
-   * the child turn's persisted user-message metadata. Completion deliveries
+   * the child's persisted user-message metadata — per turn for the turn that
+   * was dispatched, and across turns as mission ownership. Completion deliveries
    * carry the child turn id in the parent transcript, providing durable dedupe
    * without a process-local spawn tracker.
    */
@@ -29619,18 +29624,18 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
-    const parentWasDispatcher = (() => {
-      const history = mergeEnvelopeStreams(
+    // Wake decision lives in `spawnMissionOwnership` so the policy — which
+    // inputs count as a directive — is stated and tested in one place. Peers
+    // never wake, so they never pay for the transcript read. Read once, before
+    // the delivery retries: a retry must not re-decide ownership.
+    const parentShouldWake = spawnKind === "subagent" && parentShouldWakeForChildTurn({
+      history: mergeEnvelopeStreams(
         readTranscriptEnvelopes(child),
         eventHistoryBySession.get(childSessionId) ?? [],
-      );
-      for (let index = history.length - 1; index >= 0; index -= 1) {
-        const event = history[index]?.event;
-        if (event?.type !== "user_message" || event.turnId !== resolvedTurnId) continue;
-        return event.metadata?.spawnDispatch?.parentSessionId === parentSessionId;
-      }
-      return false;
-    })();
+      ),
+      parentSessionId,
+      turnId: resolvedTurnId,
+    });
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -29696,7 +29701,7 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
-          if (spawnKind === "subagent" && parentWasDispatcher) {
+          if (parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,
               kind: "wake",
@@ -29712,6 +29717,19 @@ export function createAgentChatService(args: {
               detail: { spawnCompletion },
             });
           }
+          // One line per child turn completion, written after the delivery
+          // succeeded so it records the outcome rather than the intent — a
+          // retried attempt must not read as a second wake. A parent that was
+          // never woken is otherwise indistinguishable from a child that never
+          // finished, which is how the original incident went unnoticed.
+          logger.info("agent_chat.spawn_completion_routed", {
+            childSessionId,
+            parentSessionId,
+            childTurnId: resolvedTurnId,
+            spawnKind,
+            status: resultStatus,
+            routedTo: parentShouldWake ? "wake" : "quiet_notice",
+          });
           return;
         } catch (error) {
           lastError = error;
@@ -38253,7 +38271,11 @@ export function createAgentChatService(args: {
         sessionId,
         text: capsule,
         displayText: "Rebuilt this chat's AI thread from ADE history.",
-        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        metadata: {
+          kind: "continuity_recovery",
+          hostContinuation: { reason: "continuity_recovery" },
+          hideFullPrompt: true,
+        },
         allowContinuityRecovery: true,
       });
     } catch (error) {
@@ -38286,7 +38308,11 @@ export function createAgentChatService(args: {
           sessionId,
           text: capsule,
           displayText: "Rebuilt this chat's AI thread from ADE history.",
-          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+          metadata: {
+            kind: "continuity_recovery",
+            hostContinuation: { reason: "continuity_recovery" },
+            hideFullPrompt: true,
+          },
         }, {
           awaitDispatch: true,
           preparedMessage: preparedCapsule,
@@ -38333,7 +38359,11 @@ export function createAgentChatService(args: {
           sessionId,
           text: capsule,
           displayText: "Rebuilt this chat's AI thread from ADE history.",
-          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+          metadata: {
+            kind: "continuity_recovery",
+            hostContinuation: { reason: "continuity_recovery" },
+            hideFullPrompt: true,
+          },
         }, {
           awaitDispatch: true,
           preparedMessage: preparedCapsule,
@@ -38450,6 +38480,9 @@ export function createAgentChatService(args: {
         text: action === "restart_resume_thread"
           ? "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress."
           : "Retry the interrupted work from the user's last request in this thread. Re-check the current workspace state, continue safely, and report progress.",
+        // Resumes the user's own last request; it assigns no new work, so a
+        // spawned child stays owned by whoever owned it before the interrupt.
+        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
       }, { awaitDispatch: true, automaticRecovery: internal?.automatic === true });
       if (action === "restart_resume_thread") {
         emitCodexTurnRecovery(managed, {
@@ -39214,7 +39247,14 @@ export function createAgentChatService(args: {
       "Do not perform any other work.",
     ].filter((part): part is string => Boolean(part)).join(" ");
     try {
-      await messageSession({ sessionId, kind: "wake", text: instructions });
+      // Housekeeping, not a directive: a subagent asked to clean up legacy
+      // provider schedules must not lose its parent's mission ownership.
+      await messageSession({
+        sessionId,
+        kind: "wake",
+        text: instructions,
+        metadata: { hostContinuation: { reason: "provider_schedule_cleanup" } },
+      });
     } catch (error) {
       if (!confirmedOwnerSchedules.length) {
         await forgetStaleOwnerSchedules();
@@ -39506,7 +39546,13 @@ export function createAgentChatService(args: {
       // awaitDispatch so a first-run dispatch failure (unauthenticated provider,
       // no model configured) lands in the catch below instead of escaping as an
       // unhandled rejection from a fire-and-forget turn.
-      await sendMessage({ sessionId, text: CTO_INTRO_PROMPT }, { awaitDispatch: true });
+      await sendMessage({
+        sessionId,
+        text: CTO_INTRO_PROMPT,
+        // Host-authored seed, not a mission anyone assigned. Inert for the CTO
+        // session (it has no parent), marked so the rule holds everywhere.
+        metadata: { hostContinuation: { reason: "cto_intro" } },
+      }, { awaitDispatch: true });
       ctoStateService.completeOnboardingStep(CTO_INTRO_ONBOARDING_STEP);
       logger.info("agent_chat.cto_intro_seeded", { sessionId });
     } catch (error) {

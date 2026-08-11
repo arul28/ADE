@@ -1959,7 +1959,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link.
     --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after parent-requested turns; peer leaves quiet notes.
+                            after every turn while the parent owns the mission;
+                            peer leaves quiet notes.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -2014,7 +2015,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                             tracked agent shell (the spawning chat).
     --no-parent             Create the chat without a parent link.
     --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after parent-requested turns; peer leaves quiet notes.
+                            after every turn while the parent owns the mission;
+                            peer leaves quiet notes.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.

@@ -779,14 +779,15 @@ export async function sendChatMessage(
   text: string,
   attachments: AgentChatFileRef[] = [],
 ): Promise<void> {
-  await connection.actionList("chat", "sendMessage", [
-    {
-      sessionId,
-      text,
-      ...(attachments.length ? { attachments } : {}),
-    },
-    { awaitDispatch: true },
-  ]);
+  // Object form: chat message actions re-derive their trusted provenance from
+  // the caller's bound identity, and the host rejects the positional form so
+  // metadata cannot route around that. The old second positional argument
+  // (`{ awaitDispatch: true }`) was never forwarded by the action wrapper.
+  await connection.action("chat", "sendMessage", {
+    sessionId,
+    text,
+    ...(attachments.length ? { attachments } : {}),
+  });
 }
 
 export async function messageChatSession(

@@ -156,12 +156,45 @@ will need, join, read, or review the result (including parallel work); `peer`
 is fire-and-forget and leaves quiet turn-completion notes. Missing types and
 the legacy `none` value are rejected for new parented sessions.
 
-Every parent-dispatched subagent chat turn returns its child turn id and latest
-bounded assistant summary, steering an active parent or waking an idle parent.
-Human-dispatched child turns and peer turns leave quiet notes. The persisted
-lineage/dispatch metadata makes this restart-safe and per-turn rather than a
-one-shot kickoff notification; final delivery failure becomes visible in the
-child after bounded retries.
+Subagent chat turns return their child turn id and latest bounded assistant
+summary, steering an active parent or waking an idle parent. A completion wakes
+the parent when the parent started that turn *or* still owns the child's
+mission — the most recent directive-class input to the child was
+parent-dispatched. The policy lives in
+`services/chat/spawnMissionOwnership.ts`. These inputs continue the mission in
+flight rather than reassigning it, so a subagent that self-schedules wakeups —
+an ADE ship loop polling CI, say — still wakes its parent when the mission
+finishes:
+
+- `scheduledWake` — the child's own durable scheduler firing.
+- `spawnCompletion` — a result returning from the child's own grandchild.
+- `agentRelay` — any other bound agent messaging the child (a grandchild
+  reporting in, a sibling coordinating, the child writing to itself).
+- `hostContinuation` — ADE prompting the chat to resume or repair its own work
+  (`kind: "continuity_recovery"` is still matched for older transcripts).
+- `orchestrationOrigin` with an `intent` other than `"directive"` — status
+  reports, diff notices, questions and cancellations inside a run, so a worker
+  reporting to a lead cannot cost that lead its own parent's wakes.
+- `deliveryState: "queued"` — superseded by the delivered copy, which carries
+  the authoritative metadata (the queue path strips `scheduledWake`).
+
+A direct human message is a directive and moves ownership to the human, making
+completions quiet notes until the parent dispatches again. A handoff prompt is
+also a directive — it carries a human's continuation intent. Ownership is read
+at completion time; ADE keeps no per-schedule provenance. Peer turns are always
+quiet notes.
+
+All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
+`chat.messageSession`, `chat.sendMessage` and `chat.steer` before any
+role-specific branch: it deletes every caller-supplied marker, then re-derives
+`spawnDispatch` (caller is the target's persisted parent) or `agentRelay` (any
+other bound caller) from observed identity. Positional invocation of those three
+actions is rejected so metadata cannot route around the check, and the
+automation action bridge strips the same keys. A child therefore cannot
+manufacture ownership of itself, and a grandchild's status report cannot revoke
+its grandparent's. The persisted lineage/dispatch metadata makes this
+restart-safe rather than a one-shot kickoff notification; final delivery failure
+becomes visible in the child after bounded retries.
 
 For a CLI child, the same parent/type fields are persisted in the tracked
 session's `resumeMetadata` and projected onto `TerminalSessionSummary` for
