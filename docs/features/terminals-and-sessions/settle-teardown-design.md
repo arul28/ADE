@@ -604,6 +604,31 @@ Analytics: one `ade_feature_used` per settle that had residue — never one per
 failed job — with `provider`, the coarse `outcome` reason, and a bucketed
 `count_bucket`. No session ids, task ids, commands, or error text.
 
+### 6c-i. Open: the sync bulk settle still answers with a bare id list
+
+`§3c`'s contract table says the sync entry point should carry the typed outcome
+"additively". It does not yet. `session.settleSessions`
+(`syncRemoteCommandService.ts`) returns `sessionService.settleSessions(...)` — a
+changed-id array — so an aborted id is simply absent, indistinguishable from one
+that was never eligible. iOS reads it as `resultShape: .changedIdList`.
+
+This is not a regression and not silently wrong: iOS shows an in-flight settle
+through a local overlay that expires on its own (`PendingSessionSettleStates`,
+20s), so an aborted settle reads as "the overlay timed out" rather than as a
+settled row. Step 3 makes aborts more likely, though, which makes the gap worth
+closing.
+
+It is left open deliberately because the fix is a **wire-compatibility decision
+that needs the mobile side**, and either option costs something:
+
+- **Change the shape** to `{settled, aborted}` — breaks older iOS builds, which
+  parse an array.
+- **Add `session.settleSessionsWithOutcome`** alongside it and register it in
+  the mobile compatibility list — genuinely additive, but ships a wire surface
+  with no consumer until iOS adopts it.
+
+Neither belongs in a desktop/CLI branch on its own.
+
 ### 6d. Peer tuple writes: host authority finished, not consensus added
 
 R7's fix is in the **apply layer**: `db.sync.applyChanges`, the one place both
