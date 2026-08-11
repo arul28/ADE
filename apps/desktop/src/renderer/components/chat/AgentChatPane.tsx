@@ -253,7 +253,16 @@ import {
   listAgentChatSessionsCached,
 } from "../../lib/agentChatSessionListCache";
 import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
-import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAgentChatModelsCached,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  peekAiStatusCached,
+  type AiStatusCacheInvalidatedEventDetail,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -3490,17 +3499,14 @@ export function AgentChatPane({
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
   // from the cached AI status (if any). This avoids a "not configured" flash
   // in the model picker every time a chat pane mounts: the previously-known
-  // configured set is shown immediately, and `refreshAvailableModels` below
-  // re-verifies asynchronously and corrects any stale entries. We only block
-  // sends when the *fresh* status confirms the provider is unauthenticated;
-  // the seeded value is purely cosmetic for the picker's "Ready / not
-  // configured" labels.
+  // configured set is shown immediately. Cache update/invalidation listeners
+  // and `refreshAvailableModels` keep the seed in sync after Settings auth
+  // or other shared-cache writers without remounting the pane.
   const seedAiStatus = useMemo<AiStatusSnapshot | null>(
     () => peekAiStatusCached(projectRoot),
     // projectRoot is stable for the lifetime of a project session — recompute
-    // only when the user actually switches projects. We intentionally do not
-    // depend on cache mutations; refreshAvailableModels overrides state once
-    // the async re-check resolves.
+    // only when the user actually switches projects. Cache mutations are
+    // applied via AI_STATUS_CACHE_* listeners below, not this memo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectRoot],
   );
@@ -5724,27 +5730,54 @@ export function AgentChatPane({
     awaitingInput: selectedSessionAwaitingInput,
   });
 
-  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
-    ++availableModelsRefreshSeqRef.current;
-    const selectedModelProvider = modelId.trim()
-      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
-      : null;
-    const shouldRefreshOpenCodeInventory =
-      sessionProvider === "opencode"
-      && (
-        selectedSession?.provider === "opencode"
-        || selectedModelProvider === "opencode"
-      );
+  const applyAiStatusSnapshot = useCallback((status: AiStatusSnapshot) => {
+    setAiStatus(status);
+    setProviderConnections({
+      claude: status.providerConnections?.claude ?? null,
+      codex: status.providerConnections?.codex ?? null,
+      cursor: status.providerConnections?.cursor ?? null,
+      droid: status.providerConnections?.droid ?? null,
+    });
+    const orderedAvailable = orderAvailableModelIds(deriveConfiguredModelIds(status, { includeDroid: true }));
+    setAvailableModelIds(orderedAvailable);
+    return orderedAvailable;
+  }, []);
+
+  const resolveAiStatusRuntimeScope = useCallback(() => {
     const runtimePin = selectedSessionIdRef.current
       ? chatRuntimePinRef.current
       : draftExecutionBindingRef.current;
     if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !runtimePin) {
+      return null;
+    }
+    return {
+      runtimePin,
+      runtimeProjectRoot: runtimePin?.rootPath ?? projectRoot,
+    };
+  }, [projectRoot]);
+
+  const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
+    const selectedModelProvider = modelId.trim()
+      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
+      : null;
+    return sessionProvider === "opencode"
+      && (
+        selectedSession?.provider === "opencode"
+        || selectedModelProvider === "opencode"
+      );
+  }, [modelId, selectedSession?.provider, sessionProvider]);
+
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
+    ++availableModelsRefreshSeqRef.current;
+    const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
+    const scope = resolveAiStatusRuntimeScope();
+    if (!scope) {
       setAiStatus(null);
       setProviderConnections(null);
       setAvailableModelIds([]);
       return [];
     }
-    const runtimeProjectRoot = runtimePin?.rootPath ?? projectRoot;
+    const { runtimePin, runtimeProjectRoot } = scope;
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
@@ -5755,17 +5788,7 @@ export function AgentChatPane({
         force: options?.force === true,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
-      setAiStatus(status);
-      setProviderConnections({
-        claude: status.providerConnections?.claude ?? null,
-        codex: status.providerConnections?.codex ?? null,
-        cursor: status.providerConnections?.cursor ?? null,
-        droid: status.providerConnections?.droid ?? null,
-      });
-      const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      const orderedAvailable = orderAvailableModelIds(available);
-      setAvailableModelIds(orderedAvailable);
-      return orderedAvailable;
+      return applyAiStatusSnapshot(status);
     } catch {
       setAiStatus(null);
       setProviderConnections(null);
@@ -5819,7 +5842,82 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
+  }, [
+    applyAiStatusSnapshot,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    let settleTimer: number | null = null;
+    let stale = false;
+    let settleGeneration = 0;
+
+    const applyFromPeek = () => {
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return false;
+      const updated = peekAiStatusCached(scope.runtimeProjectRoot, scope.runtimePin);
+      if (!updated) return false;
+      applyAiStatusSnapshot(updated);
+      stale = false;
+      return true;
+    };
+
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail;
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      if ((detail?.projectRoot ?? null) !== (scope.runtimeProjectRoot ?? null)) return;
+      applyFromPeek();
+    };
+
+    const onInvalidated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      if (detail && !detail.allProjects && detail.projectRoot !== (scope.runtimeProjectRoot ?? null)) return;
+      stale = true;
+      const generation = ++settleGeneration;
+      if (settleTimer != null) {
+        window.clearTimeout(settleTimer);
+      }
+      // Wait briefly for a paired UPDATED from another writer (Settings). If
+      // nothing arrives and this tile is active, refill once without force.
+      // Prefer peek after the refill so a newer invalidate cannot apply an
+      // orphaned in-flight status; getAiStatusCached already coalesces IPC.
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        if (!active || !stale || !isTileActive || generation !== settleGeneration) return;
+        const settledScope = resolveAiStatusRuntimeScope();
+        if (!settledScope) return;
+        const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
+        void getAiStatusCached({
+          projectRoot: settledScope.runtimeProjectRoot,
+          pin: settledScope.runtimePin,
+          ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+        }).then(() => {
+          if (!active || !stale || generation !== settleGeneration) return;
+          applyFromPeek();
+        }).catch(() => undefined);
+      }, 250);
+    };
+
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+    return () => {
+      active = false;
+      settleGeneration += 1;
+      if (settleTimer != null) window.clearTimeout(settleTimer);
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+    };
+  }, [
+    applyAiStatusSnapshot,
+    isTileActive,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
