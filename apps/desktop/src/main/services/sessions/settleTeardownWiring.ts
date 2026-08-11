@@ -24,8 +24,18 @@ export type SettleTeardownChatService = {
     provider?: string | null;
     claudeBackgroundJobShort?: string | null;
   } | null>;
-  /** Liveness for a persisted Claude `--bg` job; the recorded short alone is not one. */
-  hasLiveClaudeBackgroundJob?: (short: string | null | undefined) => Promise<boolean>;
+  /**
+   * Liveness for a persisted Claude `--bg` job; the recorded short alone is not
+   * one. REQUIRED, not optional: a wiring without it would read a recorded job
+   * as absent and confirm a clean teardown over work that is still running,
+   * which is the hole this callback exists to close.
+   *
+   * `"unknown"` is a distinct answer on purpose — an unreachable daemon is not
+   * evidence the job finished.
+   */
+  hasLiveClaudeBackgroundJob: (
+    short: string | null | undefined,
+  ) => Promise<"alive" | "gone" | "unknown">;
 };
 
 export type SettleTeardownWiringDeps = {
@@ -80,9 +90,11 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
       // and the short is a record rather than a liveness signal: it survives the
       // job finishing, so trusting it alone would make every later settle burn
       // the confirmation budget and report residue that no longer exists.
-      const persistedBackgroundJob = liveCount === 0
-        && summary.claudeBackgroundJobShort
-        && await deps.agentChatService.hasLiveClaudeBackgroundJob?.(summary.claudeBackgroundJobShort)
+      const persistedBackgroundJob = liveCount === 0 && summary.claudeBackgroundJobShort
+        // Anything but a definite "gone" counts as work. An unreachable daemon
+        // means we cannot tell, and guessing "finished" is the one guess that
+        // settles over a running job.
+        && await deps.agentChatService.hasLiveClaudeBackgroundJob(summary.claudeBackgroundJobShort) !== "gone"
         ? 1
         : 0;
       return {

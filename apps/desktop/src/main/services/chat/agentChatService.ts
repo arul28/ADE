@@ -44304,8 +44304,25 @@ export function createAgentChatService(args: {
      * settle spend the confirmation budget and then report residue that does
      * not exist.
      */
-    hasLiveClaudeBackgroundJob: async (short: string | null | undefined): Promise<boolean> =>
-      (await getLiveClaudeBackgroundSocket(short)) !== null,
+    hasLiveClaudeBackgroundJob: async (
+      short: string | null | undefined,
+    ): Promise<"alive" | "gone" | "unknown"> => {
+      const normalized = normalizeClaudeBackgroundShort(short);
+      if (!normalized) return "gone";
+      const socketPath = await resolveClaudeDaemonControlSocket();
+      // No daemon socket, or a request that failed: we do not KNOW the job is
+      // gone. Collapsing that to "gone" is how a settle confirms a clean
+      // teardown over a job that is still running — the same mistake as
+      // treating a timed-out liveness read as an idle session.
+      if (!socketPath) return "unknown";
+      try {
+        const response = await sendClaudeDaemonRequest(socketPath, { op: "has", short: normalized });
+        if (response.ok !== true) return "unknown";
+        return response.alive === true || response.present === true ? "alive" : "gone";
+      } catch {
+        return "unknown";
+      }
+    },
     restoreCancelledQueue,
     recoverTurn,
     recoverCodexTurn,

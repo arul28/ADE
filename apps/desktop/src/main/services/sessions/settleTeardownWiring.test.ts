@@ -10,9 +10,12 @@ import { createSettleTeardownWiring } from "./settleTeardownWiring";
 describe("settle teardown wiring", () => {
   const neverAborted = { isAborted: () => false };
 
-  function harness(summary: Record<string, unknown> | null, backgroundJobAlive = true) {
+  function harness(
+    summary: Record<string, unknown> | null,
+    backgroundJob: "alive" | "gone" | "unknown" = "alive",
+  ) {
     const interrupt = vi.fn(async () => ({}));
-    const hasLiveClaudeBackgroundJob = vi.fn(async () => backgroundJobAlive);
+    const hasLiveClaudeBackgroundJob = vi.fn(async () => backgroundJob);
     const wiring = createSettleTeardownWiring({
       agentChatService: {
         interrupt,
@@ -60,13 +63,48 @@ describe("settle teardown wiring", () => {
       provider: "claude",
       activeBackgroundTaskCount: 0,
       claudeBackgroundJobShort: "bg-42",
-    }, false);
+    }, "gone");
 
     const outcome = await wiring.runSettleTeardown("session-1", neverAborted);
 
     expect(hasLiveClaudeBackgroundJob).toHaveBeenCalledWith("bg-42");
     expect(interrupt, "a finished job must not be stopped again").not.toHaveBeenCalled();
     expect(outcome.residue, "a finished job is not residue").toEqual([]);
+  });
+
+  it("treats an unreachable daemon as work, not as a finished job", async () => {
+    // `getLiveClaudeBackgroundSocket` turns socket and request failures into a
+    // null, so "cannot reach the daemon" and "the job is gone" arrive looking
+    // identical. Guessing "finished" is the guess that settles over a job that
+    // is still running.
+    const { wiring, interrupt } = harness({
+      status: "idle",
+      provider: "claude",
+      activeBackgroundTaskCount: 0,
+      claudeBackgroundJobShort: "bg-42",
+    }, "unknown");
+
+    await wiring.runSettleTeardown("session-1", neverAborted);
+
+    expect(interrupt, "unknown liveness must still attempt the stop").toHaveBeenCalled();
+  });
+
+  it("reports residue when a daemon job survives the interrupt", async () => {
+    // `interrupt`'s daemon `stop <short>` branch is gated on there being no
+    // resident Claude runtime, so a resumed session with a live `--bg` job
+    // takes the SDK branch and the daemon job keeps running. Teardown must not
+    // call that a clean settle — it cannot stop the job, so it says so.
+    const { wiring } = harness({
+      status: "idle",
+      provider: "claude",
+      activeBackgroundTaskCount: 0,
+      claudeBackgroundJobShort: "bg-42",
+    }, "alive");
+
+    const outcome = await wiring.runSettleTeardown("session-1", neverAborted);
+
+    expect(outcome.residue, "an unstoppable daemon job must be reported").not.toEqual([]);
+    expect(outcome.residue[0]?.kind).toBe("background_tasks");
   });
 
   it("does not interrupt a session that is genuinely idle", async () => {
