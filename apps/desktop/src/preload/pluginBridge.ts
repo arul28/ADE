@@ -310,6 +310,8 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
         invoke(IPC.pluginMarketplaceIndex, args),
       );
     },
+    repoStars: async (input: { repo: string }): Promise<number | null> =>
+      callStrictOr("repoStars", input, () => invoke(IPC.pluginRepoStars, input)),
     presence: async (): Promise<PluginPresenceMachineRow[]> =>
       callStrictOr("presence", {}, () => invoke(IPC.pluginPresence, {})),
     getReadme: async (input: { pluginId: string }): Promise<string | null> =>

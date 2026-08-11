@@ -66,6 +66,16 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail
   // button that hands off to the system browser (WelcomeVideoGate.tsx), so
   // no external frame-src is needed.
+  // Plugin registry entries publish screenshots and short clips that live in the
+  // plugin's own GitHub repository, so the Marketplace detail gallery plays video
+  // straight off GitHub. Raw file contents come from raw.githubusercontent.com;
+  // clips dragged into an issue or release note land on
+  // user-images/private-user-images.githubusercontent.com; newer attachment
+  // uploads are served from `github.com/user-attachments/...`, which then 302s to
+  // private-user-images. Same rules as the img-src list above: no blanket
+  // `https:`, and github.com is allowed only under the attachment path prefix,
+  // never as a bare host.
+  const cspMediaSources = `${cspSources}${cspLocalSources} https://raw.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://github.com/user-attachments/`;
   const cspFrameSources = `${cspSources}${cspLocalSources} about:`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
@@ -77,7 +87,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
     `script-src ${cspScriptSources}`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
-    `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
+    `media-src ${cspMediaSources} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}`,
     `worker-src 'self' blob:`,

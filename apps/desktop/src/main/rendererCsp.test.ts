@@ -91,6 +91,33 @@ describe("buildRendererCspPolicy", () => {
     expect(imgTokens).toContain("https://images.clerk.dev");
   });
 
+  it("plays Marketplace plugin clips hosted in the plugin's GitHub repository", () => {
+    const policy = buildRendererCspPolicy(false);
+    const mediaSrc = policy.split("; ").find((directive) => directive.startsWith("media-src "));
+    const mediaTokens = mediaSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(mediaTokens).toContain("https://raw.githubusercontent.com");
+    expect(mediaTokens).toContain("https://user-images.githubusercontent.com");
+    expect(mediaTokens).toContain("https://private-user-images.githubusercontent.com");
+    // Attachment uploads are path-scoped: github.com is never a bare media host.
+    expect(mediaTokens).toContain("https://github.com/user-attachments/");
+    expect(mediaTokens).not.toContain("https://github.com");
+  });
+
+  it("keeps media sources scoped -- no blanket HTTPS for plugin galleries", () => {
+    for (const policy of [buildRendererCspPolicy(false), buildRendererCspPolicy(true)]) {
+      const mediaSrc = policy.split("; ").find((directive) => directive.startsWith("media-src "));
+      const mediaTokens = mediaSrc?.split(/\s+/).slice(1) ?? [];
+
+      expect(mediaTokens).not.toContain("https:");
+      expect(mediaTokens).not.toContain("https://*.githubusercontent.com");
+      // Local playback (artifact previews, recorded proof clips) still works.
+      expect(mediaTokens).toContain("ade-artifact:");
+      expect(mediaTokens).toContain("blob:");
+      expect(mediaTokens).toContain("data:");
+    }
+  });
+
   it("allows Clerk avatar uploads only under the images.clerk.dev GCS path prefix", () => {
     const policy = buildRendererCspPolicy(false);
     const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));

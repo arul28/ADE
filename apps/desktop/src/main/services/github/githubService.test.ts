@@ -2384,6 +2384,96 @@ describe("githubService.createSecretGist", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Repository star state — /user/starred is status-only (204 vs 404)
+// ---------------------------------------------------------------------------
+
+describe("githubService repository stars", () => {
+  beforeEach(() => {
+    resetMocks();
+    process.env.GITHUB_TOKEN = "ghp_env_token";
+  });
+
+  function fetchCall(index: number) {
+    return mockFetch.mock.calls[index] as [string, RequestInit];
+  }
+
+  it("reads 204 as starred and carries the star count", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(204, {}))
+      .mockResolvedValueOnce(jsonResponse(200, { stargazers_count: 128 }));
+
+    await expect(makeService().getRepoStarState("acme", "ade")).resolves.toEqual({
+      starred: true,
+      stars: 128,
+    });
+    expect(fetchCall(0)[0]).toBe("https://api.github.com/user/starred/acme/ade");
+    expect(fetchCall(0)[1].method).toBe("GET");
+    expect(fetchCall(1)[0]).toBe("https://api.github.com/repos/acme/ade");
+  });
+
+  it("reads 404 as not starred rather than an error", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(404, { message: "Not Found" }))
+      .mockResolvedValueOnce(jsonResponse(200, { stargazers_count: 7 }));
+
+    await expect(makeService().getRepoStarState("acme", "ade")).resolves.toEqual({
+      starred: false,
+      stars: 7,
+    });
+  });
+
+  it("reports a null star count when the repo itself cannot be read", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(204, {}))
+      .mockResolvedValueOnce(jsonResponse(404, { message: "Not Found" }));
+
+    await expect(makeService().getRepoStarState("acme", "ade")).resolves.toEqual({
+      starred: true,
+      stars: null,
+    });
+  });
+
+  it("surfaces a genuine star-state failure", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(500, { message: "Server Error" }));
+
+    await expect(makeService().getRepoStarState("acme", "ade")).rejects.toThrow("Server Error");
+  });
+
+  it("PUTs to star and DELETEs to unstar the same path", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(204, {}));
+    await makeService().setRepoStarred("acme", "ade", true);
+    expect(fetchCall(0)[0]).toBe("https://api.github.com/user/starred/acme/ade");
+    expect(fetchCall(0)[1].method).toBe("PUT");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(204, {}));
+    await makeService().setRepoStarred("acme", "ade", false);
+    expect(fetchCall(1)[0]).toBe("https://api.github.com/user/starred/acme/ade");
+    expect(fetchCall(1)[1].method).toBe("DELETE");
+  });
+
+  it("throws with the API's message when the write is rejected", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(422, { message: "Validation Failed" }));
+
+    await expect(makeService().setRepoStarred("acme", "ade", true))
+      .rejects.toThrow("Validation Failed");
+  });
+
+  it("rejects owner/name that are not plain GitHub path segments", async () => {
+    const service = makeService();
+
+    await expect(service.getRepoStarState("acme/../evil", "ade"))
+      .rejects.toThrow("Invalid GitHub repository owner.");
+    await expect(service.getRepoStarState("acme", "ade?x=1"))
+      .rejects.toThrow("Invalid GitHub repository name.");
+    await expect(service.setRepoStarred("", "ade", true))
+      .rejects.toThrow("Invalid GitHub repository owner.");
+    await expect(service.setRepoStarred("acme", "ade/extra", true))
+      .rejects.toThrow("Invalid GitHub repository name.");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // publishCurrentProject — orchestrates createRepo + remote add + push
 // ---------------------------------------------------------------------------
 

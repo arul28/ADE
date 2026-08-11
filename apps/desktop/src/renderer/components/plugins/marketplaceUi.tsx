@@ -3,6 +3,7 @@ import { CheckCircle, Circle, Minus, Star, Warning } from "@phosphor-icons/react
 
 import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
 import { formatCount, type CoverageState, type MachineCoverageRow } from "./marketplaceModel";
+import type { PluginIdentity } from "./pluginIcons";
 
 /**
  * The Marketplace's small parts.
@@ -14,6 +15,67 @@ import { formatCount, type CoverageState, type MachineCoverageRow } from "./mark
  * against fixed dark hexes; {@link MarketplaceEmpty} is the token-backed
  * equivalent and is the only reason a local one exists.
  */
+
+/* ── Identity ───────────────────────────────────────────────────────────── */
+
+/**
+ * A plugin's tile: its image, or its glyph on a wash of its own colour.
+ *
+ * The wash rather than a flat fill because these sit in a dense list and eight
+ * saturated squares in a column is a colour chart, not a catalogue. The colour
+ * carries recognition and the glyph carries meaning, which is the same division
+ * every app launcher makes.
+ *
+ * An image that fails to load falls back to the glyph and stays there for the
+ * life of the component. Retrying would flicker a broken tile on every render
+ * of a list that re-renders on every install event, and a plugin whose icon
+ * host is down should look plain, not unstable.
+ */
+export function PluginIconTile({
+  identity,
+  size,
+  label,
+}: {
+  identity: PluginIdentity;
+  /** Tile edge in px. The glyph is drawn at 52% of it. */
+  size: number;
+  /** Alt text for the image form. Decorative in the glyph form. */
+  label: string;
+}) {
+  const [imageFailed, setImageFailed] = React.useState(false);
+  const { Icon, color, imageUrl } = identity;
+  const radius = size >= 40 ? RADII.lg : RADII.sm;
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        flexShrink: 0,
+        borderRadius: radius,
+        overflow: "hidden",
+        background: `color-mix(in srgb, ${color} 14%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 22%, transparent)`,
+      }}
+    >
+      {imageUrl && !imageFailed ? (
+        <img
+          src={imageUrl}
+          alt={label}
+          loading="lazy"
+          decoding="async"
+          onError={() => setImageFailed(true)}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+        />
+      ) : (
+        <Icon size={Math.round(size * 0.52)} weight="regular" color={color} aria-hidden />
+      )}
+    </span>
+  );
+}
 
 /* ── Chips and badges ───────────────────────────────────────────────────── */
 
@@ -65,7 +127,14 @@ export function FilterChip({
   );
 }
 
-/** The official mark. Deliberately quiet — a badge, not a medal. */
+/**
+ * The official mark. Deliberately quiet — a badge, not a medal.
+ *
+ * It says the whole thing in one chip: a card used to carry "ADE" as author
+ * text AND an "Official" chip beside it, which is the same fact twice and left
+ * the author column meaningless for everyone else. The detail page still names
+ * the author, where there is room for it to be a link.
+ */
 export function OfficialBadge() {
   return (
     <span
@@ -87,7 +156,7 @@ export function OfficialBadge() {
       }}
     >
       <CheckCircle size={9} weight="fill" aria-hidden />
-      Official
+      Official ADE plugin
     </span>
   );
 }
@@ -150,6 +219,36 @@ export function ListingStats({ installs, stars }: { installs: number | null; sta
           {starText}
         </span>
       ) : null}
+    </span>
+  );
+}
+
+/**
+ * A repository's stars, on their own.
+ *
+ * Separate from {@link ListingStats} because a card shows one number and the
+ * detail rail shows two: folding them together produced a card that said
+ * "12 installs 4" whenever an install count happened to exist. Null renders
+ * nothing at all — a plugin nobody has counted is unranked, not unloved.
+ */
+export function StarCount({ stars }: { stars: number | null }) {
+  const text = formatCount(stars);
+  if (!text) return null;
+  return (
+    <span
+      title={`${stars} ${stars === 1 ? "star" : "stars"} on GitHub`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3,
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textDim,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <Star size={11} weight="fill" aria-hidden />
+      {text}
     </span>
   );
 }

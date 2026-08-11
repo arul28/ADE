@@ -6,7 +6,9 @@ import {
   deriveMachineCoverage,
   deriveSurfaceFacets,
   describePluginAdds,
+  describePluginResources,
   describePluginSource,
+  pluginAuthorUrl,
   installStateFor,
   listingFromInstalled,
   marketplaceRouteFromPath,
@@ -35,6 +37,10 @@ function listing(overrides: Partial<MarketplaceListing> = {}): MarketplaceListin
     version: "1.0.0",
     icon: null,
     accent: null,
+    iconUrl: null,
+    repo: null,
+    media: [],
+    links: null,
     official: false,
     featured: false,
     isTheme: false,
@@ -445,5 +451,60 @@ describe("describePluginSource", () => {
       url: null,
     });
     expect(describePluginSource("   ")).toBeNull();
+  });
+});
+
+describe("resources and authorship", () => {
+  it("names the owner's page rather than the author's own text", () => {
+    expect(pluginAuthorUrl(listing({ repo: "https://github.com/arul28/ade-graph" })))
+      .toBe("https://github.com/arul28");
+    // A plugin installed from a folder has no page, and an http repo is not one
+    // this app is willing to open.
+    expect(pluginAuthorUrl(listing({ repo: null, links: null }))).toBeNull();
+    expect(pluginAuthorUrl(listing({ repo: "http://github.com/arul28/ade-graph" }))).toBeNull();
+    expect(pluginAuthorUrl(listing({ repo: "not a url" }))).toBeNull();
+  });
+
+  it("builds the rail in reading order and never lists one URL twice", () => {
+    const rail = describePluginResources(listing({
+      repo: "https://github.com/arul28/ade-graph",
+      source: "https://github.com/arul28/ade-graph",
+      changelogUrl: "https://github.com/arul28/ade-graph/releases",
+      links: {
+        repository: "https://github.com/arul28/ade-graph",
+        homepage: "https://ade.example",
+        changelog: null,
+        license: null,
+        docs: "https://docs.example/graph",
+      },
+    }));
+    expect(rail).toEqual([
+      { label: "View source", url: "https://github.com/arul28/ade-graph" },
+      { label: "Homepage", url: "https://ade.example" },
+      { label: "Documentation", url: "https://docs.example/graph" },
+      { label: "Changelog", url: "https://github.com/arul28/ade-graph/releases" },
+    ]);
+  });
+
+  it("adds the install source only when it is somewhere else", () => {
+    const rail = describePluginResources(listing({
+      repo: "https://github.com/arul28/ade-graph",
+      source: "https://mirror.example/ade-graph.git",
+      changelogUrl: null,
+      links: null,
+    }));
+    expect(rail).toEqual([
+      { label: "View source", url: "https://github.com/arul28/ade-graph" },
+      { label: "Install source", url: "https://mirror.example/ade-graph.git" },
+    ]);
+  });
+
+  it("has nothing to show for a plugin installed from a folder", () => {
+    expect(describePluginResources(listing({
+      repo: null,
+      links: null,
+      changelogUrl: null,
+      source: "/Users/sam/code/lane-graph",
+    }))).toEqual([]);
   });
 });

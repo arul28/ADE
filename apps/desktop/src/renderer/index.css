@@ -116,6 +116,24 @@
      status, not a neon highlight. Resolves per-theme via var() at use time. */
   --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
 
+  /* Plugin identity palette.
+
+     A plugin with no published icon still needs to be recognisable in a list,
+     so the Marketplace derives one of these from its id. They are IDENTITY
+     colours, not status colours: nothing about them means anything, and the
+     only requirement is that eight of them stay apart from each other and from
+     the accent. Declared per theme because the tile they sit on inverts —
+     these are the values that hold their contrast on a dark surface, and the
+     light block carries deeper ones that hold theirs on a pale one. */
+  --plugin-identity-0: #8B8CF5;
+  --plugin-identity-1: #5AA9F5;
+  --plugin-identity-2: #3FBFD0;
+  --plugin-identity-3: #4FC48A;
+  --plugin-identity-4: #E0A94A;
+  --plugin-identity-5: #EE8C5A;
+  --plugin-identity-6: #F0728F;
+  --plugin-identity-7: #C77BEA;
+
   /* PRs tab surfaces (premium overhaul): neutral near-black tab + thread cards,
      faintly-violet floating side panels. */
   --pr-surface: rgb(15, 16, 16);
@@ -295,6 +313,16 @@
   --color-diff-add: #16a34a;
   --color-diff-del: #dc2626;
   --color-diff-hunk: #2563eb;
+  /* Plugin identity palette — the dark block's note applies; these are the
+     deeper values, for a glyph drawn on a pale tile. */
+  --plugin-identity-0: #5B5BD6;
+  --plugin-identity-1: #1D74C7;
+  --plugin-identity-2: #10808F;
+  --plugin-identity-3: #1C8A5B;
+  --plugin-identity-4: #A9761A;
+  --plugin-identity-5: #C25C22;
+  --plugin-identity-6: #C93B62;
+  --plugin-identity-7: #8B44C0;
   /* PRs tab surfaces — light-theme equivalents. */
   --pr-surface: var(--color-bg);
   --pr-thread-card: var(--color-card);

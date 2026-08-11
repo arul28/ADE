@@ -300,6 +300,36 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+// Star state is asked about a Marketplace plugin's repository, so owner/name
+// arrive from a third-party registry entry on their way into a URL path.
+// GitHub's own rule for both segments is this character set.
+const GITHUB_REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+function requireGithubRepoSegment(value: string, label: "owner" | "name"): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!GITHUB_REPO_SEGMENT.test(trimmed)) {
+    throw new Error(`Invalid GitHub repository ${label}.`);
+  }
+  return trimmed;
+}
+
+// The raw request path hands back the Response untouched, so status-only
+// endpoints have to read GitHub's error message themselves.
+function githubRawErrorMessage(bodyText: string, status: number): string {
+  const fallback = `GitHub API request failed (HTTP ${status})`;
+  const trimmed = bodyText.trim();
+  if (!trimmed) return fallback;
+  try {
+    const payload = JSON.parse(trimmed) as unknown;
+    const record = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : null;
+    return (record ? asString(record.message).trim() : "") || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 type HeadlessGitHubTokenLookup = {
   token: string | null;
   source: HeadlessGitHubStatus["authSource"];
@@ -2082,6 +2112,48 @@ export function createHeadlessGitHubService(
         path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
         query: { per_page: 100 },
       });
+    },
+    async getRepoStarState(owner, name) {
+      // `GET /user/starred/{owner}/{repo}` answers 204 when starred and 404 when
+      // not; both are answers, so this takes the raw path rather than
+      // `apiRequest`, which would throw on the 404.
+      const repoOwner = requireGithubRepoSegment(owner, "owner");
+      const repoName = requireGithubRepoSegment(name, "name");
+      const response = await requestRawWithCredentialFallback({
+        url: `https://api.github.com/user/starred/${repoOwner}/${repoName}`,
+        method: "GET",
+        headers: { accept: "application/vnd.github+json" },
+        capability: "read",
+      });
+      const bodyText = await response.text().catch(() => "");
+      if (!response.ok && response.status !== 404) {
+        throw new Error(githubRawErrorMessage(bodyText, response.status));
+      }
+      let stars: number | null = null;
+      try {
+        const { data } = await apiRequest<Record<string, unknown>>({
+          method: "GET",
+          path: `/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}`,
+        });
+        const count = data?.stargazers_count;
+        stars = typeof count === "number" && Number.isFinite(count) ? count : null;
+      } catch {
+        // The count is decoration; an unreadable repo still yields star state.
+      }
+      return { starred: response.ok, stars };
+    },
+    async setRepoStarred(owner, name, starred) {
+      const repoOwner = requireGithubRepoSegment(owner, "owner");
+      const repoName = requireGithubRepoSegment(name, "name");
+      const response = await requestRawWithCredentialFallback({
+        url: `https://api.github.com/user/starred/${repoOwner}/${repoName}`,
+        method: starred ? "PUT" : "DELETE",
+        headers: { accept: "application/vnd.github+json" },
+        capability: "write",
+      });
+      const bodyText = await response.text().catch(() => "");
+      if (response.ok) return;
+      throw new Error(githubRawErrorMessage(bodyText, response.status));
     },
     listRepoIssues,
     getIssue,

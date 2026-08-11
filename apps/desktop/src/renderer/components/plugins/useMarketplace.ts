@@ -3,7 +3,9 @@ import React from "react";
 import { useRootAppStore } from "../../state/appStore";
 import {
   fetchMarketplaceIndex,
+  fetchPluginRepoStars,
   pluginMarketplaceCapabilities,
+  pluginRepoStarsSupported,
   readPluginPresence,
   subscribeToPluginChanges,
   type PluginMarketplaceCapabilities,
@@ -112,6 +114,99 @@ export function useMarketplaceCatalogue(): MarketplaceCatalogue {
     refresh: React.useCallback(() => setRefreshToken((token) => token + 1), []),
     capabilities,
   };
+}
+
+/* ── Stars ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Star counts already asked for, for the life of this window.
+ *
+ * Module-level rather than component state because the gallery and the detail
+ * page are two mounts of the same catalogue: without it, opening a plugin and
+ * pressing Back asks GitHub about every row again. The host keeps a 24-hour
+ * disk cache underneath this, so the only thing this map buys is not making
+ * the round trip — but on an unauthenticated API budgeted at sixty requests an
+ * hour, not making the round trip is the whole game.
+ */
+const starCache = new Map<string, number | null>();
+
+/**
+ * How many repositories one pass will ask about.
+ *
+ * The gallery can list hundreds. Sixty unauthenticated requests an hour is the
+ * ceiling for the whole machine, so a page that spent them all on its first
+ * scroll would leave nothing for the plugin someone actually opens. Featured
+ * and top-of-list rows are the ones a reader looks at.
+ */
+const MAX_STAR_LOOKUPS_PER_PASS = 12;
+
+/**
+ * Live star counts, keyed by plugin id.
+ *
+ * The directory publishes `stars` at crawl time and that number is used as-is
+ * when it is there; this only fills the gaps. A count that cannot be had stays
+ * absent from the map, and the card draws nothing — which is the same thing it
+ * does for a plugin nobody has ever counted, because they are the same fact.
+ */
+export function usePluginRepoStars(
+  listings: readonly MarketplaceListing[],
+): Map<string, number> {
+  /* A snapshot of the module cache. The cache is what survives a remount; this
+     is what makes a resolved lookup a render — the counts land outside React,
+     so nothing in `listings` changes when one arrives. */
+  const [answered, setAnswered] = React.useState<ReadonlyMap<string, number | null>>(
+    () => new Map(starCache),
+  );
+
+  // The repos worth asking about: no published count, an https repo URL, and
+  // not already answered. Sliced in list order, which is the order the gallery
+  // already sorted them into.
+  const pending = React.useMemo(() => {
+    if (!pluginRepoStarsSupported()) return [] as { pluginId: string; repo: string }[];
+    const rows: { pluginId: string; repo: string }[] = [];
+    for (const listing of listings) {
+      if (rows.length >= MAX_STAR_LOOKUPS_PER_PASS) break;
+      if (listing.stars !== null) continue;
+      const repo = listing.repo ?? listing.links?.repository ?? null;
+      if (!repo || starCache.has(repo)) continue;
+      rows.push({ pluginId: listing.pluginId, repo });
+    }
+    return rows;
+  }, [listings]);
+
+  React.useEffect(() => {
+    if (pending.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      // Sequential on purpose. These are decorations on a page that is already
+      // drawn, and a burst of parallel requests to the same host is how a
+      // rate limit gets spent in one second instead of one hour.
+      for (const row of pending) {
+        if (cancelled) return;
+        if (starCache.has(row.repo)) continue;
+        starCache.set(row.repo, await fetchPluginRepoStars(row.repo));
+        if (cancelled) return;
+        setAnswered(new Map(starCache));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pending]);
+
+  return React.useMemo(() => {
+    const stars = new Map<string, number>();
+    for (const listing of listings) {
+      if (listing.stars !== null) {
+        stars.set(listing.pluginId, listing.stars);
+        continue;
+      }
+      const repo = listing.repo ?? listing.links?.repository ?? null;
+      const cached = repo ? answered.get(repo) : null;
+      if (typeof cached === "number") stars.set(listing.pluginId, cached);
+    }
+    return stars;
+  }, [answered, listings]);
 }
 
 /**

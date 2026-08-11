@@ -27,25 +27,30 @@ import {
   uninstallPlugin,
   type PluginUsageRow,
 } from "../../lib/pluginRuntimeBridge";
-import { pluginIcon } from "./pluginIcons";
+import { pluginIdentity } from "./pluginIcons";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
 import { PluginConfigForm } from "./PluginConfigForm";
 import { PluginThemePreview } from "./PluginThemePreview";
 import { ContributionsRail, MachineRail, UsageRail } from "./MarketplaceDetailRail";
-import { useMarketplaceCatalogue, usePluginPresence } from "./useMarketplace";
+import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
+import { PluginMediaGallery } from "./PluginMediaGallery";
+import { PluginStarButton } from "./PluginStarButton";
 import {
   InlineNotice,
   ListingStats,
   MarketplaceEmpty,
   OfficialBadge,
+  PluginIconTile,
   QuietTag,
   RailSection,
 } from "./marketplaceUi";
 import {
   deriveMachineCoverage,
   describePluginAdds,
+  describePluginResources,
   describePluginSource,
   installStateFor,
+  pluginAuthorUrl,
   type ListingInstallState,
   type MarketplaceListing,
 } from "./marketplaceModel";
@@ -121,6 +126,12 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
     };
   }, [installedKey, pluginId]);
 
+  /* One listing, so the lookup budget is spent on the plugin someone opened.
+     The star button reads GitHub directly when there is a connection; this is
+     what fills the count when there is not. */
+  const listingsForStars = React.useMemo(() => (listing ? [listing] : []), [listing]);
+  const stars = usePluginRepoStars(listingsForStars);
+
   const thisMachineKey = presence.rows.find((row) => row.isThisMachine)?.machineKey ?? null;
   const coverage = React.useMemo(
     () => deriveMachineCoverage({
@@ -154,6 +165,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   // A plugin installed from a folder on this machine has no page to open, so it
   // gets a fact row instead of a button that would go nowhere.
   const source = describePluginSource(listing.source);
+  const resources = describePluginResources(listing);
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -174,6 +186,8 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
         listing={listing}
         state={state}
         busy={busy}
+        stars={stars.get(listing.pluginId) ?? listing.stars}
+        canInstall={catalogue.capabilities.install}
         canManage={catalogue.capabilities.enable || catalogue.capabilities.uninstall}
         enabled={installedPlugin?.enabled ?? false}
         onInstall={() => setInstallTarget({ kind: "listing", listing })}
@@ -186,12 +200,19 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
 
       {actionError ? <InlineNotice>{actionError}</InlineNotice> : null}
 
+      {catalogue.capabilities.install ? null : (
+        <InlineNotice tone="muted">
+          Open a project to manage plugins on this machine.
+        </InlineNotice>
+      )}
+
       {state.kind === "update" ? (
         <UpdateCard
           listing={listing}
           from={state.version}
           to={state.available}
           busy={busy}
+          canInstall={catalogue.capabilities.install}
           onUpdate={() => void run(async () => {
             await installPlugin({
               source: listing.source,
@@ -206,7 +227,13 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
           variants rather than an inline `gridTemplateColumns` because an inline
           style has no breakpoint to respond to. */}
       <div className="grid items-start gap-7 [grid-template-columns:minmax(0,1fr)_minmax(260px,300px)] max-lg:[grid-template-columns:minmax(0,1fr)]">
-        <Readme text={readme ?? listing.readme} description={listing.description} />
+        <div style={{ display: "grid", gap: 18, minWidth: 0 }}>
+          {/* Above the readme, because a screenshot answers "what is this"
+              faster than a paragraph does — and below the header, because the
+              install decision is the header's job. */}
+          <PluginMediaGallery media={listing.media} />
+          <Readme text={readme ?? listing.readme} description={listing.description} />
+        </div>
 
         <aside style={{ display: "grid", gap: 22, minWidth: 0 }} data-tour="plugin:marketplace.rail">
           <MachineRail
@@ -243,15 +270,22 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               {source && !source.url ? <FactRow label="From" value={source.text} /> : null}
             </dl>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <ListingStats installs={listing.installs} stars={listing.stars} />
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {listing.changelogUrl ? (
-                <LinkButton label="Changelog" url={listing.changelogUrl} />
-              ) : null}
-              {source?.url ? <LinkButton label="Source" url={source.url} /> : null}
+              <ListingStats
+                installs={listing.installs}
+                stars={stars.get(listing.pluginId) ?? listing.stars}
+              />
             </div>
           </RailSection>
+
+          {resources.length > 0 ? (
+            <RailSection title="Resources">
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {resources.map((resource) => (
+                  <LinkButton key={resource.url} label={resource.label} url={resource.url} />
+                ))}
+              </div>
+            </RailSection>
+          ) : null}
 
           {listing.themeTokens ? (
             <PluginThemePreview
@@ -359,7 +393,9 @@ function DetailHeader({
   listing,
   state,
   busy,
+  stars,
   enabled,
+  canInstall,
   canManage,
   showRuntimeActions,
   onInstall,
@@ -371,7 +407,9 @@ function DetailHeader({
   listing: MarketplaceListing;
   state: ListingInstallState;
   busy: boolean;
+  stars: number | null;
   enabled: boolean;
+  canInstall: boolean;
   canManage: boolean;
   showRuntimeActions: boolean;
   onInstall: () => void;
@@ -380,8 +418,10 @@ function DetailHeader({
   onRestart: () => void;
   onLogs: () => void;
 }) {
-  const Icon = pluginIcon(listing.icon);
+  const identity = pluginIdentity(listing);
   const installedHere = state.kind !== "available";
+  const authorUrl = pluginAuthorUrl(listing);
+  const repo = listing.repo ?? listing.links?.repository ?? null;
 
   return (
     <header
@@ -391,25 +431,9 @@ function DetailHeader({
         gap: 14,
         paddingBottom: 18,
         borderBottom: `1px solid ${COLORS.borderMuted}`,
-        ...(listing.accent ? ({ "--plugin-accent": listing.accent } as React.CSSProperties) : {}),
       }}
     >
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 44,
-          height: 44,
-          flexShrink: 0,
-          borderRadius: RADII.md,
-          background: listing.accent
-            ? "color-mix(in srgb, var(--plugin-accent) 12%, transparent)"
-            : COLORS.recessedBg,
-        }}
-      >
-        <Icon size={22} weight="regular" color={listing.accent ? "var(--plugin-accent)" : COLORS.textMuted} aria-hidden />
-      </span>
+      <PluginIconTile identity={identity} size={52} label={listing.displayName} />
 
       <div style={{ display: "grid", gap: 5, flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -430,9 +454,36 @@ function DetailHeader({
           {state.kind === "disabled" ? <QuietTag>Turned off</QuietTag> : null}
           {listing.origin === "installed" ? <QuietTag>Installed directly</QuietTag> : null}
         </div>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-          {listing.author}
-        </span>
+        {/* The author row survives the card's single official chip: here there
+            is room for it to be a link to the account that publishes it, which
+            is the one form of the fact worth reading. */}
+        {authorUrl ? (
+          <button
+            type="button"
+            onClick={() => openUrlInAdeBrowser(authorUrl)}
+            title={authorUrl}
+            style={{
+              justifySelf: "start",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: 0,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              color: COLORS.textMuted,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            {listing.author}
+            <ArrowSquareOut size={11} weight="regular" aria-hidden />
+          </button>
+        ) : (
+          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+            {listing.author}
+          </span>
+        )}
         {listing.description ? (
           <p
             style={{
@@ -450,16 +501,20 @@ function DetailHeader({
       </div>
 
       <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+        <PluginStarButton repo={repo} fallbackStars={stars} />
+
         {state.kind === "available" ? (
-          <button
-            type="button"
-            onClick={onInstall}
-            disabled={busy}
-            data-tour="plugin:marketplace.detail-install"
-            style={{ ...primaryButton({ height: 30, fontSize: 12 }), opacity: busy ? 0.6 : 1 }}
-          >
-            Install
-          </button>
+          canInstall ? (
+            <button
+              type="button"
+              onClick={onInstall}
+              disabled={busy}
+              data-tour="plugin:marketplace.detail-install"
+              style={{ ...primaryButton({ height: 30, fontSize: 12 }), opacity: busy ? 0.6 : 1 }}
+            >
+              Install
+            </button>
+          ) : null
         ) : (
           <button
             type="button"
@@ -603,12 +658,14 @@ function UpdateCard({
   from,
   to,
   busy,
+  canInstall,
   onUpdate,
 }: {
   listing: MarketplaceListing;
   from: string;
   to: string;
   busy: boolean;
+  canInstall: boolean;
   onUpdate: () => void;
 }) {
   return (
@@ -633,15 +690,17 @@ function UpdateCard({
         </span>
       </span>
       {listing.changelogUrl ? <LinkButton label="What changed" url={listing.changelogUrl} /> : null}
-      <button
-        type="button"
-        onClick={onUpdate}
-        disabled={busy}
-        data-tour="plugin:marketplace.update-action"
-        style={{ ...primaryButton({ height: 28, fontSize: 11.5 }), opacity: busy ? 0.6 : 1 }}
-      >
-        {busy ? "Updating…" : "Update"}
-      </button>
+      {canInstall ? (
+        <button
+          type="button"
+          onClick={onUpdate}
+          disabled={busy}
+          data-tour="plugin:marketplace.update-action"
+          style={{ ...primaryButton({ height: 28, fontSize: 11.5 }), opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "Updating…" : "Update"}
+        </button>
+      ) : null}
     </div>
   );
 }

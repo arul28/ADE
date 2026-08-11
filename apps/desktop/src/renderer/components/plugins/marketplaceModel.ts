@@ -34,6 +34,8 @@ import {
 import {
   parsePluginRegistryEntry,
   type PluginRegistryEntry,
+  type PluginRegistryLinks,
+  type PluginRegistryMedia,
 } from "../../../shared/plugins/registryIndex";
 import { PLUGIN_SURFACE_IDS, type PluginSurfaceId } from "../../../shared/plugins/sockets";
 import type { PluginThemeTokens } from "../../lib/pluginTheme";
@@ -54,6 +56,20 @@ export type MarketplaceListing = {
   version: string;
   icon: string | null;
   accent: string | null;
+  /** A published image tile. Null for everything the app draws a glyph for. */
+  iconUrl: string | null;
+  /**
+   * The canonical repository page, when the catalogue knows one.
+   *
+   * Distinct from `source`, which is what an install clones — they are the same
+   * URL today, and the star button and the author link both need the one that
+   * means "this project's page" rather than "where the bytes come from".
+   */
+  repo: string | null;
+  /** Screenshots and clips for the detail page. Empty for most plugins. */
+  media: PluginRegistryMedia[];
+  /** Named links for the resources rail. Null when nothing published any. */
+  links: PluginRegistryLinks | null;
   official: boolean;
   featured: boolean;
   /** Themes get their own chip and their own detail rail. */
@@ -124,6 +140,10 @@ export function listingFromRegistryEntry(entry: PluginRegistryEntry): Marketplac
     version: entry.version,
     icon: entry.icon,
     accent: entry.accent,
+    iconUrl: entry.iconUrl,
+    repo: entry.repo,
+    media: entry.media,
+    links: entry.links,
     official: entry.official,
     featured: entry.featured,
     isTheme: entry.isTheme,
@@ -223,6 +243,10 @@ export function listingFromInstalled(plugin: InstalledPlugin): MarketplaceListin
     version: plugin.version,
     icon: plugin.icon,
     accent: plugin.accent,
+    iconUrl: null,
+    repo: null,
+    media: [],
+    links: null,
     official: false,
     featured: false,
     isTheme: plugin.theme !== null,
@@ -254,6 +278,10 @@ export function listingFromManifest(manifest: PluginManifest, source: string): M
     version: manifest.version,
     icon: manifest.icon ?? null,
     accent: manifest.accent ?? null,
+    iconUrl: null,
+    repo: null,
+    media: [],
+    links: null,
     // `official` in a manifest is the author's claim about themselves. Only the
     // directory can vouch for it, so a manifest read off an arbitrary URL never
     // earns the badge here.
@@ -663,6 +691,57 @@ export function describePluginSource(source: string): PluginSourceDisplay | null
   const parts = value.split(/[\\/]/).filter(Boolean);
   const tail = parts.slice(-2).join("/");
   return { text: parts.length > 2 ? `…/${tail}` : value, url: null };
+}
+
+/**
+ * The author's page, when the catalogue points at somewhere a person lives.
+ *
+ * Derived from the repository URL rather than from the author name, because a
+ * name is text an entry writes about itself and an owner path is a place. A
+ * plugin with no repository gets no link, which is the honest answer for
+ * something installed from a folder.
+ */
+export function pluginAuthorUrl(listing: MarketplaceListing): string | null {
+  const repo = listing.repo ?? listing.links?.repository ?? null;
+  if (!repo) return null;
+  let url: URL;
+  try {
+    url = new URL(repo);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  const owner = url.pathname.split("/").filter(Boolean)[0];
+  return owner ? `${url.origin}/${owner}` : null;
+}
+
+export type PluginResourceLink = { label: string; url: string };
+
+/**
+ * The resources rail: every link the catalogue published, labelled.
+ *
+ * Order is fixed and is a reading order, not the entry's: source first because
+ * it is the one that answers "what am I about to run", then the rest. The
+ * install source is appended only when it is somewhere else — a plugin whose
+ * repository IS its source should not get the same URL under two labels.
+ */
+export function describePluginResources(listing: MarketplaceListing): PluginResourceLink[] {
+  const links = listing.links;
+  const seen = new Set<string>();
+  const rail: PluginResourceLink[] = [];
+  const add = (label: string, url: string | null | undefined) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    rail.push({ label, url });
+  };
+
+  add("View source", listing.repo ?? links?.repository ?? null);
+  add("Homepage", links?.homepage);
+  add("Documentation", links?.docs);
+  add("Changelog", links?.changelog ?? listing.changelogUrl);
+  add("Licence", links?.license);
+  add("Install source", describePluginSource(listing.source)?.url ?? null);
+  return rail;
 }
 
 /* ── Formatting ─────────────────────────────────────────────────────────── */

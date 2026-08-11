@@ -2210,6 +2210,8 @@ declare global {
           enabled: boolean;
         }) => Promise<void>;
         marketplaceIndex: (args?: { refresh?: boolean }) => Promise<MarketplaceIndexPayload | null>;
+        /** A repository's live star count. Null means unknown, never zero. */
+        repoStars: (args: { repo: string }) => Promise<number | null>;
         presence: () => Promise<PluginPresenceRow[]>;
         getReadme: (args: { pluginId: string }) => Promise<string | null>;
         /** Raw manifest object; the renderer parses it. */
@@ -2483,6 +2485,21 @@ declare global {
           owner: string;
           name: string;
         }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
+        /**
+         * Star state for an arbitrary repository (a Marketplace plugin's, not
+         * necessarily the project's own). `stars` is null when the count could
+         * not be read.
+         */
+        getRepoStarState: (args: {
+          owner: string;
+          name: string;
+        }) => Promise<{ starred: boolean; stars: number | null }>;
+        /** Stars or unstars a repository for the signed-in GitHub user. */
+        setRepoStarred: (args: {
+          owner: string;
+          name: string;
+          starred: boolean;
+        }) => Promise<void>;
         listMyRepos: (
           input?: ListMyGitHubReposInput,
         ) => Promise<ListMyGitHubReposResult>;

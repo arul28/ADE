@@ -121,6 +121,96 @@ describe("registry entry parsing", () => {
     expect(good.entry.accent).toBe("#7C6FF0");
   });
 
+  it("counts the live publishing owner as curated", () => {
+    // The official set is published under `arul28` today. Getting this wrong is
+    // not cosmetic: `official` also decides whether an install is refused for a
+    // missing checksum, so a demoted entry silently loses its tamper check.
+    const parsed = parsePluginRegistryEntry(entry({
+      official: true,
+      repo: "https://github.com/arul28/ade-graph",
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.official).toBe(true);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("reads the icon under its published name and its older one", () => {
+    const published = parsePluginRegistryEntry(entry({
+      iconGlyph: "graph",
+      iconColor: "#7C6FF0",
+      icon: "puzzle",
+      accent: "#111111",
+    }));
+    if ("reason" in published) throw new Error(published.reason);
+    expect(published.entry.icon).toBe("graph");
+    expect(published.entry.accent).toBe("#7C6FF0");
+
+    const legacy = parsePluginRegistryEntry(entry({ icon: "puzzle", accent: "#111111" }));
+    if ("reason" in legacy) throw new Error(legacy.reason);
+    expect(legacy.entry.icon).toBe("puzzle");
+    expect(legacy.entry.accent).toBe("#111111");
+  });
+
+  it("keeps only media items the app could render", () => {
+    const parsed = parsePluginRegistryEntry(entry({
+      media: [
+        { kind: "image", src: "https://raw.githubusercontent.com/a/b/main/one.png", caption: "One" },
+        { kind: "video", src: "https://raw.githubusercontent.com/a/b/main/clip.mp4" },
+        // Every one of these is dropped, and the rest of the list survives.
+        { kind: "image", src: "http://insecure.example/two.png" },
+        { kind: "image", src: "javascript:alert(1)" },
+        { kind: "gif", src: "https://raw.githubusercontent.com/a/b/main/three.gif" },
+        { src: "https://raw.githubusercontent.com/a/b/main/four.png" },
+        "not an object",
+      ],
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.media).toEqual([
+      { kind: "image", src: "https://raw.githubusercontent.com/a/b/main/one.png", caption: "One" },
+      { kind: "video", src: "https://raw.githubusercontent.com/a/b/main/clip.mp4", caption: null },
+    ]);
+  });
+
+  it("caps the gallery and tolerates media that is not a list", () => {
+    const many = Array.from({ length: PLUGIN_REGISTRY_LIMITS.maxMedia + 4 }, (_unused, index) => ({
+      kind: "image",
+      src: `https://raw.githubusercontent.com/a/b/main/${index}.png`,
+    }));
+    const parsed = parsePluginRegistryEntry(entry({ media: many }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.media).toHaveLength(PLUGIN_REGISTRY_LIMITS.maxMedia);
+
+    const notAList = parsePluginRegistryEntry(entry({ media: { kind: "image" } }));
+    if ("reason" in notAList) throw new Error(notAList.reason);
+    expect(notAList.entry.media).toEqual([]);
+  });
+
+  it("keeps only https links, and always has a repository one", () => {
+    const parsed = parsePluginRegistryEntry(entry({
+      iconUrl: "http://insecure.example/icon.png",
+      links: {
+        repository: "https://github.com/arul28/ade-graph",
+        homepage: "http://insecure.example",
+        docs: "https://docs.example/graph",
+        license: "javascript:alert(1)",
+      },
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.iconUrl).toBeNull();
+    expect(parsed.entry.links).toEqual({
+      repository: "https://github.com/arul28/ade-graph",
+      homepage: null,
+      changelog: null,
+      license: null,
+      docs: "https://docs.example/graph",
+    });
+
+    // An entry that publishes no links at all still points somewhere.
+    const bare = parsePluginRegistryEntry(entry());
+    if ("reason" in bare) throw new Error(bare.reason);
+    expect(bare.entry.links.repository).toBe("https://github.com/ade-plugins/graph");
+  });
+
   it("drops checksums that are not a version mapped to a sha256", () => {
     const parsed = parsePluginRegistryEntry(entry({
       checksums: { "1.0.0": DIGEST_A, "not-a-version": DIGEST_B, "1.1.0": "short" },

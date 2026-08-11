@@ -800,6 +800,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         return { entries: result.entries, fetchedAt: result.fetchedAt, origin: result.origin };
       },
 
+      async repoStars(starsArgs): Promise<number | null> {
+        // The registry owns the URL check, the day-long cache and the rate-limit
+        // degradation; there is deliberately nothing to add here. Null reaches
+        // the client unchanged and is drawn as "unknown", never as zero.
+        return registry().fetchRepoStars(starsArgs.repo);
+      },
+
       async presence(): Promise<PluginPresenceMachineRow[]> {
         const attached = scopedProject();
         // No project database means no synced rows to read. Empty reads as

@@ -12,8 +12,8 @@ import {
   pluginMarketplaceCapabilities,
 } from "../../lib/pluginRuntimeBridge";
 import { parsePluginManifest } from "../../../shared/plugins/manifest";
-import { pluginIcon } from "./pluginIcons";
-import { OfficialBadge } from "./marketplaceUi";
+import { pluginIdentity } from "./pluginIcons";
+import { OfficialBadge, PluginIconTile } from "./marketplaceUi";
 import {
   describePluginAdds,
   listingFromManifest,
@@ -124,7 +124,7 @@ export function PluginInstallDialog({
     }
   };
 
-  const Icon = pluginIcon(listing?.icon);
+  const identity = listing ? pluginIdentity(listing) : null;
   const title = listing ? `Install ${listing.displayName}` : "Install from a URL";
 
   return (
@@ -202,7 +202,7 @@ export function PluginInstallDialog({
           </div>
         ) : null}
 
-        {listing ? (
+        {listing && identity ? (
           <div
             style={{
               display: "flex",
@@ -211,15 +211,9 @@ export function PluginInstallDialog({
               background: COLORS.recessedBg,
               border: `1px solid ${COLORS.borderMuted}`,
               borderRadius: RADII.md,
-              ...(listing.accent ? ({ "--plugin-accent": listing.accent } as React.CSSProperties) : {}),
             }}
           >
-            <Icon
-              size={20}
-              weight="regular"
-              color={listing.accent ? "var(--plugin-accent)" : COLORS.textMuted}
-              aria-hidden
-            />
+            <PluginIconTile identity={identity} size={34} label={listing.displayName} />
             <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
               <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>

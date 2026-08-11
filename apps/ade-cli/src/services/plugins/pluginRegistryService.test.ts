@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PLUGIN_REGISTRY_INDEX_URL,
   PLUGIN_REGISTRY_CACHE_TTL_MS,
+  PLUGIN_REGISTRY_STARS_TTL_MS,
   createPluginRegistryService,
   resolvePluginRegistryIndexUrl,
 } from "./pluginRegistryService";
@@ -253,6 +254,102 @@ describe("plugin registry service", () => {
       const registry = service(fetchImpl as unknown as typeof fetch);
 
       expect(await registry.resolveEntryForVerification("nobody")).toEqual({ status: "absent" });
+    });
+  });
+
+  describe("fetching a repository's star count", () => {
+    const REPO = "https://github.com/arul28/ade-graph";
+
+    const starsResponse = (stars: number, init: { etag?: string; status?: number } = {}) =>
+      jsonResponse(JSON.stringify({ stargazers_count: stars }), init);
+
+    it("refuses anything that is not a GitHub repository URL without asking anyone", async () => {
+      const fetchImpl = vi.fn();
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      for (const repo of [
+        "",
+        "not a url",
+        "http://github.com/arul28/ade-graph",
+        "https://gitlab.com/arul28/ade-graph",
+        "https://github.com/arul28",
+        "https://github.com/arul28/ade-graph/tree/main",
+        "https://github.com/../ade-graph",
+        "https://user:pw@github.com/arul28/ade-graph",
+      ]) {
+        expect(await registry.fetchRepoStars(repo)).toBeNull();
+      }
+      // The point is the zero: a rate-limit budget spent proving a URL is not a
+      // repository is a budget the real repositories on the page no longer have.
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("fetches a count once and serves it from cache for the rest of the day", async () => {
+      const fetchImpl = vi.fn(async () => starsResponse(128, { etag: "s1" }));
+      let clock = Date.parse("2026-08-11T00:00:00.000Z");
+      const registry = service(fetchImpl as unknown as typeof fetch, () => new Date(clock));
+
+      expect(await registry.fetchRepoStars(REPO)).toBe(128);
+      expect(fs.existsSync(path.join(cacheDir, "plugins", ".stars-cache.json"))).toBe(true);
+
+      clock += 23 * 60 * 60 * 1000;
+      expect(await registry.fetchRepoStars(REPO)).toBe(128);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it("revalidates with the stored etag once the day is up and keeps the count on a 304", async () => {
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        return headers["if-none-match"] === "s1"
+          ? starsResponse(0, { status: 304 })
+          : starsResponse(128, { etag: "s1" });
+      });
+      let clock = Date.parse("2026-08-11T00:00:00.000Z");
+      const registry = service(fetchImpl as unknown as typeof fetch, () => new Date(clock));
+
+      await registry.fetchRepoStars(REPO);
+      clock += PLUGIN_REGISTRY_STARS_TTL_MS + 1;
+      // A 304 carries no body, so the only thing that can answer it is the count
+      // the etag was issued for — and it is now current for another day.
+      expect(await registry.fetchRepoStars(REPO)).toBe(128);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+      clock += 1_000;
+      expect(await registry.fetchRepoStars(REPO)).toBe(128);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("serves the cached count when GitHub rate limits the machine", async () => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(starsResponse(128, { etag: "s1" }))
+        .mockResolvedValue(jsonResponse("{\"message\":\"API rate limit exceeded\"}", { status: 403 }));
+      let clock = Date.parse("2026-08-11T00:00:00.000Z");
+      const registry = service(fetchImpl as unknown as typeof fetch, () => new Date(clock));
+
+      await registry.fetchRepoStars(REPO);
+      clock += PLUGIN_REGISTRY_STARS_TTL_MS + 1;
+      // 60 requests an hour per IP is the normal budget, so this is the expected
+      // path rather than the exceptional one: the day-old count beats no count.
+      expect(await registry.fetchRepoStars(REPO)).toBe(128);
+    });
+
+    it("answers null — never zero — when it is rate limited with nothing cached", async () => {
+      const fetchImpl = vi.fn(async () => jsonResponse("{\"message\":\"rate limited\"}", { status: 403 }));
+      const registry = service(fetchImpl as unknown as typeof fetch);
+
+      // Zero would be a claim about the repository. This call is never in a
+      // position to make one it did not read.
+      expect(await registry.fetchRepoStars(REPO)).toBeNull();
+    });
+
+    it("degrades to null when the network fails or the body is not a count", async () => {
+      const offline = vi.fn(async () => {
+        throw new Error("offline");
+      });
+      expect(await service(offline as unknown as typeof fetch).fetchRepoStars(REPO)).toBeNull();
+
+      const garbage = vi.fn(async () => jsonResponse(JSON.stringify({ stargazers_count: "lots" })));
+      expect(await service(garbage as unknown as typeof fetch).fetchRepoStars(REPO)).toBeNull();
     });
   });
 

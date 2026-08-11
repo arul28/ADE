@@ -4,19 +4,20 @@ import { ArrowClockwise, LinkSimple, MagnifyingGlass } from "@phosphor-icons/rea
 
 import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
-import { pluginIcon } from "./pluginIcons";
+import { pluginIdentity } from "./pluginIcons";
 import { MarketplaceDetailPage } from "./MarketplaceDetailPage";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
-import { useMarketplaceCatalogue, usePluginPresence } from "./useMarketplace";
+import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
 import {
   CoverageDots,
   FilterChip,
   InlineNotice,
   ListingSkeleton,
-  ListingStats,
   MarketplaceEmpty,
   OfficialBadge,
+  PluginIconTile,
   QuietTag,
+  StarCount,
 } from "./marketplaceUi";
 import {
   DEFAULT_MARKETPLACE_QUERY,
@@ -82,6 +83,11 @@ function MarketplaceGallery() {
   const [query, setQuery] = React.useState<MarketplaceQuery>(DEFAULT_MARKETPLACE_QUERY);
   const [installTarget, setInstallTarget] = React.useState<InstallDialogTarget | null>(null);
 
+  /* A host with no install action is not a broken Marketplace — it is a window
+     with no project attached, which is most of what "this button does nothing"
+     turned out to mean. The gallery still browses; only the actions go quiet. */
+  const canManage = catalogue.capabilities.install;
+
   const thisMachineKey = React.useMemo(
     () => presence.rows.find((row) => row.isThisMachine)?.machineKey ?? null,
     [presence.rows],
@@ -96,6 +102,12 @@ function MarketplaceGallery() {
     [catalogue.listings, query],
   );
   const featured = React.useMemo(() => featuredListings(catalogue.listings), [catalogue.listings]);
+  // Asked for in the order the gallery draws, so the rows on screen are the
+  // ones that spend the lookup budget.
+  const stars = usePluginRepoStars(React.useMemo(
+    () => [...featured, ...visible],
+    [featured, visible],
+  ));
 
   const coverageFor = React.useCallback(
     (listing: MarketplaceListing) => deriveMachineCoverage({
@@ -128,16 +140,28 @@ function MarketplaceGallery() {
           onRefresh={catalogue.refresh}
           refreshing={catalogue.refreshing}
           canRefresh={catalogue.capabilities.browse}
+          canManage={canManage}
         />
 
         <IndexNotice state={catalogue.state} onRefresh={catalogue.refresh} />
+
+        {canManage ? null : (
+          <InlineNotice tone="muted">
+            Open a project to manage plugins on this machine.
+          </InlineNotice>
+        )}
 
         {catalogue.loading ? (
           <ListingSkeleton rows={5} />
         ) : (
           <>
             {featured.length > 0 && !filtersActive ? (
-              <FeaturedRow listings={featured} onOpen={openListing} installed={installed} />
+              <FeaturedRow
+                listings={featured}
+                onOpen={openListing}
+                installed={installed}
+                stars={stars}
+              />
             ) : null}
 
             <FilterBar
@@ -171,6 +195,8 @@ function MarketplaceGallery() {
                     listing={listing}
                     state={installStateFor(listing, installed)}
                     coverage={coverageFor(listing)}
+                    stars={stars.get(listing.pluginId) ?? null}
+                    canManage={canManage}
                     onOpen={() => openListing(listing)}
                     onInstall={() => setInstallTarget({ kind: "listing", listing })}
                   />
@@ -199,6 +225,7 @@ function GalleryHeader({
   onRefresh,
   refreshing,
   canRefresh,
+  canManage,
 }: {
   search: string;
   onSearch: (value: string) => void;
@@ -206,27 +233,24 @@ function GalleryHeader({
   onRefresh: () => void;
   refreshing: boolean;
   canRefresh: boolean;
+  canManage: boolean;
 }) {
   return (
     <header style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-          <h1
-            style={{
-              margin: 0,
-              fontFamily: SANS_FONT,
-              fontSize: 19,
-              fontWeight: 600,
-              letterSpacing: "-0.015em",
-              color: COLORS.textPrimary,
-            }}
-          >
-            Marketplace
-          </h1>
-          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-            Tabs, panels, themes and commands, installed per machine.
-          </p>
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+        <h1
+          style={{
+            margin: 0,
+            minWidth: 0,
+            fontFamily: SANS_FONT,
+            fontSize: 19,
+            fontWeight: 600,
+            letterSpacing: "-0.015em",
+            color: COLORS.textPrimary,
+          }}
+        >
+          Marketplace
+        </h1>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
           {canRefresh ? (
             <button
@@ -244,15 +268,17 @@ function GalleryHeader({
               {refreshing ? "Checking…" : "Refresh"}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={onInstallFromUrl}
-            data-tour="plugin:marketplace.install-from-url"
-            style={primaryButton({ height: 30, fontSize: 11.5 })}
-          >
-            <LinkSimple size={13} weight="regular" aria-hidden />
-            Install from URL
-          </button>
+          {canManage ? (
+            <button
+              type="button"
+              onClick={onInstallFromUrl}
+              data-tour="plugin:marketplace.install-from-url"
+              style={primaryButton({ height: 30, fontSize: 11.5 })}
+            >
+              <LinkSimple size={13} weight="regular" aria-hidden />
+              Install from URL
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -334,10 +360,12 @@ function FeaturedRow({
   listings,
   onOpen,
   installed,
+  stars,
 }: {
   listings: readonly MarketplaceListing[];
   onOpen: (listing: MarketplaceListing) => void;
   installed: readonly InstalledPlugin[];
+  stars: ReadonlyMap<string, number>;
 }) {
   return (
     <section data-tour="plugin:marketplace.featured" style={{ display: "grid", gap: 10 }}>
@@ -360,31 +388,28 @@ function FeaturedRow({
         }}
       >
         {listings.map((listing) => {
-          const Icon = pluginIcon(listing.icon);
+          const identity = pluginIdentity(listing);
           const state = installStateFor(listing, installed);
           return (
             <button
               key={listing.pluginId}
               type="button"
               onClick={() => onOpen(listing)}
+              className="hover:bg-fg/[0.03]"
               style={{
                 display: "grid",
-                gap: 8,
+                gap: 9,
                 padding: 14,
                 textAlign: "left",
-                background: listing.accent
-                  ? `color-mix(in srgb, ${listing.accent} 9%, transparent)`
-                  : COLORS.recessedBg,
-                border: `1px solid ${listing.accent
-                  ? `color-mix(in srgb, ${listing.accent} 24%, transparent)`
-                  : COLORS.borderMuted}`,
+                background: "transparent",
+                border: `1px solid ${COLORS.borderMuted}`,
                 borderRadius: RADII.lg,
                 cursor: "pointer",
                 minWidth: 0,
               }}
             >
-              <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <Icon size={17} weight="regular" color={listing.accent ?? COLORS.textMuted} aria-hidden />
+              <span style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                <PluginIconTile identity={identity} size={30} label={listing.displayName} />
                 <span
                   style={{
                     fontFamily: SANS_FONT,
@@ -416,7 +441,7 @@ function FeaturedRow({
               </span>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {listing.official ? <OfficialBadge /> : null}
-                <ListingStats installs={listing.installs} stars={listing.stars} />
+                <StarCount stars={stars.get(listing.pluginId) ?? null} />
               </span>
             </button>
           );
@@ -549,17 +574,23 @@ function ListingRow({
   listing,
   state,
   coverage,
+  stars,
+  canManage,
   onOpen,
   onInstall,
 }: {
   listing: MarketplaceListing;
   state: ListingInstallState;
   coverage: ReturnType<typeof deriveMachineCoverage>;
+  stars: number | null;
+  canManage: boolean;
   onOpen: () => void;
   onInstall: () => void;
 }) {
-  const Icon = pluginIcon(listing.icon);
-  const actionable = state.kind === "available" || state.kind === "update";
+  const identity = pluginIdentity(listing);
+  // A row whose install cannot run does not offer one. The page says why once,
+  // at the top, rather than every row having to explain itself.
+  const actionable = canManage && (state.kind === "available" || state.kind === "update");
 
   return (
     <li>
@@ -588,22 +619,7 @@ function ListingRow({
           minWidth: 0,
         }}
       >
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 30,
-            height: 30,
-            flexShrink: 0,
-            borderRadius: RADII.sm,
-            background: listing.accent
-              ? `color-mix(in srgb, ${listing.accent} 12%, transparent)`
-              : COLORS.recessedBg,
-          }}
-        >
-          <Icon size={16} weight="regular" color={listing.accent ?? COLORS.textMuted} aria-hidden />
-        </span>
+        <PluginIconTile identity={identity} size={30} label={listing.displayName} />
 
         <span style={{ display: "grid", gap: 2, flex: 1, minWidth: 0 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
@@ -620,10 +636,14 @@ function ListingRow({
             >
               {listing.displayName}
             </span>
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
-              {listing.author}
-            </span>
-            {listing.official ? <OfficialBadge /> : null}
+            {/* Official says who published it, so the author column would be
+                the same word again. Community rows keep theirs — that is the
+                only place the name carries information. */}
+            {listing.official ? <OfficialBadge /> : (
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
+                {listing.author}
+              </span>
+            )}
             {listing.isTheme ? <QuietTag>Theme</QuietTag> : null}
             {state.kind === "update" ? <QuietTag tone="warning">Update</QuietTag> : null}
           </span>
@@ -642,7 +662,7 @@ function ListingRow({
         </span>
 
         <span style={{ display: "inline-flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <ListingStats installs={listing.installs} stars={listing.stars} />
+          <StarCount stars={stars} />
           <CoverageDots rows={coverage} />
           <button
             type="button"

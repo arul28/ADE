@@ -47,6 +47,13 @@ export const PLUGIN_REGISTRY_LIMITS = {
   maxUrlChars: 512,
   /** Per entry. Enough for a long-lived plugin's release history. */
   maxChecksumVersions: 64,
+  /**
+   * Screenshots and clips per entry. A gallery is a preview, not a manual —
+   * and every item is a URL this app will fetch, so the ceiling is a request
+   * budget as much as a taste one.
+   */
+  maxMedia: 8,
+  maxCaptionChars: 160,
 } as const;
 
 /**
@@ -56,6 +63,38 @@ export const PLUGIN_REGISTRY_LIMITS = {
  * check that must never cry wolf.
  */
 const SHA256_HEX_PATTERN = /^[a-fA-F0-9]{64}$/;
+
+/**
+ * One screenshot or clip from a plugin's own gallery.
+ *
+ * `kind` is closed rather than sniffed from the extension: the app renders an
+ * `<img>` or a `<video>` from it, and letting the URL decide which element it
+ * lands in is how a directory entry picks the tag it is rendered in.
+ */
+export type PluginRegistryMedia = {
+  kind: "image" | "video";
+  src: string;
+  caption: string | null;
+};
+
+export const PLUGIN_REGISTRY_MEDIA_KINDS = ["image", "video"] as const;
+
+/**
+ * The links a plugin publishes about itself.
+ *
+ * A fixed set of named slots rather than a free list of label/url pairs: the
+ * detail page renders these as labelled buttons, and an entry that could name
+ * its own labels could put any words it liked on a control ADE drew.
+ */
+export type PluginRegistryLinks = {
+  repository: string | null;
+  homepage: string | null;
+  changelog: string | null;
+  license: string | null;
+  docs: string | null;
+};
+
+const PLUGIN_REGISTRY_LINK_KEYS = ["repository", "homepage", "changelog", "license", "docs"] as const;
 
 export type PluginRegistryEntry = {
   pluginId: string;
@@ -72,8 +111,27 @@ export type PluginRegistryEntry = {
    * installs at a mirror without moving where the crawler looks.
    */
   source: string;
+  /**
+   * A glyph name from the app's curated set, and a hex colour to draw it in.
+   *
+   * Published as `iconGlyph` and `iconColor`; the older `icon` and `accent`
+   * names are still read, because entries written against the first schema are
+   * live in the directory today and an icon is not worth a flag day. The pair
+   * is only ever a HINT — the app derives a stable glyph and colour from the
+   * plugin id when neither is set, so no entry is ever iconless.
+   */
   icon: string | null;
   accent: string | null;
+  /**
+   * A custom image tile. Rendered instead of the glyph when it loads, and
+   * silently replaced by the glyph when it does not — a broken image must cost
+   * the picture, never the row.
+   */
+  iconUrl: string | null;
+  /** Screenshots and clips for the detail page's gallery. */
+  media: PluginRegistryMedia[];
+  /** Named links for the detail page's resources rail. */
+  links: PluginRegistryLinks;
   official: boolean;
   featured: boolean;
   isTheme: boolean;
@@ -187,7 +245,14 @@ export function isSafeRegistryUrl(value: unknown): value is string {
  * refused for a missing checksum, so a forged one buys an unverified install.
  */
 const OFFICIAL_REPO_HOST = "github.com";
-const OFFICIAL_REPO_PATH_PREFIXES = ["/ade-plugins/"] as const;
+/**
+ * Both owners are live. `arul28` is where ADE publishes today; `ade-plugins`
+ * is the organisation the set will move to, and it is listed now rather than
+ * on the day of the move: an installed ADE reads this list from ITS OWN build,
+ * so a version that has not learned the new owner would demote every official
+ * plugin to community the moment the repositories moved.
+ */
+const OFFICIAL_REPO_PATH_PREFIXES = ["/arul28/", "/ade-plugins/"] as const;
 
 export function isCuratedPluginRepo(repo: string): boolean {
   let url: URL;
@@ -221,6 +286,52 @@ function parseChecksums(raw: unknown, drop: (reason: string) => void): Record<st
     kept += 1;
   }
   return checksums;
+}
+
+/**
+ * The gallery, dropping any item the app could not safely render.
+ *
+ * Item-by-item rather than all-or-nothing, for the reason the whole module is
+ * written that way: one screenshot moved to a URL that no longer resolves is a
+ * routine event in a crawled directory, and it must cost that screenshot.
+ */
+function parseMedia(raw: unknown): PluginRegistryMedia[] {
+  if (!Array.isArray(raw)) return [];
+  const items: PluginRegistryMedia[] = [];
+  for (const value of raw) {
+    if (items.length >= PLUGIN_REGISTRY_LIMITS.maxMedia) break;
+    if (!isRecord(value)) continue;
+    const kind = oneOf(value.kind, PLUGIN_REGISTRY_MEDIA_KINDS);
+    if (kind === null) continue;
+    const src = bounded(value.src, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+    // The same https-only rule the source URL gets. These are fetched by the
+    // renderer under a CSP that only admits a handful of hosts, but the check
+    // belongs here too: the CSP is a second line, not the first.
+    if (!src || !isSafeRegistryUrl(src)) continue;
+    items.push({
+      kind,
+      src,
+      caption: bounded(value.caption, PLUGIN_REGISTRY_LIMITS.maxCaptionChars),
+    });
+  }
+  return items;
+}
+
+/**
+ * The named links, each one independently optional.
+ *
+ * `repository` falls back to the entry's own repo URL so the resources rail
+ * always has somewhere to send a reader, which is the one link that is never
+ * a nice-to-have.
+ */
+function parseLinks(raw: unknown, repo: string): PluginRegistryLinks {
+  const source = isRecord(raw) ? raw : {};
+  const links = {} as Record<(typeof PLUGIN_REGISTRY_LINK_KEYS)[number], string | null>;
+  for (const key of PLUGIN_REGISTRY_LINK_KEYS) {
+    const value = bounded(source[key], PLUGIN_REGISTRY_LIMITS.maxUrlChars);
+    links[key] = value && isSafeRegistryUrl(value) ? value : null;
+  }
+  return { ...links, repository: links.repository ?? repo };
 }
 
 function parseStringList(raw: unknown, maxEntries: number, maxChars: number): string[] {
@@ -285,10 +396,15 @@ export function parsePluginRegistryEntry(
     warnings.push(`${pluginId}: claims official but ${offending} is outside ADE's curated repositories — listed as community`);
   }
 
-  const rawAccent = bounded(raw.accent, 32);
+  // `iconColor` is the published name; `accent` is what the first schema called
+  // it. Read in that order so an entry that carries both is not surprised by
+  // which one wins.
+  const rawAccent = bounded(raw.iconColor, 32) ?? bounded(raw.accent, 32);
   if (rawAccent && !isValidPluginAccent(rawAccent)) {
-    warnings.push(`${pluginId}: accent "${rawAccent}" is not a hex colour — ignored`);
+    warnings.push(`${pluginId}: icon colour "${rawAccent}" is not a hex colour — ignored`);
   }
+
+  const iconUrl = bounded(raw.iconUrl, PLUGIN_REGISTRY_LIMITS.maxUrlChars);
 
   const surfaces = closedList(raw.surfaces, PLUGIN_SURFACE_IDS);
   const sockets = closedList(raw.sockets, PLUGIN_SOCKET_KINDS);
@@ -302,8 +418,11 @@ export function parsePluginRegistryEntry(
       version,
       repo,
       source,
-      icon: bounded(raw.icon, 64),
+      icon: bounded(raw.iconGlyph, 64) ?? bounded(raw.icon, 64),
       accent: isValidPluginAccent(rawAccent) ? rawAccent : null,
+      iconUrl: iconUrl && isSafeRegistryUrl(iconUrl) ? iconUrl : null,
+      media: parseMedia(raw.media),
+      links: parseLinks(raw.links, repo),
       official,
       featured: raw.featured === true,
       isTheme: raw.isTheme === true,

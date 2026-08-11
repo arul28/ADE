@@ -48,6 +48,7 @@ const LIMITS = {
   maxManifestBytes: 256 * 1024,
   maxReadmeChars: 32 * 1024,
   maxDescriptionChars: 300,
+  maxUrlChars: 512,
   requestTimeoutMs: 20_000,
 };
 
@@ -160,6 +161,63 @@ function trimmed(value, maxChars) {
 }
 
 /**
+ * An https URL, or nothing.
+ *
+ * The app refuses anything else at parse time, so publishing one would produce
+ * an entry with a field that silently disappears on every reader — worse than
+ * omitting it, because the plugin author would see it in the index and believe
+ * it worked.
+ */
+function httpsUrl(value) {
+  const raw = trimmed(value, LIMITS.maxUrlChars);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return null;
+    if (url.username || url.password) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/** The plugin's own gallery, item by item. A bad item costs itself. */
+function buildMedia(value) {
+  if (!Array.isArray(value)) return [];
+  const media = [];
+  for (const item of value) {
+    if (media.length >= 8) break;
+    if (!item || typeof item !== "object") continue;
+    const kind = item.kind === "video" ? "video" : item.kind === "image" ? "image" : null;
+    const src = httpsUrl(item.src);
+    if (!kind || !src) continue;
+    const caption = trimmed(item.caption, 160);
+    media.push(caption ? { kind, src, caption } : { kind, src });
+  }
+  return media;
+}
+
+/**
+ * The named links.
+ *
+ * Repository and changelog are DERIVED from where the plugin was found rather
+ * than read from its manifest: those two are the links a reader uses to decide
+ * whether to trust the thing, and a manifest that could point them elsewhere
+ * could point them at a repository it does not control.
+ */
+function buildLinks({ manifest, repository, repo }) {
+  const declared = manifest.links && typeof manifest.links === "object" ? manifest.links : {};
+  const links = { repository: repo, changelog: `${repo}/releases` };
+  const homepage = httpsUrl(declared.homepage) ?? httpsUrl(repository.homepage);
+  if (homepage) links.homepage = homepage;
+  const docs = httpsUrl(declared.docs);
+  if (docs) links.docs = docs;
+  const license = httpsUrl(declared.license);
+  if (license) links.license = license;
+  return links;
+}
+
+/**
  * Turn a repository plus its manifest into an index entry, or explain the
  * refusal. Only the fields the index publishes are read; the manifest's own
  * `official` flag is deliberately ignored.
@@ -218,9 +276,24 @@ function buildEntry({ repository, manifest, curated, stars, installs }) {
     surfaces,
     sockets: socketKinds,
   };
+  // `iconGlyph`/`iconColor` are the published names; `icon`/`accent` are what
+  // the manifest calls them and what the first schema published. Both are
+  // written for now — installed ADEs older than the rename read the old pair,
+  // and an index is read by every version that ever shipped.
   const icon = trimmed(manifest.icon, 64);
-  if (icon) entry.icon = icon;
-  if (accent && ACCENT_PATTERN.test(accent)) entry.accent = accent;
+  if (icon) {
+    entry.iconGlyph = icon;
+    entry.icon = icon;
+  }
+  if (accent && ACCENT_PATTERN.test(accent)) {
+    entry.iconColor = accent;
+    entry.accent = accent;
+  }
+  const iconUrl = httpsUrl(manifest.iconUrl);
+  if (iconUrl) entry.iconUrl = iconUrl;
+  const media = buildMedia(manifest.media);
+  if (media.length > 0) entry.media = media;
+  entry.links = buildLinks({ manifest, repository, repo });
   if (Number.isFinite(stars) && stars >= 0) entry.stars = Math.round(stars);
   if (Number.isFinite(installs) && installs >= 0) entry.installs = Math.round(installs);
   if (typeof repository.created_at === "string") entry.publishedAt = repository.created_at;

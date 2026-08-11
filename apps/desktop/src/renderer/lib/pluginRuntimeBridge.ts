@@ -103,6 +103,8 @@ type PluginBridge = {
 
   /* Marketplace — every member optional; see the block comment above. */
   marketplaceIndex?: (input?: { refresh?: boolean }) => Promise<MarketplaceIndexPayload | null>;
+  /** A repository's live star count. Null is "unknown", never zero stars. */
+  repoStars?: (input: { repo: string }) => Promise<number | null>;
   inspectSource?: (input: { source: string }) => Promise<PluginSourceInspection | null>;
   install?: (input: PluginInstallRequest) => Promise<PluginInstallResult>;
   uninstall?: (input: { pluginId: string; machineKey?: string }) => Promise<unknown>;
@@ -363,6 +365,42 @@ export async function fetchMarketplaceIndex(
     const result = await marketplaceIndex(options.refresh ? { refresh: true } : {});
     if (!result || !Array.isArray(result.entries)) return null;
     return result;
+  } catch (error) {
+    noteUnavailable(error);
+    return null;
+  }
+}
+
+/**
+ * Whether this host can answer for a repository's stars at all.
+ *
+ * A member-presence probe, the same idiom {@link pluginMarketplaceCapabilities}
+ * uses and for the same reason: a published member proves the CALL exists, and
+ * a host that never published one cannot be asked. Kept OUT of the capabilities
+ * record deliberately — that record gates affordances the reader can press, and
+ * a star count is a decoration whose absence is a quieter card rather than a
+ * missing button.
+ */
+export function pluginRepoStarsSupported(): boolean {
+  if (hostReportedUnavailable) return false;
+  return typeof bridge()?.repoStars === "function";
+}
+
+/**
+ * A repository's live star count, or null when this machine cannot say.
+ *
+ * Null covers every way that can happen — no host member, a rate-limited
+ * GitHub, a URL that is not a repository — and they are one answer on purpose:
+ * the Marketplace draws a count or it draws nothing, and it has no useful
+ * different thing to say about which of those it was. It never throws: a
+ * decoration must not be able to take a page down with it.
+ */
+export async function fetchPluginRepoStars(repo: string): Promise<number | null> {
+  const repoStars = bridge()?.repoStars;
+  if (!repoStars) return null;
+  try {
+    const stars = await repoStars({ repo });
+    return typeof stars === "number" && Number.isFinite(stars) ? stars : null;
   } catch (error) {
     noteUnavailable(error);
     return null;

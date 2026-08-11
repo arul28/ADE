@@ -235,7 +235,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "clearOAuthClientCredentials",
   ],
   linear_oauth: ["startSession"],
-  github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
+  // setRepoStarred writes to the signed-in user's personal GitHub account, so a
+  // session-bound agent must not be able to star or unstar on their behalf.
+  // getRepoStarState is a read and stays open.
+  github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth", "setRepoStarred"],
   update: ["quitAndInstall"],
   // Linear webhook lifecycle mutates account-level state (registers/deletes a
   // webhook against the user's Linear organization), so it stays CTO-only;
@@ -811,6 +814,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getAppUserAuthStatus",
     "getRepoOrThrow",
     "getRemoteStatus",
+    "getRepoStarState",
     "getStatus",
     "createRepoAutolink",
     "listRepoAutolinks",
@@ -818,6 +822,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
+    "setRepoStarred",
     "setToken",
     "startAppUserDeviceAuth",
   ],
@@ -1250,6 +1255,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "The plugin directory. Cached for six hours; `refresh` revalidates. Null when there is neither a network answer nor a cache.",
       input: "object { refresh?: boolean }",
       example: "ade actions run plugin.marketplaceIndex --text",
+    },
+    repoStars: {
+      description: "A plugin repository's live GitHub star count, cached for a day. Null — never zero — when the URL is not a GitHub repository or the unauthenticated API declined to answer.",
+      input: "object { repo: string }",
+      example: "ade actions run plugin.repoStars --input-json '{\"repo\":\"https://github.com/arul28/ade-graph\"}' --text",
     },
     presence: {
       description: "Which machines on the account have which plugins installed, from the synced presence table.",
@@ -3773,6 +3783,25 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.listRepoCollaborators(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async getRepoStarState(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getRepoStarState(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async setRepoStarred(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const starred = actionArgs.starred;
+      if (typeof starred !== "boolean") {
+        throw new Error("Expected 'starred' to be a boolean.");
+      }
+      return githubService.setRepoStarred(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        starred,
       );
     },
     async publishCurrentProject(args?: unknown) {

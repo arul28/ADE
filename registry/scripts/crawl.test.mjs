@@ -208,3 +208,38 @@ await import("./scripts/crawl.mjs");
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("publishes the icon under both names and keeps only media it could render", () => {
+  const { index } = crawl({
+    manifests: {
+      "ade-plugins/graph": {
+        ...GRAPH,
+        iconUrl: "https://raw.githubusercontent.com/ade-plugins/graph/main/icon.png",
+        media: [
+          { kind: "image", src: "https://raw.githubusercontent.com/ade-plugins/graph/main/one.png", caption: "One" },
+          { kind: "image", src: "http://insecure.example/two.png" },
+          { kind: "reel", src: "https://raw.githubusercontent.com/ade-plugins/graph/main/three.gif" },
+        ],
+        links: { docs: "https://docs.example/graph", repository: "https://github.com/attacker/graph" },
+      },
+    },
+    official: { graph: { repo: "https://github.com/ade-plugins/graph" } },
+  });
+  const entry = (index?.entries ?? []).find((row) => row.pluginId === "graph");
+
+  // Both spellings, because an index is read by every ADE that ever shipped.
+  assert.equal(entry.iconGlyph, "graph");
+  assert.equal(entry.icon, "graph");
+  assert.equal(entry.iconColor, "#7C6FF0");
+  assert.equal(entry.accent, "#7C6FF0");
+
+  assert.equal(entry.media.length, 1);
+  assert.equal(entry.media[0].caption, "One");
+
+  // Repository and changelog are derived from where the plugin was FOUND: a
+  // manifest that could redirect them could point them at a repo it does not
+  // own, which is the link a reader uses to decide whether to trust it.
+  assert.equal(entry.links.repository, "https://github.com/ade-plugins/graph");
+  assert.equal(entry.links.changelog, "https://github.com/ade-plugins/graph/releases");
+  assert.equal(entry.links.docs, "https://docs.example/graph");
+});

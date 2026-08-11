@@ -575,6 +575,15 @@ export type PluginDomainService = {
    */
   marketplaceIndex(args?: { refresh?: boolean }): Promise<PluginMarketplaceIndex | null>;
   /**
+   * A plugin repository's live star count, or null when nobody can say.
+   *
+   * Separate from the directory read because the index's own `stars` figure is
+   * only as fresh as the last crawl. Null is an ordinary answer — the GitHub
+   * API is queried unauthenticated, so being rate limited is normal — and every
+   * caller draws it as "unknown", never as zero.
+   */
+  repoStars(args: { repo: string }): Promise<number | null>;
+  /**
    * Install state across the account's machines, from the synced presence
    * table. Empty on a machine with no sync host, which reads as
    * "this machine only" rather than as an error.
@@ -654,6 +663,7 @@ export const PLUGIN_DOMAIN_ACTIONS = [
   "openLogs",
   "presence",
   "reload",
+  "repoStars",
   "setConfig",
   "setContributionEnabled",
   "uninstall",
@@ -680,6 +690,9 @@ export const PLUGIN_READ_ONLY_DOMAIN_ACTIONS: readonly PluginDomainAction[] = [
   // can already see and never fetches or installs anything.
   "inspectSource",
   "marketplaceIndex",
+  // A decoration on a public repository, cached for a day. Nothing about asking
+  // for it changes any state, here or at GitHub.
+  "repoStars",
   "presence",
   "usageSummary",
 ];

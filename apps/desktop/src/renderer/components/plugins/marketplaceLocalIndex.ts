@@ -26,7 +26,16 @@ import type { PluginManifest } from "../../../shared/plugins/manifest";
 import type { MarketplaceListing } from "./marketplaceModel";
 import { surfacesFromManifest } from "./marketplaceModel";
 
-const REGISTRY_ORG = "https://github.com/ade-plugins";
+/**
+ * Where the official packages are published.
+ *
+ * One constant, never spelled out at a call site: the organisation moved once
+ * already (from `ade-plugins` to `arul28`, which is where the directory
+ * repository actually lives), and the only reason that rename was a one-line
+ * change is that nothing below knows the org exists. Every official plugin's
+ * repository is `${REGISTRY_ORG}/<pluginId>`.
+ */
+const REGISTRY_ORG = "https://github.com/arul28";
 
 /** Fills the fields every manifest has but most official plugins leave empty. */
 function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
@@ -57,6 +66,79 @@ const GRAPH = manifest({
   // in or out of the rail. See `builtinTabs.ts`.
   surfaces: [{ kind: "tab", id: "graph", title: "Graph", icon: "graph", panelId: "main", builtin: "graph" }],
   panels: [{ id: "main", schemaFile: "panels/main.json", title: "Graph" }],
+});
+
+/**
+ * The rest of the compiled surfaces, as gates.
+ *
+ * Same shape as GRAPH and for the same reason: none of these draws anything
+ * from its manifest. Review is a diff reader, History is an event timeline,
+ * Linear talks to an API, the simulator and app panes own native processes —
+ * none of that is expressible as vocabulary, and rewriting them as panels to
+ * make them "real" plugins would have been a rewrite of working code for no
+ * gain. What the manifest buys is the choice: installed, the surface is there;
+ * removed, every entry point for it goes with it.
+ *
+ * The `builtin` id is the contract, not the surface `id`: `ade-ios-sim`
+ * publishes surface id `ios-sim` but gates the compiled `ios` pane, and the
+ * two being spelled differently is exactly why the compiled side keys off
+ * `builtin` and never off the surface id. These mirror `plugins/<id>/plugin.json`
+ * field for field — a drift here shows as a wrong "Adds" list in the install
+ * modal, never as a wrong install.
+ */
+const REVIEW = manifest({
+  name: "ade-review",
+  version: "1.0.0",
+  displayName: "Review",
+  description: "Review pull requests and changes in ADE's compiled Review tab.",
+  icon: "git-pull-request",
+  accent: "#7C6FF0",
+  surfaces: [{ kind: "tab", id: "review", title: "Review", icon: "git-pull-request", panelId: "main", builtin: "review" }],
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Review" }],
+});
+
+const HISTORY = manifest({
+  name: "ade-history",
+  version: "1.0.0",
+  displayName: "History",
+  description: "Browse project events and captured artifacts in ADE's compiled History tab.",
+  icon: "clock-counter-clockwise",
+  accent: "#7C6FF0",
+  surfaces: [{ kind: "tab", id: "history", title: "History", icon: "clock-counter-clockwise", panelId: "main", builtin: "history" }],
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "History" }],
+});
+
+const LINEAR = manifest({
+  name: "ade-linear",
+  version: "1.0.0",
+  displayName: "Linear",
+  description: "Open Linear issues in ADE's compiled project pane.",
+  icon: "list-checks",
+  accent: "#7C6FF0",
+  surfaces: [{ kind: "pane", id: "linear", title: "Linear", icon: "list-checks", panelId: "main", builtin: "linear" }],
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Linear" }],
+});
+
+const IOS_SIM = manifest({
+  name: "ade-ios-sim",
+  version: "1.0.0",
+  displayName: "iOS Simulator",
+  description: "Control the iOS Simulator from ADE's compiled Work tools.",
+  icon: "device-mobile",
+  accent: "#7C6FF0",
+  surfaces: [{ kind: "pane", id: "ios-sim", title: "iOS Simulator", icon: "device-mobile", panelId: "main", builtin: "ios" }],
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "iOS Simulator" }],
+});
+
+const APP_CONTROL = manifest({
+  name: "ade-app-control",
+  version: "1.0.0",
+  displayName: "App Control",
+  description: "Control desktop apps from ADE's compiled Work tools.",
+  icon: "desktop",
+  accent: "#7C6FF0",
+  surfaces: [{ kind: "pane", id: "app-control", title: "App Control", icon: "desktop", panelId: "main", builtin: "app-control" }],
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "App Control" }],
 });
 
 const LOG_VIEWER = manifest({
@@ -334,6 +416,22 @@ function listing(
     version: source.version,
     icon: source.icon ?? null,
     accent: source.accent ?? null,
+    // Bundled packages publish no image and no gallery: they are drawn from
+    // their glyph, and the app is not going to fetch a screenshot of itself.
+    iconUrl: null,
+    media: [],
+    // The repository page, which is display-only here — `source` below is what
+    // an install actually resolves against. It is what the author link and the
+    // star button point at, and both of those want the project's page rather
+    // than the bytes.
+    repo: `${REGISTRY_ORG}/${source.name}`,
+    links: {
+      repository: `${REGISTRY_ORG}/${source.name}`,
+      homepage: null,
+      changelog: `${REGISTRY_ORG}/${source.name}/releases`,
+      license: null,
+      docs: null,
+    },
     official: true,
     featured: extra.featured === true,
     isTheme: source.theme !== undefined,
@@ -382,6 +480,104 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "  that holds the repository.",
       "- The `/graph` route keeps working even with the tab hidden, so links minted",
       "  before you removed it still open.",
+    ].join("\n"),
+  }),
+  listing(REVIEW, {
+    author: "ADE",
+    readme: [
+      "## Review",
+      "",
+      "Read a pull request and the changes in your working copy side by side, file",
+      "by file, with comments in place.",
+      "",
+      "Review was part of ADE itself until plugins existed. Nothing about it changed —",
+      "it stopped being something everyone has to carry. Install it and the Review tab",
+      "is in your rail; remove it and the rail is one item shorter.",
+      "",
+      "### Notes",
+      "",
+      "- The diff is drawn by the desktop app rather than published as a panel, so on",
+      "  a phone or in the terminal the plugin shows a card pointing at the machine",
+      "  that holds the repository.",
+      "- The `/review` route opens only while the plugin is installed and on.",
+    ].join("\n"),
+  }),
+  listing(HISTORY, {
+    author: "ADE",
+    readme: [
+      "## History",
+      "",
+      "Everything that happened in a project, in order: runs, commits, files that",
+      "changed, and the screenshots and recordings your agents captured along the way.",
+      "",
+      "History was part of ADE itself until plugins existed. Nothing about it changed —",
+      "it stopped being something everyone has to carry. Install it and the History tab",
+      "is in your rail; remove it and the rail is one item shorter.",
+      "",
+      "### Notes",
+      "",
+      "- The timeline is drawn by the desktop app rather than published as a panel, so",
+      "  on a phone or in the terminal the plugin shows a card pointing at the machine",
+      "  that holds the project.",
+      "- The `/history` route opens only while the plugin is installed and on.",
+    ].join("\n"),
+  }),
+  listing(LINEAR, {
+    author: "ADE",
+    readme: [
+      "## Linear",
+      "",
+      "Read and update the Linear issue you are working on without leaving ADE: open",
+      "it beside your work, change its state, comment, and pick up the next one.",
+      "",
+      "Install it and the Linear pane and its buttons are there; remove it and they",
+      "are gone, links included.",
+      "",
+      "### Notes",
+      "",
+      "- Needs a Linear connection, which lives in Settings and is separate from this",
+      "  plugin — installing it does not connect an account.",
+      "- The issue view is drawn by the desktop app rather than published as a panel.",
+      "- Linear links open only while the plugin is installed and on, on the machine",
+      "  you are attached to.",
+    ].join("\n"),
+  }),
+  listing(IOS_SIM, {
+    author: "ADE",
+    readme: [
+      "## iOS Simulator",
+      "",
+      "Run an iOS Simulator beside your work: launch a build, tap and type in it,",
+      "take screenshots, and hand what you see to a chat.",
+      "",
+      "Install it and the simulator pane and its chat button are there; remove it and",
+      "they are gone.",
+      "",
+      "### Notes",
+      "",
+      "- Macs only, and it needs Xcode. On anything else the pane stays hidden even",
+      "  with the plugin installed.",
+      "- Driving the simulator stays inside ADE rather than being published as a",
+      "  panel, because it holds a running app and a video stream open.",
+    ].join("\n"),
+  }),
+  listing(APP_CONTROL, {
+    author: "ADE",
+    readme: [
+      "## App Control",
+      "",
+      "Point ADE at a desktop app and watch it work: click and type in it, read its",
+      "logs, answer its prompts, and pull a screenshot back into a chat.",
+      "",
+      "Install it and the App Control pane and its chat button are there; remove it",
+      "and they are gone.",
+      "",
+      "### Notes",
+      "",
+      "- Runs on the machine you are attached to, and asks that machine for permission",
+      "  the first time it needs it.",
+      "- Driving an app stays inside ADE rather than being published as a panel,",
+      "  because it holds a live connection to a running program.",
     ].join("\n"),
   }),
   listing(LOG_VIEWER, {

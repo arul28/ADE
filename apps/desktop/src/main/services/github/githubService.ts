@@ -1972,6 +1972,115 @@ export function createGithubService({
     });
   };
 
+  // Marketplace plugin entries carry a repository URL published by a third
+  // party, so owner/name reach us as untrusted strings on their way into a URL
+  // path. GitHub's own rule for both segments is this character set; anything
+  // else is rejected before a request exists rather than escaped into one.
+  const GITHUB_REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+  const requireRepoSegment = (value: string, label: "owner" | "name"): string => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!GITHUB_REPO_SEGMENT.test(trimmed)) {
+      throw new Error(`Invalid GitHub repository ${label}.`);
+    }
+    return trimmed;
+  };
+
+  // The raw request path hands back the Response untouched, so status-only
+  // endpoints have to read GitHub's error message themselves.
+  const githubRawErrorMessage = (bodyText: string, status: number): string => {
+    const fallback = `GitHub API request failed (HTTP ${status})`;
+    const trimmed = bodyText.trim();
+    if (!trimmed) return fallback;
+    try {
+      const payload = JSON.parse(trimmed) as unknown;
+      const record = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : null;
+      return (record ? asString(record.message).trim() : "") || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const readRepoStarCount = async (owner: string, name: string): Promise<number | null> => {
+    try {
+      const { data } = await apiRequest<Record<string, unknown>>({
+        method: "GET",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+      });
+      const count = data?.stargazers_count;
+      return typeof count === "number" && Number.isFinite(count) ? count : null;
+    } catch {
+      // The count is decoration next to the star button: a repo we cannot read
+      // (private, renamed, rate limited) still renders, just without a number.
+      return null;
+    }
+  };
+
+  const getRepoStarState = async (
+    owner: string,
+    name: string,
+  ): Promise<{ starred: boolean; stars: number | null }> => {
+    const repoOwner = requireRepoSegment(owner, "owner");
+    const repoName = requireRepoSegment(name, "name");
+    // `GET /user/starred/{owner}/{repo}` is a status-only endpoint: 204 means
+    // starred, 404 means not starred. Both are answers, not failures, so this
+    // takes the raw request path -- `apiRequest` would throw on the 404 and the
+    // credential-health bookkeeping would count a perfectly healthy token as
+    // failing. The path is not under `/repos/`, so the repository fallback in
+    // the raw helper leaves the 404 alone and hands it back to us.
+    const response = await requestRawWithCredentialFallback({
+      url: `https://api.github.com/user/starred/${repoOwner}/${repoName}`,
+      method: "GET",
+      headers: { accept: "application/vnd.github+json" },
+      capability: "read",
+    });
+    const bodyText = await response.text().catch(() => "");
+    if (!response.ok && response.status !== 404) {
+      throw new Error(githubRawErrorMessage(bodyText, response.status));
+    }
+    return {
+      starred: response.ok,
+      stars: await readRepoStarCount(repoOwner, repoName),
+    };
+  };
+
+  const setRepoStarred = async (
+    owner: string,
+    name: string,
+    starred: boolean,
+  ): Promise<void> => {
+    const repoOwner = requireRepoSegment(owner, "owner");
+    const repoName = requireRepoSegment(name, "name");
+    // Starring writes to the signed-in user's own account, so this asks for the
+    // "write" capability: the credential picker then skips read-only sources
+    // (the GitHub App user token) rather than letting the API answer 403. A
+    // token that is write-capable but lacks `public_repo`/`repo` still comes
+    // back as a permission denial, which we re-word below.
+    let response: Response;
+    try {
+      response = await requestRawWithCredentialFallback({
+        url: `https://api.github.com/user/starred/${repoOwner}/${repoName}`,
+        method: starred ? "PUT" : "DELETE",
+        headers: { accept: "application/vnd.github+json" },
+        capability: "write",
+      });
+    } catch (error) {
+      const kind = (error as { authFailure?: { kind?: string } } | null)?.authFailure?.kind;
+      if (kind === "permission_denied") {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Starring a repository needs a GitHub credential with the 'public_repo' or 'repo' scope.`,
+        );
+      }
+      throw error;
+    }
+    const bodyText = await response.text().catch(() => "");
+    // Both PUT and DELETE answer 204 No Content.
+    if (response.ok) return;
+    throw new Error(githubRawErrorMessage(bodyText, response.status));
+  };
+
   const listRepoIssues = async (
     owner: string,
     name: string,
@@ -2460,6 +2569,8 @@ export function createGithubService({
     createRepoAutolink,
     listRepoLabels,
     listRepoCollaborators,
+    getRepoStarState,
+    setRepoStarred,
     listRepoIssues,
     getIssue,
     listIssueComments,

@@ -5979,6 +5979,15 @@ export function registerIpc({
     return requirePluginDomainService().marketplaceIndex(refresh ? { refresh } : {});
   });
 
+  ipcMain.handle(IPC.pluginRepoStars, async (_event, arg: unknown): Promise<number | null> => {
+    const repo = isRecord(arg) && typeof arg.repo === "string" ? arg.repo.trim() : "";
+    // An empty or absent repo is answered rather than thrown: the caller asked
+    // for a decoration, and null is the honest "not known here" this whole path
+    // is built to return.
+    if (!repo) return null;
+    return requirePluginDomainService().repoStars({ repo });
+  });
+
   ipcMain.handle(IPC.pluginPresence, async (): Promise<PluginPresenceMachineRow[]> => {
     return requirePluginDomainService().presence();
   });
@@ -9684,6 +9693,20 @@ export function registerIpc({
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoCollaborators(owner, name);
+  });
+
+  // Star state always names its repo explicitly -- it is asked about a
+  // Marketplace plugin's repository, never the project's own origin, so there
+  // is deliberately no `resolveGithubRepoRef` fallback here.
+  ipcMain.handle(IPC.githubGetRepoStarState, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRepoStarState(arg?.owner ?? "", arg?.name ?? "");
+  });
+
+  ipcMain.handle(IPC.githubSetRepoStarred, async (_event, arg: { owner?: string; name?: string; starred?: boolean }) => {
+    const ctx = getCtx();
+    if (typeof arg?.starred !== "boolean") throw new Error("Expected 'starred' to be a boolean.");
+    return await ctx.githubService.setRepoStarred(arg?.owner ?? "", arg?.name ?? "", arg.starred);
   });
 
   ipcMain.handle(IPC.githubListRepoIssues, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all"; since?: string }) => {

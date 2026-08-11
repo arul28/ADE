@@ -8751,6 +8751,21 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
       ),
+    getRepoStarState: async (args: {
+      owner: string;
+      name: string;
+    }): Promise<{ starred: boolean; stars: number | null }> =>
+      callProjectRuntimeActionOr("github", "getRepoStarState", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetRepoStarState, args),
+      ),
+    setRepoStarred: async (args: {
+      owner: string;
+      name: string;
+      starred: boolean;
+    }): Promise<void> =>
+      callProjectRuntimeActionOr("github", "setRepoStarred", { args }, () =>
+        ipcRenderer.invoke(IPC.githubSetRepoStarred, args),
+      ),
     listMyRepos: async (
       input: ListMyGitHubReposInput = {},
     ): Promise<ListMyGitHubReposResult> => {
