@@ -97,6 +97,21 @@ describe("session settle teardown", () => {
     ]);
   });
 
+  it("R5: calls a hung stop a timeout, not a rejection", async () => {
+    const { run } = harness({
+      // Never answers. The provider did not refuse — it did not reply at all,
+      // and filing that as an explicit rejection is exactly the conflation the
+      // reason field exists to prevent.
+      interrupt: vi.fn(() => new Promise<void>(() => {})),
+      readActiveWork: async () => work({ backgroundTaskCount: 1, provider: "codex" }),
+      expireProviderCall: async () => {},
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue[0]?.reason).toBe("timeout");
+  });
+
   it("R5: calls out a provider that has no stop control at all", async () => {
     const { run } = harness({
       // A Codex chat cannot stop an individual subagent. That is a different
@@ -162,7 +177,11 @@ describe("session settle teardown", () => {
 
     const outcome = await run("session-1", neverAborted);
 
-    expect(outcome.residue[0]?.reason).toBe("rejected");
+    // A provider that never answered did not REFUSE. This said "rejected" and
+    // was encoding the misclassification: every hung call would reach both the
+    // user-visible residue and the analytics dimension as an explicit provider
+    // rejection.
+    expect(outcome.residue[0]?.reason).toBe("timeout");
   });
 
   it("resolves instead of blocking the settle when a liveness read hangs", async () => {

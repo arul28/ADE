@@ -206,11 +206,16 @@ export function createSessionSettleTeardown(
     // work we have NOT done yet.
     if (ctx.isAborted()) return { residue, confirmed: false };
 
+    // Tracked apart: a provider that REFUSED the stop and one that never
+    // answered are different facts, and collapsing them is what the reason
+    // field exists to prevent — a hung call would be filed as an explicit
+    // rejection in both the residue the user sees and the analytics.
     let stopRejected = false;
+    let stopTimedOut = false;
     try {
       const stop = await withTimeout(deps.interrupt(sessionId), expireProviderCall);
       if (!stop.ok) {
-        stopRejected = true;
+        stopTimedOut = true;
         deps.logger?.warn("settle_teardown.step_timed_out", { step: "interrupt" });
       }
     } catch (error) {
@@ -232,9 +237,11 @@ export function createSessionSettleTeardown(
     if (after && !ctx.isAborted()) {
       const reason = stopRejected
         ? "rejected" as const
-        : provider && noStopControl.has(provider)
-          ? "no_stop_control" as const
-          : "timeout" as const;
+        : stopTimedOut
+          ? "timeout" as const
+          : provider && noStopControl.has(provider)
+            ? "no_stop_control" as const
+            : "timeout" as const;
       // A surviving turn and surviving background tasks are separate facts.
       // Folding them into one item lost both the kind and the count — the two
       // things the residue exists to report.
