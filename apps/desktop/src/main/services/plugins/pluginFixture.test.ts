@@ -180,7 +180,7 @@ describe("hello-plugin fixture", () => {
       pluginsRoot,
       // No published digest: community plugins live here permanently, and
       // failing them would make the directory a gate on installing anything.
-      resolveRegistryEntry: async () => ({ official: false, checksums: {} }),
+      resolveRegistryEntry: async () => ({ status: "entry", entry: { official: false, checksums: {} } }),
       reportInstall,
     });
 
@@ -201,11 +201,14 @@ describe("hello-plugin fixture", () => {
       pluginsRoot,
       builtinPluginsRoot: null,
       resolveRegistryEntry: async () => ({
-        official: true,
-        // The digest recipe is `git archive` of the tag — see registry/README.
-        // A local-directory install has no archive to reproduce it from, so the
-        // one thing it must not do is shrug and install anyway.
-        checksums: { "0.1.0": "a".repeat(64) },
+        status: "entry",
+        entry: {
+          official: true,
+          // The digest recipe is `git archive` of the tag — see registry/README.
+          // A local-directory install has no archive to reproduce it from, so
+          // the one thing it must not do is shrug and install anyway.
+          checksums: { "0.1.0": "a".repeat(64) },
+        },
       }),
     });
 
@@ -216,18 +219,77 @@ describe("hello-plugin fixture", () => {
     expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin"))).toBe(false);
   });
 
-  it("installs when the directory is unreachable rather than blocking on it", async () => {
+  it("installs a community plugin when the directory is unreachable rather than blocking on it", async () => {
     const pluginsRoot = scratchPluginsRoot();
     const install = createPluginInstallService({
       logger: testLogger(),
       pluginsRoot,
+      builtinPluginsRoot: null,
       resolveRegistryEntry: async () => {
         throw new Error("offline");
       },
     });
 
+    // hello-plugin does not present itself as official, so an offline machine
+    // keeps installing community plugins.
     const installed = await install.install({ source: fixtureRoot });
     expect(installed.record.pluginId).toBe("hello-plugin");
+  });
+
+  it("refuses an official plugin while the directory cannot be reached", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const officialSource = fs.mkdtempSync(path.join(os.tmpdir(), "ade-official-plugin-"));
+    scratchDirs.push(officialSource);
+    fs.cpSync(fixtureRoot, officialSource, { recursive: true });
+    const manifestPath = path.join(officialSource, "plugin.json");
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...JSON.parse(fs.readFileSync(manifestPath, "utf8")), official: true }),
+      "utf8",
+    );
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: null,
+      resolveRegistryEntry: async () => ({ status: "unreachable" }),
+    });
+
+    // "Nobody answered" is not "no checksum published": installing here is how
+    // an official plugin gets onto a machine with nothing checked at all.
+    await expect(install.install({ source: officialSource })).rejects.toThrow(/could not reach/i);
+    expect(install.list()).toEqual([]);
+  });
+
+  it("refuses an official version the directory publishes no checksum for", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: null,
+      // The directory vouches for this plugin, but not for the version being
+      // installed — the version-bump evasion, and a free pass if it installed.
+      resolveRegistryEntry: async () => ({
+        status: "entry",
+        entry: { official: true, checksums: { "9.9.9": "a".repeat(64) } },
+      }),
+    });
+
+    await expect(install.install({ source: fixtureRoot })).rejects.toThrow(/no checksum for version/i);
+    expect(install.list()).toEqual([]);
+  });
+
+  it("installs a plugin the directory does not list at all", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: null,
+      resolveRegistryEntry: async () => ({ status: "absent" }),
+    });
+
+    // The directory answered and does not know this plugin: unverified is the
+    // permanent, correct outcome for everything outside the official set.
+    expect((await install.install({ source: fixtureRoot })).record.pluginId).toBe("hello-plugin");
   });
 });
 
@@ -246,6 +308,55 @@ describe("builtin plugin seeding", () => {
   function service(pluginsRoot: string, builtinPluginsRoot: string | null) {
     return createPluginInstallService({ logger: testLogger(), pluginsRoot, builtinPluginsRoot });
   }
+
+  /** The starter themes ship at `plugins/themes/<id>`, one level down. */
+  function builtinRootWithNested(category: string, pluginId: string): string {
+    const builtinRoot = path.join(scratchPluginsRoot(), "builtin");
+    const target = path.join(builtinRoot, category, pluginId);
+    fs.cpSync(fixtureRoot, target, { recursive: true });
+    const manifestPath = path.join(target, "plugin.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: pluginId, version: "1.0.0" }, null, 2));
+    return builtinRoot;
+  }
+
+  it("installs a package that ships inside a category directory without seeding it", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = service(pluginsRoot, builtinRootWithNested("themes", "ade-theme-ink"));
+
+    // The nesting is the opt-in: a palette nobody chose must not arrive
+    // installed. But it has to be REACHABLE, and before this nothing could
+    // install it — the Marketplace's bundled listing points at a repository
+    // that does not exist, so the themes were unreachable by every path.
+    expect(install.list()).toEqual([]);
+
+    const installed = await install.install({ source: "ade-theme-ink" });
+
+    expect(installed.record.pluginId).toBe("ade-theme-ink");
+    // Flattened into the install root, where `<root>/<id>` is assumed by
+    // describe, skillRoots and uninstall alike.
+    expect(fs.existsSync(path.join(pluginsRoot, "ade-theme-ink", "plugin.json"))).toBe(true);
+  });
+
+  it("revokes the tombstone when a removed builtin is installed again", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const builtinRoot = builtinRootWith("hello-plugin");
+    const install = service(pluginsRoot, builtinRoot);
+    expect(install.uninstall("hello-plugin")).toEqual({ removed: true });
+    expect(install.list()).toEqual([]);
+
+    const reinstalled = await install.install({ source: "hello-plugin" });
+
+    expect(reinstalled.record.source).toEqual({ kind: "builtin" });
+    expect(service(pluginsRoot, builtinRoot).list().map((entry) => entry.record.pluginId))
+      .toEqual(["hello-plugin"]);
+    // The tombstone is gone, not just outvoted: while it stands, every later
+    // app update skips this package and it silently stops being upgraded.
+    const state = JSON.parse(fs.readFileSync(path.join(pluginsRoot, "state.json"), "utf8")) as {
+      removedBuiltins: string[];
+    };
+    expect(state.removedBuiltins).toEqual([]);
+  });
 
   it("seeds a bundled plugin into a fresh machine, installed and enabled", () => {
     const pluginsRoot = scratchPluginsRoot();

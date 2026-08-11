@@ -65,6 +65,20 @@ const PLUGIN_GIT_URL_PATTERN = /^(?:https?:\/\/|ssh:\/\/|git:\/\/|git@)[A-Za-z0-
 /** Branch/tag/sha. No `..`, no leading dash, no whitespace. */
 const PLUGIN_GIT_REF_PATTERN = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,128}$/;
 
+/**
+ * What the directory says about one plugin, as of the call that asked.
+ *
+ * `absent` and `unreachable` are the distinction the install gate turns on:
+ * "the directory answered and does not list this plugin" is a fact an install
+ * may act on, while "nobody answered" is the absence of information — and
+ * treating the second as the first silently installs official plugins with no
+ * checksum check at all on any machine that has not browsed the Marketplace.
+ */
+export type PluginRegistryVerificationRead =
+  | { status: "entry"; entry: Pick<PluginRegistryEntry, "official" | "checksums"> }
+  | { status: "absent" }
+  | { status: "unreachable" };
+
 export type PluginInstalledPlugin = {
   record: PluginInstallRecord;
   /** `null` when `plugin.json` is missing or unparseable — install still lists. */
@@ -126,7 +140,12 @@ async function gitArchiveDigest(stagingDir: string, logger: Logger): Promise<str
   try {
     const result = await spawnAsync(
       GIT_COMMAND,
-      ["-C", stagingDir, "archive", "--format=tar", "-o", tarPath, "HEAD"],
+      // `core.autocrlf` is per-machine and on by default on Windows, and it
+      // rewrites line endings INSIDE the archive — so the same tag would digest
+      // differently there than on the machine that published the digest, and
+      // the one check that must never cry wolf would report tampering. Pinned
+      // here and in `registry/README.md`'s published recipe.
+      ["-C", stagingDir, "-c", "core.autocrlf=false", "archive", "--format=tar", "-o", tarPath, "HEAD"],
       { timeout: PLUGIN_GIT_ARCHIVE_TIMEOUT_MS, maxOutputBytes: 8_000 },
     );
     if (result.status !== 0) {
@@ -315,26 +334,48 @@ function isAdePluginsSourceRoot(directory: string): boolean {
   }
 }
 
-/** Bundled package directories that carry a readable, valid manifest. */
-function listBuiltinPackages(builtinRoot: string): { pluginId: string; source: string; manifest: PluginManifest }[] {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(builtinRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const packages: { pluginId: string; source: string; manifest: PluginManifest }[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isValidPluginId(entry.name)) continue;
-    const source = path.join(builtinRoot, entry.name);
-    const parsed = readManifestAt(source);
-    // A bundled package that does not parse is a build problem, not a user
-    // problem; seeding it would surface as a broken plugin nobody installed.
-    if (!parsed.manifest || parsed.errors.length > 0) continue;
-    if (parsed.manifest.name !== entry.name) continue;
-    packages.push({ pluginId: entry.name, source, manifest: parsed.manifest });
-  }
-  return packages;
+export type BuiltinPluginPackage = { pluginId: string; source: string; manifest: PluginManifest };
+
+/**
+ * Bundled package directories that carry a readable, valid manifest.
+ *
+ * `maxDepth` is the difference between the two things this answers, and they
+ * are not the same question:
+ *
+ * - **0 — what gets seeded.** Direct children only. The starter themes ship at
+ *   `plugins/themes/<id>`, and that nesting IS their opt-in: a palette nobody
+ *   chose must not arrive installed on every machine.
+ * - **1 — what can be installed by id.** An explicit install IS the opt-in, so
+ *   it looks inside a category directory. Only a directory with no manifest of
+ *   its own is descended into, so a category can never shadow a package.
+ */
+function listBuiltinPackages(builtinRoot: string, maxDepth = 0): BuiltinPluginPackage[] {
+  const packages: BuiltinPluginPackage[] = [];
+  const visit = (directory: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const source = path.join(directory, entry.name);
+      const parsed = readManifestAt(source);
+      if (!parsed.manifest || parsed.errors.length > 0) {
+        // No manifest here: a grouping directory, so look inside it if this
+        // caller is allowed to.
+        if (depth < maxDepth) visit(source, depth + 1);
+        continue;
+      }
+      // A bundled package that does not parse is a build problem, not a user
+      // problem; seeding it would surface as a broken plugin nobody installed.
+      if (!isValidPluginId(entry.name) || parsed.manifest.name !== entry.name) continue;
+      packages.push({ pluginId: entry.name, source, manifest: parsed.manifest });
+    }
+  };
+  visit(builtinRoot, 0);
+  return packages.sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 }
 
 export function createPluginInstallService(deps: {
@@ -342,13 +383,13 @@ export function createPluginInstallService(deps: {
   pluginsRoot?: string;
   adeVersion?: string | null;
   /**
-   * The directory's entry for a plugin, when the directory is reachable.
+   * What the directory says about a plugin, confirmed on THIS call.
+   *
    * Injected rather than imported so this service never fetches anything
-   * itself; a null answer (offline, or an unlisted plugin) installs unverified.
+   * itself. The three answers are not interchangeable — see
+   * {@link PluginRegistryVerificationRead}.
    */
-  resolveRegistryEntry?: (
-    pluginId: string,
-  ) => Promise<Pick<PluginRegistryEntry, "official" | "checksums"> | null>;
+  resolveRegistryEntry?: (pluginId: string) => Promise<PluginRegistryVerificationRead>;
   /**
    * Tell the directory an install happened. Fire-and-forget by contract: the
    * install has already succeeded by the time this runs, and telemetry that can
@@ -419,6 +460,12 @@ export function createPluginInstallService(deps: {
       });
     }
     return changed;
+  };
+
+  /** The bundled package for an id, when this build ships one. */
+  const findBuiltinPackage = (pluginId: string): BuiltinPluginPackage | null => {
+    if (!builtinRoot || !isValidPluginId(pluginId)) return null;
+    return listBuiltinPackages(builtinRoot, 1).find((entry) => entry.pluginId === pluginId) ?? null;
   };
 
   const readRegistry = (): PluginRegistryFile => {
@@ -527,21 +574,50 @@ export function createPluginInstallService(deps: {
    * published for this version.
    *
    * Runs while the plugin is still in staging, so a tampered tree is never
-   * moved into place and never runs. The three-way verdict is Wave E's: only a
-   * MISMATCH is fatal. "Unverified" covers every community plugin and any
-   * official release the crawler has not indexed yet, and failing those would
-   * make the directory a gate on installing anything at all.
+   * moved into place and never runs.
+   *
+   * Three answers, three outcomes, and folding any two of them together breaks
+   * the gate:
+   *
+   * - **entry** — verify against the published digest. An OFFICIAL entry with
+   *   no digest for the requested version is REFUSED rather than installed
+   *   unverified: picking a version the directory has not vouched for is
+   *   otherwise a free pass around the whole check.
+   * - **absent**, or a community entry — unverified, and that is permanent.
+   *   The directory does not checksum community plugins, and failing them would
+   *   make it a gate on installing anything at all.
+   * - **unreachable** — nobody answered, which is NOT "no checksum published".
+   *   A plugin presenting itself as official is refused with a message that
+   *   says so; a community plugin still installs, so an offline machine keeps
+   *   working. The manifest's own `official` claim is all there is to go on
+   *   here, and reading it can only ADD refusals: a plugin that lies about
+   *   being official gets refused, and one that lies the other way was never
+   *   going to be verified anyway.
    */
   const verifyStagedTree = async (stagingDir: string, manifest: PluginManifest): Promise<void> => {
     if (!deps.resolveRegistryEntry) return;
-    let entry: Pick<PluginRegistryEntry, "official" | "checksums"> | null = null;
+    let read: PluginRegistryVerificationRead;
     try {
-      entry = await deps.resolveRegistryEntry(manifest.name);
+      read = await deps.resolveRegistryEntry(manifest.name);
     } catch {
-      // An unreachable directory installs unverified rather than not at all.
-      return;
+      read = { status: "unreachable" };
     }
-    if (!entry || !requiresChecksumVerification(entry, manifest.version)) return;
+    if (read.status === "unreachable") {
+      if (!manifest.official) return;
+      throw new Error(
+        `Plugin "${manifest.name}" ${manifest.version} says it is an official plugin, and ADE could not reach `
+        + "the plugin directory to check it against the published checksum. Try again when you are online.",
+      );
+    }
+    if (read.status === "absent") return;
+    const entry = read.entry;
+    if (entry.official && !requiresChecksumVerification(entry, manifest.version)) {
+      throw new Error(
+        `Plugin "${manifest.name}" is official, but the directory publishes no checksum for version `
+        + `${manifest.version}. Refusing to install a version ADE cannot vouch for.`,
+      );
+    }
+    if (!requiresChecksumVerification(entry, manifest.version)) return;
     const actual = await gitArchiveDigest(stagingDir, deps.logger);
     if (!actual) {
       throw new Error(
@@ -571,12 +647,19 @@ export function createPluginInstallService(deps: {
     fs.mkdirSync(root, { recursive: true });
 
     const isLocalDirectory = !PLUGIN_GIT_URL_PATTERN.test(source) && dirExists(path.resolve(source));
+    // A bare plugin id names a BUNDLED package: the starter themes and the two
+    // pilots ship inside ADE, so the honest source for them is the copy on this
+    // disk, not a repository URL that has to resolve over the network. Checked
+    // after the directory test so a real directory of the same name still wins.
+    const bundled = isLocalDirectory ? null : findBuiltinPackage(source);
     const stagingDir = path.join(root, `.staging-${randomUUID()}`);
     let manifest: PluginManifest;
     let warnings: string[];
     try {
       if (isLocalDirectory) {
         stageFromLocalDirectory(path.resolve(source), stagingDir);
+      } else if (bundled) {
+        stageFromLocalDirectory(bundled.source, stagingDir);
       } else {
         await stageFromGit(source, args.ref, stagingDir);
       }
@@ -631,9 +714,13 @@ export function createPluginInstallService(deps: {
       pluginId,
       version: manifest.version,
       enabled: args.enable === undefined ? existing?.enabled !== false : args.enable,
-      source: isLocalDirectory
-        ? { kind: "local", path: path.resolve(source) }
-        : { kind: "git", url: source, ...(args.ref ? { ref: args.ref } : {}) },
+      source: bundled
+        // Recorded as builtin, not as the path it happened to be copied from:
+        // that is what lets the next app update seed a newer copy over it.
+        ? { kind: "builtin" }
+        : isLocalDirectory
+          ? { kind: "local", path: path.resolve(source) }
+          : { kind: "git", url: source, ...(args.ref ? { ref: args.ref } : {}) },
       installedAt: existing?.installedAt ?? at,
       updatedAt: at,
       // Reinstalling (an upgrade, or the `ade plugin dev` loop) must not switch
@@ -644,6 +731,12 @@ export function createPluginInstallService(deps: {
         : {}),
     };
     registry.plugins[pluginId] = record;
+    // Installing a builtin again revokes the tombstone that says the user
+    // removed it — otherwise the record is there but every later app update
+    // skips it, and the plugin quietly stops being upgraded.
+    if (bundled) {
+      registry.removedBuiltins = registry.removedBuiltins.filter((id) => id !== pluginId);
+    }
     writeRegistry(registry);
     deps.logger.info("plugin.installed", {
       pluginId,

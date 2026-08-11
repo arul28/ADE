@@ -354,14 +354,17 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     adeVersion: args.adeVersion ?? null,
     /**
      * The install service verifies against the directory's digest, so it needs
-     * the entry — from the CACHE only. A network fetch here would make every
-     * install wait on the directory, and the digest is a tamper check on bytes
-     * the machine already has, not a permission to install.
+     * an answer CONFIRMED on this call — not the cache.
+     *
+     * The cache is usually cold: it holds an index for six hours and only if
+     * someone opened the Marketplace, so reading it would report "no checksum
+     * published" for a plugin the directory does vouch for, and an official
+     * install would go through unverified with nothing said. A digest that
+     * never left the machine also proves nothing about what the directory
+     * currently vouches for. The install path pays one revalidating request and
+     * decides for itself what an unreachable directory means.
      */
-    resolveRegistryEntry: async (pluginId: string) => {
-      const cached = registry().readCachedIndex();
-      return cached?.entries.find((entry) => entry.pluginId === pluginId) ?? null;
-    },
+    resolveRegistryEntry: (pluginId: string) => registry().resolveEntryForVerification(pluginId),
     // Read through the mutable context, not captured at construction: the ping
     // target is wired later in bootstrap than the host is built.
     reportInstall: (install) => machine.reportInstall?.(install),
