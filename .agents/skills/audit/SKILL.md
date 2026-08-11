@@ -15,6 +15,8 @@ Audit the work you just did in this session. Don't stop at "it compiles" or "it 
 
 4. **Check the surrounding contract.** Did the change break any callers, tests, types, styling, or invariants elsewhere? Grep for references to anything you removed or renamed and confirm.
 
+   **The plugin SDK is a published contract.** If you touched `apps/desktop/src/shared/plugins/` (manifest, panel vocabulary, socket taxonomy, surface contexts, SDK v0) or any of its four renderers, confirm the change is additive, that a re-shaped wire format moved its version constant, and that every renderer either draws the new thing or degrades to a named marker. Installed plugins and older desktop/iOS/TUI builds cannot be updated in lockstep with this diff.
+
 5. **Fix what you find.** For each real bug or gap, make the fix directly — including Windows breakage; a Windows bug is a bug. For anything genuinely ambiguous, call it out rather than guessing.
 
    If a capability genuinely **cannot** work on Windows, stop and ask instead of fixing or shipping it half-working. State the exact capability and the OS-level reason, say whether macOS/Linux keep it, then offer **hidden** (absent on Windows) vs **disabled with a reason shown** vs **removed** with a recommendation. Those are different user experiences — the human picks per item.

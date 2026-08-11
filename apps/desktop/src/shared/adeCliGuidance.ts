@@ -13,6 +13,7 @@ export const adeBundledAgentSkills = [
   "ade-deeplinks",
   "ade-search",
   "ade-mosaic",
+  "ade-plugins",
 ] as const;
 
 /**

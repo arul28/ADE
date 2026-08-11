@@ -105,6 +105,43 @@ remote commands, or host update flows, verify:
 - Tests cover legacy hosts that omit `mobileCompatibility` and hosts that report
   missing required actions.
 
+## 6.6 Plugin SDK contract impact
+
+**Class:** The plugin platform's shared contracts — `apps/desktop/src/shared/plugins/`
+(`manifest.ts`, `vocabulary.ts`, `sockets.ts`, `context.ts`, `sdk.ts`,
+`registryIndex.ts`) — are read by four independently-released clients (desktop,
+web, iOS, the `ade code` TUI) plus installed third-party plugins. A change that
+narrows or re-shapes one of them breaks plugins and clients that shipped months
+ago and cannot be updated in lockstep.
+
+**Check:** When a lane touches `shared/plugins/**`, verify:
+
+- **Additive only.** `PLUGIN_SDK_VERSION` and `VOCAB_VERSION` are handshakes:
+  methods and components are added, never removed or re-signatured. A behavior
+  change on an existing method needs a new name, not a new shape. Removing a
+  vocabulary component, a socket kind, a context field, or an SDK method is a
+  Blocker without a version bump and a migration story.
+- **The version moved with the shape.** A changed wire shape without a bumped
+  `VOCAB_VERSION` / `PLUGIN_SDK_VERSION` / `PLUGIN_MANIFEST_VERSION` means old
+  clients mis-parse silently instead of falling back.
+- **Every renderer moved together.** A new vocabulary component or socket kind
+  needs the desktop interpreter, the iOS renderable set
+  (`PluginRenderSupport.renderableComponents`, `PluginSocketKind`), and the TUI
+  `pluginPane.ts` arm — or an explicit, tested degrade in the ones that skip it.
+  A component that renders on desktop and silently collapses to nothing
+  elsewhere is the bug this rule exists for.
+- **The floor still holds.** Panel-fatal damage renders the required `fallback`,
+  node-local damage renders one marker, unknown component names render a marker.
+  Nothing blanks and nothing crashes.
+- **Budgets are enforced by the writer, in its transaction.** A new stored shape
+  without a ceiling in `pluginTableWriters.ts` / `dbMaintenanceApi.ts` is
+  unbounded growth in a synced table.
+- **SQL shapes are frozen.** `plugin_presence`, `plugin_panels`,
+  `plugin_collections`, `plugin_contributions` take no new columns and no new
+  sibling tables; iOS `DatabaseBootstrap.sql` must match `kvDb.ts` exactly, and
+  outbound plugin rows stay behind the `pluginTables` hello capability (an
+  unknown table inbound poisons an old peer's cursor permanently).
+
 ## 7. Node / test-env discipline
 
 **Check:** Desktop/renderer tests run under **Node 22** (`.nvmrc`); a newer

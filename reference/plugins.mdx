@@ -1,0 +1,103 @@
+---
+title: "Plugins"
+description: "Plugins add tabs, panels, badges, file viewers, and themes to ADE — installed per machine, rendered everywhere you use ADE."
+icon: "puzzle-piece"
+---
+
+A plugin adds something to ADE: a new tab, a panel, a badge on your pull request rows, a viewer for a file type, a theme, or a new `ade` command. ADE's own core stays the same — Work, Lanes, Files, PRs, Automations, and CTO are always there.
+
+You install plugins from the [Marketplace](/tools/marketplace), from a link, or from a folder on your computer. An agent working in a chat can also offer you one to install, as a card you approve.
+
+## Where plugins show up
+
+<Columns cols={2}>
+  <Card title="Its own tab" icon="table-columns">
+    Plugin tabs sit below the divider in the sidebar, under ADE's core tabs.
+  </Card>
+  <Card title="Inside core surfaces" icon="tag">
+    Badges on rows, extra menu entries, toolbar buttons, filter chips, and extra sections in detail views — always after ADE's own content, never in place of it.
+  </Card>
+  <Card title="File viewers" icon="file">
+    A plugin can open file types ADE doesn't handle on its own, right inside the Files tab.
+  </Card>
+  <Card title="Themes" icon="palette">
+    Theme plugins change ADE's colors. Preview one, press Esc to go back, or apply it to keep it.
+  </Card>
+</Columns>
+
+Everything a plugin draws appears on your desktop, in the web client, on your phone, and in the `ade code` terminal. Some surfaces show a simpler version — a phone won't draw a chart, and the terminal won't draw video — and you get a short note plus a link instead of a blank space.
+
+## Installing
+
+<Steps>
+  <Step title="Open the Marketplace">
+    It sits above Account in the sidebar. Browse, or paste a link.
+  </Step>
+  <Step title="Check what it adds">
+    The detail page lists every tab, badge, and viewer the plugin contributes, and shows which of your machines already have it.
+  </Step>
+  <Step title="Install">
+    Installing puts the plugin on **this machine only**. Your other machines are untouched until you install it there too.
+  </Step>
+</Steps>
+
+From a terminal:
+
+```bash
+ade plugin install https://github.com/someone/some-plugin
+ade plugin list --text
+```
+
+## Plugins and your machines
+
+Installs are per machine, because a plugin runs code and that code runs where you put it.
+
+- A plugin you haven't installed on a machine simply doesn't appear there. Nothing looks broken.
+- Badges, panels, and other data are computed by the machine that owns the work, then shown on your other devices.
+- The plugin's detail page has a coverage grid — one row per machine — so you can see at a glance where it's installed and where it's turned on.
+
+## Settings, secrets, and turning things off
+
+Each plugin has its own settings on its detail page. A setting marked as a secret — an API token, say — is stored in your machine's credential store, kept in the plugin's own namespace, and never shown back to you or to another plugin.
+
+You can also turn off individual contributions. If you like a plugin's tab but not its badges on your PR rows, switch the badges off and keep the rest. That choice stays put across restarts and reinstalls.
+
+To stop a plugin entirely without removing it:
+
+```bash
+ade plugin disable <name>
+ade plugin enable <name>
+ade plugin remove <name>
+```
+
+## What a plugin can and can't do
+
+A plugin asks ADE for everything. It has no direct access to your database, your files, or your credentials.
+
+- It gets a small, fixed set of facts about the thing you clicked — a pull request's number and state, a lane's name and branch — and nothing more. Not the worktree, not your tokens, not your chat transcripts.
+- It can store a limited amount of data (2 MB per plugin per machine). Past that, ADE refuses the write rather than letting it grow quietly.
+- Its own secrets are its own. One plugin cannot read another's.
+- It draws with a fixed set of building blocks, so a plugin cannot make ADE look or behave in a way ADE doesn't already allow.
+
+<Note>
+Being listed in the Marketplace is not an endorsement. Community plugins show their author and carry no Official mark. Official plugins are ones ADE vouches for by name, and ADE checks their contents against a published fingerprint before installing.
+</Note>
+
+## When something looks wrong
+
+| What you see | What to do |
+|---|---|
+| A plugin shows as crashed | It restarts on its own. `ade plugin logs <name> --text` shows why it stopped. |
+| A panel shows a short summary instead of the real thing | That surface can't draw this panel. Open it on desktop, or follow the link in the summary. |
+| One part of a panel says it isn't supported here | Expected on phones and in the terminal for charts, video, and images. |
+| A badge disappeared | Badges come from the machine that owns the work. If that machine is off, the badge is stale or gone until it's back. |
+| A plugin is missing on another machine | Installs are per machine. Install it there too. |
+
+<CardGroup cols={2}>
+  <Card title="Marketplace" icon="store" href="/tools/marketplace">
+    Browse, filter, and install plugins.
+  </Card>
+  <Card title="Build a plugin" icon="code" href="/reference/plugin-sdk">
+    The manifest, the panel vocabulary, the sockets, and the SDK.
+  </Card>
+</CardGroup>

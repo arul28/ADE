@@ -82,7 +82,8 @@
               "tools/files-editor",
               "tools/terminals",
               "tools/browser",
-              "tools/ios-simulator"
+              "tools/ios-simulator",
+              "tools/marketplace"
             ]
           },
           {
@@ -165,6 +166,8 @@
             "icon": "code",
             "pages": [
               "reference/cli",
+              "reference/plugins",
+              "reference/plugin-sdk",
               "architecture",
               "reference/troubleshooting"
             ]

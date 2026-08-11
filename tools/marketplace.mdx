@@ -1,0 +1,57 @@
+---
+title: "Marketplace"
+description: "Browse and install ADE plugins — tabs, badges, file viewers, and themes — from one place in the sidebar."
+icon: "store"
+---
+
+The Marketplace is where you find plugins. It sits above Account in the sidebar.
+
+## Finding something
+
+The top of the page has a featured row. Below it, filter by:
+
+- **All, Official, Featured, Themes** — Official plugins are ones ADE vouches for by name. Everything else is from the community.
+- **Surface** — narrow to plugins that add to Lanes, PRs, Files, Work, Automations, or CTO.
+- **Sort** — most installed, most starred, or newest.
+
+## The detail page
+
+Open a plugin and you get its README, plus a rail on the right with everything you need to decide:
+
+- **What it adds** — every tab, badge, menu entry, and file viewer, listed one by one.
+- **Your machines** — a grid showing where the plugin is installed and where it's turned on.
+- **Settings** — the plugin's own options, filled in before or after you install.
+- **Data used** — how much of its storage allowance it's using on this machine.
+- **Changelog** — what changed between versions.
+
+## Installing
+
+Press Install. The plugin lands on **this machine**, and nothing changes on your other machines until you install it there too.
+
+You can also install from outside the Marketplace:
+
+- **From a link** — paste a repository URL into the install dialog. ADE reads the plugin's manifest and shows you what it adds *before* anything is downloaded onto your machine.
+- **From a folder** — point ADE at a directory you have locally. This is how you try a plugin you're building.
+- **From a chat** — an agent can offer a plugin as a card in a Work chat. You still press the button.
+
+```bash
+ade plugin install https://github.com/someone/some-plugin
+ade plugin install ~/plugins/my-thing
+```
+
+## Themes
+
+Theme plugins get a preview. Press it and ADE changes colors immediately; press Esc and it goes back. Nothing is saved until you press Apply.
+
+<Note>
+Listing is open — publish a public repository, add the `ade-plugin` topic, and a crawler picks it up. That means a listing is not a recommendation. Check the author and read what the plugin adds before installing.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Using plugins" icon="puzzle-piece" href="/reference/plugins">
+    Where plugins appear, per-machine installs, settings, and troubleshooting.
+  </Card>
+  <Card title="Build a plugin" icon="code" href="/reference/plugin-sdk">
+    Scaffold, manifest, panels, sockets, and the SDK.
+  </Card>
+</CardGroup>

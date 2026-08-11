@@ -32,6 +32,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/main/services/onboarding/`, `services/config/` | `docs/features/onboarding-and-settings/` | `ade-perf-boot` |
 | `apps/desktop/src/main/services/pty/`, `sessions/`, `processes/` | `docs/features/terminals-and-sessions/` | `ade-perf-work` |
 | `apps/desktop/src/main/services/sync/` | `docs/features/sync-and-multi-device/` | — |
+| `apps/desktop/src/main/services/plugins/`, `src/shared/plugins/`, `renderer/components/plugins/`, `apps/ade-cli/src/{commands/plugin.ts,services/plugins/}`, `registry/` | `docs/features/plugins/README.md` | — |
 | `apps/desktop/src/main/services/git/` | `docs/ARCHITECTURE.md` (Git engine) + `lanes/` | `ade-perf-lanes` |
 | `apps/desktop/src/main/services/ipc/`, `src/preload/` | `docs/ARCHITECTURE.md` (IPC contract) | — |
 | `apps/desktop/src/main/main.ts`, app bootstrap | `docs/ARCHITECTURE.md` (Apps & Processes) | `ade-perf-boot` |

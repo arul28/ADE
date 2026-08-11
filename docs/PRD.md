@@ -117,6 +117,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index per project (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. The machine router keeps non-chat kinds in the active project and aggregates bounded, explicitly truncated chat hits across every registered project. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
+- [**Plugins**](./features/plugins/README.md) — Third-party extension of everything outside the six core surfaces. Code runs only on the owning machine in a supervised child process; UI is a declarative versioned panel schema that desktop, web, iOS, and the TUI each render natively. One `plugin` action domain, a closed seven-kind socket taxonomy, four frozen CRR tables behind a capability gate, writer-enforced budgets, and a crawler-built GitHub registry behind the Marketplace.
 
 ### Integrations
 

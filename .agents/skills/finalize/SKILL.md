@@ -233,6 +233,39 @@ grep -oE "\[.*\]\([^)]+\.md\)" docs/PRD.md | \
 
 Both commands should produce empty output. Any `MISSING map:` or `BROKEN LINK:` line is a failure — fix the offending doc and re-run. Do not prompt the user; resolve autonomously.
 
+Then the plugin SDK contract checks. `apps/desktop/src/shared/plugins/` is read by four independently-released clients and by installed third-party plugins, so a re-shaped contract without a version bump ships a silent mis-parse:
+
+```bash
+# A changed contract shape must move a version constant in the same branch.
+base=$(git merge-base HEAD main 2>/dev/null || echo HEAD)
+if [ -n "$(git diff "$base" --name-only -- \
+      apps/desktop/src/shared/plugins/manifest.ts \
+      apps/desktop/src/shared/plugins/vocabulary.ts \
+      apps/desktop/src/shared/plugins/sdk.ts \
+      apps/desktop/src/shared/plugins/sockets.ts \
+      apps/desktop/src/shared/plugins/context.ts)" ]; then
+  git diff "$base" -- apps/desktop/src/shared/plugins/ | \
+    grep -qE '^\+(export )?const (VOCAB_VERSION|PLUGIN_SDK_VERSION|PLUGIN_MANIFEST_VERSION) =' || \
+    echo "SDK CONTRACT: shared/plugins changed with no version constant bumped"
+fi
+
+# The end-to-end fixture plugin still satisfies the manifest and panel contracts.
+node -e '
+const fs = require("node:fs");
+const root = "apps/desktop/test/fixtures/hello-plugin";
+const bad = [];
+const m = JSON.parse(fs.readFileSync(root + "/plugin.json", "utf8"));
+if (!/^[a-z][a-z0-9-]{0,63}$/.test(m.name)) bad.push("plugin.json name");
+if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(m.version)) bad.push("plugin.json version");
+if (!Number.isInteger(m.vocabVersion) || m.vocabVersion < 1) bad.push("plugin.json vocabVersion");
+const p = JSON.parse(fs.readFileSync(root + "/panels/main.json", "utf8"));
+if (p.v !== 1 || !p.fallback?.title || !p.fallback?.text || !Array.isArray(p.body)) bad.push("panels/main.json");
+if (bad.length) console.log("FIXTURE PLUGIN INVALID: " + bad.join(", "));
+'
+```
+
+Empty output is a pass. An `SDK CONTRACT:` line means either bump the version constant or restore the shape — a "harmless" field rename is not harmless to a plugin someone already shipped. A `FIXTURE PLUGIN INVALID:` line means the fixture drifted from the contract it exists to pin; fix the fixture, not the parser.
+
 All checks must pass. If any fail, fix and re-run only the failed step.
 
 ### 3h. Test-simplifier drift check (catch Phase 2 over-reach)

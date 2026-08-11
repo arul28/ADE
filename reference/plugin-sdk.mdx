@@ -1,0 +1,273 @@
+---
+title: "Plugin SDK"
+description: "Build an ADE plugin: the manifest, the panel vocabulary, the socket taxonomy, the SDK your code gets, and the ade plugin commands."
+icon: "code"
+---
+
+An ADE plugin is a folder with a `plugin.json` at its root. It installs to `~/.ade/plugins/<id>/`.
+
+Two rules shape everything else:
+
+- **Your code runs only on the machine that owns the plugin**, in a supervised Node child process. There is no remote execution.
+- **Your UI is data, never code.** You ship a versioned JSON panel schema. Desktop, web, iOS, and the `ade code` terminal each interpret that same JSON with their own native widgets.
+
+Anything you want computed, compute in your code and store as data. A schema has no expressions, no conditionals, and no callbacks.
+
+## Scaffold one
+
+```bash
+ade plugin create my-thing --dir ~/plugins   # plugin.json, index.js, panels/main.json, README.md
+ade plugin install ~/plugins/my-thing        # register it on this machine
+ade plugin dev my-thing                      # watch the folder, reload on every save
+```
+
+`ade plugin dev` keeps watching even if ADE is closed — it says so once and picks the plugin back up when the app returns.
+
+<AccordionGroup>
+  <Accordion title="ade plugin commands" icon="terminal">
+    ```bash
+    ade plugin list [--text]                        # installed on this machine
+    ade plugin create <name> [--dir <path>]         # scaffold
+    ade plugin install <source> [--ref <r>] [--no-enable]
+    ade plugin remove <id>
+    ade plugin enable <id> | disable <id>
+    ade plugin reload <id>                          # re-read manifest, restart child
+    ade plugin logs <id> [--limit <n>]
+    ade plugin dev [<id>|<path>]
+    ```
+
+    `list` and `create` work with ADE closed. Everything else needs the ADE brain running. JSON is the default output; `--text` is human-readable.
+  </Accordion>
+  <Accordion title="Your own CLI words" icon="wand-magic-sparkles">
+    List words in the manifest's `cli` array and add handlers of the same name to `exports.actions`. They become `ade <pluginId> <word> [args]`, and your handler receives the raw `argv`, so the plugin owns its own usage text.
+  </Accordion>
+</AccordionGroup>
+
+## The manifest
+
+Parsing is strict on keys it knows and tolerant of keys it doesn't: an unknown field is dropped so a manifest written for a newer ADE still loads on an older one, but a known field with the wrong shape is an error. One bad `sockets` entry is dropped with a warning — the plugin still installs.
+
+```json
+{
+  "name": "graph",
+  "version": "1.2.0",
+  "displayName": "Graph",
+  "description": "Workspace graph as an ADE tab.",
+  "icon": "graph",
+  "accent": "#7C6FF0",
+  "minAdeVersion": "1.3.0",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [{ "kind": "tab", "id": "graph", "title": "Graph", "panelId": "main" }],
+  "panels":   [{ "id": "main", "schemaFile": "panels/main.json", "title": "Graph" }],
+  "sockets":  [{ "socket": "row-badge", "surface": "prs", "id": "ci" }],
+  "collections": { "issues": { "sync": true } },
+  "settings": [{ "key": "token", "kind": "secret", "label": "API token" }],
+  "cli": ["issues"],
+  "skills": ["skills/using-graph"],
+  "official": false
+}
+```
+
+| Field | Rules |
+|---|---|
+| `name` | The plugin id. Lowercase kebab-case, starts with a letter, 64 characters or fewer. It is a directory name, a secret namespace, a sync key, and a CLI word |
+| `version` | `major.minor.patch`, optional prerelease or build tail |
+| `displayName`, `description`, `icon`, `accent` | Presentation. `accent` is a 3- or 6-digit hex color |
+| `minAdeVersion` | Version floor. An unknown host version never locks a user out of their own plugins |
+| `vocabVersion` | Panel schema version. Positive integer, defaults to `1` |
+| `entry` | Relative path to your entry module. **Omit it** for UI-only plugins such as themes — they run no code |
+| `surfaces[]` | `{kind: "tab" \| "pane", id, title, panelId, icon?, order?}` |
+| `panels[]` | `{id, schemaFile?, title?, icon?}` |
+| `sockets[]` | See [Sockets](#sockets) |
+| `collections` | `{"<name>": {"sync": true}}` — `sync: true` carries rows to the user's other devices |
+| `settings[]` | `{key, kind, label, description?, options?, optionsAction?, default?}`; kinds are `text`, `secret`, `select`, `toggle`, `number` |
+| `cli[]` | Subcommand words, reachable as `ade <id> <word>` |
+| `skills[]` | Relative paths to agent-skill directories; they join `ADE_AGENT_SKILLS_DIRS` |
+| `theme` | Token sets — see [Themes](#themes) |
+| `official` | **Ignored for trust.** Official status comes from the registry's curated file, never from a manifest |
+
+Every path in a manifest must be relative, inside the plugin directory, and free of `..`.
+
+<Warning>
+`detail-section` and `file-viewer` sockets require a `panelId`. `toolbar-action` and `row-menu-item` require an `actionId`. `file-viewer` requires at least one `".ext"` extension. A socket that fails these is dropped rather than rendered empty.
+</Warning>
+
+## Panels
+
+A panel is JSON. `v` is the vocabulary version, `fallback` is **required**, `body` is the tree.
+
+```json
+{
+  "v": 1,
+  "title": "Recent issues",
+  "fallback": { "title": "Recent issues", "text": "Open ADE to see this panel." },
+  "body": [
+    { "component": "stack", "gap": "md", "children": [
+      { "component": "text", "text": "Open issues", "variant": "title" },
+      { "component": "list", "bind": { "collection": "issues", "keyPrefix": "open:" },
+        "emptyText": "Nothing open." },
+      { "component": "button", "label": "Refresh", "kind": "primary",
+        "onPress": { "action": "refresh" } }
+    ]}
+  ]
+}
+```
+
+### Components
+
+| Component | Required fields | Also takes |
+|---|---|---|
+| `stack` | `children` | `direction`, `gap`, `align`, `wrap` |
+| `text` | `text` | `variant` (`title`, `subtitle`, `body`, `caption`, `code`), `tone` |
+| `badge` | `text` | `tone`, `icon` |
+| `button` | `label`, `onPress` | `kind` (`primary`, `default`, `quiet`), `icon`, `disabled` |
+| `list` | `items` or `bind` | `emptyText`. Item: `title`, `subtitle`, `meta`, `tone`, `icon`, `onPress` |
+| `table` | `columns`, and `rows` or `bind` | `emptyText`. Column: `key`, `label`, `align` |
+| `form` | `fields`, `submit` | Field kinds: `text`, `secret`, `select`, `toggle`, `number` |
+| `chart` | `kind` (`line`/`bar`), `series` | `title`, `emptyText` |
+| `video` | `src` | `poster`, `title` |
+| `image` | `src`, `alt` | `maxHeight` |
+| `divider` | — | `label` |
+| `keyValue` | `rows` or `bind` | `emptyText` |
+| `emptyState` | `title` | `description`, `icon`, `action` |
+
+Tones are `neutral`, `accent`, `success`, and `warning`. There is no red — any red-ish value you write folds to `warning`.
+
+`bind` is `{collection, keyPrefix?, limit?}` and reads your own stored rows. Those rows must already be in render shape for the component that binds them; the renderer does no reshaping. `onPress` is `{action, args?, confirm?}`, and `args` is flat scalars only.
+
+### What each surface draws
+
+| Component | Desktop and web | iOS | `ade code` terminal |
+|---|---|---|---|
+| `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState`, `form` | full | full | full |
+| `video`, `image` | full | full | named placeholder |
+| `chart` | full | named marker | named placeholder |
+| Anything a later vocabulary version adds | marker | marker | placeholder |
+
+Design around this: put a `deeplink` in every `fallback`, and never make a chart the only content of a panel.
+
+### Limits
+
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24.
+
+These are part of the contract, not a client's private defence. A schema over any of them is invalid everywhere, identically.
+
+### When a panel breaks
+
+- **Panel-fatal** — bad JSON, unsupported `v`, missing `fallback`, over a ceiling → the client renders your `fallback`.
+- **Node-local** — a malformed component or binding → that node becomes one inline marker, the rest renders.
+- **Unknown component** — a marker naming it. This is the forward-compatibility path, not an error.
+
+Nothing blanks and nothing crashes.
+
+## Sockets
+
+Seven kinds across six surfaces (`work`, `lanes`, `files`, `prs`, `automations`, `cto`). Placement is host-controlled and always **after** ADE's own content; `order` sorts plugins against each other and nothing more.
+
+| Kind | Payload |
+|---|---|
+| `toolbar-action` | `{label, actionId, icon?, disabled?}` |
+| `row-badge` | `{text, tone, icon?, tooltip?}` |
+| `row-menu-item` | `{label, actionId, icon?, danger?}` |
+| `detail-section` | `{panelId, title?}` |
+| `empty-state` | `{title, body?, actionId?, actionLabel?}` |
+| `filter-chip` | `{label, filterKey, count?}` |
+| `file-viewer` | `{panelId, extensions[]}` |
+
+Static contributions come from the manifest. Dynamic per-entity values — this PR's badge, right now — come from `ade.contributions.publish(...)`, computed by the machine that owns the data. Row badges cap at 2 visible per row with a "+N" overflow; one plugin may place at most 8 contributions in a single slot.
+
+Your action receives a read-only context: a `pr` gets `number`, `title`, `branch`, `state`, and `ciStatus`; a `lane` gets `id`, `name`, `branch`, `machineKey`, and `dirty`; a `session` gets `id`, `title`, `provider`, and `status`; a `file` gets `path`, `size`, `extension`, and `workspaceId`. It is a projection, not a handle — there is no path from it to a worktree, a token, or a transcript.
+
+<Note>
+iOS draws `row-badge` and `row-menu-item` today; the other five decode and draw nothing until a later iOS build adds the arm — no wire change needed. The terminal draws no sockets at all and surfaces plugins through `/plugin-view`. Treat a socket as an enhancement; the panel and its fallback are the floor.
+</Note>
+
+## The SDK
+
+Your entry module is CommonJS and dependency-free — the child bootstrap `require`s it, and a plugin may not assume a bundler ran.
+
+```js
+exports.activate = async (ade) => { /* ade is the SDK */ };
+exports.deactivate = async () => {};
+exports.actions = {
+  async refresh(args) { return { ok: true }; },
+};
+```
+
+| Call | Contract |
+|---|---|
+| `ade.actions.invoke(domain, action, args?)` | Invoke an ADE action at **agent** role. CTO-only actions are refused; project-scoped domains need `projectId` |
+| `ade.collections.get / put / delete / list` | Your own key-value rows. `list` takes `{keyPrefix?, limit?}` |
+| `ade.secrets.get / set / delete` | Machine credential store, namespaced `plugin:<id>:<NAME>` |
+| `ade.contributions.publish(entityKind, entityId, socket, payload)` | Publish, or clear with `null` |
+| `ade.events.on(event, cb)` | `lane.changed`, `pr.changed`, `session.changed`, `install.changed`. Debounced; returns an unsubscribe function |
+| `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for an undeclared panel |
+| `ade.config.get()` | Current `settings` values with defaults applied; secrets redacted |
+| `ade.log(level, message, fields?)` | Into the ring `ade plugin logs` reads |
+
+Everything is async and host-mediated. There is no direct database, no ambient filesystem authority, and no synchronous escape hatch.
+
+The SDK version is **0**, and the handshake is additive: methods are added, never removed or re-shaped. Anything that would break a shipped plugin gets a new method name instead.
+
+### Errors
+
+Every rejection carries a `code` you can branch on: `plugin_not_found`, `plugin_disabled`, `plugin_no_entry`, `plugin_crashed`, `plugin_timeout`, `invalid_args`, `plugin_budget_exceeded`, `not_permitted`, `unsupported_method`, `internal_error`. A budget refusal also carries `detail: {budget, limit, actual}`.
+
+### Budgets
+
+Enforced by the writer, inside its transaction. A write past a ceiling is refused, never silently truncated.
+
+| Budget | Limit |
+|---|---|
+| Collection bytes per plugin per machine | 2 MiB |
+| Collection rows per plugin | 4,000 |
+| One collection value | 64 KiB |
+| Contribution rows per plugin | 2,000 |
+| One contribution payload | 4 KiB |
+| Panels per plugin | 32 |
+| One panel schema | 64 KiB |
+
+### Lifecycle
+
+Your child gets 20 seconds to become ready and 60 seconds for one action round-trip. If it exits, it restarts with backoff — one second, doubling, capped at thirty. A child that stays up a minute is treated as healthy and its backoff resets. The last 4 KB of stderr lands in the log ring, so a crash is readable with `ade plugin logs <id> --text`.
+
+## Themes
+
+Theme plugins omit `entry` and ship no code.
+
+```json
+{ "theme": { "tokens": {
+  "dark":  { "--color-accent": "#7C6FF0", "--shell-bg": "#0B0B0F" },
+  "light": { "--color-accent": "#5B4FD6" } } } }
+```
+
+Only these namespaces are accepted; anything else is dropped with a warning: `--color-*`, `--shell-*`, `--chat-*`, `--work-*`, `--pane-*`, `--pr-*`, `--gradient-*`. Users preview a theme and press Esc to revert, or apply it to persist. iOS applies the accent only.
+
+## Contributing an agent skill
+
+Put a `SKILL.md` with `name` and `description` frontmatter under `skills/<name>/`, and list the directory in the manifest's `skills` array. Installed plugin skill roots join `ADE_AGENT_SKILLS_DIRS`, so every runtime that reads extra skill roots picks it up.
+
+## Publishing
+
+<Steps>
+  <Step title="Push a public repository">
+    With a valid `plugin.json` at its root.
+  </Step>
+  <Step title="Add the ade-plugin topic">
+    A crawler finds the topic and adds your plugin to the directory.
+  </Step>
+</Steps>
+
+There is no submission, no review queue, and no account. Being listed is not an endorsement — community entries show their author and carry no Official mark. Official status is set from a curated file in the registry, and official releases carry a published sha256 the installer verifies before running anything.
+
+Bump `version` on every published change: the install registry, the checksum table, and the update path all key off it.
+
+<CardGroup cols={2}>
+  <Card title="Using plugins" icon="puzzle-piece" href="/reference/plugins">
+    The user-facing side — installing, machines, settings, themes.
+  </Card>
+  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+    The rest of the control plane your plugin can invoke.
+  </Card>
+</CardGroup>

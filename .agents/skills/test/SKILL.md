@@ -278,11 +278,11 @@ Fix until passing before moving to the next.
 
 ---
 
-## Parity Passes (4–7)
+## Parity Passes (4–8)
 
-After the test-suite work above, run four parity reviewers that keep docs, iOS, the CLI, and the TUI in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, run five parity reviewers that keep docs, iOS, the CLI, the TUI, and the plugin SDK in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3. Pass 8 is conditional: run it only when the branch touches the plugin platform's shared contracts.
 
-**Preferred: TeamCreate** for these four passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
+**Preferred: TeamCreate** for these passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
 
 ---
 
@@ -587,7 +587,92 @@ Report:
 - typecheck and test results
 ```
 
-Wait for all four parity agents to complete before moving to Verification.
+---
+
+## Pass 8: SDK parity (conditional)
+
+`apps/desktop/src/shared/plugins/` is a wire contract, not internal code: four independently-released clients (desktop, web, iOS, `ade code`) and every installed third-party plugin read it. Run this pass **only if** the branch touches any of these — skip it and say so otherwise:
+
+```bash
+git diff "$TEST_REVIEW_BASE" --name-only | grep -E \
+  'shared/plugins/|services/plugins/|components/plugins/|commands/plugin\.ts|tuiClient/pluginPane|ios/ADE/(Models|Views)/Plugin|registry/'
+```
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the ADE plugin SDK parity reviewer.
+
+`apps/desktop/src/shared/plugins/` (manifest.ts, vocabulary.ts, sockets.ts,
+context.ts, sdk.ts, registryIndex.ts) is the contract four clients and every
+installed plugin render. Your job is to prove this branch did not break it.
+
+Step 1: Get branch context
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git diff "$TEST_REVIEW_BASE" -- apps/desktop/src/shared/plugins/
+
+Step 2: Classify each contract change
+- ADDITIVE (new optional field, new component, new socket kind, new SDK
+  method) — allowed, but see steps 3-5.
+- BREAKING (removed or renamed field/component/kind/method, narrowed type,
+  changed semantics of an existing name) — not allowed without a version
+  bump; report it as a blocker with the exact symbol.
+
+Step 3: Require the version bump
+A changed wire shape must move its version constant in the same commit:
+  VOCAB_VERSION (vocabulary.ts) for panel schema shape
+  PLUGIN_SDK_VERSION (sdk.ts) for the child SDK surface
+  PLUGIN_MANIFEST_VERSION (manifest.ts) for manifest shape
+An unchanged constant beside a changed shape means old clients mis-parse
+silently instead of falling back. Report it.
+
+Step 4: Require the doc update
+Any contract change must be reflected in BOTH:
+  docs/features/plugins/README.md (internal architecture + source file map)
+  apps/desktop/resources/agent-skills/ade-plugins/SKILL.md (the authoring
+    reference agents read — manifest table, component table, socket table,
+    SDK table, budgets)
+Public pages reference/plugins.mdx and reference/plugin-sdk.mdx update too
+when the user-facing or author-facing surface changed. Apply the edits; do
+not just report the gap.
+
+Step 5: Require a fixture regression test
+apps/desktop/test/fixtures/hello-plugin/ is the end-to-end fixture. A new
+SDK method, socket kind, or manifest field needs the fixture to exercise it
+and a test in apps/desktop/src/main/services/plugins/pluginFixture.test.ts
+(or the matching shared/plugins/*.test.ts) to pin it. Confirm the fixture
+manifest still parses:
+  node -e "const {parsePluginManifestJson}=require('./apps/desktop/src/shared/plugins/manifest.ts')" \
+    2>/dev/null || npx vitest run apps/desktop/src/shared/plugins/manifest.test.ts
+
+Step 6: Four-renderer parity check
+For every vocabulary component or socket kind the branch adds or changes,
+confirm each renderer either draws it or degrades on purpose:
+  desktop  apps/desktop/src/renderer/components/plugins/vocabularyComponents.tsx
+           apps/desktop/src/renderer/components/plugins/sockets/
+  iOS      apps/ios/ADE/Views/Plugins/PluginPaneStore.swift
+             (PluginRenderSupport.renderableComponents)
+           apps/ios/ADE/Models/PluginRecords.swift (PluginSocketKind)
+  TUI      apps/ade-cli/src/tuiClient/pluginPane.ts
+  web      shares the desktop renderer; check only the data adapter
+A component drawn on desktop that collapses to nothing elsewhere is a
+failure. A named marker or placeholder is a pass — record which it is.
+
+Step 7: Validate
+  cd apps/desktop && npx vitest run src/shared/plugins src/main/services/plugins
+  cd apps/ade-cli && npx vitest run src/tuiClient/__tests__ src/services/plugins
+  node scripts/validate-docs.mjs
+
+Report:
+- Every contract change, classified additive vs breaking
+- Version constants bumped, or why none was needed
+- Docs and skill files updated
+- Fixture/test added, with the file and test name
+- The four-renderer table: component/socket x renderer x drawn|marker|missing
+- Test and validate-docs results
+```
+
+Wait for all parity agents to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
 

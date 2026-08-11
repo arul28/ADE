@@ -146,6 +146,9 @@ open the relevant one only when a task needs it.
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.
+- **Plugins** (manifest, panel vocabulary, sockets, SDK v0, `ade plugin`) →
+  `ade-plugins`. Read it before touching anything under `shared/plugins/` — the
+  panel schema and socket payloads are a wire contract four clients render.
 
 **Worktree note:** ADE runs this session inside a lane worktree
 (`.ade/worktrees/<lane>/`). Every edit must target a path under that worktree,
