@@ -884,16 +884,33 @@ export function createSessionService({
       }
     };
 
-    // Chunked rather than a worker pool: results come back in request order for
-    // free, which matters because `settled` is a changed-id list a caller
-    // compares against what it asked for. Head-of-line blocking inside a chunk
-    // is not observable — every teardown is already hard-bounded.
-    for (let start = 0; start < ids.length; start += SETTLE_TEARDOWN_CONCURRENCY) {
-      const chunk = await Promise.all(ids.slice(start, start + SETTLE_TEARDOWN_CONCURRENCY).map(settleOne));
-      for (const outcome of chunk) {
-        settled.push(...outcome.settled);
-        aborted.push(...outcome.aborted);
-      }
+    // A worker pool, not chunks. Chunking was tried and reverted: a chunk
+    // barrier idles the other workers until its slowest member finishes, and
+    // "every teardown is bounded" is not the same as "every teardown takes the
+    // same time". For a 50-session sweep where a quarter of the rows hold
+    // unstoppable work, chunking costs roughly 65s against the pool's ~20 —
+    // aimed straight at the 30s iOS command budget this exists to protect.
+    const perSession = new Map<string, SettleSessionsOutcome>();
+    const queue = [...ids];
+    await Promise.all(
+      Array.from({ length: Math.min(SETTLE_TEARDOWN_CONCURRENCY, queue.length) }, async () => {
+        for (;;) {
+          const id = queue.shift();
+          if (id === undefined) return;
+          perSession.set(id, await settleOne(id));
+        }
+      }),
+    );
+
+    // Reassembled in request order. `settled` is a changed-id list that callers
+    // compare against what they asked for, so it must not come back shuffled by
+    // whichever teardown happened to finish first. `normalizeSessionIds`
+    // dedupes, so every id has exactly one entry.
+    for (const id of ids) {
+      const outcome = perSession.get(id);
+      if (!outcome) continue;
+      settled.push(...outcome.settled);
+      aborted.push(...outcome.aborted);
     }
 
     return { settled, aborted };

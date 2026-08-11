@@ -194,6 +194,7 @@ describe("session settle teardown", () => {
 
   it("does not claim a clean teardown when the CONFIRMATION read times out", async () => {
     let call = 0;
+    let armed = false;
     const { run } = harness({
       // The first read succeeds, so teardown proceeds and interrupts. The read
       // that is supposed to CONFIRM the stop then hangs — and a timeout is not
@@ -201,15 +202,65 @@ describe("session settle teardown", () => {
       readActiveWork: vi.fn(async () => {
         call += 1;
         if (call === 1) return work({ backgroundTaskCount: 1 });
+        armed = true;
         return await new Promise<SessionActiveWork>(() => {});
       }),
-      expireProviderCall: async () => {},
+      expireProviderCall: () => armed ? Promise.resolve() : new Promise<void>(() => {}),
     });
 
     const outcome = await run("session-1", neverAborted);
 
     expect(outcome.residue, "an unconfirmed stop must never report as clean").not.toEqual([]);
     expect(outcome.residue[0]?.reason).toBe("timeout");
+  });
+
+  it("never claims confirmation for a settle that was aborted mid-confirmation", async () => {
+    let aborted = false;
+    let reads = 0;
+    const { run } = harness({
+      // The abort must trip INSIDE the confirmation loop, not before it. Tripped
+      // earlier, an already-correct early return handles it and this test would
+      // pass against the very bug it is written for.
+      readActiveWork: async () => {
+        reads += 1;
+        if (reads >= 2) aborted = true;
+        return work({ backgroundTaskCount: 1 });
+      },
+    });
+
+    const outcome = await run("session-1", { isAborted: () => aborted });
+
+    expect(reads, "the confirmation loop must actually have run").toBeGreaterThan(1);
+
+    // `confirmed` gates whether a previous residue record may be ERASED, so a
+    // teardown that confirmed nothing must never report true — this is the one
+    // shape the flag exists to make impossible.
+    expect(outcome.confirmed).toBe(false);
+  });
+
+  it("keeps the provider on a confirmation-read timeout", async () => {
+    let call = 0;
+    // Armed only AFTER the first read lands. An always-immediate expire races
+    // the first read on the microtask queue and can time it out instead, which
+    // would pass this test for the wrong reason.
+    let armed = false;
+    const { run } = harness({
+      readActiveWork: vi.fn(async () => {
+        call += 1;
+        if (call === 1) return work({ backgroundTaskCount: 1, provider: "codex" });
+        armed = true;
+        return await new Promise<SessionActiveWork>(() => {});
+      }),
+      expireProviderCall: () => armed
+        ? Promise.resolve()
+        : new Promise<void>(() => {}),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    // The provider was already read; dropping it loses the analytics dimension
+    // for exactly the residue worth attributing.
+    expect(outcome.provider).toBe("codex");
   });
 
   it("buckets residue counts so a large fleet cannot widen the analytics dimension", () => {

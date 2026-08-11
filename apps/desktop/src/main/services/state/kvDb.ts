@@ -938,7 +938,11 @@ function readSettleTupleColumn(
     [sessionId],
   );
   const value = row?.value;
-  return typeof value === "string" ? value : null;
+  if (value == null) return null;
+  // Stringified rather than narrowed to `string`: TEXT affinity converts a
+  // numeric `val`, but not a blob, and a blob that CHANGED must not read as
+  // unchanged just because it is not a string.
+  return value instanceof Uint8Array ? Buffer.from(value).toString("base64") : String(value);
 }
 
 function isSettleTupleChange(

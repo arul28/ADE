@@ -164,14 +164,14 @@ export function createSessionSettleTeardown(
       await withTimeout(deps.readActiveWork(sessionId), expireProviderCall)
         .catch(() => ({ ok: false }) as const);
 
-    const timedOutResidue = (): SettleTeardownOutcome => ({
+    const timedOutResidue = (provider: string | null = null): SettleTeardownOutcome => ({
       residue: [{
         kind: "background_tasks",
         reason: "timeout",
         count: 1,
         detail: "could not read what this session was running, so nothing was stopped",
       }],
-      provider: null,
+      provider,
       confirmed: false,
     });
 
@@ -210,7 +210,7 @@ export function createSessionSettleTeardown(
 
     const confirmed = await waitForQuiet(readWork, ctx);
     // Same rule for the confirmation read: a timeout here is not confirmation.
-    if (!confirmed.ok) return timedOutResidue();
+    if (!confirmed.ok) return timedOutResidue(provider);
     const after = confirmed.value;
     if (after && !ctx.isAborted()) {
       const reason = stopRejected
@@ -239,7 +239,7 @@ export function createSessionSettleTeardown(
       }
     }
 
-    return { residue, provider, confirmed: true };
+    return { residue, provider, confirmed: !ctx.isAborted() };
   };
 
   /**
