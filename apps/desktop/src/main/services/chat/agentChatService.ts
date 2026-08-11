@@ -6273,7 +6273,7 @@ function buildSpawnSelfReportGuidance(
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. ADE automatically wakes your parent after parent-requested turns and includes your latest assistant summary. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. While your parent owns your current mission, ADE automatically wakes it after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. If a human messages you directly, completions become quiet notes until your parent dispatches again. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -29554,7 +29554,8 @@ export function createAgentChatService(args: {
   /**
    * Child chat sessions spawned with a parent lineage. The relationship lives
    * on the persisted child session, while parent-dispatch causality lives on
-   * the child turn's persisted user-message metadata. Completion deliveries
+   * the child's persisted user-message metadata — per turn for the turn that
+   * was dispatched, and across turns as mission ownership. Completion deliveries
    * carry the child turn id in the parent transcript, providing durable dedupe
    * without a process-local spawn tracker.
    */
@@ -29619,18 +29620,53 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
+    /**
+     * A completion wakes the parent when the parent started this turn OR still
+     * owns the child's mission. Ownership matters because a subagent's own
+     * scheduled wakeups, not the parent, start most of the turns in a long
+     * mission (a ship loop polling CI, for example) — attributing strictly
+     * per-turn left the parent unnotified when the mission actually finished.
+     *
+     * Ownership is the most recent directive-class input to the child. A
+     * scheduler delivery, a completion returning from the child's own
+     * grandchild, and a host housekeeping prompt all continue whatever mission
+     * is in flight rather than reassigning it, so they are not directives. A
+     * human message is a directive and takes ownership away from the parent
+     * (the human owns that interaction) until the parent dispatches again.
+     *
+     * Ownership is read at completion time; ADE does not track which owner was
+     * in charge when a given wakeup was scheduled. "Who is waiting for this
+     * result now" is the question the wake answers, and the cheaper rule needs
+     * no durable per-schedule provenance.
+     *
+     * Every input here is persisted host-authored state. `spawnDispatch` is
+     * stamped at the RPC edge from the caller's bound session and the target's
+     * persisted parent, with caller-supplied values deleted first, so a child
+     * cannot manufacture ownership of itself.
+     */
+    const childHistory = mergeEnvelopeStreams(
+      readTranscriptEnvelopes(child),
+      eventHistoryBySession.get(childSessionId) ?? [],
+    );
     const parentWasDispatcher = (() => {
-      const history = mergeEnvelopeStreams(
-        readTranscriptEnvelopes(child),
-        eventHistoryBySession.get(childSessionId) ?? [],
-      );
-      for (let index = history.length - 1; index >= 0; index -= 1) {
-        const event = history[index]?.event;
+      for (let index = childHistory.length - 1; index >= 0; index -= 1) {
+        const event = childHistory[index]?.event;
         if (event?.type !== "user_message" || event.turnId !== resolvedTurnId) continue;
         return event.metadata?.spawnDispatch?.parentSessionId === parentSessionId;
       }
       return false;
     })();
+    const parentOwnsMission = (() => {
+      for (let index = childHistory.length - 1; index >= 0; index -= 1) {
+        const event = childHistory[index]?.event;
+        if (event?.type !== "user_message") continue;
+        const metadata = event.metadata;
+        if (metadata?.scheduledWake || metadata?.spawnCompletion || metadata?.hostMaintenance) continue;
+        return metadata?.spawnDispatch?.parentSessionId === parentSessionId;
+      }
+      return false;
+    })();
+    const parentShouldWake = parentWasDispatcher || parentOwnsMission;
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -29696,7 +29732,7 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
-          if (spawnKind === "subagent" && parentWasDispatcher) {
+          if (spawnKind === "subagent" && parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,
               kind: "wake",
@@ -39214,7 +39250,14 @@ export function createAgentChatService(args: {
       "Do not perform any other work.",
     ].filter((part): part is string => Boolean(part)).join(" ");
     try {
-      await messageSession({ sessionId, kind: "wake", text: instructions });
+      // Housekeeping, not a directive: a subagent asked to clean up legacy
+      // provider schedules must not lose its parent's mission ownership.
+      await messageSession({
+        sessionId,
+        kind: "wake",
+        text: instructions,
+        metadata: { hostMaintenance: { reason: "provider_schedule_cleanup" } },
+      });
     } catch (error) {
       if (!confirmedOwnerSchedules.length) {
         await forgetStaleOwnerSchedules();

@@ -197,6 +197,10 @@ export type AgentChatSpawnDispatchMetadata = {
   dispatchedAt: string;
 };
 
+export type AgentChatHostMaintenanceMetadata = {
+  reason: "provider_schedule_cleanup";
+};
+
 export type AgentChatContinuityRecovery = {
   state: "required" | "reconstructed";
   reason: AgentChatResumeFailureKind;
@@ -505,6 +509,9 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   spawnCompletion?: AgentChatSpawnCompletion;
   /** Marks a child turn as parent-dispatched so completion may wake the parent. */
   spawnDispatch?: AgentChatSpawnDispatchMetadata;
+  /** Marks a host-authored housekeeping prompt (not a directive from a human or
+   * a parent), so it never reassigns ownership of a child's current mission. */
+  hostMaintenance?: AgentChatHostMaintenanceMetadata;
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */

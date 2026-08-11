@@ -10529,6 +10529,151 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("wakes the parent when a self-scheduled wakeup finishes a turn the parent still owns", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamTurn = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamTurn += 1;
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-scheduled", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: {
+            id: `msg-scheduled-summary-${streamTurn}`,
+            content: [{ type: "text", text: "Mission complete: PR merged." }],
+            usage: { input_tokens: 1, output_tokens: 6 },
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-scheduled",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Ship loop child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Ship the fix.",
+        metadata: {
+          spawnDispatch: { parentSessionId: parent.id, dispatchedAt: "2026-08-11T00:00:00.000Z" },
+        },
+      });
+      const parentWakes = () => events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      );
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(1));
+
+      // The incident: the mission's final turn is started by the child's own
+      // durable scheduler, not by the parent.
+      await service.messageSession({
+        sessionId: child.id,
+        kind: "wake",
+        text: "Check CI.",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "wakeup-1",
+            kind: "wakeup",
+            firedAt: "2026-08-11T00:10:00.000Z",
+            reason: "poll CI",
+          },
+        },
+      });
+
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(2));
+      const [dispatchedWake, scheduledWake] = parentWakes();
+      expect((dispatchedWake!.event as any).metadata.spawnCompletion.summary)
+        .toBe("Mission complete: PR merged.");
+      expect((scheduledWake!.event as any).metadata.spawnCompletion).toMatchObject({
+        childSessionId: child.id,
+        childTitle: "Ship loop child",
+        spawnKind: "subagent",
+        status: "completed",
+      });
+      expect((scheduledWake!.event as any).metadata.spawnCompletion.childTurnId)
+        .not.toBe((dispatchedWake!.event as any).metadata.spawnCompletion.childTurnId);
+    });
+
+    it("leaves a quiet note for a scheduled turn after a human takes over the mission", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-handover", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-handover",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Handover child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Ship the fix.",
+        metadata: {
+          spawnDispatch: { parentSessionId: parent.id, dispatchedAt: "2026-08-11T00:00:00.000Z" },
+        },
+      });
+      const parentWakes = () => events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      );
+      const quietNotices = () => events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+        && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+      );
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(1));
+
+      await service.sendMessage({ sessionId: child.id, text: "Actually, hold on — do this instead." });
+      await vi.waitFor(() => expect(quietNotices()).toHaveLength(1));
+
+      await service.messageSession({
+        sessionId: child.id,
+        kind: "wake",
+        text: "Check CI.",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "wakeup-2",
+            kind: "wakeup",
+            firedAt: "2026-08-11T00:20:00.000Z",
+            reason: "poll CI",
+          },
+        },
+      });
+
+      await vi.waitFor(() => expect(quietNotices()).toHaveLength(2));
+      expect(parentWakes()).toHaveLength(1);
+    });
+
     it("emits a quiet completion notice without a wake when a peer finishes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {

@@ -3789,7 +3789,11 @@ async function runTool(args: {
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
-    } else if (domain === "chat" && action === "messageSession") {
+    } else if (domain === "chat" && (action === "messageSession" || action === "steer")) {
+      // `steer` also carries caller metadata into a child turn's persisted
+      // user message, and that metadata decides whether a completion may wake
+      // another agent. Strip and re-derive it here too, or a child could steer
+      // itself with a forged parent stamp.
       scopedObjectArgs = withTrustedSpawnDispatchMetadata(
         runtime,
         session,

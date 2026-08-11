@@ -156,10 +156,25 @@ will need, join, read, or review the result (including parallel work); `peer`
 is fire-and-forget and leaves quiet turn-completion notes. Missing types and
 the legacy `none` value are rejected for new parented sessions.
 
-Every parent-dispatched subagent chat turn returns its child turn id and latest
-bounded assistant summary, steering an active parent or waking an idle parent.
-Human-dispatched child turns and peer turns leave quiet notes. The persisted
-lineage/dispatch metadata makes this restart-safe and per-turn rather than a
+Subagent chat turns return their child turn id and latest bounded assistant
+summary, steering an active parent or waking an idle parent. A completion wakes
+the parent when the parent started that turn *or* still owns the child's
+mission — the most recent directive-class input to the child was
+parent-dispatched. Scheduler deliveries (`scheduledWake`), completions arriving
+from the child's own grandchildren (`spawnCompletion`), and host housekeeping
+prompts (`hostMaintenance`) continue the mission in flight rather than
+reassigning it, so a subagent that self-schedules wakeups — an ADE ship loop
+polling CI, say — still wakes its parent when the mission finishes. A direct
+human message is a directive and moves ownership to the human, making
+completions quiet notes until the parent dispatches again. Ownership is read at
+completion time; ADE keeps no per-schedule provenance. Peer turns are always
+quiet notes.
+
+`spawnDispatch` is stamped at the RPC edge (`withTrustedSpawnDispatchMetadata`)
+from the caller's bound session and the target's persisted parent, with any
+caller-supplied value deleted first, on `chat.messageSession`, `chat.sendMessage`
+and `chat.steer` — so a child cannot manufacture ownership of itself. The
+persisted lineage/dispatch metadata makes this restart-safe rather than a
 one-shot kickoff notification; final delivery failure becomes visible in the
 child after bounded retries.
 

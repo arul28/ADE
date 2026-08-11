@@ -572,6 +572,7 @@ function createRuntime() {
         responseText: "yes",
       })),
       sendMessage: vi.fn(async () => {}),
+      steer: vi.fn(async () => ({ steerId: "steer-1", queued: false })),
       messageSession: vi.fn(async (args: unknown) => ({
         sessionId: (args as { sessionId?: string }).sessionId ?? "chat-unknown",
         kind: (args as { kind?: string }).kind ?? "auto",
@@ -4439,6 +4440,45 @@ describe("adeRpcServer", () => {
       text: "peer context",
       metadata: {
         requestId: "request-1",
+        spawnDispatch: {
+          parentSessionId: "chat-1",
+          dispatchedAt: expect.any(String),
+        },
+      },
+    });
+
+    // Ownership of a child's mission is derived from this stamp, so `steer`
+    // must strip a forged one the same way `messageSession` does.
+    const forgedSelfSteer = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "steer",
+      args: {
+        sessionId: "chat-1",
+        text: "self steer",
+        metadata: {
+          spawnDispatch: {
+            parentSessionId: "spoofed-parent",
+            dispatchedAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      },
+    });
+    expect(forgedSelfSteer?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.steer).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "self steer",
+    });
+
+    const parentSteerToChild = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "steer",
+      args: { sessionId: "chat-2", text: "more context" },
+    });
+    expect(parentSteerToChild?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.steer).toHaveBeenLastCalledWith({
+      sessionId: "chat-2",
+      text: "more context",
+      metadata: {
         spawnDispatch: {
           parentSessionId: "chat-1",
           dispatchedAt: expect.any(String),
