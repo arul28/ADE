@@ -822,13 +822,6 @@ function withSessionLookup<T extends { list: () => Array<{ id: string }> }>(serv
 }
 
 describe("prMergeAutoSettlementService", () => {
-  /**
-   * Default: the revision always looks different, so a retry is never blocked.
-   * The no-retry test overrides it to a constant.
-   */
-  let revisionCounter = 0;
-  const getRevision = () => (revisionCounter += 1);
-
   function createMemoryDb() {
     const values = new Map<string, unknown>();
     return {
@@ -873,7 +866,6 @@ describe("prMergeAutoSettlementService", () => {
         ]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent,
     });
@@ -936,7 +928,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1015,7 +1006,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1087,7 +1077,6 @@ describe("prMergeAutoSettlementService", () => {
         ]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1132,7 +1121,6 @@ describe("prMergeAutoSettlementService", () => {
         ]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent,
     });
@@ -1153,7 +1141,8 @@ describe("prMergeAutoSettlementService", () => {
       settled: ids,
       aborted: [] as Array<{ sessionId: string; reason: string }>,
     }));
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:05:00.000Z" });
+    // Past the cooling-off window: the merge is deferred, never abandoned.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
 
     expect(
       settleSessionsReportingAborts,
@@ -1171,7 +1160,7 @@ describe("prMergeAutoSettlementService", () => {
    * teardown, stop the very work that beat the first attempt — once per poll.
    * The revision is the "something changed since" signal that gates it.
    */
-  it("does not retry an aborted settle while the session has not changed", async () => {
+  it("cools off after an aborted settle, then re-arms", async () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
       settled: [] as string[],
@@ -1185,8 +1174,6 @@ describe("prMergeAutoSettlementService", () => {
         ]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        // The turn is still running: nothing about the session has moved.
-        getSettleLifecycleRevision: () => 7,
       }) as any,
       emitEvent: vi.fn(),
     });
@@ -1206,8 +1193,15 @@ describe("prMergeAutoSettlementService", () => {
 
     expect(
       settleSessionsReportingAborts,
-      "an unchanged session must not have teardown re-run against it every poll",
+      "teardown must not be re-run against still-active work on every poll",
     ).toHaveBeenCalledTimes(1);
+
+    // ...but the window always expires, so the PR is never permanently skipped.
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "the cooling-off window must re-arm",
+    ).toHaveBeenCalledTimes(2);
   });
 
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
@@ -1233,7 +1227,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent,
     });
@@ -1298,7 +1291,6 @@ describe("prMergeAutoSettlementService", () => {
         }]),
         get: vi.fn(() => null),
         settleSessionsReportingAborts,
-        getSettleLifecycleRevision: getRevision,
       }) as any,
       emitEvent: vi.fn(),
     });

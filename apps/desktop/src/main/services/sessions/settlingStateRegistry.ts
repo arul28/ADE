@@ -16,6 +16,33 @@
  * would be a lie on every other device the moment this host died.
  */
 
+declare const settleTeardownCompletedBrand: unique symbol;
+
+/**
+ * Proof that a teardown finished synchronously.
+ *
+ * The settle path is synchronous in step 2, and a teardown that defers is not
+ * merely unsupported — it is actively harmful: the settling window would close
+ * while the unowned continuation kept stopping processes, so C4/C5 output from
+ * those stops would no longer be swallowed and would clear the settle that just
+ * landed. Losing the work AND the settle is the R2 shape.
+ *
+ * A runtime check cannot prevent this. `async (id) => {}` is caught by its
+ * constructor, but the common adapter `id => asyncStop(id)` is an ordinary
+ * `Function` and has already started the work by the time any check runs. So the
+ * seam demands a value only a synchronous body can produce: an `async` function
+ * or a promise-returning adapter returns `Promise<...>`, which is not assignable
+ * to this brand, and fails to COMPILE.
+ *
+ * Step 3 replaces this with an awaited seam once the settle path itself is async.
+ */
+export type SettleTeardownCompleted = { readonly [settleTeardownCompletedBrand]: true };
+
+/** The only way to produce a `SettleTeardownCompleted`. */
+export function settleTeardownCompleted(): SettleTeardownCompleted {
+  return {} as SettleTeardownCompleted;
+}
+
 /** Why a settle was abandoned. Only ever set by a human-decision clearer. */
 export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";
 

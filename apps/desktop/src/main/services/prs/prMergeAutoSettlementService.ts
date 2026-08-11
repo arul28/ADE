@@ -62,15 +62,25 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
-  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts" | "getSettleLifecycleRevision">;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
-   * The lifecycle revision each session had when its auto-settle last aborted.
-   * Instance-scoped, so it lives exactly as long as the poller — a module-level
-   * map would leak across services and across tests.
+   * When each session's auto-settle last aborted.
+   *
+   * A revision check was tried and is wrong: a normal turn COMPLETING does not
+   * move the settle lifecycle (`clearLastTurnFailed` does not touch it, and chat
+   * output deliberately opts out of clearing), so the revision can stay equal
+   * forever and the merged PR would be skipped for good — worse than the
+   * over-retry it was meant to fix.
+   *
+   * A cooling-off period is the honest gate: it always re-arms, so the PR is
+   * never permanently abandoned, while the poll interval stops re-running
+   * teardown against work that is still in progress. Instance-scoped, so it
+   * lives exactly as long as the poller.
    */
-  const abortedRevisions = new Map<string, number>();
+  const lastAbortedAtBySession = new Map<string, number>();
+  const RETRY_AFTER_ABORT_MS = 10 * 60 * 1000;
 
   /**
    * The currently open or draft PRs in the previous snapshot, so a merge we
@@ -201,16 +211,17 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        // Do not retry while the activity that won the race is still in
-        // progress. The abort signal is edge-triggered — a turn that is STILL
-        // running will not trip it again — so an unconditional retry would, in
-        // step 3, stop the very work that beat the first attempt, once per poll.
-        // The revision is the available "something changed since" signal, and it
-        // is the mechanism this whole design is built on.
-        const revisionAtLastAbort = abortedRevisions.get(session.id);
+        // Cool off after an abort. The abort signal is edge-triggered — a turn
+        // that is STILL running will not trip it again — so retrying every poll
+        // would, in step 3, stop the very work that beat the first attempt, over
+        // and over. The window always expires, so the merge is deferred, never
+        // abandoned.
+        const lastAbortedAt = lastAbortedAtBySession.get(session.id);
+        const polledAtMs = Date.parse(polledAt);
         if (
-          revisionAtLastAbort !== undefined
-          && args.sessionService.getSettleLifecycleRevision(session.id) === revisionAtLastAbort
+          lastAbortedAt !== undefined
+          && Number.isFinite(polledAtMs)
+          && polledAtMs - lastAbortedAt < RETRY_AFTER_ABORT_MS
         ) {
           abandonedThisPr = true;
           continue;
@@ -227,7 +238,8 @@ export function createPrMergeAutoSettlementService(args: {
           // merge being consumed by a settle that never landed. Record the
           // revision so that retry waits for the session to actually change.
           abandonedThisPr = true;
-          abortedRevisions.set(session.id, args.sessionService.getSettleLifecycleRevision(session.id));
+          const abortedAtMs = Date.parse(polledAt);
+          if (Number.isFinite(abortedAtMs)) lastAbortedAtBySession.set(session.id, abortedAtMs);
         }
       }
 

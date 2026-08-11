@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
-import type { SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
+import type { SettleAbortedSession, SettleSessionsOutcome, SettleTeardownCompleted } from "./settlingStateRegistry";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -379,19 +379,8 @@ export function createSessionService({
    * revision guard all land and are tested against a NO-OP, so every race is
    * exercised before there is any work to lose. Step 3 supplies the real one.
    */
-  runSettleTeardown?: (sessionId: string) => void;
+  runSettleTeardown?: (sessionId: string) => SettleTeardownCompleted;
 }) {
-  // Refuse an async teardown HERE, at wiring time, not when a settle runs.
-  // Detecting it after invocation is too late: the body has already started, and
-  // its unowned continuation can go on stopping processes after the settling
-  // window closed — losing the work AND the settle. TypeScript's void-return
-  // rule makes `async (id) => {}` assignable, so this is the only boundary that
-  // can catch it before it does damage.
-  if (runSettleTeardown && runSettleTeardown.constructor.name === "AsyncFunction") {
-    throw new Error(
-      "runSettleTeardown must be synchronous: the settle path must be made async before teardown can await anything.",
-    );
-  }
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
 
@@ -771,16 +760,7 @@ export function createSessionService({
       // The owner will report the outcome; reporting it twice would double-count.
       if (begin.kind === "joined") continue;
       try {
-        const teardownResult = runSettleTeardown?.(id) as unknown;
-        // Backstop for a SYNC function that returns a promise — the
-        // `AsyncFunction` check at construction cannot see that shape. Still
-        // after-the-fact, but such a function has at least run its synchronous
-        // body to completion, so the damage is bounded to whatever it deferred.
-        if (teardownResult && typeof (teardownResult as { then?: unknown }).then === "function") {
-          throw new Error(
-            "runSettleTeardown returned a promise: the settle path must be made async before teardown can await anything.",
-          );
-        }
+        runSettleTeardown?.(id);
 
         const abortedBy = settleLifecycle.settling.abortedBy(id);
         if (abortedBy) {

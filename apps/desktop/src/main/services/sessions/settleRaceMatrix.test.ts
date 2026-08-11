@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
+import { settleTeardownCompleted } from "./settlingStateRegistry";
 
 /**
  * The race matrix from the settle-teardown design (§2), tested directly against
@@ -60,7 +61,10 @@ describe("settle race matrix (teardown is a no-op)", () => {
     let teardown: (sessionId: string) => void = () => {};
     const service = createSessionService({
       db,
-      runSettleTeardown: (sessionId) => teardown(sessionId),
+      runSettleTeardown: (sessionId) => {
+        teardown(sessionId);
+        return settleTeardownCompleted();
+      },
     });
     const setTeardown = (fn: (sessionId: string) => void) => {
       teardown = fn;
@@ -323,16 +327,12 @@ describe("settle race matrix (teardown is a no-op)", () => {
     expect(service.settlingSessionIds()).toEqual([]);
   });
 
-  /** An async teardown would close the window early; the seam refuses one. */
-  it("refuses an async teardown rather than closing the window under it", async () => {
-    const { service, setTeardown } = await fixture();
-    setTeardown((() => Promise.resolve()) as unknown as (sessionId: string) => void);
-
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
-
-    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "teardown_failed" }]);
-    expect(service.settlingSessionIds()).toEqual([]);
-  });
+  /**
+   * An async teardown is now a COMPILE error, not a runtime one — the seam
+   * returns a branded value that only a synchronous body can produce, so both
+   * `async (id) => {}` and the adapter `id => asyncStop(id)` fail to typecheck.
+   * There is no runtime behaviour left to assert; the type is the test.
+   */
 
   /** A settling row found after a restart resolves to not-settled. */
   it("crash safety: the settling window does not survive the process", async () => {
