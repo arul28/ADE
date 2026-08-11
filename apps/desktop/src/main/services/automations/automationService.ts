@@ -33,6 +33,7 @@ import type {
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
 import {
   ensureAutomationScheduleOccurrenceSchema,
@@ -2517,6 +2518,22 @@ export function createAutomationService({
           (resolvedArgs as Record<string, unknown>)[key] = value;
         }
       }
+    }
+
+    // Automation config is not a trusted author of chat-message provenance:
+    // `spawnDispatch` and its siblings decide whether an agent completion wakes
+    // another agent, and the host derives them from observed identity.
+    if (
+      domain === "chat"
+      && typeof resolvedArgs === "object"
+      && resolvedArgs !== null
+      && !Array.isArray(resolvedArgs)
+      && typeof (resolvedArgs as Record<string, unknown>).metadata === "object"
+      && (resolvedArgs as Record<string, unknown>).metadata !== null
+    ) {
+      stripHostAuthoredMessageProvenance(
+        (resolvedArgs as { metadata: Record<string, unknown> }).metadata,
+      );
     }
 
     try {

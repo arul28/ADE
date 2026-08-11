@@ -10487,7 +10487,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("leaves a quiet completion note for a human-dispatched subagent turn", async () => {
+    it("leaves a quiet completion note when a human dispatches the child's first turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-human", slash_commands: [] };

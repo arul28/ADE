@@ -19,6 +19,7 @@ import {
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
@@ -2694,6 +2695,10 @@ function scopeChatAdeActionArgs(
   return scopedArgs;
 }
 
+/** Chat actions whose caller-supplied metadata is persisted on a `user_message`,
+ * where this provenance decides whether a completion may wake another agent. */
+const SPAWN_DISPATCH_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
+
 function withTrustedSpawnDispatchMetadata(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2702,10 +2707,10 @@ function withTrustedSpawnDispatchMetadata(
   const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId);
   const existingMetadata = isRecord(chatArgs.metadata) ? { ...chatArgs.metadata } : {};
-  // This marker controls whether a child completion may wake another agent.
-  // Never trust caller-supplied provenance; derive it from the bound session
-  // and the target's persisted direct-parent relationship.
-  delete existingMetadata.spawnDispatch;
+  // This provenance controls whether a child completion may wake another agent,
+  // and for how long. Never trust the caller's copy; derive it from the bound
+  // session and the target's persisted direct-parent relationship.
+  stripHostAuthoredMessageProvenance(existingMetadata);
   const targetSession = targetSessionId ? runtime.sessionService.get(targetSessionId) : null;
   const targetParentSessionId = asOptionalTrimmedString(
     targetSession?.orchestrationParentSessionId,
@@ -2715,6 +2720,11 @@ function withTrustedSpawnDispatchMetadata(
       parentSessionId: callerSessionId,
       dispatchedAt: new Date().toISOString(),
     };
+  } else if (callerSessionId) {
+    // Some other bound agent — the target's own child reporting in, a sibling,
+    // or the target itself. Coordination between agents does not reassign a
+    // mission, so it must not take ownership away from the target's parent.
+    existingMetadata.agentRelay = { fromSessionId: callerSessionId };
   }
   if (!Object.keys(existingMetadata).length) {
     const { metadata: _metadata, ...withoutMetadata } = chatArgs;
@@ -3746,7 +3756,23 @@ async function runTool(args: {
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
-    const rawObjectArgs = safeObject(toolArgs.args);
+    // Every chat action whose caller metadata lands in a persisted
+    // `user_message` re-derives the spawn-dispatch stamp here, before any
+    // role- or scope-specific branch. That stamp decides whether a child's
+    // completion may wake another agent — and now decides it for the whole
+    // mission, not one turn — so no caller, elevated or not, gets to supply it.
+    const stampedChatAction = domain === "chat" && SPAWN_DISPATCH_STAMPED_CHAT_ACTIONS.has(action);
+    if (stampedChatAction && (argsList || hasScalarArg)) {
+      // Positional invocation would carry caller metadata straight past the
+      // re-derivation below. These actions take object arguments anyway.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Action 'chat.${action}' requires object arguments; pass them with --input-json.`,
+      );
+    }
+    const rawObjectArgs = stampedChatAction
+      ? withTrustedSpawnDispatchMetadata(runtime, session, safeObject(toolArgs.args))
+      : safeObject(toolArgs.args);
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
@@ -3789,16 +3815,8 @@ async function runTool(args: {
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
-    } else if (domain === "chat" && (action === "messageSession" || action === "steer")) {
-      // `steer` also carries caller metadata into a child turn's persisted
-      // user message, and that metadata decides whether a completion may wake
-      // another agent. Strip and re-derive it here too, or a child could steer
-      // itself with a forged parent stamp.
-      scopedObjectArgs = withTrustedSpawnDispatchMetadata(
-        runtime,
-        session,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
-      );
+    } else if (domain === "chat" && action === "messageSession") {
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
     } else if (!callerIsCto && domain === "pty") {
       scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
@@ -3819,19 +3837,13 @@ async function runTool(args: {
       && domain === "chat"
       && SCOPED_CHAT_ACTIONS.has(action)
     ) {
-      const chatArgs = action === "sendMessage"
-        ? withTrustedSpawnDispatchMetadata(
-            runtime,
-            session,
-            requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
-          )
-        : requireObjectArgsForScopedAdeAction(
-            domain,
-            action,
-            argsList,
-            hasScalarArg,
-            rawObjectArgs,
-          );
+      const chatArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
+      );
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
       const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId);
       const legacyCrossSessionSend = action === "sendMessage"

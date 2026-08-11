@@ -4255,9 +4255,13 @@ describe("adeRpcServer", () => {
       args: { text: "own-chat write" },
     });
     expect(ownChatSend?.isError).toBeUndefined();
+    // An agent writing to its own chat is recorded as an agent relay: it is not
+    // a directive, so it cannot take a spawned child's mission from its parent
+    // (nor, for a child writing to itself, claim one).
     expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "own-chat write",
+      metadata: { agentRelay: { fromSessionId: "chat-1" } },
     });
 
     const ownAttentionRequest = await callTool(handler, "run_ade_action", {
@@ -4447,8 +4451,10 @@ describe("adeRpcServer", () => {
       },
     });
 
-    // Ownership of a child's mission is derived from this stamp, so `steer`
-    // must strip a forged one the same way `messageSession` does.
+    // Ownership of a child's mission is derived from this provenance, so
+    // `steer` must strip a forged copy the same way `messageSession` does. A
+    // caller that is not the target's parent is recorded as an agent relay,
+    // which never reassigns a mission.
     const forgedSelfSteer = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "steer",
@@ -4460,6 +4466,7 @@ describe("adeRpcServer", () => {
             parentSessionId: "spoofed-parent",
             dispatchedAt: "2020-01-01T00:00:00.000Z",
           },
+          hostContinuation: { reason: "plan_followup" },
         },
       },
     });
@@ -4467,7 +4474,16 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.steer).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "self steer",
+      metadata: { agentRelay: { fromSessionId: "chat-1" } },
     });
+
+    const positionalSteer = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "steer",
+      argsList: [{ sessionId: "chat-1", text: "positional", metadata: { spawnDispatch: { parentSessionId: "chat-9" } } }],
+    });
+    expect(positionalSteer.isError).toBe(true);
+    expect(positionalSteer.error?.code).toBe(JsonRpcErrorCode.invalidParams);
 
     const parentSteerToChild = await callTool(handler, "run_ade_action", {
       domain: "chat",

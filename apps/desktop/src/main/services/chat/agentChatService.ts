@@ -92,6 +92,7 @@ import {
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
+import { parentShouldWakeForChildTurn } from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -23811,6 +23812,9 @@ export function createAgentChatService(args: {
       void sendMessage({
         sessionId: managed.session.id,
         text: followup.followupText,
+        // Continues this chat's own plan, so it must not take a spawned
+        // child's mission away from its parent.
+        metadata: { hostContinuation: { reason: "plan_followup" } },
       }).catch((error) => {
         logger.warn("agent_chat.plan_followup_dispatch_failed", {
           sessionId: managed.session.id,
@@ -29620,53 +29624,16 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
-    /**
-     * A completion wakes the parent when the parent started this turn OR still
-     * owns the child's mission. Ownership matters because a subagent's own
-     * scheduled wakeups, not the parent, start most of the turns in a long
-     * mission (a ship loop polling CI, for example) — attributing strictly
-     * per-turn left the parent unnotified when the mission actually finished.
-     *
-     * Ownership is the most recent directive-class input to the child. A
-     * scheduler delivery, a completion returning from the child's own
-     * grandchild, and a host housekeeping prompt all continue whatever mission
-     * is in flight rather than reassigning it, so they are not directives. A
-     * human message is a directive and takes ownership away from the parent
-     * (the human owns that interaction) until the parent dispatches again.
-     *
-     * Ownership is read at completion time; ADE does not track which owner was
-     * in charge when a given wakeup was scheduled. "Who is waiting for this
-     * result now" is the question the wake answers, and the cheaper rule needs
-     * no durable per-schedule provenance.
-     *
-     * Every input here is persisted host-authored state. `spawnDispatch` is
-     * stamped at the RPC edge from the caller's bound session and the target's
-     * persisted parent, with caller-supplied values deleted first, so a child
-     * cannot manufacture ownership of itself.
-     */
-    const childHistory = mergeEnvelopeStreams(
-      readTranscriptEnvelopes(child),
-      eventHistoryBySession.get(childSessionId) ?? [],
-    );
-    const parentWasDispatcher = (() => {
-      for (let index = childHistory.length - 1; index >= 0; index -= 1) {
-        const event = childHistory[index]?.event;
-        if (event?.type !== "user_message" || event.turnId !== resolvedTurnId) continue;
-        return event.metadata?.spawnDispatch?.parentSessionId === parentSessionId;
-      }
-      return false;
-    })();
-    const parentOwnsMission = (() => {
-      for (let index = childHistory.length - 1; index >= 0; index -= 1) {
-        const event = childHistory[index]?.event;
-        if (event?.type !== "user_message") continue;
-        const metadata = event.metadata;
-        if (metadata?.scheduledWake || metadata?.spawnCompletion || metadata?.hostMaintenance) continue;
-        return metadata?.spawnDispatch?.parentSessionId === parentSessionId;
-      }
-      return false;
-    })();
-    const parentShouldWake = parentWasDispatcher || parentOwnsMission;
+    // Wake decision lives in `spawnMissionOwnership` so the policy — which
+    // inputs count as a directive — is stated and tested in one place.
+    const parentShouldWake = parentShouldWakeForChildTurn({
+      history: mergeEnvelopeStreams(
+        readTranscriptEnvelopes(child),
+        eventHistoryBySession.get(childSessionId) ?? [],
+      ),
+      parentSessionId,
+      turnId: resolvedTurnId,
+    });
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -38486,6 +38453,9 @@ export function createAgentChatService(args: {
         text: action === "restart_resume_thread"
           ? "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress."
           : "Retry the interrupted work from the user's last request in this thread. Re-check the current workspace state, continue safely, and report progress.",
+        // Resumes the user's own last request; it assigns no new work, so a
+        // spawned child stays owned by whoever owned it before the interrupt.
+        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
       }, { awaitDispatch: true, automaticRecovery: internal?.automatic === true });
       if (action === "restart_resume_thread") {
         emitCodexTurnRecovery(managed, {
@@ -39256,7 +39226,7 @@ export function createAgentChatService(args: {
         sessionId,
         kind: "wake",
         text: instructions,
-        metadata: { hostMaintenance: { reason: "provider_schedule_cleanup" } },
+        metadata: { hostContinuation: { reason: "provider_schedule_cleanup" } },
       });
     } catch (error) {
       if (!confirmedOwnerSchedules.length) {
