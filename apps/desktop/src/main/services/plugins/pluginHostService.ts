@@ -782,13 +782,19 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         // which surface that kind renders on is per-plugin manifest detail.
         // Built once per call rather than per row — a Lanes list asks for this
         // on every render, and a plugin declares a handful of sockets.
+        //
+        // The key joins plugin id to socket kind on a NUL, which neither can
+        // contain, so no pair of ids can ever collide into one entry. Written
+        // as the ESCAPE, never as a literal NUL byte: a source file holding one
+        // is binary to git, which stops diffing it and hides every later change
+        // to this function.
         const declared = new Map<string, { socketId: string; enabled: boolean }>();
         for (const installed of installs.list()) {
           if (!installed.record.enabled || !installed.manifest) continue;
           const off = new Set(installed.record.disabledContributions ?? []);
           for (const socket of installed.manifest.sockets) {
             if (socket.surface !== surface) continue;
-            declared.set(`${installed.record.pluginId} ${socket.socket}`, {
+            declared.set(`${installed.record.pluginId}\u0000${socket.socket}`, {
               socketId: socket.id,
               enabled: !off.has(socket.id),
             });
@@ -801,7 +807,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         });
         const results: PluginContributionRecord[] = [];
         for (const row of rows) {
-          const match = declared.get(`${row.pluginId} ${row.socket}`);
+          const match = declared.get(`${row.pluginId}\u0000${row.socket}`);
           // Disabled plugins, switched-off sockets and rows left behind by a
           // plugin that stopped declaring a socket all drop out here, so no
           // caller has to re-derive any of it.
