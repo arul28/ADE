@@ -6,7 +6,6 @@
   "icon": "graph",
   "accent": "#7C6FF0",
   "vocabVersion": 1,
-  "entry": "index.js",
   "surfaces": [
     {
       "kind": "tab",

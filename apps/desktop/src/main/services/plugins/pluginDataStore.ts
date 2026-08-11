@@ -1,4 +1,5 @@
 import {
+  deleteAllPluginRows,
   deletePluginCollectionValue,
   isPluginBudgetExceeded,
   publishPluginContribution,
@@ -352,9 +353,7 @@ export function createPluginDataStore(deps: {
     },
 
     removePluginData(pluginId) {
-      db.run("delete from plugin_collections where plugin_id = ?", [pluginId]);
-      db.run("delete from plugin_contributions where plugin_id = ?", [pluginId]);
-      db.run("delete from plugin_panels where plugin_id = ?", [pluginId]);
+      deleteAllPluginRows(db, pluginId);
     },
   };
 }

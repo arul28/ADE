@@ -59,7 +59,7 @@ export const PLUGIN_CHILD_ENV_DENYLIST = [
 const PLUGIN_CHILD_DISPOSE_GRACE_MS = 3_000;
 
 /** How long `start()` waits for the child's `ready` frame. */
-const PLUGIN_CHILD_READY_TIMEOUT_MS = 20_000;
+export const PLUGIN_CHILD_READY_TIMEOUT_MS = 20_000;
 
 /** Default ceiling on one `invoke` round-trip. */
 const PLUGIN_CHILD_INVOKE_TIMEOUT_MS = 60_000;
@@ -233,8 +233,29 @@ export function createPluginChildSupervisor(args: {
 
   let readyResolve: (() => void) | null = null;
   let readyReject: ((error: Error) => void) | null = null;
+  /**
+   * Which spawn the pending ready timer belongs to.
+   *
+   * A crash-restart loop can have the previous child's ready timer still armed
+   * while the NEXT child is in `starting`: without the generation check that
+   * timer sees `status === "starting"`, decides the (healthy, just-spawned)
+   * child timed out, and kills it. The counter makes a timer only ever able to
+   * fail the spawn it was armed for.
+   */
+  let spawnGeneration = 0;
+  let readyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearReadyTimer = (): void => {
+    if (!readyTimer) return;
+    clearTimer(readyTimer);
+    readyTimer = null;
+  };
 
   const settleReady = (error: Error | null): void => {
+    // Every path out of `starting` runs through here — ready frame, exit,
+    // spawn error, closed stdin — so this is the one place the timer has to be
+    // dropped for it never to outlive its own spawn.
+    clearReadyTimer();
     const resolve = readyResolve;
     const reject = readyReject;
     readyResolve = null;
@@ -378,6 +399,7 @@ export function createPluginChildSupervisor(args: {
   };
 
   const spawnChild = (): Promise<void> => new Promise<void>((resolve, reject) => {
+    const generation = (spawnGeneration += 1);
     const bootstrapPath = resolveChildBootstrapPath();
     const env: NodeJS.ProcessEnv = {
       ...sanitizePluginChildBaseEnv(process.env),
@@ -431,8 +453,10 @@ export function createPluginChildSupervisor(args: {
     });
     spawned.once("exit", (code, signal) => handleExit(code, signal));
 
-    const readyTimer = setTimer(() => {
-      if (status !== "starting") return;
+    clearReadyTimer();
+    readyTimer = setTimer(() => {
+      readyTimer = null;
+      if (generation !== spawnGeneration || status !== "starting") return;
       settleReady(new PluginSdkError("plugin_timeout", `Plugin "${pluginId}" did not become ready in time.`));
       stopChild();
     }, PLUGIN_CHILD_READY_TIMEOUT_MS);
@@ -447,7 +471,6 @@ export function createPluginChildSupervisor(args: {
       config: args.config,
     });
     if (!helloSent) {
-      clearTimer(readyTimer);
       settleReady(new PluginSdkError("plugin_crashed", `Plugin "${pluginId}" closed its input channel before starting.`));
     }
   });
@@ -539,6 +562,7 @@ export function createPluginChildSupervisor(args: {
         clearTimer(restartTimer);
         restartTimer = null;
       }
+      clearReadyTimer();
       const target = child;
       if (!target) {
         setStatus("stopped");

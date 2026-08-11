@@ -47,6 +47,7 @@ import type {
 } from "../../../shared/plugins/sockets";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { createPluginChildSupervisor, type PluginChildSupervisor } from "./pluginChildSupervisor";
+import { subscribeToPluginChanges } from "./pluginEvents";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
 import { createPluginSdkServer } from "./pluginSdkServer";
@@ -82,6 +83,12 @@ export type PluginHostServiceArgs = {
   logger: Logger;
   pluginsRoot?: string;
   adeVersion?: string | null;
+  /**
+   * Builds a plugin's child supervisor. Injected only by tests: the host starts
+   * every enabled plugin on its own now, and a unit test that installs a
+   * fixture must be able to prove the host asked without spawning node.
+   */
+  createSupervisor?: typeof createPluginChildSupervisor;
 } & PluginMachineContext;
 
 /**
@@ -418,23 +425,31 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   const activeProjectByPlugin = new Map<string, string>();
   let disposed = false;
 
+  /** Any attached project, for callers with no reason to prefer one. */
+  const anyProject = (): AttachedProject | null => projects.values().next().value ?? null;
+
+  /**
+   * One message for "there is nowhere to put plugin data", shared by both
+   * resolvers below so a plugin cannot get two different explanations for the
+   * same condition depending on which call it made.
+   */
+  const requireAttached = (attached: AttachedProject | null): AttachedProject => {
+    if (!attached) {
+      throw new PluginSdkError("internal_error", "No project is open, so plugin data is unavailable.");
+    }
+    return attached;
+  };
+
   const resolveProject = (pluginId: string): AttachedProject | null => {
     const preferred = activeProjectByPlugin.get(pluginId);
     if (preferred) {
       const attached = projects.get(preferred);
       if (attached) return attached;
     }
-    const first = projects.values().next();
-    return first.done ? null : first.value;
+    return anyProject();
   };
 
-  const requireProject = (pluginId: string): AttachedProject => {
-    const attached = resolveProject(pluginId);
-    if (!attached) {
-      throw new PluginSdkError("internal_error", "No project is open, so plugin data is unavailable.");
-    }
-    return attached;
-  };
+  const requireProject = (pluginId: string): AttachedProject => requireAttached(resolveProject(pluginId));
 
   /**
    * A `PluginDataStore` that resolves its project at call time. The supervisor
@@ -457,6 +472,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   const configFor = (pluginId: string, manifest: PluginManifest | null): Record<string, string | number | boolean | null> =>
     effectiveConfig(manifest, readStoredConfig(installs.root)[pluginId]);
 
+  const buildSupervisor = args.createSupervisor ?? createPluginChildSupervisor;
+
   const ensureSupervisor = (installed: PluginInstalledPlugin): PluginChildSupervisor => {
     const pluginId = installed.record.pluginId;
     const existing = supervisors.get(pluginId);
@@ -473,7 +490,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         requireProject(pluginId).binding.invokeAdeAction(domain, action, actionArgs),
       readConfig: () => configFor(pluginId, manifest),
     });
-    const supervisor = createPluginChildSupervisor({
+    const supervisor = buildSupervisor({
       pluginId,
       pluginRoot: installed.root,
       manifest,
@@ -483,6 +500,21 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     });
     supervisors.set(pluginId, supervisor);
     return supervisor;
+  };
+
+  /**
+   * Drop a plugin's running child.
+   *
+   * Every caller that replaces what a child is running — a settings write, an
+   * upgrade, a reload, an uninstall — has to do this first, and the supervisor
+   * is removed from the map BEFORE the await so a concurrent `invoke` cannot
+   * pick up the one that is on its way out.
+   */
+  const stopSupervisor = async (pluginId: string): Promise<void> => {
+    const supervisor = supervisors.get(pluginId);
+    if (!supervisor) return;
+    supervisors.delete(pluginId);
+    await supervisor.dispose();
   };
 
   const runtimeStateFor = (installed: PluginInstalledPlugin): {
@@ -502,12 +534,101 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     return { status: hasEntry ? "idle" : "no-entry", restartCount: 0, lastCrashAt: null };
   };
 
-  /** Drop supervisors whose plugin was disabled, removed, or reloaded. */
-  const reconcile = (): void => {
-    const enabled = new Map(installs.list().map((plugin) => [plugin.record.pluginId, plugin]));
+  /**
+   * Read a panel's declared schema from the plugin's own tree.
+   *
+   * The manifest parser already refuses a path that escapes the plugin, and
+   * this re-checks the resolved path anyway — the same belt-and-braces the
+   * skills roots get, because this one is read from a directory a third party
+   * wrote. Unreadable or unparseable reads as "no declared schema", which is
+   * the honest answer: the plugin ships a panel it cannot render.
+   */
+  const readDeclaredPanelSchema = (pluginRoot: string, schemaFile: string): unknown => {
+    const resolved = path.resolve(pluginRoot, schemaFile);
+    if (resolved !== pluginRoot && !resolved.startsWith(`${pluginRoot}${path.sep}`)) return undefined;
+    try {
+      return JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * Materialize the panels a manifest DECLARES, so a plugin that ships no code
+   * still renders.
+   *
+   * `plugin_panels` is the only thing any client reads — desktop, phone, TUI
+   * and web all render the row, never the manifest — so before this a declared
+   * `schemaFile` was never read by anything and every codeless plugin (themes,
+   * static panels) opened onto "this plugin hasn't published this view yet".
+   * The one pilot that worked around it did so by shipping an entry point whose
+   * only job was to re-publish its own JSON on a retry loop.
+   *
+   * `replace` is false for a plain bind: a running plugin's live panel content
+   * outranks its shipped default, and clobbering it on every project attach
+   * would blank a populated view until the child republished. It is true when
+   * the code on disk just changed (install, reload) — the declared schema is
+   * then genuinely newer than whatever the previous version published.
+   */
+  const seedDeclaredPanels = (installed: PluginInstalledPlugin, replace: boolean): void => {
+    const manifest = installed.manifest;
+    if (!manifest || !installed.record.enabled) return;
+    const pluginId = installed.record.pluginId;
+    for (const panel of manifest.panels) {
+      if (!panel.schemaFile) continue;
+      const schema = readDeclaredPanelSchema(installed.root, panel.schemaFile);
+      if (schema === undefined) continue;
+      const surface = manifest.surfaces.find((entry) => entry.panelId === panel.id);
+      for (const attached of projects.values()) {
+        try {
+          if (!replace && attached.data.readPanel(pluginId, panel.id)) continue;
+          // Through the store, so the budget writer sees this row exactly as it
+          // sees a `panels.update` from the plugin itself.
+          attached.data.updatePanel(pluginId, panel.id, {
+            ...(panel.title ? { title: panel.title } : {}),
+            ...(panel.icon ? { icon: panel.icon } : {}),
+            ...(surface ? { surface: surface.id } : {}),
+            schema,
+            vocabVersion: manifest.vocabVersion,
+          });
+        } catch (error) {
+          logger.warn("plugin.panel_seed_failed", {
+            pluginId,
+            panelId: panel.id,
+            projectId: attached.binding.projectId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+  };
+
+  /** Start a plugin without making the caller wait on — or fail with — it. */
+  const startQuietly = (supervisor: PluginChildSupervisor): void => {
+    void supervisor.start().catch((error: unknown) => {
+      logger.warn("plugin.autostart_failed", {
+        pluginId: supervisor.pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /**
+   * Bring running state in line with installed state.
+   *
+   * Two halves, and the second one is what makes a plugin visible at all:
+   * supervisors for plugins that were disabled, removed or reloaded are
+   * dropped, and every enabled plugin is then STARTED and has its declared
+   * panels seeded. Nothing else starts a plugin except an explicit `invoke`, so
+   * without this an installed plugin sat idle — no panels, no contributions,
+   * nothing on any surface — until someone happened to invoke one of its
+   * actions.
+   */
+  const reconcile = (options?: { replacePanels?: boolean }): void => {
+    const installed = new Map(installs.list().map((plugin) => [plugin.record.pluginId, plugin]));
     for (const [pluginId, supervisor] of [...supervisors]) {
-      const installed = enabled.get(pluginId);
-      if (installed && installed.record.enabled && installed.manifest && pluginHasRuntimeEntry(installed.manifest)) {
+      const plugin = installed.get(pluginId);
+      if (plugin && plugin.record.enabled && plugin.manifest && pluginHasRuntimeEntry(plugin.manifest)) {
         continue;
       }
       supervisors.delete(pluginId);
@@ -518,6 +639,26 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         });
       });
     }
+    if (disposed) return;
+    for (const plugin of installed.values()) {
+      if (!plugin.record.enabled || !plugin.manifest) continue;
+      seedDeclaredPanels(plugin, options?.replacePanels === true);
+      if (!pluginHasRuntimeEntry(plugin.manifest)) continue;
+      startQuietly(ensureSupervisor(plugin));
+    }
+  };
+
+  /**
+   * The tail every install-state change shares: bring running state in line,
+   * tell the other machines, and answer with the plugin as it now is.
+   */
+  const applyInstallChange = (
+    installed: PluginInstalledPlugin,
+    options?: { replacePanels?: boolean },
+  ): PluginSummary => {
+    reconcile(options);
+    publishPresence();
+    return toSummary(installed, runtimeStateFor(installed));
   };
 
   const requireInstalled = (pluginId: string): PluginInstalledPlugin => {
@@ -539,17 +680,10 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   };
 
   const domainService = (projectId: string | null): PluginDomainService => {
-    const scopedProject = (): AttachedProject | null => {
-      const attached = projectId ? projects.get(projectId) : projects.values().next().value;
-      return attached ?? null;
-    };
-    const requireScopedProject = (): AttachedProject => {
-      const attached = scopedProject();
-      if (!attached) {
-        throw new PluginSdkError("internal_error", "No project is open, so plugin data is unavailable.");
-      }
-      return attached;
-    };
+    const scopedProject = (): AttachedProject | null => (
+      projectId ? projects.get(projectId) ?? null : anyProject()
+    );
+    const requireScopedProject = (): AttachedProject => requireAttached(scopedProject());
     const requireId = (value: unknown, field: string): string => {
       if (typeof value !== "string" || !value.trim()) {
         throw new PluginSdkError("invalid_args", `"${field}" is required.`);
@@ -769,28 +903,31 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         stored[pluginId] = values;
         writeStoredConfig(installs.root, stored);
         // The child is handed its config at spawn, so a running one keeps the
-        // old values until it is replaced.
-        const supervisor = supervisors.get(pluginId);
-        if (supervisor) {
-          supervisors.delete(pluginId);
-          await supervisor.dispose();
-        }
+        // old values until it is replaced. `reconcile` then brings it back with
+        // the values the user just typed — a plugin that stayed stopped after a
+        // settings change would read as the change having broken it.
+        await stopSupervisor(pluginId);
+        reconcile();
         return detailFor(requireInstalled(pluginId));
       },
 
       async install(installArgs) {
+        // A local source names its plugin before anything is copied, which is
+        // the only chance to stop the child BEFORE its directory is renamed out
+        // from under it: on Windows a live cwd handle makes that rename fail
+        // outright, and everywhere else the old code keeps running while the
+        // new version is reported as installed.
+        const incoming = readManifestFromDirectory(installArgs.source)?.name ?? null;
+        if (incoming) await stopSupervisor(incoming);
         const installed = await installs.install(installArgs);
-        reconcile();
-        publishPresence();
-        return toSummary(installed, runtimeStateFor(installed));
+        // A git source only reveals its id here; either way the supervisor for
+        // the installed id must not survive the code it was running.
+        if (installed.record.pluginId !== incoming) await stopSupervisor(installed.record.pluginId);
+        return applyInstallChange(installed, { replacePanels: true });
       },
 
       async uninstall(uninstallArgs) {
-        const supervisor = supervisors.get(uninstallArgs.pluginId);
-        if (supervisor) {
-          supervisors.delete(uninstallArgs.pluginId);
-          await supervisor.dispose();
-        }
+        await stopSupervisor(uninstallArgs.pluginId);
         const result = installs.uninstall(uninstallArgs.pluginId);
         // Rows outlive the install otherwise: `plugin_collections` is keyed by
         // plugin id and nothing else would ever collect them.
@@ -805,22 +942,27 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             });
           }
         }
+        // Secrets are machine-scoped, so no project cleanup would ever reach
+        // them: an uninstalled plugin's tokens would sit in the credential
+        // store with nothing left that knows their names.
+        try {
+          await secrets.removeAll(uninstallArgs.pluginId);
+        } catch (error) {
+          logger.warn("plugin.secret_cleanup_failed", {
+            pluginId: uninstallArgs.pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         publishPresence();
         return result;
       },
 
       async enable(enableArgs) {
-        const installed = installs.setEnabled(enableArgs.pluginId, true);
-        reconcile();
-        publishPresence();
-        return toSummary(installed, runtimeStateFor(installed));
+        return applyInstallChange(installs.setEnabled(enableArgs.pluginId, true));
       },
 
       async disable(disableArgs) {
-        const installed = installs.setEnabled(disableArgs.pluginId, false);
-        reconcile();
-        publishPresence();
-        return toSummary(installed, runtimeStateFor(installed));
+        return applyInstallChange(installs.setEnabled(disableArgs.pluginId, false));
       },
 
       async usageSummary(usageArgs): Promise<PluginUsageSummary> {
@@ -843,13 +985,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       },
 
       async reload(reloadArgs) {
-        const supervisor = supervisors.get(reloadArgs.pluginId);
-        if (supervisor) {
-          supervisors.delete(reloadArgs.pluginId);
-          await supervisor.dispose();
-        }
+        await stopSupervisor(reloadArgs.pluginId);
         const before = installs.get(reloadArgs.pluginId)?.record.version ?? null;
         const installed = installs.reload(reloadArgs.pluginId);
+        // The point of a reload is to run what is on disk NOW, panels included:
+        // `ade plugin dev` edits a panel schema and expects the surface to
+        // follow, so the declared schema replaces what the last run published.
+        reconcile({ replacePanels: true });
         // Only a version change is news for presence; the `ade plugin dev` loop
         // reloads constantly and republishing every time would be pure noise.
         if (installed.record.version !== before) publishPresence();
@@ -857,6 +999,48 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       },
     };
   };
+
+  /**
+   * Install changes, delivered to running plugins as `sdk.events`.
+   *
+   * `events.on` is part of the documented SDK surface and the child already
+   * dispatches `event` frames — nothing ever SENT one, so every listener a
+   * plugin registered was dead. Coalesced because an install emits per plugin
+   * and a `plugin install` of a package that replaces another produces a burst;
+   * a plugin wants "the install set moved, re-read it", not one wake per row.
+   */
+  const PLUGIN_EVENT_COALESCE_MS = 250;
+  /** Ids one payload carries. Past this the plugin should re-read the roster. */
+  const PLUGIN_EVENT_MAX_IDS = 50;
+  const pendingInstallIds = new Set<string>();
+  let installEventTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushInstallEvent = (): void => {
+    installEventTimer = null;
+    const ids = [...pendingInstallIds].slice(0, PLUGIN_EVENT_MAX_IDS);
+    pendingInstallIds.clear();
+    for (const [pluginId, supervisor] of supervisors) {
+      // Only a running child has an open stdin; `send` refuses the rest, and
+      // one that is still starting reads its state at activation anyway.
+      if (supervisor.status() !== "running") continue;
+      supervisor.send({
+        type: "event",
+        payload: {
+          event: "install.changed",
+          ids,
+          projectId: resolveProject(pluginId)?.binding.projectId ?? null,
+        },
+      });
+    }
+  };
+
+  const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
+    if (disposed || event.kind !== "installs") return;
+    if (event.pluginId) pendingInstallIds.add(event.pluginId);
+    if (installEventTimer) return;
+    installEventTimer = setTimeout(flushInstallEvent, PLUGIN_EVENT_COALESCE_MS);
+    installEventTimer.unref?.();
+  });
 
   const storeFor = (binding: PluginProjectBinding): PluginDataStore => createPluginDataStore({
     db: binding.db,
@@ -876,13 +1060,17 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         // handle, and holding the closed one would throw on the next write.
         existing.binding = binding;
         existing.data = storeFor(binding);
-        return { detach: () => detachProject(binding.projectId) };
+      } else {
+        projects.set(binding.projectId, {
+          binding,
+          data: storeFor(binding),
+          attachCount: 1,
+        });
       }
-      projects.set(binding.projectId, {
-        binding,
-        data: storeFor(binding),
-        attachCount: 1,
-      });
+      // The first project to bind is what makes plugin data writable at all, so
+      // this is where enabled plugins start and declared panels materialize.
+      // Both are idempotent, so a second project binding costs a no-op pass.
+      reconcile();
       return { detach: () => detachProject(binding.projectId) };
     },
     domainService,
@@ -900,6 +1088,11 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     async dispose() {
       if (disposed) return;
       disposed = true;
+      unsubscribePluginChanges();
+      if (installEventTimer) {
+        clearTimeout(installEventTimer);
+        installEventTimer = null;
+      }
       setPluginInstallService(null);
       setPluginActionInvoker(null);
       const running = [...supervisors.values()];
@@ -931,7 +1124,13 @@ export function getSharedPluginHostService(args: PluginHostServiceArgs): PluginH
   return sharedHost;
 }
 
-/** Test/teardown seam. */
+/**
+ * Tear the machine-scoped host down: every child is asked to stop (so a
+ * plugin's `deactivate` actually runs) before the process goes away.
+ *
+ * The daemon's own shutdown path calls this alongside the other machine-scoped
+ * singletons; tests call it between cases.
+ */
 export async function disposeSharedPluginHostService(): Promise<void> {
   const host = sharedHost;
   sharedHost = null;

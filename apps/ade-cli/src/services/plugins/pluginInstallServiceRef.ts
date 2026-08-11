@@ -1,4 +1,5 @@
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/plugins/sdk";
 
 /**
  * Late-bound handle to the plugin install service.
@@ -16,7 +17,12 @@ import { codedError } from "../../../../desktop/src/shared/codedError";
  * — worse — reporting success for an install that never happened.
  */
 
-export const PLUGIN_SERVICE_UNAVAILABLE_CODE = "plugins_unavailable";
+/**
+ * Re-exported, not restated: the renderer branches on this code and so does the
+ * sync layer, and two spellings of it would mean a caller degrades honestly on
+ * one route and shows an internal error on the other.
+ */
+export { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/plugins/sdk";
 
 export type PluginInstallSource =
   | { kind: "registry"; pluginId: string; version?: string | null }
@@ -90,10 +96,6 @@ export function setPluginInstallService(service: PluginInstallService | null): v
   current = service;
 }
 
-export function getPluginInstallService(): PluginInstallService | null {
-  return current;
-}
-
 /**
  * The service, or a typed error. Callers must not substitute a silent no-op:
  * a remote install that returns `{ ok: true }` without installing anything is
@@ -128,10 +130,6 @@ let invoker: PluginActionInvoker | null = null;
 /** Bind the host's invoker. Pass null on dispose. */
 export function setPluginActionInvoker(next: PluginActionInvoker | null): void {
   invoker = next;
-}
-
-export function getPluginActionInvoker(): PluginActionInvoker | null {
-  return invoker;
 }
 
 /** The invoker, or the same typed unavailability the install service raises. */

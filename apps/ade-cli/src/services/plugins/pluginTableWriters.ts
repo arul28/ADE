@@ -282,6 +282,26 @@ export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): vo
   });
 }
 
+/**
+ * Drop every row the three plugin tables hold for one plugin.
+ *
+ * Here rather than as three `db.run("delete …")` calls in the SDK-facing store:
+ * these tables are CRR, so a delete is itself a replicated change, and the set
+ * of tables that make up "a plugin's data" has to have one definition. A caller
+ * that deleted two of the three would leave rows nothing will ever collect —
+ * the plugin they belonged to is gone, so no later write can reach them.
+ *
+ * One transaction, so an uninstall cannot half-apply and leave a plugin with
+ * panels but no collections.
+ */
+export function deleteAllPluginRows(db: PluginWriterDb, pluginId: string): void {
+  inWriteTransaction(db, () => {
+    db.run("delete from plugin_collections where plugin_id = ?", [pluginId]);
+    db.run("delete from plugin_contributions where plugin_id = ?", [pluginId]);
+    db.run("delete from plugin_panels where plugin_id = ?", [pluginId]);
+  });
+}
+
 export type PluginPresenceRow = {
   pluginId: string;
   version: string;

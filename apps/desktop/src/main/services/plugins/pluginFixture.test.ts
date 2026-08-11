@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Logger } from "../logging/logger";
 import { parsePluginPanel } from "../../../shared/plugins/vocabulary";
-import { createPluginInstallService, listPluginAgentSkillRoots } from "./pluginInstallService";
+import {
+  createPluginInstallService,
+  listPluginAgentSkillRoots,
+  resolveBuiltinPluginsRoot,
+} from "./pluginInstallService";
 
 /**
  * End-to-end acceptance for the install half of the platform, driven by the
@@ -36,6 +40,59 @@ afterEach(() => {
   while (scratchDirs.length) {
     fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
   }
+});
+
+/**
+ * Where the bundled packages are found.
+ *
+ * Seeding INSTALLS and ENABLES whatever it finds, so the answer to "is this
+ * directory ADE's own `plugins/`" has to be proof, not proximity — otherwise
+ * launching ADE from a directory that happens to have a `plugins/` folder next
+ * to it runs third-party code nobody chose.
+ */
+describe("builtin plugins root", () => {
+  function tree(files: Record<string, string>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-builtin-root-"));
+    scratchDirs.push(root);
+    for (const [relative, contents] of Object.entries(files)) {
+      const target = path.join(root, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents, "utf8");
+    }
+    return root;
+  }
+
+  it("accepts the repo checkout, identified by its own package.json", () => {
+    const repo = tree({
+      "package.json": JSON.stringify({ name: "ade" }),
+      "plugins/ade-graph/plugin.json": "{}",
+    });
+
+    expect(resolveBuiltinPluginsRoot({}, { cwd: path.join(repo, "apps", "desktop"), dirname: null }))
+      .toBe(path.join(repo, "plugins"));
+  });
+
+  it("refuses an unrelated ancestor that merely has a plugins directory", () => {
+    const workspace = tree({
+      "package.json": JSON.stringify({ name: "someone-elses-monorepo" }),
+      "plugins/evil/plugin.json": "{}",
+      "checkout/package.json": JSON.stringify({ name: "not-ade" }),
+    });
+
+    expect(resolveBuiltinPluginsRoot({}, { cwd: path.join(workspace, "checkout"), dirname: null }))
+      .toBeNull();
+  });
+
+  it("prefers the packaged resources directory", () => {
+    const resources = tree({ "plugins/ade-graph/plugin.json": "{}" });
+    const repo = tree({
+      "package.json": JSON.stringify({ name: "ade" }),
+      "plugins/ade-graph/plugin.json": "{}",
+    });
+
+    expect(resolveBuiltinPluginsRoot({}, { cwd: repo, dirname: null, resourcesPath: resources }))
+      .toBe(path.join(resources, "plugins"));
+  });
 });
 
 describe("hello-plugin fixture", () => {

@@ -184,6 +184,73 @@ describe("ADE CLI", () => {
     ).toEqual(["project_recent", "project_system_host"]);
   });
 
+  it("routes `ade <plugin-id> <command>` to the plugin's own action, and a bare id to its usage", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-plugin-route-"));
+    try {
+      const root = path.join(adeHome, "plugins", "graph");
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "plugin.json"),
+        JSON.stringify({
+          name: "graph",
+          version: "1.0.0",
+          displayName: "Graph",
+          description: "Graph fixture",
+          vocabVersion: 1,
+          entry: "index.js",
+          surfaces: [],
+          panels: [],
+          cli: ["issues"],
+        }),
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(adeHome, "plugins", "state.json"),
+        JSON.stringify({
+          version: 1,
+          plugins: {
+            graph: {
+              pluginId: "graph",
+              version: "1.0.0",
+              enabled: true,
+              source: { kind: "local", path: root },
+              installedAt: "2026-08-11T00:00:00.000Z",
+              updatedAt: "2026-08-11T00:00:00.000Z",
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      withEnv({ ADE_HOME: adeHome }, () => {
+        // The declared word IS the action. Without it every `ade <id> <cmd>`
+        // reached the host as an invoke with no action and was refused.
+        expect(expectExecutePlan(buildCliPlan(["graph", "issues", "--text"]))).toMatchObject({
+          steps: [{
+            params: {
+              name: "run_ade_action",
+              arguments: {
+                domain: "plugin",
+                action: "invoke",
+                args: { pluginId: "graph", action: "issues", argv: ["issues", "--text"] },
+              },
+            },
+          }],
+        });
+
+        // A bare id is a question about the plugin, answered from its manifest.
+        const bare = buildCliPlan(["graph"]);
+        expect(bare.kind).toBe("help");
+        if (bare.kind === "help") expect(bare.text).toContain("ade graph issues");
+
+        // A word it never declared is still a typo, not a plugin failure.
+        expect(() => buildCliPlan(["graph", "nuke"])).toThrowError(/Unknown command/);
+      });
+    } finally {
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
   it("builds projectless account commands and reports the signed-out local-first message", () => {
     const statusPlan = expectExecutePlan(buildCliPlan(["auth", "status"]));
     expect(statusPlan).toMatchObject({

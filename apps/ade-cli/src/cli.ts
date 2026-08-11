@@ -29,6 +29,7 @@ import {
 } from "./commands/skill";
 import {
   CliPluginUsageError,
+  pluginCliUsageText,
   resolvePluginCliRoute,
   runPluginCommandAsync,
 } from "./commands/plugin";
@@ -12719,11 +12720,25 @@ function buildCliPlan(
   // `ade <pluginId> <cmd>` (D18). Only an installed, enabled plugin that
   // declares this word claims the command; anything else must still read as the
   // typo it is, so `ade lnes` says "Unknown command" and not a plugin error.
-  if (resolvePluginCliRoute(primary, args)) {
+  const pluginRoute = resolvePluginCliRoute(primary, args);
+  if (pluginRoute) {
+    // A bare `ade <id>` is a question, not a call: the plugin declares its words
+    // in a manifest this process can read, so answer from there rather than
+    // waking the brain to invoke an action nobody named.
+    if (!pluginRoute.command) {
+      return { kind: "help", text: pluginCliUsageText(pluginRoute.pluginId) };
+    }
     return {
       kind: "execute",
-      label: `plugin ${primary}`,
-      steps: [actionStep("result", "plugin", "invoke", { pluginId: primary, argv: args })],
+      label: `plugin ${primary} ${pluginRoute.command}`,
+      steps: [actionStep("result", "plugin", "invoke", {
+        pluginId: primary,
+        // The declared word IS the action; without it the host rejected every
+        // `ade <id> <cmd>` as a call with no action. `argv` stays raw beside it
+        // because the plugin owns its own flag parsing.
+        action: pluginRoute.command,
+        argv: args,
+      })],
     };
   }
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
@@ -17307,6 +17322,19 @@ async function runServe(
       )?.shutdown();
     } catch {
       // Analytics is best-effort and must never delay or fail daemon shutdown.
+    }
+    try {
+      // Machine-scoped like the two above, and the only path that asks a plugin
+      // child to stop: without it the process exits, every plugin is killed
+      // where it stands, and `deactivate()` — a plugin's one chance to flush
+      // whatever it was holding — never runs.
+      const { disposeSharedPluginHostService } = await import(
+        "../../desktop/src/main/services/plugins/pluginHostService"
+      );
+      await disposeSharedPluginHostService();
+    } catch {
+      // A plugin that will not stop is killed with the process; shutdown must
+      // not hang on it.
     }
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});

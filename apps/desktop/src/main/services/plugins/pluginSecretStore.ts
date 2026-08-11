@@ -9,7 +9,8 @@ import { assertPluginSecretName, pluginSecretStoreKey } from "../../../shared/pl
  *
  * `SyncCredentialStore` has no key-enumeration method — deliberately, since the
  * machine store also holds account tokens no caller should be able to sweep —
- * so the plugin namespace keeps its own index entry. `_` is outside
+ * so the plugin namespace keeps its own index entry, which is how `removeAll`
+ * knows what an uninstall has to clear. `_` is outside
  * `PLUGIN_SECRET_NAME_PATTERN`, which starts with a letter, so this key can
  * never collide with a real secret name.
  */
@@ -19,8 +20,14 @@ export type PluginSecretStore = {
   get(pluginId: string, name: string): Promise<string | null>;
   set(pluginId: string, name: string, value: string): Promise<void>;
   delete(pluginId: string, name: string): Promise<void>;
-  /** Names only, never values — this is what the settings UI is allowed to see. */
-  listNames(pluginId: string): Promise<string[]>;
+  /**
+   * Drop every secret a plugin stored, for uninstall.
+   *
+   * This is what the name index is FOR: the credential store cannot be
+   * enumerated, so without it an uninstalled plugin's tokens would sit in the
+   * machine store forever with nothing left that knows their names.
+   */
+  removeAll(pluginId: string): Promise<void>;
 };
 
 function indexKey(pluginId: string): string {
@@ -75,8 +82,11 @@ export function createPluginSecretStore(
       await store.delete(pluginSecretStoreKey(pluginId, secretName));
       await writeNames(pluginId, (await readNames(pluginId)).filter((entry) => entry !== secretName));
     },
-    async listNames(pluginId) {
-      return await readNames(pluginId);
+    async removeAll(pluginId) {
+      for (const name of await readNames(pluginId)) {
+        await store.delete(pluginSecretStoreKey(pluginId, name));
+      }
+      await store.delete(indexKey(pluginId));
     },
   };
 }

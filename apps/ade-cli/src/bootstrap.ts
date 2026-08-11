@@ -100,6 +100,9 @@ import {
   listPluginAgentSkillRoots,
   resolvePluginsRoot,
 } from "../../desktop/src/main/services/plugins/pluginInstallService";
+import { readPluginRegistryFile } from "../../desktop/src/main/services/plugins/pluginRegistryFile";
+import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
+import { PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 import {
   createPluginPresenceService,
   getPluginPresenceService,
@@ -474,6 +477,29 @@ function canonicalDirectoryWithin(root: string | null, boundary: string | null):
   }
 }
 
+/**
+ * Strip the message provenance ADE authors for itself before a plugin's call
+ * reaches a chat service.
+ *
+ * `spawnDispatch` and its siblings decide whether an agent completion may wake
+ * another agent, and the host derives them from identity it OBSERVED. A plugin
+ * has no chat session, so it cannot be the author of any of them — and unlike
+ * the RPC edge, this bridge has no session to derive a replacement from, so the
+ * honest answer is to drop the caller's copy rather than to trust it. Same rule
+ * the automation action bridge applies to automation config.
+ */
+export function withoutPluginAuthoredProvenance(
+  domain: AdeActionDomain,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (domain !== "chat" && domain !== "session") return args;
+  const metadata = args.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return args;
+  const copy = { ...(metadata as Record<string, unknown>) };
+  stripHostAuthoredMessageProvenance(copy);
+  return { ...args, metadata: copy };
+}
+
 function trustedAgentSkillsRootForCliEntry(
   cliEntry: string | null,
   resourcesPath: string | null,
@@ -711,13 +737,11 @@ export async function createAdeRuntime(args: {
    * (`state.json`, written by pluginInstallService) is probed here first.
    */
   const listInstalledPluginIds = (): readonly string[] | null => {
-    try {
-      JSON.parse(fs.readFileSync(path.join(resolvePluginsRoot(), "state.json"), "utf8"));
-    } catch (error) {
-      // No registry at all: nothing has ever been installed on this machine.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      return null;
-    }
+    // The registry file's own reader makes the distinction, so this no longer
+    // re-parses it by hand or hardcodes the file name.
+    const registry = readPluginRegistryFile(resolvePluginsRoot());
+    if (registry.kind === "unreadable") return null;
+    if (registry.kind === "absent") return [];
     try {
       return pluginHostService.listPresenceRows().map((row) => row.pluginId);
     } catch {
@@ -2118,14 +2142,36 @@ export async function createAdeRuntime(args: {
       invokeAdeAction: async (domain, action, args) => {
         const actionDomain = domain as AdeActionDomain;
         if (!isAutomationAllowedAdeAction(actionDomain, action)) {
-          throw new Error(`Action '${domain}.${action}' is not available to plugins.`);
+          throw new PluginSdkError(
+            "not_permitted",
+            `Action '${domain}.${action}' is not available to plugins.`,
+          );
+        }
+        // The account domain answers the RPC edge through
+        // `scopeAccountStatusForRole`, which strips the signed-in identity for
+        // anything below operator. This bridge is not that edge — it calls the
+        // service directly — so a plugin asking for `account.status` would read
+        // back the user's email and user id in full. Plugins have no account
+        // identity of their own, so the whole domain is refused here rather
+        // than a redaction being maintained in a second place.
+        if (actionDomain === "account") {
+          throw new PluginSdkError(
+            "not_permitted",
+            `Action '${domain}.${action}' is not available to plugins.`,
+          );
         }
         const service = getAdeActionDomainServices(runtime)[actionDomain];
         const callable = service?.[action];
         if (typeof callable !== "function") {
-          throw new Error(`Action '${domain}.${action}' is unavailable in this runtime.`);
+          throw new PluginSdkError(
+            "internal_error",
+            `Action '${domain}.${action}' is unavailable in this runtime.`,
+          );
         }
-        return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(service, args);
+        return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(
+          service,
+          withoutPluginAuthoredProvenance(actionDomain, args),
+        );
       },
     });
     return () => {

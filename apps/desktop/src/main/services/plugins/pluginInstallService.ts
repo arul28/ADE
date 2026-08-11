@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { Logger } from "../logging/logger";
+import { preferNativeExecutablePath } from "../shared/processExecution";
 import { dirExists, nowIso, spawnAsync, writeTextAtomic } from "../shared/utils";
 import {
   isPluginSupportedByAdeVersion,
@@ -16,11 +17,26 @@ import {
   verifyPluginChecksum,
   type PluginRegistryEntry,
 } from "../../../shared/plugins/registryIndex";
-import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/plugins/sdk";
+import type { PluginInstallRecord } from "../../../shared/plugins/sdk";
 import { emitPluginChange } from "./pluginEvents";
+import {
+  pluginRegistryFilePath,
+  readPluginRegistryContents,
+  type PluginRegistryFileContents,
+} from "./pluginRegistryFile";
 
-const PLUGIN_STATE_FILE = "state.json";
 const PLUGIN_MANIFEST_FILE = "plugin.json";
+
+/**
+ * `git`, named so Windows spawns it directly.
+ *
+ * `spawnAsync` routes an EXTENSION-LESS command through `cmd.exe /d /s /c`
+ * (windows-quirks §8), which re-parses the whole command line: a clone URL
+ * containing `%…%` would expand against the environment and a ref could pick up
+ * `cmd` metacharacters. Naming the `.exe` keeps the argv structured, which is
+ * the only form these arguments are safe in.
+ */
+const GIT_COMMAND = preferNativeExecutablePath(["git", "git.exe"]) ?? "git";
 
 /**
  * Copy ceilings. A plugin is source code and a few JSON schemas; a repository
@@ -74,57 +90,19 @@ export type PluginInstallService = {
   skillRoots(): string[];
 };
 
-type PluginRegistryFile = {
-  version: 1;
-  plugins: Record<string, PluginInstallRecord>;
-  /**
-   * Builtin plugins the user removed on purpose.
-   *
-   * Seeding is idempotent by checking "is there a record", so without a
-   * tombstone an uninstalled builtin would reappear on the next read — the user
-   * would delete it, and ADE would put it straight back. The id stays here
-   * forever; that is the point.
-   */
-  removedBuiltins: string[];
-};
+/**
+ * The registry file's shape, read and written here.
+ *
+ * `removedBuiltins` is the tombstone list: seeding is idempotent by checking
+ * "is there a record", so without it an uninstalled builtin would reappear on
+ * the next read — the user would delete it, and ADE would put it straight back.
+ * An id stays there forever; that is the point.
+ */
+type PluginRegistryFile = PluginRegistryFileContents;
 
 /** `<machine adeDir>/plugins` — installs are machine-scoped, never per project. */
 export function resolvePluginsRoot(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveMachineAdeLayout(env).adeDir, "plugins");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseInstallSource(raw: unknown): PluginInstallSource {
-  if (isRecord(raw)) {
-    if (raw.kind === "local" && typeof raw.path === "string") return { kind: "local", path: raw.path };
-    if (raw.kind === "git" && typeof raw.url === "string") {
-      return { kind: "git", url: raw.url, ...(typeof raw.ref === "string" ? { ref: raw.ref } : {}) };
-    }
-  }
-  return { kind: "builtin" };
-}
-
-function parseInstallRecord(pluginId: string, raw: unknown): PluginInstallRecord | null {
-  if (!isRecord(raw)) return null;
-  const version = typeof raw.version === "string" ? raw.version : "0.0.0";
-  const installedAt = typeof raw.installedAt === "string" ? raw.installedAt : nowIso();
-  const disabled = Array.isArray(raw.disabledContributions)
-    ? [...new Set(raw.disabledContributions.filter((id): id is string => typeof id === "string" && id.length > 0))]
-    : [];
-  return {
-    pluginId,
-    version,
-    enabled: raw.enabled !== false,
-    source: parseInstallSource(raw.source),
-    installedAt,
-    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : installedAt,
-    // Always present after a read, so nothing downstream has to distinguish
-    // "no field" from "nothing disabled" — they mean the same thing.
-    disabledContributions: disabled,
-  };
 }
 
 /**
@@ -147,7 +125,7 @@ async function gitArchiveDigest(stagingDir: string, logger: Logger): Promise<str
   const tarPath = path.join(path.dirname(stagingDir), `.archive-${randomUUID()}.tar`);
   try {
     const result = await spawnAsync(
-      "git",
+      GIT_COMMAND,
       ["-C", stagingDir, "archive", "--format=tar", "-o", tarPath, "HEAD"],
       { timeout: PLUGIN_GIT_ARCHIVE_TIMEOUT_MS, maxOutputBytes: 8_000 },
     );
@@ -170,35 +148,6 @@ async function gitArchiveDigest(stagingDir: string, logger: Logger): Promise<str
       // The archive is scratch; failing to remove it must not fail an install.
     }
   }
-}
-
-function readRegistryFile(statePath: string): PluginRegistryFile {
-  let text: string;
-  try {
-    text = fs.readFileSync(statePath, "utf8");
-  } catch {
-    return { version: 1, plugins: {}, removedBuiltins: [] };
-  }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(text);
-  } catch {
-    return { version: 1, plugins: {}, removedBuiltins: [] };
-  }
-  if (!isRecord(decoded) || !isRecord(decoded.plugins)) return { version: 1, plugins: {}, removedBuiltins: [] };
-  const plugins: Record<string, PluginInstallRecord> = {};
-  for (const [pluginId, raw] of Object.entries(decoded.plugins)) {
-    // The registry is the source of truth for what is installed, so a key that
-    // could not be a directory name is dropped here rather than defended
-    // against at every path join downstream.
-    if (!isValidPluginId(pluginId)) continue;
-    const record = parseInstallRecord(pluginId, raw);
-    if (record) plugins[pluginId] = record;
-  }
-  const removedBuiltins = Array.isArray(decoded.removedBuiltins)
-    ? [...new Set(decoded.removedBuiltins.filter(isValidPluginId))]
-    : [];
-  return { version: 1, plugins, removedBuiltins };
 }
 
 function readManifestAt(pluginRoot: string): { manifest: PluginManifest | null; errors: string[]; warnings: string[] } {
@@ -297,11 +246,21 @@ function removeQuietly(target: string): void {
  *
  * Packaged builds carry them beside the bundled agent skills (`extraResources`,
  * see `apps/desktop/package.json`); a source checkout has them at the repo's
- * `plugins/`. The candidate walk mirrors `getAdeAgentSkillRootCandidates` — the
- * same problem, solved the same way, so a dev checkout and a shipped app find
- * their resources by the same rules.
+ * `plugins/`.
+ *
+ * The two are found by DIFFERENT rules, and deliberately so. Seeding installs
+ * and enables whatever it finds, which makes "any ancestor directory that
+ * happens to contain a `plugins/` folder" an auto-run of code nobody chose:
+ * launch ADE from `~/work` while `~/work/plugins/` holds an unrelated checkout
+ * and it becomes an enabled ADE plugin. So the packaged path is anchored to
+ * `resourcesPath`, and the source path is only accepted at a directory that
+ * proves it is THIS repository — see {@link isAdePluginsSourceRoot}.
  */
-export function resolveBuiltinPluginsRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+export function resolveBuiltinPluginsRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  /** Injected by the test that pins the walk; production reads the process. */
+  from: { cwd?: string; dirname?: string | null; resourcesPath?: string | null } = {},
+): string | null {
   const configured = env.ADE_BUILTIN_PLUGINS_DIR?.trim();
   if (configured) return dirExists(configured) ? configured : null;
   // Under test the walk would find the repo's own `plugins/` and seed real
@@ -309,25 +268,51 @@ export function resolveBuiltinPluginsRoot(env: NodeJS.ProcessEnv = process.env):
   // that builds an install service would silently gain two plugins it never
   // installed. Tests opt in by passing `builtinPluginsRoot` explicitly.
   if (env.VITEST || env.VITEST_WORKER_ID || env.NODE_ENV === "test") return null;
-  const candidates: string[] = [];
-  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  if (resourcesPath) candidates.push(path.join(resourcesPath, "plugins"));
-  const starts = [process.cwd(), typeof __dirname === "string" ? __dirname : null];
+  const resourcesPath = from.resourcesPath
+    ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ?? null;
+  if (resourcesPath) {
+    const packaged = path.join(resourcesPath, "plugins");
+    if (dirExists(packaged)) return packaged;
+  }
+  const starts = [
+    from.cwd ?? process.cwd(),
+    from.dirname === undefined ? (typeof __dirname === "string" ? __dirname : null) : from.dirname,
+  ];
   for (const start of starts) {
     if (!start) continue;
     let current = start;
-    for (let depth = 0; depth < 8; depth += 1) {
-      candidates.push(path.join(current, "plugins"));
-      candidates.push(path.join(current, "apps", "desktop", "resources", "plugins"));
+    for (let depth = 0; depth < BUILTIN_PLUGINS_ANCESTOR_DEPTH; depth += 1) {
+      const candidate = path.join(current, "plugins");
+      if (isAdePluginsSourceRoot(current) && dirExists(candidate)) return candidate;
       const parent = path.dirname(current);
       if (parent === current) break;
       current = parent;
     }
   }
-  for (const candidate of candidates) {
-    if (dirExists(candidate)) return candidate;
-  }
   return null;
+}
+
+/** How far up from `cwd`/`__dirname` a dev checkout's root may sit. */
+const BUILTIN_PLUGINS_ANCESTOR_DEPTH = 8;
+
+/** `package.json` `name` at this repository's root. */
+const ADE_REPO_PACKAGE_NAME = "ade";
+
+/**
+ * Is this directory the ADE checkout itself?
+ *
+ * The marker is the workspace `package.json` name, which no unrelated parent
+ * directory carries. Without it the walk would accept any ancestor holding a
+ * `plugins/` directory and seed its contents as installed, enabled plugins.
+ */
+function isAdePluginsSourceRoot(directory: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")) as { name?: unknown };
+    return parsed.name === ADE_REPO_PACKAGE_NAME;
+  } catch {
+    return false;
+  }
 }
 
 /** Bundled package directories that carry a readable, valid manifest. */
@@ -374,7 +359,7 @@ export function createPluginInstallService(deps: {
   builtinPluginsRoot?: string | null;
 }): PluginInstallService {
   const root = deps.pluginsRoot?.trim() || resolvePluginsRoot();
-  const statePath = path.join(root, PLUGIN_STATE_FILE);
+  const statePath = pluginRegistryFilePath(root);
   const builtinRoot = deps.builtinPluginsRoot === undefined
     ? resolveBuiltinPluginsRoot()
     : deps.builtinPluginsRoot;
@@ -419,6 +404,12 @@ export function createPluginInstallService(deps: {
         source: { kind: "builtin" },
         installedAt: existing?.installedAt ?? now,
         updatedAt: now,
+        // Per-contribution switches are the user's, not the package's: an
+        // update that silently switched a badge they turned off back on would
+        // be indistinguishable from ADE ignoring the setting.
+        ...(existing?.disabledContributions?.length
+          ? { disabledContributions: [...existing.disabledContributions] }
+          : {}),
       };
       changed = true;
       deps.logger.info("plugin.builtin_seeded", {
@@ -431,7 +422,7 @@ export function createPluginInstallService(deps: {
   };
 
   const readRegistry = (): PluginRegistryFile => {
-    const registry = readRegistryFile(statePath);
+    const registry = readPluginRegistryContents(root);
     // Seeding lives in the read path so a bundled plugin is present the first
     // time anything asks, without a caller having to remember to seed. The flag
     // keeps it to once per service: the copy is filesystem work, not something
@@ -478,14 +469,26 @@ export function createPluginInstallService(deps: {
       .map(describe);
   };
 
+  /**
+   * The record for an id, or null.
+   *
+   * `Object.hasOwn` rather than a bare index: the id reaches this from a phone,
+   * a URL and a plugin's own SDK call, and `plugins["constructor"]` on a plain
+   * object answers with a function that then fails somewhere far less
+   * explicable than here.
+   */
+  const findRecord = (registry: PluginRegistryFile, pluginId: string): PluginInstallRecord | null => (
+    Object.hasOwn(registry.plugins, pluginId) ? registry.plugins[pluginId] ?? null : null
+  );
+
   const get = (pluginId: string): PluginInstalledPlugin | null => {
-    const record = readRegistry().plugins[pluginId];
+    const record = findRecord(readRegistry(), pluginId);
     return record ? describe(record) : null;
   };
 
   const requireRecord = (pluginId: string): { registry: PluginRegistryFile; record: PluginInstallRecord } => {
     const registry = readRegistry();
-    const record = registry.plugins[pluginId];
+    const record = findRecord(registry, pluginId);
     if (!record) throw new Error(`Plugin "${pluginId}" is not installed.`);
     return { registry, record };
   };
@@ -501,7 +504,7 @@ export function createPluginInstallService(deps: {
     // `spawnAsync` is the house spawner: no `shell: true`, a real timeout, and
     // a process-tree kill when the clone hangs on an unreachable host.
     const result = await spawnAsync(
-      "git",
+      GIT_COMMAND,
       ["clone", "--depth", "1", ...(ref ? ["--branch", ref] : []), "--", url, stagingDir],
       { timeout: PLUGIN_GIT_CLONE_TIMEOUT_MS, maxOutputBytes: 8_000 },
     );
@@ -633,6 +636,12 @@ export function createPluginInstallService(deps: {
         : { kind: "git", url: source, ...(args.ref ? { ref: args.ref } : {}) },
       installedAt: existing?.installedAt ?? at,
       updatedAt: at,
+      // Reinstalling (an upgrade, or the `ade plugin dev` loop) must not switch
+      // a contribution the user turned off back on: the OFF list is their
+      // setting, and it survives the code being replaced under it.
+      ...(existing?.disabledContributions?.length
+        ? { disabledContributions: [...existing.disabledContributions] }
+        : {}),
     };
     registry.plugins[pluginId] = record;
     writeRegistry(registry);
@@ -663,7 +672,8 @@ export function createPluginInstallService(deps: {
 
   const uninstall = (pluginId: string): { removed: boolean } => {
     const registry = readRegistry();
-    const known = Boolean(registry.plugins[pluginId]);
+    const existing = findRecord(registry, pluginId);
+    const known = existing !== null;
     let target: string;
     try {
       target = pluginRootWithin(root, pluginId);
@@ -678,8 +688,7 @@ export function createPluginInstallService(deps: {
     if (known) {
       // Removing a builtin has to be remembered, or the next read seeds it
       // straight back and the uninstall looks like it silently failed.
-      if (registry.plugins[pluginId]?.source.kind === "builtin"
-        && !registry.removedBuiltins.includes(pluginId)) {
+      if (existing?.source.kind === "builtin" && !registry.removedBuiltins.includes(pluginId)) {
         registry.removedBuiltins.push(pluginId);
       }
       delete registry.plugins[pluginId];
@@ -771,7 +780,7 @@ export function listPluginAgentSkillRoots(
   options: { pluginsRoot?: string; env?: NodeJS.ProcessEnv } = {},
 ): string[] {
   const root = options.pluginsRoot?.trim() || resolvePluginsRoot(options.env ?? process.env);
-  const registry = readRegistryFile(path.join(root, PLUGIN_STATE_FILE));
+  const registry = readPluginRegistryContents(root);
   const installed = Object.values(registry.plugins).map((record): PluginInstalledPlugin => {
     const pluginRoot = path.join(root, record.pluginId);
     const parsed = readManifestAt(pluginRoot);

@@ -33,6 +33,7 @@ import {
   parsePluginManifestJson,
   type PluginManifest,
 } from "../../../desktop/src/shared/plugins/manifest";
+import { readPluginInstallRecords } from "../../../desktop/src/main/services/plugins/pluginRegistryFile";
 import type {
   PluginDetail,
   PluginInstallRecord,
@@ -85,7 +86,6 @@ const HELP_PLUGIN = [
 // ---------------------------------------------------------------------------
 
 const PLUGIN_MANIFEST_FILE = "plugin.json";
-const PLUGIN_STATE_FILE = "state.json";
 const DEFAULT_LOG_LIMIT = 50;
 
 export type InstalledPlugin = {
@@ -101,66 +101,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function stringField(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
-}
-
 export function resolvePluginsRoot(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveMachineAdeLayout(env).adeDir, "plugins");
-}
-
-function readInstallSource(value: unknown, root: string): PluginInstallSource {
-  if (isRecord(value)) {
-    if (value.kind === "git" && typeof value.url === "string") {
-      return {
-        kind: "git",
-        url: value.url,
-        ...(typeof value.ref === "string" ? { ref: value.ref } : {}),
-      };
-    }
-    if (value.kind === "builtin") return { kind: "builtin" };
-    if (value.kind === "local" && typeof value.path === "string") {
-      return { kind: "local", path: value.path };
-    }
-  }
-  return { kind: "local", path: root };
-}
-
-/**
- * Read `<plugins root>/state.json`. Tolerant on purpose: a registry this build
- * cannot fully understand still has to yield the ids it does understand, or a
- * newer field would make every installed plugin vanish from `ade plugin list`.
- */
-function readInstallRecords(
-  pluginsRoot: string,
-): Map<string, PluginInstallRecord> {
-  const records = new Map<string, PluginInstallRecord>();
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(pluginsRoot, PLUGIN_STATE_FILE), "utf8");
-  } catch {
-    return records;
-  }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(text);
-  } catch {
-    return records;
-  }
-  if (!isRecord(decoded) || !isRecord(decoded.plugins)) return records;
-  for (const [key, value] of Object.entries(decoded.plugins)) {
-    if (!isValidPluginId(key) || !isRecord(value)) continue;
-    const installedAt = stringField(value.installedAt, "");
-    records.set(key, {
-      pluginId: key,
-      version: stringField(value.version, "0.0.0"),
-      enabled: value.enabled !== false,
-      source: readInstallSource(value.source, path.join(pluginsRoot, key)),
-      installedAt,
-      updatedAt: stringField(value.updatedAt, installedAt),
-    });
-  }
-  return records;
 }
 
 function readPluginManifestAt(root: string): {
@@ -181,7 +123,7 @@ function readPluginManifestAt(root: string): {
 export function readInstalledPlugins(env: NodeJS.ProcessEnv = process.env): InstalledPlugin[] {
   const pluginsRoot = resolvePluginsRoot(env);
   const entries: InstalledPlugin[] = [];
-  for (const [pluginId, record] of readInstallRecords(pluginsRoot)) {
+  for (const [pluginId, record] of readPluginInstallRecords(pluginsRoot)) {
     const root = path.join(pluginsRoot, pluginId);
     const parsed = readPluginManifestAt(root);
     entries.push({ pluginId, root, record, ...parsed });
@@ -210,7 +152,7 @@ export function resolvePluginCliRoute(
 ): PluginCliRoute | null {
   if (!isValidPluginId(primary)) return null;
   const pluginsRoot = resolvePluginsRoot(env);
-  const record = readInstallRecords(pluginsRoot).get(primary);
+  const record = readPluginInstallRecords(pluginsRoot).get(primary);
   if (!record || !record.enabled) return null;
   const { manifest } = readPluginManifestAt(path.join(pluginsRoot, primary));
   if (!manifest || manifest.cli.length === 0) return null;
@@ -219,6 +161,31 @@ export function resolvePluginCliRoute(
   // refusing it here would answer "Unknown command" for a command that exists.
   if (word !== null && !manifest.cli.includes(word)) return null;
   return { pluginId: primary, command: word };
+}
+
+/**
+ * What `ade <pluginId>` prints when no word follows it.
+ *
+ * The plugin's manifest is the only description of what it accepts, and it is
+ * already on disk — so this answers with the app closed, the same posture as
+ * `ade skill`. Routing a bare id into the plugin instead would reach a child
+ * process that was handed no action and could only fail.
+ */
+export function pluginCliUsageText(pluginId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const { manifest } = readPluginManifestAt(path.join(resolvePluginsRoot(env), pluginId));
+  const title = manifest?.displayName?.trim() || pluginId;
+  const description = manifest?.description?.trim();
+  const words = manifest?.cli ?? [];
+  return [
+    description ? `${title} — ${description}` : title,
+    "",
+    "Usage:",
+    ...(words.length
+      ? words.map((word) => `  ade ${pluginId} ${word}`)
+      : [`  ${pluginId} declares no commands.`]),
+    "",
+    `Logs: ade plugin logs ${pluginId}`,
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +267,8 @@ export type PluginListEntry = {
   root: string;
   cli: string[];
   surfaces: { kind: string; id: string; title: string; panelId: string }[];
+  /** Socket contributions the user switched off, as the registry stores them. */
+  disabledContributions: string[];
   errors: string[];
   warnings: string[];
 };
@@ -323,6 +292,7 @@ function toListEntry(entry: InstalledPlugin): PluginListEntry {
       title: surface.title,
       panelId: surface.panelId,
     })) ?? [],
+    disabledContributions: entry.record.disabledContributions ?? [],
     errors: entry.errors,
     warnings: entry.warnings,
   };
@@ -609,7 +579,7 @@ function resolveDevTarget(target: string | undefined): { pluginId: string; root:
     throw new CliPluginUsageError(`${target} is neither a plugin directory nor a plugin id.`);
   }
   const pluginsRoot = resolvePluginsRoot();
-  if (!readInstallRecords(pluginsRoot).has(target)) {
+  if (!readPluginInstallRecords(pluginsRoot).has(target)) {
     throw new CliPluginUsageError(`Plugin ${target} is not installed on this machine.`);
   }
   return fromDirectory(path.join(pluginsRoot, target));
@@ -713,62 +683,66 @@ async function runPluginDev(
 // Command dispatch
 // ---------------------------------------------------------------------------
 
-const DAEMON_SUBCOMMANDS = new Set([
-  "install",
-  "remove",
-  "uninstall",
-  "enable",
-  "disable",
-  "logs",
-  "reload",
-  "dev",
-]);
+/**
+ * Every `ade plugin` word, in one table.
+ *
+ * `kind` is the whole routing decision: `local` runs against the install
+ * registry with the app closed, `daemon` rides the `plugin` action domain. A
+ * word absent from this table is a typo and says so — the previous shape had a
+ * Set plus two switches whose `default` arm ran `dev`, so a misspelled
+ * daemon-backed subcommand silently started a file watcher.
+ */
+type PluginSubcommand =
+  | { kind: "local"; run: (args: string[]) => PluginCliResult }
+  | {
+    kind: "daemon";
+    run: (args: string[], format: OutputFormat, deps: PluginCommandDeps | undefined) => Promise<PluginCliResult>;
+  };
+
+const PLUGIN_SUBCOMMANDS: Record<string, PluginSubcommand> = {
+  list: { kind: "local", run: (args) => runPluginList(args) },
+  create: { kind: "local", run: (args) => runPluginCreate(args) },
+  install: { kind: "daemon", run: (args, format, deps) => runPluginInstall(args, format, deps) },
+  remove: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("uninstall", args, format, deps) },
+  uninstall: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("uninstall", args, format, deps) },
+  enable: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("enable", args, format, deps) },
+  disable: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("disable", args, format, deps) },
+  reload: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("reload", args, format, deps) },
+  logs: { kind: "daemon", run: (args, format, deps) => runPluginLogs(args, format, deps) },
+  dev: { kind: "daemon", run: (args, format, deps) => runPluginDev(args, format, deps) },
+};
+
+function findSubcommand(verb: string): PluginSubcommand | null {
+  return Object.hasOwn(PLUGIN_SUBCOMMANDS, verb) ? PLUGIN_SUBCOMMANDS[verb] ?? null : null;
+}
 
 /** The daemon-free subset. Throws for anything that needs the action domain. */
 export function runPluginCommand(argv: string[]): PluginCliResult {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+  const verb = argv[0];
+  if (!verb || verb === "--help" || verb === "-h") {
     return { output: `${HELP_PLUGIN}\n`, exitCode: 0 };
   }
-  const [verb, ...verbArgs] = argv;
-  switch (verb) {
-    case "list":
-      return runPluginList(verbArgs);
-    case "create":
-      return runPluginCreate(verbArgs);
-    default:
-      if (DAEMON_SUBCOMMANDS.has(verb!)) {
-        throw new CliPluginUsageError(
-          `ade plugin ${verb} needs the ADE brain. Run it through the ade CLI, or start the brain with 'ade brain start'.`,
-        );
-      }
-      throw new CliPluginUsageError(
-        `Unknown plugin subcommand: ${verb}. Run 'ade plugin --help' for the list.`,
-      );
+  const subcommand = findSubcommand(verb);
+  if (!subcommand) {
+    throw new CliPluginUsageError(
+      `Unknown plugin subcommand: ${verb}. Run 'ade plugin --help' for the list.`,
+    );
   }
+  if (subcommand.kind === "daemon") {
+    throw new CliPluginUsageError(
+      `ade plugin ${verb} needs the ADE brain. Run it through the ade CLI, or start the brain with 'ade brain start'.`,
+    );
+  }
+  return subcommand.run(argv.slice(1));
 }
 
 export async function runPluginCommandAsync(
   argv: string[],
   deps?: PluginCommandDeps,
 ): Promise<PluginCliResult> {
-  const first = argv[0];
-  if (!first || !DAEMON_SUBCOMMANDS.has(first)) return runPluginCommand(argv);
+  const verb = argv[0];
+  const subcommand = verb ? findSubcommand(verb) : null;
+  if (!subcommand || subcommand.kind === "local") return runPluginCommand(argv);
   const { format, rest } = extractFormat(argv.slice(1));
-  switch (first) {
-    case "install":
-      return await runPluginInstall(rest, format, deps);
-    case "remove":
-    case "uninstall":
-      return await runPluginLifecycle("uninstall", rest, format, deps);
-    case "enable":
-      return await runPluginLifecycle("enable", rest, format, deps);
-    case "disable":
-      return await runPluginLifecycle("disable", rest, format, deps);
-    case "reload":
-      return await runPluginLifecycle("reload", rest, format, deps);
-    case "logs":
-      return await runPluginLogs(rest, format, deps);
-    default:
-      return await runPluginDev(rest, format, deps);
-  }
+  return await subcommand.run(rest, format, deps);
 }

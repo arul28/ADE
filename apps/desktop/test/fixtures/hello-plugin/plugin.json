@@ -14,7 +14,7 @@
     { "id": "main", "schemaFile": "panels/main.json", "title": "Hello" }
   ],
   "sockets": [
-    { "socket": "row-badge", "surface": "lanes", "id": "greeting" }
+    { "socket": "row-badge", "surface": "lanes", "id": "greeting", "label": "Greeting" }
   ],
   "collections": {
     "greetings": { "sync": true }

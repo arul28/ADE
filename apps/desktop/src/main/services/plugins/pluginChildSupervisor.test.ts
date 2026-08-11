@@ -9,6 +9,7 @@ import { PluginSdkError, type PluginSdkMethod } from "../../../shared/plugins/sd
 import {
   createPluginChildSupervisor,
   PLUGIN_CHILD_MAX_FAST_FAILURES,
+  PLUGIN_CHILD_READY_TIMEOUT_MS,
   pluginChildRestartDelayMs,
   sanitizePluginChildBaseEnv,
   type PluginChildSupervisor,
@@ -303,6 +304,43 @@ describe("pluginChildSupervisor", () => {
     }
 
     expect(supervisor.status()).toBe("running");
+  });
+
+  it("never lets a previous spawn's ready timer kill the child that replaced it", async () => {
+    const timers = fakeTimers();
+    const supervisor = makeSupervisor("stale-ready-timer", {
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+      now: () => 1_000,
+    });
+
+    await supervisor.start();
+    // The first spawn's ready timer. Nothing clears it in the fake clock, which
+    // is exactly the situation a crash-restart produces on the real one.
+    const staleReady = timers.scheduled.find((timer) => timer.delay === PLUGIN_CHILD_READY_TIMEOUT_MS);
+    expect(staleReady).toBeDefined();
+    timers.scheduled.length = 0;
+
+    await expect(supervisor.invoke("crash", {})).rejects.toMatchObject({ code: "plugin_crashed" });
+    expect(supervisor.status()).toBe("restarting");
+    runScheduled(timers);
+    // The replacement is mid-handshake — the one window where a stale timer
+    // sees `starting` and concludes the child it is watching timed out.
+    expect(supervisor.status()).toBe("starting");
+
+    staleReady!.run();
+    await waitFor(() => supervisor.status() === "running");
+    const pid = supervisor.pid();
+
+    // The timer belonged to the child that already died, so the replacement is
+    // untouched: same process, still answering. Without the generation check it
+    // is sent `shutdown` here and the supervisor lands on `stopped` with no pid.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(supervisor.status()).toBe("running");
+    expect(supervisor.pid()).toBe(pid);
+    await expect(supervisor.invoke("echo", { ok: true })).resolves.toMatchObject({
+      echoed: { ok: true },
+    });
   });
 
   it("stops restarting once disposed", async () => {

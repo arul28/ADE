@@ -7,6 +7,7 @@ import {
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
+  withoutPluginAuthoredProvenance,
 } from "./bootstrap";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
@@ -486,5 +487,39 @@ describe("createEventBuffer", () => {
         payload: { n: 1 },
       }),
     ]);
+  });
+});
+
+/**
+ * The plugin action bridge calls ADE services directly, so none of the RPC
+ * edge's scoping runs on it. This is the piece of that scoping the bridge has
+ * to reproduce: a plugin cannot author the provenance that decides whether an
+ * agent completion wakes another agent.
+ */
+describe("plugin action bridge provenance", () => {
+  it("drops host-authored provenance a plugin supplied, and leaves its own metadata", () => {
+    const args = {
+      sessionId: "session-1",
+      text: "run the tests",
+      metadata: {
+        spawnDispatch: { parentSessionId: "session-victim" },
+        agentRelay: { fromSessionId: "session-victim" },
+        scheduledWake: { at: "2026-08-11T00:00:00.000Z" },
+        pluginNote: "kept",
+      },
+    };
+
+    const scoped = withoutPluginAuthoredProvenance("chat", args);
+
+    expect(scoped.metadata).toEqual({ pluginNote: "kept" });
+    // The caller's object is never mutated: the same args reach the allowlist
+    // check and the log line before this runs.
+    expect(Object.keys(args.metadata)).toHaveLength(4);
+  });
+
+  it("passes other domains through untouched", () => {
+    const args = { metadata: { spawnDispatch: { parentSessionId: "session-1" } } };
+    expect(withoutPluginAuthoredProvenance("lane", args)).toBe(args);
+    expect(withoutPluginAuthoredProvenance("chat", { text: "hi" })).toEqual({ text: "hi" });
   });
 });

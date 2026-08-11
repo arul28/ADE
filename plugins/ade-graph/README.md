@@ -18,5 +18,5 @@ is in your rail; remove it and the rail is one item shorter.
   shows a card pointing at the machine that holds the repository.
 - The `/graph` route keeps working even with the tab hidden, so links minted
   before you removed it still open.
-- It runs no code of its own beyond publishing that one card, reads nothing, and
-  stores nothing.
+- It runs no code at all: the card is `panels/main.json`, which ADE reads from
+  the manifest. Nothing is read, and nothing is stored.

@@ -8,6 +8,7 @@ import { parsePluginManifestJson } from "../../../desktop/src/shared/plugins/man
 import { parsePluginPanel } from "../../../desktop/src/shared/plugins/vocabulary";
 import {
   CliPluginUsageError,
+  pluginCliUsageText,
   resolvePluginCliRoute,
   runPluginCommand,
   runPluginCommandAsync,
@@ -178,6 +179,14 @@ describe("ade plugin dispatch", () => {
     expect(() => runPluginCommand(["frobnicate"])).toThrowError(/Unknown plugin subcommand/);
   });
 
+  it("never falls through to the file watcher for a misspelled subcommand", async () => {
+    // `dev` blocks until SIGINT, so a dispatch that reached it by default would
+    // hang the CLI on a typo rather than saying the word does not exist.
+    await expect(
+      runPluginCommandAsync(["instal", "."], { invokeAction: async () => ({}) }),
+    ).rejects.toThrowError(/Unknown plugin subcommand/);
+  });
+
   it("tells the caller when a daemon-backed subcommand is run without the brain", () => {
     expect(() => runPluginCommand(["enable", "graph"])).toThrowError(/needs the ADE brain/);
   });
@@ -224,6 +233,29 @@ describe("ade plugin dispatch", () => {
   });
 });
 
+describe("ade plugin registry reading", () => {
+  it("reads a source kind this build does not know as a builtin, keeping the OFF list", () => {
+    writePlugin("graph", manifestFixture("graph"));
+    const statePath = path.join(adeHome, "plugins", "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      plugins: Record<string, Record<string, unknown>>;
+    };
+    state.plugins.graph = {
+      ...state.plugins.graph,
+      source: { kind: "marketplace-v2", url: "https://example.test/g.git" },
+      disabledContributions: ["issues-badge"],
+    };
+    fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+
+    const entries = JSON.parse(runPluginList(["--json"]).output) as PluginListEntry[];
+    // Unknown reads as builtin, not as a local path: a builtin is re-seeded
+    // from the bundle rather than re-cloned from something the record failed to
+    // describe. And the user's switched-off contributions survive the read.
+    expect(entries[0]?.source).toEqual({ kind: "builtin" });
+    expect(entries[0]?.disabledContributions).toEqual(["issues-badge"]);
+  });
+});
+
 describe("ade <plugin-id> <command> routing", () => {
   it("claims a word an installed, enabled plugin declares", () => {
     writePlugin("graph", manifestFixture("graph", { cli: ["issues", "open"] }));
@@ -252,5 +284,14 @@ describe("ade <plugin-id> <command> routing", () => {
     expect(resolvePluginCliRoute("quiet", [])).toBeNull();
     expect(resolvePluginCliRoute("Graph", ["issues"])).toBeNull();
     expect(resolvePluginCliRoute("../etc", [])).toBeNull();
+  });
+
+  it("answers a bare id from the manifest instead of calling the plugin", () => {
+    writePlugin("graph", manifestFixture("graph", { cli: ["issues", "open"] }));
+
+    const usage = pluginCliUsageText("graph");
+    expect(usage).toContain("ade graph issues");
+    expect(usage).toContain("ade graph open");
+    expect(usage).toContain("ade plugin logs graph");
   });
 });
