@@ -1,5 +1,5 @@
 import React from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { Navigate, useParams, useSearchParams } from "react-router-dom";
 
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
@@ -7,6 +7,7 @@ import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/p
 import { PluginPanelHost } from "./PluginPanelHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { pluginIcon } from "./pluginIcons";
+import { builtinRouteForPluginRoute } from "./builtinTabs";
 
 /**
  * The route page for a plugin tab (`/plugin/:pluginId`).
@@ -39,6 +40,14 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
     [pluginId, plugins],
   );
 
+  // A plugin that gates a compiled-in tab has no panel to render — it owns the
+  // app's own page. Sending the route there keeps `/plugin/<id>` a working
+  // address (a marketplace link, an old bookmark) instead of a dead end.
+  const builtinRoute = React.useMemo(
+    () => builtinRouteForPluginRoute(pluginId, plugins),
+    [pluginId, plugins],
+  );
+
   const requestedPanelId = searchParams.get("panel");
   const panelId = requestedPanelId
     ?? lastPanelByPlugin[pluginId]
@@ -49,6 +58,8 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
     if (!plugin || !panelId) return;
     setLastPluginPanel(plugin.pluginId, panelId);
   }, [panelId, plugin, setLastPluginPanel]);
+
+  if (builtinRoute) return <Navigate to={builtinRoute} replace />;
 
   if (!pluginsLoaded && !plugin) {
     return <PluginPageShell plugin={null} title="Loading" pluginId={pluginId} active={active} />;

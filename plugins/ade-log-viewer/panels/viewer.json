@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Log",
+  "fallback": {
+    "title": "Log viewer",
+    "text": "Press Load to read the end of this file."
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Nothing read yet",
+      "description": "Logs can be enormous, so this reads the end of the file on request rather than on sight.",
+      "icon": "list",
+      "action": { "label": "Load", "onPress": { "action": "load" } }
+    }
+  ]
+}

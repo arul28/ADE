@@ -1,0 +1,33 @@
+{
+  "name": "ade-log-viewer",
+  "version": "1.0.0",
+  "displayName": "Log viewer",
+  "description": "Reads the end of .log and .ndjson files in Files, with levels picked out.",
+  "icon": "list",
+  "accent": "#4C9AFF",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [],
+  "panels": [
+    { "id": "viewer", "schemaFile": "panels/viewer.json", "title": "Log" }
+  ],
+  "sockets": [
+    {
+      "socket": "file-viewer",
+      "surface": "files",
+      "id": "viewer",
+      "panelId": "viewer",
+      "extensions": [".log", ".ndjson"]
+    }
+  ],
+  "settings": [
+    {
+      "key": "tailLines",
+      "kind": "number",
+      "label": "Lines to show",
+      "description": "How many of the most recent lines the panel lists. Up to 100.",
+      "default": 100
+    }
+  ],
+  "official": true
+}

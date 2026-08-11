@@ -164,9 +164,11 @@ describe("the seed index in registry/", () => {
     expect(result.warnings).toEqual([]);
     expect(result.index?.entries.length).toBeGreaterThan(0);
     // Every official plugin the app bundles must exist in the directory, or the
-    // directory would look like it is missing the plugins ADE itself ships.
+    // directory would look like it is missing the plugins ADE itself ships. The
+    // full agreement — versions, descriptions, theme flags — is checked against
+    // the packages themselves in `pilotPackages.test.ts`; this is the floor.
     const ids = result.index?.entries.map((row) => row.pluginId) ?? [];
-    for (const pluginId of ["graph", "history", "video-viewer"]) {
+    for (const pluginId of ["ade-graph", "ade-log-viewer"]) {
       expect(ids).toContain(pluginId);
     }
   });

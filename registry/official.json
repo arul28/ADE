@@ -15,11 +15,10 @@
     "the tag, and never edited afterwards."
   ],
   "plugins": {
-    "graph": { "repo": "https://github.com/ade-plugins/graph", "checksums": {} },
-    "history": { "repo": "https://github.com/ade-plugins/history", "checksums": {} },
-    "video-viewer": { "repo": "https://github.com/ade-plugins/video-viewer", "checksums": {} },
-    "slate-theme": { "repo": "https://github.com/ade-plugins/slate-theme", "checksums": {} },
-    "ember-theme": { "repo": "https://github.com/ade-plugins/ember-theme", "checksums": {} },
-    "paper-theme": { "repo": "https://github.com/ade-plugins/paper-theme", "checksums": {} }
+    "ade-graph": { "repo": "https://github.com/ade-plugins/ade-graph", "checksums": {} },
+    "ade-log-viewer": { "repo": "https://github.com/ade-plugins/ade-log-viewer", "checksums": {} },
+    "ade-theme-paper": { "repo": "https://github.com/ade-plugins/ade-theme-paper", "checksums": {} },
+    "ade-theme-ink": { "repo": "https://github.com/ade-plugins/ade-theme-ink", "checksums": {} },
+    "ade-theme-contrast": { "repo": "https://github.com/ade-plugins/ade-theme-contrast", "checksums": {} }
   }
 }

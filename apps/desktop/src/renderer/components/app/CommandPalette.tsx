@@ -56,6 +56,8 @@ import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
+import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
+import { useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -295,6 +297,10 @@ export function CommandPalette({
   // Root store: the registry changes on install, and the palette must not be
   // reading a project-scoped snapshot of it.
   const installedPlugins = useRootAppStore((s) => s.installedPlugins);
+  // The palette follows the rail on plugin-gated built-in tabs: a command that
+  // navigated to a tab the rail has hidden would be the palette disagreeing with
+  // the nav, which is the failure the generated entries below already avoid.
+  const builtinTabVisible = useVisibleBuiltinRoutes();
   // The palette lists settings, so it has to agree with the settings page about
   // which ones exist. On web that depends on whether a project tab is bound —
   // the manifest reads it back through this resolver.
@@ -672,13 +678,15 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/cto"),
       },
-      {
-        id: "go-graph",
-        title: "Go to Graph",
-        shortcut: "G G",
-        group: "Navigation",
-        run: () => navigate("/graph"),
-      },
+      ...(builtinTabVisible("/graph")
+        ? [{
+          id: "go-graph",
+          title: "Go to Graph",
+          shortcut: "G G",
+          group: "Navigation",
+          run: () => navigate("/graph"),
+        }]
+        : []),
       {
         id: "go-prs",
         title: "Go to PRs",
@@ -730,7 +738,11 @@ export function CommandPalette({
         }]),
       ...(pluginTabsAvailable()
         ? installedPlugins
-            .filter((plugin) => plugin.enabled && (plugin.tabs?.length ?? 0) > 0)
+            .filter((plugin) => plugin.enabled
+              && (plugin.tabs?.length ?? 0) > 0
+              // Gating plugins have no page of their own; the tab they own is
+              // already offered above under its built-in name.
+              && !pluginOwnsBuiltinTab(plugin))
             .map((plugin) => ({
               id: `go-plugin-${plugin.pluginId}`,
               title: `Go to ${plugin.tabs[0]!.title || plugin.displayName}`,
@@ -785,13 +797,15 @@ export function CommandPalette({
         group: "Actions",
         run: () => navigate("/lanes"),
       },
-      {
-        id: "action-open-graph",
-        title: "Open Workspace Graph",
-        hint: "Visual dependency graph",
-        group: "Actions",
-        run: () => navigate("/graph"),
-      },
+      ...(builtinTabVisible("/graph")
+        ? [{
+          id: "action-open-graph",
+          title: "Open Workspace Graph",
+          hint: "Visual dependency graph",
+          group: "Actions",
+          run: () => navigate("/graph"),
+        }]
+        : []),
       {
         id: "lane-next",
         title: "Select Next Lane",
@@ -867,6 +881,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    builtinTabVisible,
     hasActiveProject,
     installedPlugins,
     lanes,

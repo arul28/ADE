@@ -1,0 +1,24 @@
+{
+  "name": "ade-graph",
+  "version": "1.0.0",
+  "displayName": "Graph",
+  "description": "Lanes, commits and PR overlays on one canvas — as an optional tab.",
+  "icon": "graph",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "graph",
+      "title": "Graph",
+      "icon": "graph",
+      "panelId": "main",
+      "builtin": "graph"
+    }
+  ],
+  "panels": [
+    { "id": "main", "schemaFile": "panels/main.json", "title": "Graph" }
+  ],
+  "official": true
+}

@@ -18,6 +18,8 @@ import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { MARKETPLACE_ICON, pluginIcon } from "../plugins/pluginIcons";
+import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
+import { useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
@@ -343,10 +345,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // one authoritative list rather than an index into `mainItems`. Review and
   // Automations stay hidden there: neither has host-side actions, so both would
   // be dead nav entries.
+  // A tool tab can be owned by a plugin (Graph is, via `ade-graph`): the page
+  // stays compiled in and routable, but the rail entry follows install state.
+  // `builtinTabs.ts` states the rules; every uncertainty resolves to showing it.
+  const builtinTabVisible = useVisibleBuiltinRoutes();
   const webMode = isWebClientMode();
-  const toolItems = webMode
+  const toolItems = (webMode
     ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))
-    : mainItems.slice(4);
+    : mainItems.slice(4)
+  ).filter((it) => builtinTabVisible(it.to));
   const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
   const showMarketplace = !webMode || WEB_CLIENT_TAB_PATHS.has(marketplaceItem.to);
 
@@ -365,7 +372,12 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     () =>
       canServePluginTabs
         ? installedPlugins
-            .filter((plugin) => plugin.enabled && (plugin.tabs?.length ?? 0) > 0)
+            // A plugin that gates a built-in tab has no panel of its own, and
+            // the tab it owns is already drawn above — a second entry would open
+            // an empty plugin page wearing the same name.
+            .filter((plugin) => plugin.enabled
+              && (plugin.tabs?.length ?? 0) > 0
+              && !pluginOwnsBuiltinTab(plugin))
             .map((plugin) => {
               const tab = plugin.tabs[0]!;
               return {
