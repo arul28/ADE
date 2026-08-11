@@ -1528,6 +1528,74 @@ describe("AgentChatPane remote startup", () => {
     }
   });
 
+  it("settles an OpenCode AI status invalidate with refreshOpenCodeInventory", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const openCodeStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: false,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [],
+        availableModelIds: ["opencode/openai/gpt-5.4"],
+        opencodeBinaryInstalled: true,
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-opencode-1", {
+        status: "idle",
+        provider: "opencode",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      installAdeMocks({ sessions: [session], aiStatus: openCodeStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(openCodeStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            refreshOpenCodeInventory: true,
+          }),
+        );
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips mount-time session delta fetches for remote chats", async () => {
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({ sessions: [session] });

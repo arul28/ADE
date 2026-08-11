@@ -5756,17 +5756,20 @@ export function AgentChatPane({
     };
   }, [projectRoot]);
 
-  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
-    ++availableModelsRefreshSeqRef.current;
+  const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
       : null;
-    const shouldRefreshOpenCodeInventory =
-      sessionProvider === "opencode"
+    return sessionProvider === "opencode"
       && (
         selectedSession?.provider === "opencode"
         || selectedModelProvider === "opencode"
       );
+  }, [modelId, selectedSession?.provider, sessionProvider]);
+
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
+    ++availableModelsRefreshSeqRef.current;
+    const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
     const scope = resolveAiStatusRuntimeScope();
     if (!scope) {
       setAiStatus(null);
@@ -5839,7 +5842,11 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [applyAiStatusSnapshot, modelId, resolveAiStatusRuntimeScope, selectedSession?.provider, sessionProvider]);
+  }, [
+    applyAiStatusSnapshot,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -5884,9 +5891,11 @@ export function AgentChatPane({
         if (!active || !stale || !isTileActive || generation !== settleGeneration) return;
         const settledScope = resolveAiStatusRuntimeScope();
         if (!settledScope) return;
+        const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
         void getAiStatusCached({
           projectRoot: settledScope.runtimeProjectRoot,
           pin: settledScope.runtimePin,
+          ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
         }).then(() => {
           if (!active || !stale || generation !== settleGeneration) return;
           applyFromPeek();
@@ -5903,7 +5912,12 @@ export function AgentChatPane({
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
     };
-  }, [applyAiStatusSnapshot, isTileActive, resolveAiStatusRuntimeScope]);
+  }, [
+    applyAiStatusSnapshot,
+    isTileActive,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
