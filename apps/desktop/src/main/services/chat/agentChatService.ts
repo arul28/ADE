@@ -37495,7 +37495,13 @@ export function createAgentChatService(args: {
       } catch {
         // Ignore provider abort failures; SSE cancellation still tears the turn down.
       }
-      cancelQueuedSteers(managed, managed.runtime, "interrupted");
+      // `stop_only` exists so settle teardown can stop a turn WITHOUT
+      // discarding the user's queued follow-ups. Only the Claude path honoured
+      // it, so a settle on these providers silently deleted queued prompts —
+      // unrecoverable, and the opposite of the rule that losing a settle costs
+      // one click while losing the user's work does not. Default is
+      // `stop_and_clear`, so the Stop button is unaffected.
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const pending of managed.runtime.pendingApprovals.values()) {
         managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
@@ -37541,7 +37547,7 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
@@ -37554,7 +37560,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore
       }
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingPiInputs(managed);
       persistChatState(managed);
       return result;
@@ -37562,7 +37568,9 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "pi") {
       piRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       setSessionIdle(managed);
       persistChatState(managed);
       return result;
@@ -37580,20 +37588,24 @@ export function createAgentChatService(args: {
         cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       persistChatState(managed);
       return result;
     }
 
     if (managed.session.provider === "cursor") {
       cursorRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       persistChatState(managed);
       return result;
     }

@@ -1623,6 +1623,16 @@ export type AgentChatSessionSummary = {
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
+  /**
+   * A Claude `--bg` job this session started, when one is still recorded.
+   *
+   * Distinct from `activeBackgroundTaskCount`, which is derived from the LIVE
+   * managed runtime and therefore reads zero after a restart even though the
+   * daemon job is still running. Settle teardown needs the persisted signal:
+   * without it a settle looks at a restarted session, sees it quiet, stops
+   * nothing, and files it as done over work that never stopped.
+   */
+  claudeBackgroundJobShort?: string | null;
   activeBackgroundTaskCount?: number;
   /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
   backgroundWork?: SessionBackgroundWork;

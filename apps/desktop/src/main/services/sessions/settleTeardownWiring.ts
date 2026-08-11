@@ -22,6 +22,7 @@ export type SettleTeardownChatService = {
     status: string;
     activeBackgroundTaskCount?: number | null;
     provider?: string | null;
+    claudeBackgroundJobShort?: string | null;
   } | null>;
 };
 
@@ -66,9 +67,16 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
     readActiveWork: async (sessionId) => {
       const summary = await deps.agentChatService.getSessionSummary(sessionId);
       if (!summary) return null;
+      // `activeBackgroundTaskCount` comes from the LIVE managed runtime, so it
+      // reads zero after a restart even while a Claude `--bg` job keeps running
+      // in the daemon. Counting the persisted job is what stops a settle from
+      // looking at a restarted session, seeing it quiet, and filing it as done
+      // over work it never stopped — the exact bug this feature exists to fix.
+      const liveCount = summary.activeBackgroundTaskCount ?? 0;
+      const persistedBackgroundJob = summary.claudeBackgroundJobShort ? 1 : 0;
       return {
         active: summary.status === "active",
-        backgroundTaskCount: summary.activeBackgroundTaskCount ?? 0,
+        backgroundTaskCount: Math.max(liveCount, persistedBackgroundJob),
         provider: summary.provider ?? null,
       };
     },
