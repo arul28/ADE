@@ -701,6 +701,46 @@ describe("storageInsightsService", () => {
     service.dispose();
   });
 
+  it("files the plugin doctor step under the table it actually prunes, not db.plugin_collections (R19)", async () => {
+    // `prunePluginData` only ever touches `plugin_wire_meter_daily` — the
+    // replicated plugin tables (`plugin_collections`, `plugin_contributions`,
+    // `plugin_panels`) are cr-sqlite CRRs the doctor deliberately never
+    // sweeps. Filing this step's result under "db.plugin_collections" made
+    // the Settings storage report show reclaimed rows against a table
+    // nothing here touches, while the table that was actually pruned
+    // reported nothing.
+    const prunePluginData = () => ({ itemsAffected: 4, bytesReclaimed: 256 });
+    (db as unknown as { maintenance?: unknown }).maintenance = {
+      pruneIngressEvents: () => ({ itemsAffected: 0, bytesReclaimed: 0 }),
+      pruneReviewArtifacts: () => ({ itemsAffected: 0, bytesReclaimed: 0 }),
+      prunePrSnapshots: () => ({ itemsAffected: 0, bytesReclaimed: 0 }),
+      compactCrsqlTombstones: () => ({ itemsAffected: 0, bytesReclaimed: 0, skippedReason: "has_peers" }),
+      vacuumIfFragmented: () => ({ itemsAffected: 0, bytesReclaimed: 0 }),
+      prunePluginData,
+    };
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      stagingTmpDir: path.join(adeHome, "no-real-staging"),
+      listInstalledPluginIds: () => ["hello-plugin"],
+    });
+
+    const report = await service.runMaintenanceNow();
+
+    const byLedger = Object.fromEntries(report.actions.map((action) => [action.ledgerId, action]));
+    expect(byLedger["db.plugin_wire_meter_daily"]).toMatchObject({ itemsAffected: 4, bytesReclaimed: 256, error: null });
+    expect(byLedger["db.plugin_collections"]).toBeUndefined();
+    // Every ledgerId a maintenance step reports under must be a real entry —
+    // a typo'd id would otherwise silently vanish from the Settings UI, which
+    // reads the ledger, not the doctor's own step list.
+    expect(STORAGE_LEDGER.some((entry) => entry.id === "db.plugin_wire_meter_daily")).toBe(true);
+
+    delete (db as unknown as { maintenance?: unknown }).maintenance;
+    service.dispose();
+  });
+
   it("caps the maintenance journal at 30 runs, newest first", async () => {
     const cacheDir = path.join(projectRoot, ".ade", "cache");
     fs.mkdirSync(cacheDir, { recursive: true });

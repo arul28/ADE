@@ -9,9 +9,10 @@ import type {
   PluginRuntimeStatus,
   PluginTabDescriptor,
 } from "../../lib/pluginRuntimeBridge";
-import type {
-  SyncPluginCollectionRow,
-  SyncPluginSnapshotPayload,
+import {
+  PLUGIN_PRESENCE_MATRIX_ACTION,
+  type SyncPluginCollectionRow,
+  type SyncPluginSnapshotPayload,
 } from "../../../shared/types/sync";
 import type { AdapterInfra } from "./types";
 import { codedError } from "../../../shared/codedError";
@@ -355,7 +356,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
 
   const presence = async (): Promise<PluginPresenceRow[]> => {
     const result = await commands.call<{ machines?: RemotePresenceRow[] }>(
-      "plugins.presenceMatrix",
+      PLUGIN_PRESENCE_MATRIX_ACTION,
       {},
       { fallback: pluginsUnavailable(), idempotent: true },
     );
@@ -515,7 +516,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
      * machine to point at, so offering the arm would be offering a dead control.
      */
     get remoteInstall() {
-      return commands.hasAction("plugins.install") && commands.hasAction("plugins.presenceMatrix");
+      return commands.hasAction("plugins.install") && commands.hasAction(PLUGIN_PRESENCE_MATRIX_ACTION);
     },
     get list() {
       return commands.hasAction("plugins.list") ? list : undefined;
@@ -544,7 +545,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
         : undefined;
     },
     get presence() {
-      return commands.hasAction("plugins.presenceMatrix") ? presence : undefined;
+      return commands.hasAction(PLUGIN_PRESENCE_MATRIX_ACTION) ? presence : undefined;
     },
     get onChanged() {
       return onChanged;

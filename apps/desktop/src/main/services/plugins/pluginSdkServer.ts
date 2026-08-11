@@ -1,8 +1,9 @@
 import type { Logger } from "../logging/logger";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
+import { isRecord } from "../../../shared/plugins/parse";
 import {
-  PLUGIN_ENTITY_KINDS,
-  PLUGIN_SOCKET_KINDS,
+  isPluginEntityKind,
+  isPluginSocketKind,
   type PluginEntityKind,
   type PluginSocketKind,
 } from "../../../shared/plugins/sockets";
@@ -18,10 +19,6 @@ import {
 } from "../../../shared/plugins/sdk";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function requireString(params: Record<string, unknown>, field: string): string {
   const value = params[field];
@@ -73,15 +70,17 @@ export function createPluginSdkServer(deps: {
   };
 
   const requireEntityKind = (params: Record<string, unknown>): PluginEntityKind => {
-    const kind = PLUGIN_ENTITY_KINDS.find((candidate) => candidate === params.entityKind);
-    if (!kind) throw new PluginSdkError("invalid_args", `Unknown contribution entity kind: ${String(params.entityKind)}`);
-    return kind;
+    if (!isPluginEntityKind(params.entityKind)) {
+      throw new PluginSdkError("invalid_args", `Unknown contribution entity kind: ${String(params.entityKind)}`);
+    }
+    return params.entityKind;
   };
 
   const requireSocket = (params: Record<string, unknown>): PluginSocketKind => {
-    const socket = PLUGIN_SOCKET_KINDS.find((candidate) => candidate === params.socket);
-    if (!socket) throw new PluginSdkError("invalid_args", `Unknown socket kind: ${String(params.socket)}`);
-    return socket;
+    if (!isPluginSocketKind(params.socket)) {
+      throw new PluginSdkError("invalid_args", `Unknown socket kind: ${String(params.socket)}`);
+    }
+    return params.socket;
   };
 
   return {

@@ -122,6 +122,7 @@ import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
+  buildPluginBaseline,
   buildPluginPanelView,
   pluginRowKey,
   type PluginPanelView,
@@ -5352,10 +5353,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pluginFlushTimer.unref?.();
   }
 
-  function serializePluginRow(row: SyncPluginCollectionRow): string {
-    return JSON.stringify([row.valueJson, row.updatedAt]);
-  }
-
   function sendPluginSnapshot(
     peer: PeerState,
     subscription: PluginPanelSubscription,
@@ -5382,9 +5379,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     subscription.panelSignature = view.panel ? JSON.stringify(view.panel) : null;
-    subscription.baseline = new Map(
-      view.rows.map((row) => [pluginRowKey(row), serializePluginRow(row)]),
-    );
+    subscription.baseline = buildPluginBaseline(view);
   }
 
   function flushPluginPanels(): void {
@@ -5414,9 +5409,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           sendPluginSnapshot(peer, subscription, view);
           continue;
         }
-        const serialized = new Map(
-          view.rows.map((row) => [pluginRowKey(row), serializePluginRow(row)]),
-        );
+        const serialized = buildPluginBaseline(view);
         const changed: SyncPluginCollectionRow[] = [];
         for (const row of view.rows) {
           const key = pluginRowKey(row);

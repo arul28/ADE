@@ -89,9 +89,13 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
       maxRows: PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
       maxBytes: PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN,
     },
-    // "both": the writer rejects an over-budget write outright, and the doctor
-    // sweeps rows left by plugins that are no longer installed.
-    enforcement: "both",
+    // "write_time" only, not "both": this is a cr-sqlite CRR with no machine
+    // dimension in its primary key, so the doctor never sweeps it — a
+    // presence-keyed delete here would destroy another machine's data on its
+    // next replicated round trip. See `prunePluginRowsForAbsentPlugins` in
+    // `dbMaintenanceApi.ts`. The writer's per-plugin budget above is the only
+    // bound.
+    enforcement: "write_time",
   },
   {
     id: "db.plugin_contributions",
@@ -99,7 +103,8 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "Plugin badges and sections attached to lanes, PRs, and files.",
     policyClass: "user_data",
     policy: { maxRows: PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN },
-    enforcement: "both",
+    // Same CRR reasoning as db.plugin_collections just above.
+    enforcement: "write_time",
   },
   {
     id: "db.plugin_wire_meter_daily",

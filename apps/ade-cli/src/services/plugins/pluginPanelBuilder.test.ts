@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPluginBaseline,
   buildPluginPanelView,
   collectionsReferencedBy,
   PLUGIN_PANEL_MAX_COLLECTIONS,
   PLUGIN_PANEL_SNAPSHOT_MAX_ROWS,
   pluginRowKey,
+  serializePluginRow,
 } from "./pluginPanelBuilder";
 
 type PanelRow = { collection: string; key: string; value_json: string; updated_at: string };
@@ -123,5 +125,31 @@ describe("pluginRowKey", () => {
   it("keeps rows distinct when a collection or key contains the delimiter", () => {
     expect(pluginRowKey({ collection: "a/b", key: "c" }))
       .not.toBe(pluginRowKey({ collection: "a", key: "b/c" }));
+  });
+});
+
+describe("buildPluginBaseline (DROPPED-2)", () => {
+  it("maps each row's identity to its serialized content", () => {
+    const view = {
+      rows: [
+        { collection: "issues", key: "a", valueJson: '{"n":1}', updatedAt: "t1" },
+        { collection: "issues", key: "b", valueJson: '{"n":2}', updatedAt: "t2" },
+      ],
+    };
+
+    const baseline = buildPluginBaseline(view);
+
+    expect(baseline.size).toBe(2);
+    expect(baseline.get(pluginRowKey(view.rows[0]))).toBe(serializePluginRow(view.rows[0]));
+    expect(baseline.get(pluginRowKey(view.rows[1]))).toBe(serializePluginRow(view.rows[1]));
+  });
+
+  it("changes when either the value or the updatedAt changes, and not otherwise", () => {
+    const row = { collection: "issues", key: "a", valueJson: '{"n":1}', updatedAt: "t1" };
+    const original = serializePluginRow(row);
+
+    expect(serializePluginRow({ ...row, valueJson: '{"n":2}' })).not.toBe(original);
+    expect(serializePluginRow({ ...row, updatedAt: "t2" })).not.toBe(original);
+    expect(serializePluginRow({ ...row })).toBe(original);
   });
 });

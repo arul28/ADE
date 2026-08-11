@@ -2114,6 +2114,17 @@ export type SyncRemoteCommandAction =
   | "modelPicker.pushRecent"
   | "deeplinks.open";
 
+/**
+ * The one action name for the account-wide plugin coverage matrix, shared by
+ * every caller that has to name it literally: the daemon's own registration,
+ * the local RPC bridge, and the web client's adapter (which calls it directly
+ * over the wire, unlike its `presenceList`/`presenceSync` siblings, which stay
+ * internal to machine-to-machine calls). One binding here is what keeps a typo
+ * in any of those from silently becoming "unsupported remote command" instead
+ * of a compile error.
+ */
+export const PLUGIN_PRESENCE_MATRIX_ACTION = "plugins.presenceMatrix";
+
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
   requiresApproval?: boolean;

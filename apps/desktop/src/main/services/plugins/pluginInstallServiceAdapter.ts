@@ -1,9 +1,9 @@
 import type {
-  PluginInstallRecord as SyncPluginInstallRecord,
-  PluginRecordRuntimeStatus as SyncPluginRecordRuntimeStatus,
-  PluginRecordTab as SyncPluginRecordTab,
-  PluginInstallService as SyncPluginInstallService,
-  PluginInstallSource as SyncPluginInstallSource,
+  SyncPluginInstallRecord,
+  SyncPluginRecordRuntimeStatus,
+  SyncPluginRecordTab,
+  SyncPluginInstallService,
+  SyncPluginInstallSource,
 } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import type { PluginPresenceRow } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
 import type { PluginInstallSource, PluginRuntimeStatus } from "../../../shared/plugins/sdk";

@@ -16,8 +16,8 @@ import {
   publishPluginContribution,
   putPluginCollectionValue,
   putPluginPanel,
+  readAllPluginPresence,
   readPluginCollectionUsage,
-  readPluginPresenceForMachine,
   replacePluginPresenceForMachine,
 } from "./pluginTableWriters";
 
@@ -175,17 +175,20 @@ describe("plugin table writers", () => {
       { pluginId: "graph", version: "1.0.0", enabled: true, displayName: "Graph", icon: "graph", accent: "#000" },
       { pluginId: "video", version: "2.0.0", enabled: true, displayName: "Video", icon: "play", accent: "#111" },
     ];
+    const forMachine = (machineKey: string) =>
+      readAllPluginPresence(db).filter((row) => row.machineKey === machineKey);
+
     expect(replacePluginPresenceForMachine(db, "machine-a", rows, NOW)).toBe(2);
     // Republishing the same state must cost nothing: on a CRR an idempotent
     // rewrite still stamps a clock entry per column and ships a changeset.
     expect(replacePluginPresenceForMachine(db, "machine-a", rows, NOW)).toBe(0);
 
     expect(replacePluginPresenceForMachine(db, "machine-a", [rows[0]], NOW)).toBe(1);
-    expect(readPluginPresenceForMachine(db, "machine-a").map((row) => row.pluginId)).toEqual(["graph"]);
+    expect(forMachine("machine-a").map((row) => row.pluginId)).toEqual(["graph"]);
 
     // Another machine's rows are untouched — the key is the whole isolation.
     replacePluginPresenceForMachine(db, "machine-b", rows, NOW);
-    expect(readPluginPresenceForMachine(db, "machine-b")).toHaveLength(2);
-    expect(readPluginPresenceForMachine(db, "machine-a")).toHaveLength(1);
+    expect(forMachine("machine-b")).toHaveLength(2);
+    expect(forMachine("machine-a")).toHaveLength(1);
   });
 });

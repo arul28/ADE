@@ -389,7 +389,15 @@ export function replacePluginPresenceForMachine(
   });
 }
 
-export type PluginContributionRecord = {
+/**
+ * The raw `plugin_contributions` row, string-typed fields and all — every
+ * field here is exactly what SQLite returns, before `entityKind`/`socket` are
+ * narrowed to their closed unions and joined against the declaring manifest.
+ * Named distinctly from `sdk.ts`'s `PluginContributionRecord` (the public
+ * shape a caller of `plugin.listContributions` actually receives) so the two
+ * are never mistaken for each other at a call site that imports both.
+ */
+export type PluginContributionDbRow = {
   entityKind: string;
   entityId: string;
   pluginId: string;
@@ -417,7 +425,7 @@ export const PLUGIN_CONTRIBUTIONS_READ_LIMIT = 2_000;
 export function readPluginContributions(
   db: PluginWriterDb,
   args: { entityKind?: string | null; entityIds?: readonly string[] | null; limit?: number } = {},
-): PluginContributionRecord[] {
+): PluginContributionDbRow[] {
   const limit = Math.min(
     Math.max(1, Math.trunc(args.limit ?? PLUGIN_CONTRIBUTIONS_READ_LIMIT)),
     PLUGIN_CONTRIBUTIONS_READ_LIMIT,
@@ -491,27 +499,3 @@ export function readAllPluginPresence(db: PluginWriterDb): PluginPresenceMachine
   }));
 }
 
-export function readPluginPresenceForMachine(
-  db: PluginWriterDb,
-  machineKey: string,
-): PluginPresenceRow[] {
-  return db.all<{
-    plugin_id: string;
-    version: string;
-    enabled: number;
-    display_name: string;
-    icon: string;
-    accent: string;
-  }>(
-    `select plugin_id, version, enabled, display_name, icon, accent
-       from plugin_presence where machine_key = ? order by plugin_id`,
-    [machineKey],
-  ).map((row) => ({
-    pluginId: row.plugin_id,
-    version: row.version,
-    enabled: Number(row.enabled) !== 0,
-    displayName: row.display_name,
-    icon: row.icon,
-    accent: row.accent,
-  }));
-}

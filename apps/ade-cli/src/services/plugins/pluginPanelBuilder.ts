@@ -153,3 +153,20 @@ export function buildPluginPanelView(
 export function pluginRowKey(row: Pick<SyncPluginCollectionRow, "collection" | "key">): string {
   return JSON.stringify([row.collection, row.key]);
 }
+
+/** One row's content, for the delta baseline VALUE — not its identity, its shape. */
+export function serializePluginRow(row: Pick<SyncPluginCollectionRow, "valueJson" | "updatedAt">): string {
+  return JSON.stringify([row.valueJson, row.updatedAt]);
+}
+
+/**
+ * The delta baseline for a panel view: every row's identity mapped to its
+ * serialized content, which `flushPluginPanels` diffs a later view against to
+ * find what changed. Built the same way whether this is the first snapshot's
+ * baseline or a later flush's comparison set, which is the point of sharing it —
+ * the two call sites in `syncHostService.ts` used to build this map inline and
+ * identically, one keystroke away from drifting.
+ */
+export function buildPluginBaseline(view: Pick<PluginPanelView, "rows">): Map<string, string> {
+  return new Map(view.rows.map((row) => [pluginRowKey(row), serializePluginRow(row)]));
+}

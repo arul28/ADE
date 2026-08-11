@@ -12,7 +12,7 @@ import {
   type PluginPresenceDirectoryClient,
   type PluginPresenceDirectoryMachine,
 } from "./pluginPresenceService";
-import { readPluginPresenceForMachine, type PluginPresenceRow } from "./pluginTableWriters";
+import { readAllPluginPresence, type PluginPresenceRow } from "./pluginTableWriters";
 
 function createLogger() {
   return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never;
@@ -20,6 +20,11 @@ function createLogger() {
 
 function row(pluginId: string, version = "1.0.0"): PluginPresenceRow {
   return { pluginId, version, enabled: true, displayName: pluginId, icon: "", accent: "" };
+}
+
+/** The public read path, narrowed to one machine — no per-machine reader exists. */
+function readPluginPresenceForMachine(db: AdeDb, machineKey: string): PluginPresenceRow[] {
+  return readAllPluginPresence(db).filter((entry) => entry.machineKey === machineKey);
 }
 
 function machine(machineKey: string, online = true): PluginPresenceDirectoryMachine {

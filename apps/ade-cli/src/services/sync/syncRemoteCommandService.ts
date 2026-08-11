@@ -10,7 +10,7 @@ import {
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   requirePluginActionInvoker,
   requirePluginInstallService,
-  type PluginInstallSource,
+  type SyncPluginInstallSource,
 } from "../plugins/pluginInstallServiceRef";
 import {
   getPluginPresenceService,
@@ -203,7 +203,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import { isAdeUsageRangePreset, isAdeUsageScope, PLUGIN_PRESENCE_MATRIX_ACTION } from "../../../../desktop/src/shared/types";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -5762,7 +5762,7 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
    * a coverage matrix that dropped every offline machine would read as "the
    * plugin is not installed there" when it is.
    */
-  register("plugins.presenceMatrix", { viewerAllowed: true }, async () => {
+  register(PLUGIN_PRESENCE_MATRIX_ACTION, { viewerAllowed: true }, async () => {
     const presence = getPluginPresenceService();
     // Same rule as `plugins.presenceList` below, for the same reason: an empty
     // matrix is a claim ("no machine on this account has any plugin"), and a
@@ -5894,7 +5894,7 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
  * LOCAL install action (`plugin.install`, driven by the user in this UI) is
  * unaffected: it never reaches this parser at all.
  */
-function parsePluginInstallSource(payload: Record<string, unknown>): PluginInstallSource {
+function parsePluginInstallSource(payload: Record<string, unknown>): SyncPluginInstallSource {
   const kind = typeof payload.kind === "string" ? payload.kind.trim() : "";
   if (kind === "registry") {
     const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";

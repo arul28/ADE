@@ -1350,8 +1350,14 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       // the doctor degrades on a handle that predates a step, and `x?.method.bind()`
       // still throws when only the method is missing.
       await runDbStep("db.event_logs", "prune", maintenance?.pruneEventLogs?.bind(maintenance));
+      // Keyed to db.plugin_wire_meter_daily, not db.plugin_collections: that is
+      // the ONLY table this step actually prunes — see `prunePluginData`'s own
+      // docblock for why the replicated plugin tables are deliberately never
+      // touched here. Filing the result under the wrong ledger entry made the
+      // Settings storage report show rows reclaimed against a table the doctor
+      // never sweeps, while the table it did prune reported nothing.
       await runDbStep(
-        "db.plugin_collections",
+        "db.plugin_wire_meter_daily",
         "prune",
         maintenance?.prunePluginData && options.listInstalledPluginIds
           ? () => maintenance.prunePluginData(options.listInstalledPluginIds?.() ?? null)

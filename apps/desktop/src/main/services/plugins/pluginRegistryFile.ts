@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { isValidPluginId } from "../../../shared/plugins/manifest";
+import { isRecord } from "../../../shared/plugins/parse";
 import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/plugins/sdk";
 
 /**
@@ -48,10 +49,6 @@ export function pluginRegistryFilePath(pluginsRoot: string): string {
 
 export function emptyPluginRegistryContents(): PluginRegistryFileContents {
   return { version: 1, plugins: {}, removedBuiltins: [] };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

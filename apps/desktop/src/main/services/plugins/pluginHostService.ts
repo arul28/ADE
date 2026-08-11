@@ -25,6 +25,7 @@ import {
   type PluginManifestSetting,
 } from "../../../shared/plugins/manifest";
 import { writeTextAtomic } from "../shared/utils";
+import { isRecord } from "../../../shared/plugins/parse";
 import {
   PluginSdkError,
   type PluginCollectionRow,
@@ -126,10 +127,6 @@ type AttachedProject = {
   data: PluginDataStore;
   attachCount: number;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function readStoredConfig(pluginsRoot: string): Record<string, Record<string, string | number | boolean | null>> {
   try {

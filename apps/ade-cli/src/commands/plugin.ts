@@ -33,6 +33,7 @@ import {
   parsePluginManifestJson,
   type PluginManifest,
 } from "../../../desktop/src/shared/plugins/manifest";
+import { isRecord } from "../../../desktop/src/shared/plugins/parse";
 import { readPluginInstallRecords } from "../../../desktop/src/main/services/plugins/pluginRegistryFile";
 import type {
   PluginDetail,
@@ -96,10 +97,6 @@ export type InstalledPlugin = {
   errors: string[];
   warnings: string[];
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 export function resolvePluginsRoot(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveMachineAdeLayout(env).adeDir, "plugins");

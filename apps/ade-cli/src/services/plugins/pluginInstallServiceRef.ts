@@ -36,7 +36,7 @@ export { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/
  */
 export const PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE = "plugin_remote_source_unsupported";
 
-export type PluginInstallSource =
+export type SyncPluginInstallSource =
   | { kind: "registry"; pluginId: string; version?: string | null }
   | { kind: "git"; url: string; ref?: string | null }
   | { kind: "path"; path: string };
@@ -49,7 +49,7 @@ export type PluginInstallSource =
  * renderer. The two must stay in step — the union is closed and small enough
  * that duplicating it costs less than the dependency would.
  */
-export type PluginRecordRuntimeStatus =
+export type SyncPluginRecordRuntimeStatus =
   | "running"
   | "starting"
   | "stopped"
@@ -57,14 +57,14 @@ export type PluginRecordRuntimeStatus =
   | "none";
 
 /** One `{"kind":"tab"}` surface from a plugin's manifest. */
-export type PluginRecordTab = {
+export type SyncPluginRecordTab = {
   id: string;
   title: string;
   panelId: string;
   icon?: string | null;
 };
 
-export type PluginInstallRecord = {
+export type SyncPluginInstallRecord = {
   pluginId: string;
   version: string;
   enabled: boolean;
@@ -88,23 +88,23 @@ export type PluginInstallRecord = {
    * guess (`enabled ? "running" : "stopped"`) would put a green dot next to a
    * crashed plugin, which is worse than admitting the transport cannot see it.
    */
-  status?: PluginRecordRuntimeStatus;
-  tabs?: PluginRecordTab[];
+  status?: SyncPluginRecordRuntimeStatus;
+  tabs?: SyncPluginRecordTab[];
   /** Present only for theme plugins. `tokens` stays opaque on this path. */
   theme?: { displayName: string; tokens: Record<string, unknown> } | null;
 };
 
-export type PluginInstallService = {
-  install(source: PluginInstallSource): Promise<PluginInstallRecord>;
+export type SyncPluginInstallService = {
+  install(source: SyncPluginInstallSource): Promise<SyncPluginInstallRecord>;
   uninstall(pluginId: string): Promise<{ removed: boolean }>;
-  setEnabled(pluginId: string, enabled: boolean): Promise<PluginInstallRecord>;
-  list(): Promise<PluginInstallRecord[]>;
+  setEnabled(pluginId: string, enabled: boolean): Promise<SyncPluginInstallRecord>;
+  list(): Promise<SyncPluginInstallRecord[]>;
 };
 
-let current: PluginInstallService | null = null;
+let current: SyncPluginInstallService | null = null;
 
 /** Bind the real service. Pass null on dispose so a stale handle cannot be used. */
-export function setPluginInstallService(service: PluginInstallService | null): void {
+export function setPluginInstallService(service: SyncPluginInstallService | null): void {
   current = service;
 }
 
@@ -113,7 +113,7 @@ export function setPluginInstallService(service: PluginInstallService | null): v
  * a remote install that returns `{ ok: true }` without installing anything is
  * indistinguishable from success on the calling machine.
  */
-export function requirePluginInstallService(): PluginInstallService {
+export function requirePluginInstallService(): SyncPluginInstallService {
   if (!current) {
     throw codedError(
       "Plugins are not available on this computer.",
