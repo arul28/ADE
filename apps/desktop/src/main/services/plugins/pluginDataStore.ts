@@ -20,64 +20,20 @@ import {
   type PluginPanelRecord,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
-import type { AdeDb } from "../state/kvDb";
+import { PLUGIN_TABLE_DDL, type AdeDb } from "../state/kvDb";
 import { emitPluginChange } from "./pluginEvents";
 
 /**
- * The three plugin data tables this module writes, character-for-character as
- * `kvDb.ts`'s `migrate()` creates them.
+ * The three plugin data tables this module writes.
  *
- * CROSS-REFERENCE: `kvDb.ts` is the authority — it creates these alongside
- * `plugin_presence` and `plugin_wire_meter_daily` and lets cr-sqlite's table
- * discovery convert them. This copy exists because `ensureTables` has to work
- * on a database whose migration predates the plugin platform (and in tests),
- * and it is a `create table if not exists`: a copy that DRIFTED from kvDb's
- * would be silently ignored on a migrated database and silently authoritative
- * on an unmigrated one. Keep the two identical or delete this one.
- *
- * Three rules the shape encodes, all non-negotiable:
- *
- * 1. The composite PRIMARY KEY is the ONLY uniqueness constraint. `crsql_as_crr`
- *    refuses a table with any other UNIQUE index, and there is no AUTOINCREMENT
- *    anywhere — a per-site rowid sequence cannot converge.
- * 2. Every column is NOT NULL with a DEFAULT, so a peer that predates a column
- *    can still apply a changeset naming it.
- * 3. The SQL shape is FROZEN. Richer panels version themselves inside
- *    `schema_json`; a new column would reach older iOS clients as an unknown one.
+ * Re-exported from `kvDb.ts` rather than restated: `ensureTables` has to create
+ * them on a database whose migration predates the plugin platform (and in
+ * tests), but both are `create table if not exists`, so a second copy that
+ * DRIFTED from kvDb's would be silently ignored on a migrated database and
+ * silently authoritative on an unmigrated one. See the constant there for the
+ * three shape rules the SQL encodes.
  */
-export const PLUGIN_TABLE_DDL: readonly string[] = [
-  `create table if not exists plugin_panels (
-      plugin_id text not null,
-      panel_id text not null,
-      title text not null default '',
-      icon text not null default '',
-      surface text not null default '',
-      schema_json text not null default '{}',
-      vocab_version integer not null default 1,
-      updated_at text not null default '',
-      primary key (plugin_id, panel_id)
-    )`,
-  `create table if not exists plugin_collections (
-      plugin_id text not null,
-      collection text not null,
-      key text not null,
-      value_json text not null default 'null',
-      updated_at text not null default '',
-      primary key (plugin_id, collection, key)
-    )`,
-  "create index if not exists idx_plugin_collections_scope on plugin_collections(plugin_id, collection)",
-  `create table if not exists plugin_contributions (
-      entity_kind text not null,
-      entity_id text not null,
-      plugin_id text not null,
-      socket text not null,
-      payload_json text not null default 'null',
-      updated_at text not null default '',
-      primary key (entity_kind, entity_id, plugin_id, socket)
-    )`,
-  "create index if not exists idx_plugin_contributions_entity on plugin_contributions(entity_kind, entity_id)",
-  "create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id)",
-];
+export { PLUGIN_TABLE_DDL };
 
 export type PluginDataStore = {
   getCollection(pluginId: string, collection: string, key: string): unknown;

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   pruneRowsInBatches,
+  prunePluginRowsForAbsentPlugins,
   MAINTENANCE_DELETE_BATCH_ROWS,
   MAINTENANCE_DELETE_MAX_BATCHES,
 } from "./dbMaintenanceApi";
@@ -86,5 +87,57 @@ describe("pruneRowsInBatches", () => {
     const sql = table.deleteRows.mock.calls[0]?.[0] ?? "";
     expect(sql).toContain("where rowid in (");
     expect(sql).toContain(`limit ${MAINTENANCE_DELETE_BATCH_ROWS}`);
+  });
+});
+
+describe("prunePluginRowsForAbsentPlugins", () => {
+  function recordingDeleter() {
+    const statements: Array<{ sql: string; params: string[] }> = [];
+    return {
+      statements,
+      deleteRows: (sql: string, params: string[]) => {
+        statements.push({ sql, params });
+        return 1;
+      },
+    };
+  }
+
+  it("never touches the replicated plugin tables", () => {
+    const deleter = recordingDeleter();
+    prunePluginRowsForAbsentPlugins(deleter.deleteRows, ["ade-graph"], "2026-01-01");
+    const sql = deleter.statements.map((statement) => statement.sql).join("\n");
+    // These three are CRRs with no machine dimension: a delete keyed on THIS
+    // machine's registry destroys rows a plugin installed on another machine
+    // owns, and replicates that destruction back to it.
+    expect(sql).not.toContain("plugin_collections");
+    expect(sql).not.toContain("plugin_contributions");
+    expect(sql).not.toContain("plugin_panels");
+  });
+
+  it("prunes only local meter rollups, by absence and by age", () => {
+    const deleter = recordingDeleter();
+    const removed = prunePluginRowsForAbsentPlugins(deleter.deleteRows, ["ade-graph"], "2026-01-01");
+
+    expect(removed).toBe(2);
+    expect(deleter.statements).toEqual([
+      {
+        sql: "delete from plugin_wire_meter_daily where plugin_id not in (?)",
+        params: ["ade-graph"],
+      },
+      {
+        sql: "delete from plugin_wire_meter_daily where day < ?",
+        params: ["2026-01-01"],
+      },
+    ]);
+  });
+
+  it("treats an empty registry as a real answer for local rows only", () => {
+    const deleter = recordingDeleter();
+    prunePluginRowsForAbsentPlugins(deleter.deleteRows, [], "2026-01-01");
+    // A machine with nothing installed clears its own meter and nothing else —
+    // the pre-fix version read the same empty registry and wiped the entire
+    // account's plugin data.
+    expect(deleter.statements[0]?.sql).toBe("delete from plugin_wire_meter_daily where 1 = 1");
+    expect(deleter.statements.every((statement) => statement.sql.includes("plugin_wire_meter_daily"))).toBe(true);
   });
 });

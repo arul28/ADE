@@ -65,6 +65,7 @@ import {
   type SyncAccountDirectoryHealth,
   type SyncCloudRelayStatus,
   type SyncPeerDeviceType,
+  type SyncRemoteCommandAction,
   type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types";
 import {
@@ -242,6 +243,33 @@ export async function readMachineRuntimeActivitySummary(args: {
   };
 }
 
+/**
+ * Plugin remote commands one machine sends to another over the runtime tunnel.
+ *
+ * They are already registered in `syncRemoteCommandService` — the same registry
+ * a phone's commands go through — so this list is only about DISPATCH: the
+ * machine RPC server and the sync command registry are two separate tables, and
+ * a command in one is invisible to the other. `sync.getDesktopPairingInfo` is
+ * the existing precedent for bridging one to the other.
+ *
+ * Deliberately just the six that actually travel between machines. `plugins.
+ * list`, `plugins.invoke` and `plugins.presenceMatrix` are answered locally by
+ * whichever machine is asked, and widening the surface past what is used is how
+ * an allowlist stops being one.
+ */
+const PLUGIN_MACHINE_RPC_METHODS: readonly SyncRemoteCommandAction[] = [
+  "plugins.presenceList",
+  "plugins.presenceSync",
+  "plugins.install",
+  "plugins.uninstall",
+  "plugins.enable",
+  "plugins.disable",
+];
+
+function isPluginMachineRpcMethod(method: string): method is SyncRemoteCommandAction {
+  return (PLUGIN_MACHINE_RPC_METHODS as readonly string[]).includes(method);
+}
+
 const RUNTIME_METHODS = new Set([
   "ade/initialize",
   "ade/initialized",
@@ -296,7 +324,16 @@ const RUNTIME_METHODS = new Set([
   "sync.getCloudRelayStatus",
   "sync.getRequireDpop",
   "sync.setRequireDpop",
+  // Plugins are installed on a COMPUTER, not into a repository, so every one of
+  // these is machine-scoped and none of them carries a projectId. Without them
+  // here they fall through to the project router below and come back as
+  // `invalidParams: requires params.projectId` — which is what made the whole
+  // account-wide plugin surface (the coverage matrix, install-on-another-
+  // machine, and the presence fan-out that keeps the matrix current) fail on
+  // every desktop-to-desktop call.
+  ...PLUGIN_MACHINE_RPC_METHODS,
 ]);
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -2031,6 +2068,19 @@ export function createMultiProjectRpcRequestHandler(
         : [];
       await (await getSyncService()).setActiveLanePresence(laneIds);
       return null;
+    }
+
+    if (isPluginMachineRpcMethod(method)) {
+      // Bridged to the remote-command registry rather than reimplemented, so
+      // one machine calling another lands on exactly the handler a phone
+      // reaches — including that registry's policy check, which is where the
+      // decision about what a paired device may do already lives.
+      const syncService = await getSyncService();
+      return await syncService.executeRemoteCommand({
+        commandId: `local-runtime-${randomUUID()}`,
+        action: method,
+        args: params,
+      });
     }
 
     if (method === "shutdown") {

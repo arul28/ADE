@@ -44,6 +44,18 @@ export const PLUGIN_WIRE_SUMMARY_DEFAULT_DAYS = 30;
 /** How often accumulated counters are written through to SQLite. */
 export const PLUGIN_WIRE_METER_FLUSH_MS = 60_000;
 
+/**
+ * Distinct (day, plugin, direction) accumulators held between flushes.
+ *
+ * The plugin id is read off an inbound envelope header, so it is chosen by
+ * whoever is sending frames rather than by anything on this machine. Without a
+ * ceiling, a sender that varies the id per frame grows this map without bound
+ * between flush windows, in the message handler, for as long as the socket is
+ * open. A real machine attributes traffic to a handful of installed plugins;
+ * anything past this is not measurement.
+ */
+export const PLUGIN_WIRE_METER_MAX_PENDING = 512;
+
 type MeterDb = Pick<AdeDb, "run" | "get" | "all">;
 
 // The map key exists only to coalesce; the tuple is carried in the value so a
@@ -78,10 +90,14 @@ export function createPluginSyncMeter(args: {
   /** Injected so tests drive flushes explicitly instead of waiting on a timer. */
   setInterval?: (handler: () => void, ms: number) => { unref?: () => void };
   clearInterval?: (handle: unknown) => void;
+  /** Overrides {@link PLUGIN_WIRE_METER_MAX_PENDING}. */
+  maxPendingEntries?: number;
 }): PluginSyncMeter {
   const now = args.now ?? (() => Date.now());
   const pending = new Map<string, Accumulator>();
+  const maxPending = args.maxPendingEntries ?? PLUGIN_WIRE_METER_MAX_PENDING;
   let disposed = false;
+  let warnedOnOverflow = false;
 
   const flush = (): void => {
     if (pending.size === 0) return;
@@ -127,6 +143,21 @@ export function createPluginSyncMeter(args: {
       if (entry) {
         entry.bytes += bytes;
         entry.frames += 1;
+        return;
+      }
+      // Drop on full rather than evict: an eviction policy would let a flood of
+      // one-off ids push out the counters for the plugins actually installed,
+      // which is the opposite of what the meter is for. Warn once per process so
+      // the log records that attribution went incomplete without becoming the
+      // flood itself.
+      if (pending.size >= maxPending) {
+        if (!warnedOnOverflow) {
+          warnedOnOverflow = true;
+          args.logger?.warn?.("plugin.wire_meter_pending_full", {
+            maxPendingEntries: maxPending,
+            droppedPluginId: trimmed,
+          });
+        }
         return;
       }
       pending.set(coalesceKey, { day, pluginId: trimmed, direction, bytes, frames: 1 });

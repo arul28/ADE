@@ -54,7 +54,9 @@ import {
   createSyncHostService,
   createTerminalInputDedupeLedger,
   adoptedSyncHostCursorForPeer,
+  inboundPluginChangeRejection,
   initialSyncHostCursorForPeer,
+  isPluginChangeAllowedForPeer,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
   planChatEventResume,
@@ -65,6 +67,12 @@ import {
   syncConnectionTransportForOrigin,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
+import { buildMobileReplicaReseedPayload } from "./mobileReplicaReseed";
+import {
+  PLUGIN_COLLECTION_VALUE_MAX_BYTES,
+  PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
+  PLUGIN_PANEL_SCHEMA_MAX_BYTES,
+} from "../../../../desktop/src/main/services/state/dbMaintenanceApi";
 import {
   generateMachinePairingPin,
   resetBrainMachineSyncStoresForTests,
@@ -5846,6 +5854,123 @@ describe("CTO-gated Linear sync commands", () => {
           // handler success paths live in syncRemoteCommandService tests.
           expect(errorCode).not.toBe("forbidden_command");
         }
+      }
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("meters inbound plugin frames only after the peer authenticates", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const record = vi.fn();
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pluginSyncMeter: { record, flush: vi.fn(), summary: vi.fn(), dispose: vi.fn() },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let ws: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      const peer = await connectPeer(port, host.getBootstrapToken(), "metered-peer");
+      peer.ws.send(encodeSyncEnvelope({ type: "heartbeat", pluginId: "graph", payload: {} }));
+      await waitForValue(
+        () => (record.mock.calls.length > 0 ? record.mock.calls : null),
+        "inbound plugin frame metered after auth",
+      );
+      expect(record.mock.calls[0][0]).toBe("graph");
+      expect(record.mock.calls[0][1]).toBe("in");
+      const meteredAfterAuth = record.mock.calls.length;
+      peer.ws.close();
+
+      // Now the same frame from a socket that has not authenticated. The host
+      // refuses it and closes at 4003 — but the meter runs in the message
+      // handler, upstream of that check, so the id still reached it. The plugin
+      // id is a string the sender picks and the meter persists a row per
+      // distinct id, so without the gate anyone who can open a socket writes
+      // permanent rows naming plugins this machine has never installed, one
+      // reconnect at a time.
+      ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const tracked = trackClientEnvelopes(ws);
+      await new Promise<void>((resolve, reject) => {
+        ws!.once("open", () => resolve());
+        ws!.once("error", reject);
+      });
+      ws.send(encodeSyncEnvelope({ type: "heartbeat", pluginId: "invented-by-the-sender", payload: {} }));
+
+      await waitForValue(
+        () => tracked.closeEvents.find((event) => event.code === 4003) ?? null,
+        "pre-auth frame rejected at 4003",
+      );
+      expect(record.mock.calls.length).toBe(meteredAfterAuth);
+      expect(record.mock.calls.every((call) => call[0] !== "invented-by-the-sender")).toBe(true);
+    } finally {
+      try {
+        ws?.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("lets a paired device reach the plugin commands instead of denying them at the gate", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "viewer-plugin-controller",
+      );
+
+      for (const action of [
+        "plugins.install",
+        "plugins.uninstall",
+        "plugins.enable",
+        "plugins.disable",
+        "plugins.invoke",
+      ]) {
+        const requestId = `viewer-${action}`;
+        peer.ws.send(encodeSyncEnvelope({
+          type: "command",
+          requestId,
+          payload: {
+            commandId: `command-${action}`,
+            action,
+            args: { pluginId: "graph", actionId: "refresh", kind: "registry" },
+          },
+        }));
+
+        const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
+        const errorCode = (result.payload as { error?: { code?: string } }).error?.code;
+        // Both of these mean the command never ran. `approval_required` is the
+        // worse one: nothing in ADE surfaces such a request to a human or ever
+        // clears it, so a command marked that way is permanently dead rather
+        // than pending. It may still fail downstream — no plugin host is bound
+        // in this harness — which is what proves it reached the handler.
+        expect(errorCode).not.toBe("forbidden_command");
+        expect(errorCode).not.toBe("approval_required");
       }
     } finally {
       peer?.ws.close();
@@ -12698,5 +12823,84 @@ describe("plugin table sync", () => {
       await host.dispose();
       cleanup();
     }
+  });
+  it("drops inbound plugin rows that exceed the writer's per-value byte caps", () => {
+    // The budgets are enforced in the writer, inside the insert transaction —
+    // a path an inbound changeset never takes. Without this check a paired peer
+    // is the way around every per-value cap: a plugin that cannot exceed 64 KB
+    // per value on the machine it runs on could exceed it on every OTHER
+    // machine on the account by going through sync.
+    const oversized = "x".repeat(PLUGIN_COLLECTION_VALUE_MAX_BYTES + 1);
+    expect(inboundPluginChangeRejection({
+      table: "plugin_collections",
+      cid: "value_json",
+      val: oversized,
+    })).toMatchObject({
+      table: "plugin_collections",
+      column: "value_json",
+      maxBytes: PLUGIN_COLLECTION_VALUE_MAX_BYTES,
+    });
+    expect(inboundPluginChangeRejection({
+      table: "plugin_contributions",
+      cid: "payload_json",
+      val: "x".repeat(PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES + 1),
+    })).not.toBeNull();
+    expect(inboundPluginChangeRejection({
+      table: "plugin_panels",
+      cid: "schema_json",
+      val: "x".repeat(PLUGIN_PANEL_SCHEMA_MAX_BYTES + 1),
+    })).not.toBeNull();
+
+    // In-budget rows, other columns, and non-plugin tables all pass untouched —
+    // the guard is a cap, not a second opinion about plugin data.
+    expect(inboundPluginChangeRejection({
+      table: "plugin_collections",
+      cid: "value_json",
+      val: "{}",
+    })).toBeNull();
+    expect(inboundPluginChangeRejection({
+      table: "plugin_collections",
+      cid: "updated_at",
+      val: oversized,
+    })).toBeNull();
+    expect(inboundPluginChangeRejection({ table: "kv", cid: "value", val: oversized })).toBeNull();
+  });
+
+  it("reseeds a capable phone with the plugin rows its cursor is about to pass", () => {
+    const cache = {
+      status: "ready" as const,
+      targetDbVersion: 12,
+      scanFromDbVersion: 12,
+      approximateBytes: 0,
+      buildSteps: 1,
+      lastAdvanceWasEmpty: false,
+      changes: [makeChange(12, 0), makePluginChange(12, "plugin_collections")],
+    };
+    const capable = { metadata: { capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY] } } as never;
+    const oldBuild = { metadata: { capabilities: [] } } as never;
+
+    // The reseed advances the phone's cursor all the way to targetDbVersion, so
+    // excluding plugin rows from the CACHE — which is shared by every phone —
+    // meant a phone that can apply them skipped every one in the reseeded range
+    // and never saw it again. Filtering per peer at send time is what fixes it.
+    const capablePayload = buildMobileReplicaReseedPayload({
+      cache,
+      deviceId: "phone-capable",
+      fromDbVersion: 0,
+      includeChange: (change) => isPluginChangeAllowedForPeer(change, capable),
+    });
+    expect(capablePayload?.changes.map((change) => change.table)).toEqual(["kv", "plugin_collections"]);
+    expect(capablePayload?.toDbVersion).toBe(12);
+
+    const oldPayload = buildMobileReplicaReseedPayload({
+      cache,
+      deviceId: "phone-old",
+      fromDbVersion: 0,
+      includeChange: (change) => isPluginChangeAllowedForPeer(change, oldBuild),
+    });
+    // A peer that never advertised the capability still gets nothing: a row for
+    // a table its schema lacks throws in applyChanges and freezes its cursor.
+    expect(oldPayload?.changes.map((change) => change.table)).toEqual(["kv"]);
+    expect(oldPayload?.toDbVersion).toBe(12);
   });
 });

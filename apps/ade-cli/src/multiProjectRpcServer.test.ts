@@ -1792,6 +1792,65 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("dispatches machine-scoped plugin commands without demanding a projectId", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const executeRemoteCommand = vi.fn(async () => ({ plugins: [] }));
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService: { executeRemoteCommand } },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    // A plugin is installed on a COMPUTER, so none of these carries a project.
+    // Unregistered, they fell through to the project router and came back as
+    // `invalidParams: requires params.projectId` — which took down the whole
+    // cross-machine plugin surface: the coverage matrix, install-on-another-
+    // machine, and the presence fan-out that keeps the matrix current.
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "plugins.presenceList",
+      params: {},
+    })).resolves.toEqual({ plugins: [] });
+    expect(executeRemoteCommand).toHaveBeenCalledWith({
+      commandId: expect.stringMatching(/^local-runtime-/),
+      action: "plugins.presenceList",
+      args: {},
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "plugins.install",
+      params: { kind: "registry", pluginId: "graph" },
+    });
+    // Bridged, not reimplemented: the arguments reach the same registry handler
+    // a phone's command does, policy check included.
+    expect(executeRemoteCommand).toHaveBeenLastCalledWith({
+      commandId: expect.stringMatching(/^local-runtime-/),
+      action: "plugins.install",
+      args: { kind: "registry", pluginId: "graph" },
+    });
+
+    handler.dispose();
+  });
+
   it("does not switch the active sync host for read-only sync polls with a projectId", async () => {
     const { root, projectRoot, registry } = createRegistry();
     const active = registry.add(projectRoot);

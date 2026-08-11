@@ -105,9 +105,10 @@ export const EVENT_LOG_RETENTION_DAYS = 30;
 // Accepting a write and pruning it later would therefore leave the shadow behind
 // and ship it to every peer on the account before the prune ran.
 //
-// The doctor pass (`prunePluginData`) is a floor, not the enforcement: it exists
-// for rows a crashed writer left behind and for plugins that have been
-// uninstalled, not to make room for a plugin that is over budget.
+// The writer is therefore the ONLY bound on the replicated tables. The doctor
+// pass (`prunePluginData`) reaches local-only rows exclusively — see
+// `prunePluginRowsForAbsentPlugins` for why a presence-keyed delete against a
+// CRR table destroys other machines' data.
 
 /** Total `value_json` bytes one plugin may hold across all its collections. */
 export const PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN = 2 * 1024 * 1024;
@@ -136,16 +137,28 @@ export const PLUGIN_WIRE_METER_RETENTION_DAYS = 45;
 export { PLUGIN_BUDGET_EXCEEDED_CODE } from "../../../shared/plugins/sdk";
 
 /**
- * Delete rows belonging to plugins that are no longer present in
- * `plugin_presence` for this machine, plus meter rollups past their window.
+ * Delete local-only plugin rows this machine no longer has a use for: wire
+ * meter rollups past their retention window, and rollups for plugins this
+ * machine does not have installed.
  *
- * Deliberately keyed on presence rather than on age: plugin rows are user data
- * for as long as the plugin is installed, and a plugin that syncs once a month
- * must not lose its collection because nothing wrote to it. `presentPluginIds`
- * is the caller's machine-local install registry — an EMPTY set means "this
- * machine has no plugins", which is a legitimate state (nothing installed) and
- * deletes every plugin row, so callers that cannot read the registry must skip
- * the prune rather than pass an empty set.
+ * THE REPLICATED PLUGIN TABLES ARE DELIBERATELY NOT TOUCHED. `plugin_panels`,
+ * `plugin_collections`, and `plugin_contributions` are cr-sqlite CRRs with no
+ * machine dimension in their primary keys — a row authored on the laptop is the
+ * same row on the desktop. Keying a delete on THIS machine's install registry
+ * therefore deletes data belonging to a plugin installed on a DIFFERENT machine,
+ * and because the delete is itself a CRR operation it replicates back and
+ * destroys the row everywhere. The failure is worst in its most ordinary case:
+ * a machine with no plugins installed at all reads a legitimately empty registry
+ * and wipes the whole account's plugin data on its next doctor pass.
+ *
+ * Growth of those three tables is bounded where it can be bounded safely —
+ * IN THE WRITER, per plugin, inside the insert transaction (see the budget
+ * constants above). That is enforcement; this is only local hygiene.
+ *
+ * `presentPluginIds` is the caller's machine-local install registry. An EMPTY
+ * set means "this machine has no plugins", which is a legitimate state, so it
+ * prunes every meter rollup; callers that cannot read the registry must skip the
+ * prune rather than pass an empty set.
  *
  * `deleteRows` executes one parameterized DELETE and reports its change count,
  * mirroring {@link pruneIngressEventRowsForProject}.
@@ -159,11 +172,10 @@ export function prunePluginRowsForAbsentPlugins(
   const notPresent = presentPluginIds.length > 0
     ? `plugin_id not in (${placeholders})`
     : "1 = 1";
-  const params = [...presentPluginIds];
-  let removed = 0;
-  for (const table of ["plugin_collections", "plugin_contributions", "plugin_panels"]) {
-    removed += deleteRows(`delete from ${table} where ${notPresent}`, params);
-  }
+  let removed = deleteRows(
+    `delete from plugin_wire_meter_daily where ${notPresent}`,
+    [...presentPluginIds],
+  );
   removed += deleteRows("delete from plugin_wire_meter_daily where day < ?", [meterCutoffDay]);
   return removed;
 }

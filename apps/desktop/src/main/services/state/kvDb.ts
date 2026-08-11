@@ -793,6 +793,75 @@ const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
  * append-only log is paid by whichever user first drives it hard, and it is
  * paid on their phone as well as their desktop.
  */
+/**
+ * The three plugin data tables, in the one place their SQL is written.
+ *
+ * `pluginDataStore.ensureTables` has to create these too — it runs against a
+ * database whose migration predates the plugin platform, and against scratch
+ * databases in tests. Both are `create table if not exists`, so a second copy
+ * that DRIFTED would be silently ignored on a migrated database and silently
+ * authoritative on an unmigrated one, which is a difference nothing would
+ * report. Exporting the statements is what makes that impossible.
+ *
+ * Three rules the shape encodes, all non-negotiable:
+ *
+ * 1. The composite PRIMARY KEY is the ONLY uniqueness constraint. `crsql_as_crr`
+ *    refuses a table with any other UNIQUE index, and there is no AUTOINCREMENT
+ *    anywhere — a per-site rowid sequence cannot converge.
+ * 2. Every column is NOT NULL with a DEFAULT, so a peer that predates a column
+ *    can still apply a changeset naming it.
+ * 3. The SQL shape is FROZEN. Richer panels version themselves inside
+ *    `schema_json`; a new column would reach older iOS clients as an unknown one.
+ *
+ * `plugin_presence` and `plugin_wire_meter_daily` are NOT here: only `migrate()`
+ * creates them, so a second copy would be the drift this constant prevents.
+ */
+export const PLUGIN_TABLE_DDL: readonly string[] = [
+  // Declarative panel schemas. `schema_json` is opaque vocabulary JSON carrying
+  // its own `vocab_version`; nothing in SQL reads into it.
+  `create table if not exists plugin_panels (
+      plugin_id text not null,
+      panel_id text not null,
+      title text not null default '',
+      icon text not null default '',
+      surface text not null default '',
+      schema_json text not null default '{}',
+      vocab_version integer not null default 1,
+      updated_at text not null default '',
+      primary key (plugin_id, panel_id)
+    )`,
+  // The ONE plugin data table. Plugins never get tables of their own: a
+  // per-plugin table would be auto-CRR'd by table discovery, multiplying
+  // clock/pks shadow tables per install, and would arrive at every peer as an
+  // unknown table — the schema-freeze hazard, now triggerable by installing a
+  // plugin rather than by shipping a release.
+  `create table if not exists plugin_collections (
+      plugin_id text not null,
+      collection text not null,
+      key text not null,
+      value_json text not null default 'null',
+      updated_at text not null default '',
+      primary key (plugin_id, collection, key)
+    )`,
+  "create index if not exists idx_plugin_collections_scope on plugin_collections(plugin_id, collection)",
+  // Materialized socket outputs (a badge on a PR row, a section on a lane) as a
+  // SIDE table joined at read, never as columns on the entity's own row.
+  // cr-sqlite merges last-writer-wins PER COLUMN, so a plugin-authored column on
+  // `pull_requests` would have two machines' values silently discard each other
+  // — and it would put a clock entry on the hot write path of a core table.
+  `create table if not exists plugin_contributions (
+      entity_kind text not null,
+      entity_id text not null,
+      plugin_id text not null,
+      socket text not null,
+      payload_json text not null default 'null',
+      updated_at text not null default '',
+      primary key (entity_kind, entity_id, plugin_id, socket)
+    )`,
+  "create index if not exists idx_plugin_contributions_entity on plugin_contributions(entity_kind, entity_id)",
+  "create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id)",
+];
+
 const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: string]> = [
   ["linear_sync_events", "created_at"],
   ["linear_workflow_run_events", "created_at"],
@@ -4023,63 +4092,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_plugin_presence_plugin on plugin_presence(plugin_id)");
 
-  // Declarative panel schemas. `schema_json` is opaque vocabulary JSON carrying
-  // its own `vocab_version`; nothing in SQL reads into it.
-  db.run(`
-    create table if not exists plugin_panels (
-      plugin_id text not null,
-      panel_id text not null,
-      title text not null default '',
-      icon text not null default '',
-      surface text not null default '',
-      schema_json text not null default '{}',
-      vocab_version integer not null default 1,
-      updated_at text not null default '',
-      primary key (plugin_id, panel_id)
-    )
-  `);
-
-  // The ONE plugin data table. Plugins never get tables of their own: a
-  // per-plugin table would be auto-CRR'd by the discovery above, multiplying
-  // clock/pks shadow tables per install, and would arrive at every peer as an
-  // unknown table — the freeze hazard again, now triggerable by installing a
-  // plugin rather than by shipping a release.
-  db.run(`
-    create table if not exists plugin_collections (
-      plugin_id text not null,
-      collection text not null,
-      key text not null,
-      value_json text not null default 'null',
-      updated_at text not null default '',
-      primary key (plugin_id, collection, key)
-    )
-  `);
-  db.run(
-    "create index if not exists idx_plugin_collections_scope on plugin_collections(plugin_id, collection)",
-  );
-
-  // Materialized socket outputs (a badge on a PR row, a section on a lane) as a
-  // SIDE table joined at read, never as columns on the entity's own row.
-  // cr-sqlite merges last-writer-wins PER COLUMN, so a plugin-authored column on
-  // `pull_requests` would have two machines' values silently discard each other
-  // — and it would put a clock entry on the hot write path of a core table.
-  db.run(`
-    create table if not exists plugin_contributions (
-      entity_kind text not null,
-      entity_id text not null,
-      plugin_id text not null,
-      socket text not null,
-      payload_json text not null default 'null',
-      updated_at text not null default '',
-      primary key (entity_kind, entity_id, plugin_id, socket)
-    )
-  `);
-  db.run(
-    "create index if not exists idx_plugin_contributions_entity on plugin_contributions(entity_kind, entity_id)",
-  );
-  db.run(
-    "create index if not exists idx_plugin_contributions_plugin on plugin_contributions(plugin_id)",
-  );
+  // The three tables the plugin data store also creates — see
+  // PLUGIN_TABLE_DDL, which is the single copy of that SQL.
+  for (const statement of PLUGIN_TABLE_DDL) db.run(statement);
 
   // Per-plugin wire accounting. LOCAL-ONLY on purpose (see
   // LOCAL_ONLY_CRR_EXCLUDED_TABLES) — it measures one machine's link.
@@ -4479,7 +4494,7 @@ export async function openKvDb(
       // ("nothing installed"); null means the caller could not read the registry
       // at all, and deleting on that would wipe every plugin's data.
       if (!presentPluginIds) return unsupportedMaintenanceResult();
-      if (!rawHasTable(db, "plugin_collections")) return unsupportedMaintenanceResult();
+      if (!rawHasTable(db, "plugin_wire_meter_daily")) return unsupportedMaintenanceResult();
       const meterCutoffDay = new Date(
         Date.now() - PLUGIN_WIRE_METER_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
       ).toISOString().slice(0, 10);

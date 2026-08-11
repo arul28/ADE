@@ -111,7 +111,21 @@ export function buildMobileReplicaReseedPayload(args: {
   cache: MobileReplicaReseedCache;
   deviceId: string;
   fromDbVersion: number;
+  /**
+   * Per-peer outbound filter, applied to the SHARED cache at send time.
+   *
+   * The cache is built once for every phone, so anything keyed on what a
+   * particular peer can apply has to happen here rather than during the build.
+   * This is the same filter the incremental broadcast path runs; keeping the
+   * rows in the cache and dropping them per peer is what lets a phone that CAN
+   * apply plugin rows receive them, while its cursor still advances past the
+   * rows a phone that cannot apply them never gets.
+   */
+  includeChange?: (change: CrsqlChangeRow) => boolean;
 }): SyncChangesetBatchPayload | null {
+  const changes = args.includeChange
+    ? args.cache.changes.filter(args.includeChange)
+    : args.cache.changes;
   const payload: SyncChangesetBatchPayload = {
     batchId: makeChangesetBatchId({
       deviceId: args.deviceId,
@@ -121,7 +135,7 @@ export function buildMobileReplicaReseedPayload(args: {
     reason: "catchup",
     fromDbVersion: args.fromDbVersion,
     toDbVersion: args.cache.targetDbVersion,
-    changes: args.cache.changes,
+    changes,
   };
   return Buffer.byteLength(JSON.stringify(payload), "utf8") <= MOBILE_REPLICA_RESEED_MAX_BYTES
     ? payload

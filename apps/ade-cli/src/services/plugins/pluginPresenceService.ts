@@ -186,6 +186,17 @@ export type PluginPresenceService = {
    * restores the inert default rather than leaving a stale caller behind.
    */
   setDirectoryClient(client: PluginPresenceDirectoryClient | null): void;
+  /**
+   * This machine's own account key.
+   *
+   * Exposed because "is this payload naming me?" is a question about identity,
+   * not about data. Answering it from `readPresenceMatrix` — the only way to ask
+   * before this existed — reads a table that is EMPTY on a machine with no
+   * plugins installed, so a machine could not recognize its own key until it had
+   * already installed something. That made the very first install from the
+   * coverage matrix dial out to itself and fail as unreachable.
+   */
+  localMachineKey(): string;
   /** Account-wide coverage matrix: every machine's rows, with identity joined. */
   readPresenceMatrix(): Promise<PluginPresenceMatrixRow[]>;
   /**
@@ -417,6 +428,7 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
     setDirectoryClient(client) {
       directoryClient = client ?? defaultDirectoryClient();
     },
+    localMachineKey: () => deps.localMachineKey(),
     readPresenceMatrix,
     callOnMachine,
     async publishLocalPresence() {

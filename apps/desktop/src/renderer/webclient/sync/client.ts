@@ -135,14 +135,27 @@ type ChatSubscription = {
   bindsActiveProject: boolean;
 };
 
-type PluginPanelSubscription = {
+/**
+ * One panel's stream, shared by every mounted view of that panel.
+ *
+ * Subscribers are held in a map rather than a single `handlers` field because
+ * the same panel can legitimately be on screen twice — a tab and a detail
+ * section, or the same route mounted while the old one unmounts. Keyed only by
+ * plugin and panel, the second subscribe replaced the first's handlers (the
+ * first view went permanently blank) and the first unsubscribe tore down the
+ * shared stream out from under the second.
+ */
+type PluginPanelStream = {
   pluginId: string;
   panelId: string;
-  handlers: PluginPanelHandlers;
+  subscribers: Map<number, PluginPanelHandlers>;
   /**
    * Highest seq received. Sent back on resubscribe so a reconnect that lands on
    * the same host resumes with a delta instead of a full snapshot; the host
    * re-snapshots on any mismatch and the client adopts the snapshot's seq.
+   *
+   * On the stream, not the subscriber: the host counts per panel, so two views
+   * of one panel share the watermark.
    */
   sinceSeq: number | null;
 };
@@ -267,7 +280,8 @@ export class AdeSyncClient {
   private readonly pendingProjectCatalog: PendingRequest<SyncProjectCatalogPayload>[] = [];
   private readonly pendingProjectSwitches = new Map<string, PendingRequest<SyncProjectSwitchResultPayload>>();
   private readonly chatSubscriptions = new Map<string, ChatSubscription>();
-  private readonly pluginSubscriptions = new Map<string, PluginPanelSubscription>();
+  private readonly pluginSubscriptions = new Map<string, PluginPanelStream>();
+  private nextPluginSubscriberId = 1;
   private readonly terminalSubscriptions = new Map<string, TerminalSubscription>();
   private readonly terminalInputQueue: TerminalInputOperation[] = [];
   private terminalInputQueueBytes = 0;
@@ -782,23 +796,29 @@ export class AdeSyncClient {
     handlers: PluginPanelHandlers = {},
   ): () => void {
     const key = pluginPanelKey(pluginId, panelId);
-    const existing = this.pluginSubscriptions.get(key);
-    const subscription: PluginPanelSubscription = {
+    const stream: PluginPanelStream = this.pluginSubscriptions.get(key) ?? {
       pluginId,
       panelId,
-      handlers,
-      sinceSeq: existing?.sinceSeq ?? null,
+      subscribers: new Map(),
+      sinceSeq: null,
     };
-    this.pluginSubscriptions.set(key, subscription);
-    if (!this.streamSubscriptionsPaused) this.sendPluginSubscribe(subscription);
-    return () => this.unsubscribePluginPanel(pluginId, panelId);
+    const subscriberId = this.nextPluginSubscriberId++;
+    stream.subscribers.set(subscriberId, handlers);
+    this.pluginSubscriptions.set(key, stream);
+    if (!this.streamSubscriptionsPaused) this.sendPluginSubscribe(stream);
+    return () => this.unsubscribePluginPanel(pluginId, panelId, subscriberId);
   }
 
-  unsubscribePluginPanel(pluginId: string, panelId: string): void {
+  private unsubscribePluginPanel(pluginId: string, panelId: string, subscriberId: number): void {
     const key = pluginPanelKey(pluginId, panelId);
-    const subscription = this.pluginSubscriptions.get(key);
+    const stream = this.pluginSubscriptions.get(key);
+    if (!stream?.subscribers.delete(subscriberId)) return;
+    // The wire subscription is torn down only when the LAST view of the panel
+    // goes away. Unsubscribing on the first one would freeze every other view
+    // that is still on screen.
+    if (stream.subscribers.size > 0) return;
     this.pluginSubscriptions.delete(key);
-    if (!subscription || !this.connection.isConnected()) return;
+    if (!this.connection.isConnected()) return;
     this.connection.send({
       type: "plugin_unsubscribe",
       projectId: this.activeProjectId,
@@ -1228,21 +1248,29 @@ export class AdeSyncClient {
   }
 
   private handlePluginSnapshot(payload: SyncPluginSnapshotPayload): void {
-    const subscription = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
+    const stream = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
     // A late frame from a host we have already unsubscribed from must not leak
     // into a panel that was since closed or rebound to another project.
-    if (!subscription) return;
+    if (!stream) return;
+    // A refused subscription is not an epoch: the host is streaming nothing, so
+    // adopting seq 0 and rendering an empty panel would show "no data" for what
+    // is actually "not allowed".
+    if (payload.error) {
+      const error = new AdeSyncError(payload.error.message, payload.error.code);
+      for (const handlers of [...stream.subscribers.values()]) handlers.error?.(error);
+      return;
+    }
     // A snapshot is a new epoch: adopt its seq outright rather than maxing with
     // the old one, or a host that restarted its counter would look like a gap.
-    subscription.sinceSeq = payload.seq;
-    subscription.handlers.snapshot?.(payload);
+    stream.sinceSeq = payload.seq;
+    for (const handlers of [...stream.subscribers.values()]) handlers.snapshot?.(payload);
   }
 
   private handlePluginDelta(payload: SyncPluginDeltaPayload): void {
-    const subscription = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
-    if (!subscription) return;
-    subscription.sinceSeq = Math.max(subscription.sinceSeq ?? 0, payload.seq);
-    subscription.handlers.delta?.(payload);
+    const stream = this.pluginSubscriptions.get(pluginPanelKey(payload.pluginId, payload.panelId));
+    if (!stream) return;
+    stream.sinceSeq = Math.max(stream.sinceSeq ?? 0, payload.seq);
+    for (const handlers of [...stream.subscribers.values()]) handlers.delta?.(payload);
   }
 
   private handleTerminalSnapshot(payload: SyncTerminalSnapshotPayload): void {
@@ -1425,21 +1453,21 @@ export class AdeSyncClient {
     }
   }
 
-  private sendPluginSubscribe(subscription: PluginPanelSubscription, throwOnFailure = false): void {
+  private sendPluginSubscribe(stream: PluginPanelStream, throwOnFailure = false): void {
     if (!this.connection.isConnected()) return;
     try {
       this.connection.send({
         type: "plugin_subscribe",
         projectId: this.activeProjectId,
         payload: {
-          pluginId: subscription.pluginId,
-          panelId: subscription.panelId,
-          ...(subscription.sinceSeq != null ? { sinceSeq: subscription.sinceSeq } : {}),
+          pluginId: stream.pluginId,
+          panelId: stream.panelId,
+          ...(stream.sinceSeq != null ? { sinceSeq: stream.sinceSeq } : {}),
         },
       });
     } catch (error) {
       const normalized = this.connectionError(error);
-      subscription.handlers.error?.(normalized);
+      for (const handlers of [...stream.subscribers.values()]) handlers.error?.(normalized);
       if (throwOnFailure) throw normalized;
     }
   }
@@ -1478,8 +1506,8 @@ export class AdeSyncClient {
     // Plugin panels re-attach on reconnect for the same reason chats do: a
     // federated hop or a host restart drops every host-side subscription, and a
     // panel that is still mounted would otherwise sit frozen with no error.
-    for (const subscription of this.pluginSubscriptions.values()) {
-      this.sendPluginSubscribe(subscription, true);
+    for (const stream of this.pluginSubscriptions.values()) {
+      this.sendPluginSubscribe(stream, true);
     }
     for (const subscription of this.terminalSubscriptions.values()) {
       subscription.recoveryInFlight = false;

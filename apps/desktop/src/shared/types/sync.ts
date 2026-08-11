@@ -949,6 +949,15 @@ export type SyncPluginSnapshotPayload = {
   rows: SyncPluginCollectionRow[];
   /** True when the host truncated `rows` at its per-snapshot ceiling. */
   truncated?: boolean;
+  /**
+   * Why the host refused the subscription, when it did.
+   *
+   * A refusal used to be silence, which a client cannot tell apart from a panel
+   * that has no rows yet — it waits for a snapshot that will never arrive.
+   * Carried on the snapshot frame rather than a new envelope type so a client
+   * that predates this simply sees an empty panel, exactly as before.
+   */
+  error?: { code: string; message: string };
 };
 
 /**

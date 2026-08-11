@@ -123,4 +123,28 @@ describe("plugin sync meter", () => {
     meter.flush();
     expect(db.get("select bytes from plugin_wire_meter_daily")).toEqual({ bytes: 42 });
   });
+
+  it("caps the pending map so a peer-chosen plugin id cannot grow it without bound", () => {
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const meter = createPluginSyncMeter({
+      db,
+      now: () => Date.parse("2026-08-11T10:00:00.000Z"),
+      logger: { warn: (message, meta) => { warnings.push({ message, meta }); } },
+      maxPendingEntries: 4,
+      setInterval: () => ({ unref: () => {} }),
+      clearInterval: () => {},
+    });
+
+    for (let index = 0; index < 200; index += 1) meter.record(`spoofed-${index}`, "in", 10);
+    meter.flush();
+
+    const rows = db.all<{ plugin_id: string }>("select plugin_id from plugin_wire_meter_daily");
+    expect(rows).toHaveLength(4);
+    // Drop, never evict: evicting would let a flood of one-off ids push out the
+    // counters for the plugins actually installed.
+    expect(rows.map((row) => row.plugin_id).sort()).toEqual(["spoofed-0", "spoofed-1", "spoofed-2", "spoofed-3"]);
+    // Warned once, not 196 times — the log must not become the flood.
+    expect(warnings.filter((entry) => entry.message === "plugin.wire_meter_pending_full")).toHaveLength(1);
+    meter.dispose();
+  });
 });

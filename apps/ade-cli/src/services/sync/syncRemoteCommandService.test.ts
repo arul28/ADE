@@ -3220,26 +3220,15 @@ describe("plugin remote commands", () => {
     setPluginActionInvoker(null);
   });
 
-  it("registers every plugin action as machine-scoped, with mutations behind approval", () => {
+  it("registers every plugin action as machine-scoped and reachable from a paired device", () => {
     const { service } = createService({});
-    for (const action of PLUGIN_ACTIONS) {
+    for (const action of [...PLUGIN_ACTIONS, "plugins.invoke"]) {
       expect(service.getDescriptor(action)?.scope).toBe("runtime");
-    }
-    for (const action of ["plugins.install", "plugins.uninstall", "plugins.enable", "plugins.disable"]) {
-      // Installing third-party code on someone else's computer is held for an
-      // explicit decision, and the denial is a POLICY denial, never a missing
-      // method — a viewer must be able to tell "not allowed" from "not there".
-      expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: false, requiresApproval: true });
-    }
-    for (const action of [
-      "plugins.list",
-      "plugins.presenceList",
-      "plugins.presenceSync",
-      // Read-only: it reports which machines have which plugins and changes
-      // nothing, so it does not sit behind the approval gate its mutating
-      // siblings do.
-      "plugins.presenceMatrix",
-    ]) {
+      // `requiresApproval` has exactly one consumer — an unconditional
+      // `approval_required` rejection in the host gate — and no mechanism
+      // anywhere surfaces such a request to a human or clears it. Setting it
+      // here would not gate these commands; it would make every plugin surface
+      // on a phone and every install from the web client permanently dead.
       expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: true });
     }
   });
@@ -3329,7 +3318,7 @@ describe("plugin remote commands", () => {
     const callOnMachine = vi.fn().mockResolvedValue({ pluginId: "graph" });
     setPluginInstallService({ install, uninstall: vi.fn(), setEnabled: vi.fn(), list: vi.fn() } as never);
     setPluginPresenceService({
-      readPresenceMatrix: vi.fn().mockResolvedValue([matrixRow("machine-a", true)]),
+      localMachineKey: () => "machine-a",
       callOnMachine,
       publishLocalPresence: vi.fn(),
     } as never);
@@ -3354,12 +3343,16 @@ describe("plugin remote commands", () => {
     });
   });
 
-  it("runs locally when the machine key names this machine", async () => {
+  it("runs locally when the machine key names this machine, with nothing installed yet", async () => {
     const install = vi.fn().mockResolvedValue({ pluginId: "graph" });
     const callOnMachine = vi.fn();
     setPluginInstallService({ install, uninstall: vi.fn(), setEnabled: vi.fn(), list: vi.fn() } as never);
     setPluginPresenceService({
-      readPresenceMatrix: vi.fn().mockResolvedValue([matrixRow("machine-a", true)]),
+      localMachineKey: () => "machine-a",
+      // Empty on purpose: a machine with no plugins installed has no presence
+      // rows, so deriving "is this me" from the matrix made the FIRST install
+      // on a machine dial out to itself and fail as unreachable.
+      readPresenceMatrix: vi.fn().mockResolvedValue([]),
       callOnMachine,
       publishLocalPresence: vi.fn(),
     } as never);
@@ -3426,12 +3419,13 @@ describe("plugin remote commands", () => {
       .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
   });
 
-  it("keeps plugin invoke off the viewer path", () => {
+  it("keeps plugin invoke reachable from a phone and out of the required set", () => {
     const { service } = createService({});
-    // A plugin handler may write anything, so this is mutating for the same
-    // reason `plugin.invoke` is — but NOT approval-gated: the install was the
-    // trust decision, and a prompt per tap makes a plugin unusable from a phone.
-    expect(service.getDescriptor("plugins.invoke")?.policy).toEqual({ viewerAllowed: false });
+    // Every button, form and menu item a plugin puts on a phone rides this one
+    // action. The install was the trust decision; gating it per tap would not
+    // prompt anyone (nothing surfaces or clears such a request) — it would just
+    // mean no plugin control on a phone ever works.
+    expect(service.getDescriptor("plugins.invoke")?.policy).toEqual({ viewerAllowed: true });
     expect(service.getDescriptor("plugins.invoke")?.scope).toBe("runtime");
     expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toContain("plugins.invoke");
   });

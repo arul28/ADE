@@ -3434,6 +3434,84 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("keeps two views of one plugin panel independent, and surfaces a refused subscription", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+
+    const first: string[] = [];
+    const second: string[] = [];
+    const firstErrors: string[] = [];
+    const unsubscribeFirst = client.subscribePluginPanel("graph", "overview", {
+      snapshot: (payload) => first.push(`snapshot:${payload.seq}`),
+      error: (error) => firstErrors.push(error.message),
+    });
+    client.subscribePluginPanel("graph", "overview", {
+      snapshot: (payload) => second.push(`snapshot:${payload.seq}`),
+    });
+    await flush();
+
+    const snapshot = {
+      type: "plugin_snapshot" as const,
+      payload: { seq: 3, pluginId: "graph", panelId: "overview", panel: null, rows: [] },
+    };
+    script.sockets[0].serverSend(snapshot);
+    await flush();
+
+    // Keyed only by plugin and panel, the second subscribe replaced the first's
+    // handlers and the first view went permanently blank.
+    expect(first).toEqual(["snapshot:3"]);
+    expect(second).toEqual(["snapshot:3"]);
+
+    // ...and the first unsubscribe tore the shared stream down under the second.
+    unsubscribeFirst();
+    await flush();
+    expect(script.sockets[0].sent.some((envelope) => envelope.type === "plugin_unsubscribe")).toBe(false);
+    script.sockets[0].serverSend({
+      type: "plugin_snapshot",
+      payload: { seq: 4, pluginId: "graph", panelId: "overview", panel: null, rows: [] },
+    });
+    await flush();
+    expect(first).toEqual(["snapshot:3"]);
+    expect(second).toEqual(["snapshot:3", "snapshot:4"]);
+
+    // A refusal must not render as an empty panel: silence is what the client
+    // cannot tell apart from a panel with no rows yet.
+    const refusedErrors: string[] = [];
+    const refusedSnapshots: number[] = [];
+    client.subscribePluginPanel("graph", "detail", {
+      snapshot: (payload) => refusedSnapshots.push(payload.seq),
+      error: (error) => refusedErrors.push(error.message),
+    });
+    await flush();
+    script.sockets[0].serverSend({
+      type: "plugin_snapshot",
+      payload: {
+        seq: 0,
+        pluginId: "graph",
+        panelId: "detail",
+        panel: null,
+        rows: [],
+        error: { code: "plugin_subscription_limit", message: "Too many panels." },
+      },
+    });
+    await flush();
+    expect(refusedSnapshots).toEqual([]);
+    expect(refusedErrors).toEqual(["Too many panels."]);
+    expect(firstErrors).toEqual([]);
+
+    client.dispose();
+  });
+
   it("rebinds /chats foreign streams while retiring active streams on a same-socket project boundary", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);

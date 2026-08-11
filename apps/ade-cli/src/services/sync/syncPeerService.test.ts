@@ -335,4 +335,94 @@ describe("createSyncPeerService", () => {
       dateNowSpy.mockRestore();
     }
   }, 15_000);
+
+  it("never relays plugin rows upward while other tables still flow", async () => {
+    const localSiteId = "site-peer-plugins";
+    const localDeviceId = "peer-device-plugins";
+    const changes: CrsqlChangeRow[] = [
+      makeChange(1, localSiteId),
+      { ...makeChange(2, localSiteId), table: "plugin_presence" },
+      { ...makeChange(3, localSiteId), table: "plugin_panels" },
+      { ...makeChange(4, localSiteId), table: "plugin_collections" },
+      { ...makeChange(5, localSiteId), table: "plugin_contributions" },
+      makeChange(6, localSiteId),
+    ];
+    let currentDbVersion = 0;
+    const db = {
+      sync: {
+        getDbVersion: () => currentDbVersion,
+        exportChangesSince: (fromDbVersion: number) => changes.filter((change) => Number(change.db_version) > fromDbVersion),
+        applyChanges: vi.fn(() => ({ appliedCount: 0 })),
+      },
+    } as unknown as AdeDb;
+    const peerService = createSyncPeerService({
+      db,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+      deviceRegistryService: {
+        getLocalSiteId: () => localSiteId,
+        getLocalDeviceId: () => localDeviceId,
+        ensureLocalDevice: () => ({
+          deviceId: localDeviceId,
+          name: "Plugin Peer",
+          platform: "macOS",
+          deviceType: "desktop",
+          siteId: localSiteId,
+          createdAt: "2026-05-31T00:00:00.000Z",
+          updatedAt: "2026-05-31T00:00:00.000Z",
+          lastSeenAt: "2026-05-31T00:00:00.000Z",
+          lastHost: null,
+          lastPort: null,
+          tailscaleIp: null,
+          ipAddresses: [],
+          metadata: {},
+        }),
+      } as any,
+    });
+    disposers.push(async () => peerService.dispose());
+
+    const server = new WebSocketServer({ port: 0 });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const serverSocketPromise = new Promise<ServerWebSocket>((resolve) => server.once("connection", resolve));
+    const connectPromise = peerService.connect({
+      host: "127.0.0.1",
+      port,
+      token: "bootstrap-token",
+      authKind: "bootstrap",
+    });
+    const serverSocket = await serverSocketPromise;
+    const hello = await nextEnvelope(serverSocket, "hello");
+    const brain: SyncPeerMetadata = {
+      deviceId: "old-host-device",
+      deviceName: "Old Host",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "site-old-host",
+      dbVersion: 0,
+    };
+    serverSocket.send(encodeSyncEnvelope({
+      type: "hello_ok",
+      requestId: hello.requestId,
+      payload: {
+        peer: brain,
+        brain,
+        serverDbVersion: 0,
+        heartbeatIntervalMs: 30_000,
+        pollIntervalMs: 400,
+        features: {},
+      },
+    }));
+    await connectPromise;
+
+    currentDbVersion = 6;
+    peerService.flushLocalChanges();
+
+    const batch = await nextEnvelope(serverSocket, "changeset_batch");
+    const payload = batch.payload as SyncChangesetBatchPayload;
+    expect(payload.changes.map((change) => change.table)).toEqual(["kv", "kv"]);
+    // The watermark still crosses the filtered versions, so the peer does not
+    // re-export the withheld range on the next tick.
+    expect(payload.toDbVersion).toBe(6);
+  });
 });

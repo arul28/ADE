@@ -12,7 +12,7 @@ import type {
   SyncPeerMetadata,
   SyncRunQuickCommandArgs,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_PLUGIN_TABLES_CAPABILITY } from "../../../../desktop/src/shared/types/sync";
+import { SYNC_PLUGIN_TABLES, SYNC_PLUGIN_TABLES_CAPABILITY } from "../../../../desktop/src/shared/types/sync";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
@@ -47,6 +47,16 @@ type PendingChangesetBatch = {
   attemptCount: number;
   retryNotBeforeMs: number;
 };
+
+// Never relay plugin rows upward. The host filters plugin tables per peer
+// capability, but this end has no such gate: a peer authors `plugin_presence`
+// on every runtime start, and a host on a build that predates the plugin schema
+// throws `unknown_sync_table` inside applyChanges, rolls the whole batch back,
+// and never acks. The peer then re-exports the same poisoned range forever, so
+// ALL of its outbound sync stalls — not just plugins. Excluding the tables
+// unconditionally costs nothing: presence converges through the directory pull,
+// which is how a peer's presence reaches other machines in the first place.
+const PLUGIN_SYNCED_TABLES = new Set(SYNC_PLUGIN_TABLES);
 
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const MAX_CHANGESET_SEND_ATTEMPTS = 6;
@@ -305,7 +315,9 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     const exportedThroughDbVersion = exported.length > 0
       ? Number(exported[exported.length - 1].db_version)
       : scanThroughDbVersion;
-    const changes = exported.filter((change) => change.site_id === localSiteId);
+    const changes = exported.filter(
+      (change) => change.site_id === localSiteId && !PLUGIN_SYNCED_TABLES.has(change.table),
+    );
     const previousDbVersion = outboundLocalDbVersion;
     if (!changes.length) {
       outboundLocalDbVersion = exportedThroughDbVersion;

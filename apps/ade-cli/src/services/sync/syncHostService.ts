@@ -127,6 +127,11 @@ import {
   type PluginPanelView,
 } from "../plugins/pluginPanelBuilder";
 import type { PluginSyncMeter } from "../plugins/pluginSyncMeter";
+import {
+  PLUGIN_COLLECTION_VALUE_MAX_BYTES,
+  PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
+  PLUGIN_PANEL_SCHEMA_MAX_BYTES,
+} from "../../../../desktop/src/main/services/state/dbMaintenanceApi";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
@@ -426,6 +431,37 @@ const SYNC_HOST_AUTHORITATIVE_TABLES = new Set([
 const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
   SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
 
+// `plugin_presence` is deliberately NOT in the set above, and the reason is
+// worth writing down because the table looks like it belongs there: its rows say
+// which plugins a given MACHINE has, so a peer authoring a row under someone
+// else's `machine_key` is asserting something about a computer that is not it.
+//
+// The set cannot express that. It is a two-way rule, and presence has to travel
+// host-to-peer — the CRR table is the durable cache under the live directory
+// pull, and joining it here would also splice presence into
+// MOBILE_REPLICA_RESEED_EXCLUDED_TABLES and leave phones with nothing.
+//
+// Enforcing per row at apply is not available either, on two counts. The
+// `machine_key` is not readable: `plugin_presence` has a composite primary key,
+// so every inbound change carries it as cr-sqlite's opaque PACKED pk blob, and
+// nothing in ADE decodes one back into column values (`normalizeIncomingCrsqlChange`
+// only validates the packing). And there is nothing to compare it against: a
+// peer is identified here by `pairedDeviceId` from the pairing store, while
+// `machine_key` comes from the account directory, which lives in the desktop
+// main process and not in this brain.
+//
+// What actually holds the invariant is upstream of the CRR path, and it holds
+// where it matters. `pluginPresenceService.runRefresh` files every pulled row
+// under the key the DIRECTORY gave for the machine it called — never under a key
+// the answer named for itself — through `replacePluginPresenceForMachine`, which
+// replaces that machine's rows wholesale. So a forged row is display-only until
+// the next successful pull from the machine it impersonates, and is then gone.
+// Peers no longer relay these rows upward at all (see the plugin-table exclusion
+// in syncPeerService's outbound export), which leaves a hand-crafted frame from
+// an already-paired device as the only way to author one. That is the accepted
+// gap; close it by decoding the packed pk only if presence ever becomes
+// load-bearing for something other than display.
+
 /**
  * Settle columns on `terminal_sessions`. The host decides these — a settle
  * arrives as a `session.settle*` remote command and is written by
@@ -454,6 +490,52 @@ const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>
 
 const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
   HOST_AUTHORITATIVE_COLUMNS_BY_TABLE.get(change.table)?.has(change.cid) ?? false;
+
+/**
+ * The per-value byte caps the plugin writers enforce, keyed by the column a CRR
+ * change row names.
+ *
+ * The writer caps exist because plugin rows are authored by third-party code,
+ * and they are enforced inside the insert transaction — which is exactly the
+ * path an inbound changeset does NOT take. A paired peer authoring
+ * `plugin_collections` rows directly reaches `applyChanges` and lands whatever
+ * it sends, so a plugin that cannot exceed 64 KB per value on the machine it
+ * runs on could exceed it on every OTHER machine on the account by going through
+ * sync. Re-checking the same numbers here is what closes that.
+ *
+ * Byte caps only. The writers' per-plugin ROW budgets cannot be re-derived here:
+ * a change row carries the primary key as one opaque encoded `pk` blob, so this
+ * layer cannot tell which plugin a row belongs to without decoding cr-sqlite's
+ * key format — and a wrong guess would drop legitimate rows. The batch-level
+ * `MAX_INBOUND_CHANGESET_ROWS` ceiling above is what bounds row count on this
+ * path; the accepted gap is that a peer can accumulate rows for one plugin
+ * across many in-budget batches.
+ */
+const PLUGIN_INBOUND_VALUE_MAX_BYTES = new Map<string, { column: string; maxBytes: number }>([
+  ["plugin_collections", { column: "value_json", maxBytes: PLUGIN_COLLECTION_VALUE_MAX_BYTES }],
+  ["plugin_contributions", { column: "payload_json", maxBytes: PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES }],
+  ["plugin_panels", { column: "schema_json", maxBytes: PLUGIN_PANEL_SCHEMA_MAX_BYTES }],
+]);
+
+/**
+ * Why an inbound plugin change is refused, or null when it is fine.
+ *
+ * Exported for the guard's tests. Returning a reason rather than a boolean is
+ * what lets the caller log which cap a peer tripped — a silently dropped row
+ * would look identical to a plugin that never wrote anything.
+ */
+export function inboundPluginChangeRejection(
+  change: Pick<CrsqlChangeRow, "table" | "cid" | "val">,
+): { table: string; column: string; bytes: number; maxBytes: number } | null {
+  const rule = PLUGIN_INBOUND_VALUE_MAX_BYTES.get(change.table);
+  if (!rule || change.cid !== rule.column) return null;
+  const value = change.val;
+  const bytes = typeof value === "string"
+    ? Buffer.byteLength(value, "utf8")
+    : (value instanceof Uint8Array ? value.byteLength : 0);
+  if (bytes <= rule.maxBytes) return null;
+  return { table: change.table, column: rule.column, bytes, maxBytes: rule.maxBytes };
+}
 
 const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
   ...MOBILE_CHANGESET_EXCLUDED_TABLES,
@@ -3376,7 +3458,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // inbound plugin traffic is attributed on the same byte the transport
         // already measured. Chunked envelopes are counted per arriving frame:
         // the reassembled envelope carries no wire cost of its own.
-        if (envelope.pluginId && args.pluginSyncMeter) {
+        //
+        // Only for an AUTHENTICATED peer. The plugin id is a string the sender
+        // picks, and the meter persists a row per distinct id — so metering
+        // before the hello is checked lets anyone who can open a socket write
+        // permanent rows naming plugins this machine has never installed, which
+        // corrupts the very report the meter exists to produce.
+        if (envelope.pluginId && peer.authenticated && args.pluginSyncMeter) {
           args.pluginSyncMeter.record(
             envelope.pluginId,
             "in",
@@ -4673,14 +4761,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         versionWindow: SYNC_EXPORT_VERSION_WINDOW,
         exportChangesSince: args.db.sync.exportChangesSince,
         excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+        // Plugin rows stay IN the shared cache and are dropped per peer at send
+        // time (`sendMobileReplicaReseed`). Excluding them from the build looks
+        // safer and is not: the reseed advances a phone's cursor all the way to
+        // `targetDbVersion`, so a phone that CAN apply plugin rows would skip
+        // every one in the reseeded range and never see them again.
         includeChange: (change) =>
           !isHostAuthoritativeTable(change)
-          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table)
-          // The reseed cache is built once and shared across phone peers, so it
-          // cannot be filtered per peer. Phones are excluded from plugin rows
-          // wholesale here; the per-peer gate on the broadcast path is what
-          // admits them once a phone build advertises the capability.
-          && !PLUGIN_SYNCED_TABLES.has(change.table),
+          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
       });
       if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
     }
@@ -4715,6 +4803,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       cache,
       deviceId,
       fromDbVersion: peer.lastKnownServerDbVersion,
+      // Same gate as the incremental path: a peer that never advertised
+      // `pluginTables` throws on a row for a table its schema lacks, which
+      // freezes its cursor permanently.
+      includeChange: (change) => isPluginChangeAllowedForPeer(change, peer),
     });
     if (!payload) {
       return { status: "too_large" };
@@ -5304,6 +5396,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         panelId,
         reason: "too_many_subscriptions",
       });
+      // Answered, not dropped. Silence is indistinguishable from a panel that
+      // has no rows yet, so the client spins on a snapshot that will never come
+      // — the refusal has to be something it can render.
+      send(peer, "plugin_snapshot", {
+        seq: 0,
+        pluginId,
+        panelId,
+        panel: null,
+        rows: [],
+        error: {
+          code: "plugin_subscription_limit",
+          message: `This computer streams at most ${MAX_PLUGIN_SUBSCRIPTIONS_PER_PEER} plugin panels at a time. Close one and try again.`,
+        },
+      } satisfies SyncPluginSnapshotPayload, requestId, { pluginId });
       return;
     }
     const view = buildPluginPanelView(args.db, pluginId, panelId);
@@ -8025,11 +8131,30 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // `hello` metadata the peer declares about itself, so a paired phone
         // cannot opt out of the guard by claiming to be a desktop.
         const isPhonePeer = isMobilePeer(peer);
+        const pluginRejections: Array<{ table: string; column: string; bytes: number; maxBytes: number }> = [];
         const filtered = changes.filter((change) => {
           if (isHostAuthoritativeTable(change)) return false;
           if (isPhonePeer && isHostAuthoritativeColumn(change)) return false;
+          // Plugin budgets are enforced in the writer, inside the insert
+          // transaction — a path an inbound changeset never takes. Without this
+          // a paired peer is the way around every per-value cap.
+          const pluginRejection = inboundPluginChangeRejection(change);
+          if (pluginRejection) {
+            pluginRejections.push(pluginRejection);
+            return false;
+          }
           return true;
         });
+        if (pluginRejections.length > 0) {
+          args.logger.warn("sync_host.plugin_change_over_budget", {
+            deviceId: peer.metadata?.deviceId ?? null,
+            batchId,
+            droppedCount: pluginRejections.length,
+            // The first is enough to name the cap; logging every row would let a
+            // peer choose how much it writes to this machine's log.
+            first: pluginRejections[0],
+          });
+        }
         try {
           let appliedCount = 0;
           if (filtered.length > 0) {

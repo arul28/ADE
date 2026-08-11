@@ -5618,11 +5618,24 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
  * Plugin install control and presence, callable from another machine.
  *
  * Machine-scoped ("runtime"), never project-scoped: a plugin is installed on a
- * computer, not into a repository. Every mutating action is `requiresApproval`,
- * so a non-owner peer's install is held for an explicit decision rather than
- * silently running third-party code on someone else's machine — a denial comes
- * back as `approval_required`/`forbidden_command`, which the command layer
- * reports as a POLICY denial and never as an unknown method.
+ * computer, not into a repository.
+ *
+ * All of them are `viewerAllowed` and none is `requiresApproval`, which is a
+ * correction, not a relaxation. `requiresApproval` has exactly one consumer —
+ * the host's command gate, which turns it into an unconditional
+ * `approval_required` rejection — and ADE has no mechanism anywhere that
+ * surfaces such a request to a human or ever clears it. Marking these commands
+ * as needing approval did not gate them; it made every one of them permanently
+ * dead from a paired device, so the phone's plugin surfaces and the web
+ * client's install button could not work at all. `viewerAllowed: false` is
+ * likewise reserved for commands that would hand a peer the pairing secrets;
+ * everything else a paired device can do that mutates this machine — including
+ * `lanes.delete`, which destroys a worktree — is `viewerAllowed: true`.
+ *
+ * The trust decision for third-party code is the install disclosure, made where
+ * the install is chosen and by the person who owns the account these devices
+ * are already paired into. When a real approval mechanism exists these are the
+ * first commands that should use it.
  *
  * None of these may ever enter MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS. A
  * phone paired to a host that lacks a required action drops to limited mode, so
@@ -5649,10 +5662,9 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
    * silently applied locally, which would install a plugin on the wrong computer
    * while reporting success for the row the reader actually clicked.
    *
-   * The forwarded call arrives at the target as an ordinary remote command and
-   * is subject to that machine's own approval policy, so the trust decision
-   * still happens where the code will run. `machineKey` is stripped on the way
-   * out so the target cannot bounce it onward.
+   * The forwarded call arrives at the target as an ordinary remote command,
+   * checked against that machine's own command policy. `machineKey` is stripped
+   * on the way out so the target cannot bounce it onward.
    */
   const runOnMachine = async <T>(
     payload: Record<string, unknown>,
@@ -5668,13 +5680,12 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
         PLUGIN_MACHINE_UNREACHABLE_CODE,
       );
     }
+    // Identity, asked of the identity source. Deriving it from the presence
+    // MATRIX instead means asking a table that is empty until this machine has
+    // installed a plugin — so the first install, the one that most needs to run
+    // here, would not recognize its own key and would dial out to itself.
+    if (machineKey === presence.localMachineKey()) return await runHere();
     const { machineKey: _target, ...forwarded } = payload;
-    const matrix = await presence.readPresenceMatrix();
-    // The matrix is the only place this layer learns its own key. A payload
-    // naming THIS machine must run here rather than dial out to itself.
-    if (matrix.some((row) => row.machineKey === machineKey && row.isThisMachine)) {
-      return await runHere();
-    }
     return await presence.callOnMachine<T>(machineKey, action, forwarded);
   };
 
@@ -5716,12 +5727,13 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
    * the plugin existed. `action` is accepted as a synonym so the desktop's own
    * `plugin.invoke` vocabulary works here unchanged.
    *
-   * NOT `viewerAllowed`: a handler may write anything, so this is treated as
-   * mutating for the same reason `plugin.invoke` is. It is deliberately not
-   * `requiresApproval` — the install lifecycle is the trust decision, and
-   * prompting per tap would make an installed plugin unusable from a phone.
+   * `viewerAllowed`, like every other plugin command here: the install is the
+   * trust decision, and a per-tap gate would make an installed plugin unusable
+   * from a phone. Marking it otherwise would not prompt anyone — the host gate
+   * rejects outright — it would only mean no plugin button on a phone ever
+   * works.
    */
-  register("plugins.invoke", { viewerAllowed: false }, async (payload) => {
+  register("plugins.invoke", { viewerAllowed: true }, async (payload) => {
     const pluginId = parsePluginId(payload);
     const rawAction = typeof payload.actionId === "string" && payload.actionId.trim()
       ? payload.actionId
@@ -5743,7 +5755,7 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
     return { ok: true, ...(message ? { message } : {}), result: result ?? null };
   }, "runtime");
 
-  register("plugins.install", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+  register("plugins.install", { viewerAllowed: true }, async (payload) =>
     await runOnMachine(payload, "plugins.install", async () => {
       const source = parsePluginInstallSource(payload);
       const record = await requirePluginInstallService().install(source);
@@ -5753,21 +5765,21 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
       return record;
     }), "runtime");
 
-  register("plugins.uninstall", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+  register("plugins.uninstall", { viewerAllowed: true }, async (payload) =>
     await runOnMachine(payload, "plugins.uninstall", async () => {
       const result = await requirePluginInstallService().uninstall(parsePluginId(payload));
       await getPluginPresenceService()?.publishLocalPresence();
       return result;
     }), "runtime");
 
-  register("plugins.enable", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+  register("plugins.enable", { viewerAllowed: true }, async (payload) =>
     await runOnMachine(payload, "plugins.enable", async () => {
       const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), true);
       await getPluginPresenceService()?.publishLocalPresence();
       return record;
     }), "runtime");
 
-  register("plugins.disable", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+  register("plugins.disable", { viewerAllowed: true }, async (payload) =>
     await runOnMachine(payload, "plugins.disable", async () => {
       const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), false);
       await getPluginPresenceService()?.publishLocalPresence();
