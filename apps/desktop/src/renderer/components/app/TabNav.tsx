@@ -16,7 +16,8 @@ import {
 import { UserCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { MARKETPLACE_ICON, pluginIcon } from "../plugins/pluginIcons";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
@@ -92,8 +93,17 @@ const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = 
   },
 };
 
+const marketplaceItem = { to: "/marketplace", label: "Marketplace", icon: MARKETPLACE_ICON } as const;
+
 function primaryTabPath(pathname: string): string {
   if (pathname === "/chats" || pathname.startsWith("/chats/")) return "/chats";
+  if (pathname === "/marketplace" || pathname.startsWith("/marketplace/")) return "/marketplace";
+  // A plugin tab keeps its rail item highlighted across its own sub-routes and
+  // its `?panel=` query, so switching panels does not un-highlight the tab.
+  if (pathname.startsWith("/plugin/")) {
+    const pluginId = pathname.slice("/plugin/".length).split("/")[0];
+    if (pluginId) return `/plugin/${pluginId}`;
+  }
   const match = mainItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
   if (match) return match.to;
   return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
@@ -161,7 +171,16 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   }, []);
 
   const renderItem = (
-    it: { to: string; label: string; icon: React.ElementType },
+    it: {
+      to: string;
+      label: string;
+      icon: React.ElementType;
+      /** Plugin tabs only: the manifest accent, applied as a CSS variable. */
+      accent?: string | null;
+      /** Plugin tabs only: draws the attention dot. */
+      attention?: boolean;
+      description?: string;
+    },
   ) => {
     const onWelcomeLanding = showWelcome || !hasActiveProject;
     const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
@@ -174,7 +193,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     const tooltipBase = TAB_TOOLTIP_BY_PATH[it.to];
     const tooltip: SmartTooltipContent = {
       label: it.label,
-      description: tooltipBase?.description ?? `Open the ${it.label} tab.`,
+      description: it.description ?? tooltipBase?.description ?? `Open the ${it.label} tab.`,
       effect: !hasActiveProject
           ? "Open or create a project first."
           : showWelcome
@@ -240,11 +259,21 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           className={cn(
             "ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100",
           )}
+          // A plugin's accent is published as a variable rather than written
+          // into a class, so it participates in the cascade and cannot leak
+          // past the one item it belongs to.
+          style={it.accent ? ({ "--plugin-accent": it.accent } as React.CSSProperties) : undefined}
         >
-          {/* Active indicator bar */}
+          {/* Active indicator bar. A plugin tab tints it with its own accent;
+              every core tab keeps the neutral overlay. */}
           {isActive && (
             <div
               className="absolute inset-0 bg-white/[0.08]"
+              style={
+                it.accent
+                  ? { background: "color-mix(in srgb, var(--plugin-accent) 16%, transparent)" }
+                  : undefined
+              }
             />
           )}
 
@@ -257,6 +286,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                 className={cn(
                   "ade-shell-sidebar-icon shrink-0 transition-colors duration-150",
                 )}
+                {...(it.accent && isActive ? { color: "var(--plugin-accent)" } : {})}
               />
               {/* Terminal attention dot */}
               {it.to === "/work" && terminalAttention.indicator !== "none" ? (
@@ -280,6 +310,16 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
               {it.to === "/cto" && ctoAttention.awaitingInput ? (
                 <span
                   title={ctoWaitingLabel}
+                  className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
+                />
+              ) : null}
+              {/* Plugin attention dot. Same socket as Work and CTO above, but
+                  driven by the plugin registry rather than a bespoke store
+                  field — a plugin sets `attention` and the rail shows a dot.
+                  Off unless a plugin asks for it. */}
+              {it.attention ? (
+                <span
+                  title={`${it.label} needs your attention`}
                   className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
                 />
               ) : null}
@@ -309,6 +349,34 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     : mainItems.slice(4);
   const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
 
+  // Plugin tabs form a third group below the tool divider, with their own
+  // separator, so the rail always reads as "core / ADE's own tools / yours".
+  //
+  // Read from the ROOT store on purpose: this component renders above
+  // `AppStoreProvider`, and a project-scoped copy of the registry would not
+  // update when a plugin is installed. Hidden on web — a plugin's code runs on
+  // the machine that owns it, so the hosted client has nothing to show.
+  const installedPlugins = useRootAppStore((s) => s.installedPlugins);
+  const pluginItems = React.useMemo(
+    () =>
+      webMode
+        ? []
+        : installedPlugins
+            .filter((plugin) => plugin.enabled && plugin.tabs.length > 0)
+            .map((plugin) => {
+              const tab = plugin.tabs[0]!;
+              return {
+                to: `/plugin/${plugin.pluginId}`,
+                label: tab.title || plugin.displayName,
+                icon: pluginIcon(tab.icon ?? plugin.icon),
+                accent: plugin.accent,
+                attention: plugin.attention === true,
+                description: `A tab from the ${plugin.displayName} plugin.`,
+              };
+            }),
+    [installedPlugins, webMode],
+  );
+
   return (
     <>
       <nav
@@ -328,6 +396,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
             {/* Tool navigation items */}
             <div className="flex flex-col gap-px">
               {toolItems.map((it) => renderItem(it))}
+            </div>
+          </>
+        ) : null}
+
+        {pluginItems.length > 0 ? (
+          <>
+            <div className="ade-shell-sidebar-separator mx-3 my-1 border-t" />
+            <div className="flex flex-col gap-px">
+              {pluginItems.map((it) => renderItem(it))}
             </div>
           </>
         ) : null}
@@ -366,6 +443,43 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
             <span className="ade-tab-label whitespace-nowrap">Chats</span>
           </NavLink>
         </SmartTooltip>
+
+        {/* Marketplace sits between Chats and Account: like both of them it is a
+            machine-level surface, so it stays reachable with no project open —
+            which is exactly when someone is most likely to be adding a plugin.
+            Hidden on web, where plugins have no machine to run on. */}
+        {!webMode ? (
+          <SmartTooltip
+            side="bottom"
+            content={{
+              label: marketplaceItem.label,
+              description: "Find plugins, themes, and extra tabs, and manage the ones you have.",
+              effect: primaryTabPath(location.pathname) === marketplaceItem.to
+                ? "Already viewing the marketplace."
+                : "Opens the marketplace.",
+            }}
+            wrapperClassName="w-full"
+            wrapperStyle={{ display: "flex" }}
+          >
+            <NavLink
+              to={marketplaceItem.to}
+              data-active={primaryTabPath(location.pathname) === marketplaceItem.to ? "true" : undefined}
+              className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
+            >
+              {primaryTabPath(location.pathname) === marketplaceItem.to ? (
+                <div className="absolute inset-0 bg-white/[0.08]" />
+              ) : null}
+              <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
+                <marketplaceItem.icon
+                  size={SIDEBAR_ICON_SIZE}
+                  weight="regular"
+                  className="ade-shell-sidebar-icon shrink-0"
+                />
+              </span>
+              <span className="ade-tab-label whitespace-nowrap">{marketplaceItem.label}</span>
+            </NavLink>
+          </SmartTooltip>
+        ) : null}
 
         {/* Account avatar — provider-aware image → monogram, routes to /account.
             Always present so account access stays discoverable from the sidebar. */}

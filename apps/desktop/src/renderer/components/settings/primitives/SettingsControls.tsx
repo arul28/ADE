@@ -1,5 +1,6 @@
-import React, { useId } from "react";
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import React, { useId, useState } from "react";
+import { Eye, EyeSlash } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 
 /**
  * The settings control vocabulary. Before this file, ADE shipped four separate
@@ -262,6 +263,138 @@ export function SettingsSelect<T extends string>({
         <option key={option.value} value={option.value}>{option.label}</option>
       ))}
     </select>
+  );
+}
+
+const FIELD_STYLE: React.CSSProperties = {
+  height: 30,
+  padding: "0 8px",
+  fontFamily: SANS_FONT,
+  fontSize: 12,
+  color: COLORS.textPrimary,
+  background: COLORS.recessedBg,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  borderRadius: 8,
+  minWidth: 0,
+};
+
+/** Single-line text field. Sized to sit in a `SettingsCard` control slot. */
+export function SettingsText({
+  value,
+  onChange,
+  id,
+  placeholder,
+  disabled = false,
+  ariaLabel,
+  /** Monospace for values that are paths, ids, or font stacks. */
+  mono = false,
+  maxLength,
+  width = 220,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  id?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  ariaLabel?: string;
+  mono?: boolean;
+  maxLength?: number;
+  width?: number | string;
+}) {
+  return (
+    <input
+      id={id}
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      maxLength={maxLength}
+      onChange={(event) => onChange(event.target.value)}
+      style={{
+        ...FIELD_STYLE,
+        width,
+        fontFamily: mono ? MONO_FONT : SANS_FONT,
+        cursor: disabled ? "not-allowed" : "text",
+        opacity: disabled ? 0.5 : 1,
+      }}
+    />
+  );
+}
+
+/**
+ * A secret field.
+ *
+ * Masked by default with an explicit reveal, because the alternative — a field
+ * that looks empty when a secret IS set — is the same failure Storage's number
+ * inputs had: "unset" and "set but unreadable" must not look alike. Callers that
+ * hold only a redacted marker pass `hasStoredValue` so the placeholder says the
+ * secret exists.
+ */
+export function SettingsSecret({
+  value,
+  onChange,
+  id,
+  placeholder = "Not set",
+  hasStoredValue = false,
+  disabled = false,
+  ariaLabel,
+  width = 220,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  id?: string;
+  placeholder?: string;
+  /** True when a secret is already stored but not readable back into `value`. */
+  hasStoredValue?: boolean;
+  disabled?: boolean;
+  ariaLabel?: string;
+  width?: number | string;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <input
+        id={id}
+        type={revealed ? "text" : "password"}
+        value={value}
+        placeholder={hasStoredValue && !value ? "Saved — enter a new value to replace it" : placeholder}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          ...FIELD_STYLE,
+          width,
+          fontFamily: revealed ? MONO_FONT : SANS_FONT,
+          cursor: disabled ? "not-allowed" : "text",
+          opacity: disabled ? 0.5 : 1,
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => setRevealed((previous) => !previous)}
+        disabled={disabled || value.length === 0}
+        aria-label={revealed ? "Hide secret" : "Show secret"}
+        title={revealed ? "Hide" : "Show"}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 30,
+          color: COLORS.textMuted,
+          background: "transparent",
+          border: "none",
+          borderRadius: 8,
+          cursor: disabled || value.length === 0 ? "default" : "pointer",
+          opacity: value.length === 0 ? 0.35 : 1,
+        }}
+      >
+        {revealed ? <EyeSlash size={14} weight="regular" /> : <Eye size={14} weight="regular" />}
+      </button>
+    </span>
   );
 }
 

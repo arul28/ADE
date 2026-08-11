@@ -9,7 +9,9 @@ export {
   SettingsSegmented,
   SettingsNumber,
   SettingsSelect,
+  SettingsSecret,
   SettingsSlider,
+  SettingsText,
   type SegmentedOption,
 } from "./SettingsControls";
 

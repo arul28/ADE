@@ -25,6 +25,13 @@ import {
   TERMINAL_SCROLLBACK_OPTIONS,
 } from "./terminalOptions";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import {
+  previewPluginTheme,
+  revertPluginThemePreview,
+  sanitizePluginThemeTokens,
+  type PluginThemeDefinition,
+} from "../../lib/pluginTheme";
+import { usePluginThemes } from "../plugins/usePluginRegistry";
 import { ChatAppearancePreview } from "./ChatAppearancePreview";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import {
@@ -162,6 +169,126 @@ export function ThemeSwatch({
   );
 }
 
+/**
+ * A plugin theme, shown beside the built-ins.
+ *
+ * The miniature is drawn from the plugin's OWN tokens for the base theme in
+ * effect, falling back to that base's colours for anything the plugin does not
+ * override — so the swatch shows what applying it would actually look like
+ * rather than a decorative guess. (`THEME_META`'s hard-coded hexes have already
+ * drifted from `index.css`; a second hand-maintained copy would drift too.)
+ *
+ * Hovering previews the theme live and leaving reverts it. Previewing never
+ * persists — only the click does.
+ */
+function PluginThemeSwatch({
+  theme,
+  baseThemeId,
+  selected,
+  onApply,
+  onPreview,
+  onEndPreview,
+}: {
+  theme: PluginThemeDefinition;
+  baseThemeId: ThemeId;
+  selected: boolean;
+  onApply: () => void;
+  onPreview: () => void;
+  onEndPreview: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const base = THEME_META[baseThemeId].colors;
+  const tokens = sanitizePluginThemeTokens(theme.tokens).tokens[baseThemeId] ?? {};
+  const colors = {
+    bg: tokens["--color-bg"] ?? base.bg,
+    fg: tokens["--color-fg"] ?? base.fg,
+    accent: tokens["--color-accent"] ?? base.accent,
+    card: tokens["--color-card"] ?? base.card,
+    border: tokens["--color-border"] ?? base.border,
+  };
+
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onApply}
+      onMouseEnter={() => {
+        setHovered(true);
+        onPreview();
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        onEndPreview();
+      }}
+      onFocus={onPreview}
+      onBlur={onEndPreview}
+      title={`Preview ${theme.displayName}. Click to keep it.`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: 10,
+        minWidth: 190,
+        textAlign: "left",
+        background: selected
+          ? "color-mix(in srgb, var(--color-accent) 10%, transparent)"
+          : hovered
+            ? COLORS.hoverBg
+            : COLORS.recessedBg,
+        border: `1px solid ${selected ? COLORS.accent : hovered ? COLORS.outlineBorder : COLORS.borderMuted}`,
+        borderRadius: 10,
+        cursor: "pointer",
+        transition: "border-color 150ms, background 150ms",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 44,
+          height: 32,
+          flexShrink: 0,
+          background: colors.bg,
+          border: `1px solid ${colors.border}`,
+          borderRadius: 5,
+          overflow: "hidden",
+          display: "block",
+        }}
+      >
+        <span style={{ display: "block", height: 6, background: colors.card }} />
+        <span
+          style={{
+            display: "block",
+            width: 24,
+            height: 3,
+            margin: "5px auto 0",
+            background: colors.accent,
+            borderRadius: 2,
+          }}
+        />
+        <span style={{ display: "block", margin: "4px 5px 0" }}>
+          <span style={{ display: "block", height: 2, width: 22, background: colors.fg, opacity: 0.4, borderRadius: 1 }} />
+        </span>
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span
+          style={{
+            display: "block",
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            fontWeight: 600,
+            color: selected ? COLORS.accent : COLORS.textPrimary,
+          }}
+        >
+          {theme.displayName}
+        </span>
+        <span style={{ display: "block", marginTop: 2, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+          {selected ? "Applied" : "Hover to preview"}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
   top: { label: "Top", hint: "Pinned to the corner" },
   bottom: { label: "Bottom", hint: "Easier after scrolling" },
@@ -188,6 +315,9 @@ const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 export function AppearanceSection() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
+  const pluginThemes = usePluginThemes();
+  const pluginThemeId = useRootAppStore((s) => s.pluginThemeId);
+  const setPluginThemeId = useRootAppStore((s) => s.setPluginThemeId);
 
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const setChatFontSizePx = useAppStore((s) => s.setChatFontSizePx);
@@ -222,7 +352,10 @@ export function AppearanceSection() {
           control={
             <button
               type="button"
-              onClick={() => resetThemeAndChatFontDefaults()}
+              onClick={() => {
+                setPluginThemeId(null);
+                resetThemeAndChatFontDefaults();
+              }}
               style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
               title="Sets theme to dark and chat font to 14px. Density, tint, and geometry stay as set."
             >
@@ -236,6 +369,40 @@ export function AppearanceSection() {
               <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
             ))}
           </div>
+          {/* A plugin theme layers token overrides on top of the built-in
+              palette above rather than replacing it, so both rows stay live:
+              the built-in choice still decides light versus dark. */}
+          {pluginThemes.length > 0 ? (
+            <div style={{ marginTop: 14, display: "grid", gap: 8 }}>
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                From plugins
+              </span>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                {pluginThemes.map((pluginTheme) => (
+                  <PluginThemeSwatch
+                    key={pluginTheme.pluginId}
+                    theme={pluginTheme}
+                    baseThemeId={theme}
+                    selected={pluginThemeId === pluginTheme.pluginId}
+                    onApply={() => setPluginThemeId(pluginTheme.pluginId)}
+                    onPreview={() => previewPluginTheme(pluginTheme)}
+                    onEndPreview={() => revertPluginThemePreview()}
+                  />
+                ))}
+              </div>
+              {pluginThemeId ? (
+                <span>
+                  <button
+                    type="button"
+                    onClick={() => setPluginThemeId(null)}
+                    style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+                  >
+                    Use ADE’s own colors
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </SettingsCard>
       </SettingsGroup>
 

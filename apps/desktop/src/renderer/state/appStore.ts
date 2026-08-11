@@ -9,6 +9,7 @@ import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
+import { listInstalledPlugins, type InstalledPlugin } from "../lib/pluginRuntimeBridge";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
@@ -791,7 +792,58 @@ type PersistedUserPreferences = {
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
+  /** Plugin id of the applied theme, or null for the built-in palette. */
+  pluginThemeId: string | null;
+  pluginViewState: PluginViewState;
 };
+
+/**
+ * Per-plugin view memory.
+ *
+ * Versioned and normalized for the reason every persisted blob in this file is:
+ * {@link normalizePluginViewState} is the ONLY reader, so a field that is not
+ * named there is silently dropped on the next write. Adding a field means adding
+ * it in three places — the type, the normalizer, and the version bump when the
+ * old shape can no longer be read.
+ */
+export type PluginViewState = {
+  version: number;
+  /** Last panel opened per plugin, so returning to a plugin tab restores the view. */
+  lastPanelByPlugin: Record<string, string>;
+};
+
+export const PLUGIN_VIEW_STATE_VERSION = 1;
+
+const DEFAULT_PLUGIN_VIEW_STATE: PluginViewState = {
+  version: PLUGIN_VIEW_STATE_VERSION,
+  lastPanelByPlugin: {},
+};
+
+/** Cap so an uninstalled plugin's entry cannot accumulate forever. */
+const PLUGIN_VIEW_STATE_MAX_ENTRIES = 64;
+
+export function normalizePluginViewState(value: unknown): PluginViewState {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ...DEFAULT_PLUGIN_VIEW_STATE };
+  }
+  const record = value as Partial<PluginViewState>;
+  const lastPanelByPlugin: Record<string, string> = {};
+  if (record.lastPanelByPlugin && typeof record.lastPanelByPlugin === "object") {
+    for (const [pluginId, panelId] of Object.entries(record.lastPanelByPlugin).slice(
+      0,
+      PLUGIN_VIEW_STATE_MAX_ENTRIES,
+    )) {
+      if (typeof pluginId === "string" && typeof panelId === "string" && pluginId && panelId) {
+        lastPanelByPlugin[pluginId] = panelId;
+      }
+    }
+  }
+  return { version: PLUGIN_VIEW_STATE_VERSION, lastPanelByPlugin };
+}
+
+function normalizePluginThemeId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 // ── Voice dictation (ephemeral, app-global) ────────────────────────────────
 //
@@ -856,6 +908,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
+      pluginThemeId: normalizePluginThemeId(parsed.pluginThemeId),
+      pluginViewState: normalizePluginViewState(parsed.pluginViewState),
     };
   } catch {
     return null;
@@ -902,6 +956,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatChromeTint: "colored",
     chatShellGeometry: "default",
     userOverrodeChatFontSize: false,
+    pluginThemeId: null,
+    pluginViewState: { ...DEFAULT_PLUGIN_VIEW_STATE },
   };
 }
 
@@ -934,6 +990,8 @@ function persistUserPreferencesFrom(state: {
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
   userOverrodeChatFontSize: boolean;
+  pluginThemeId: string | null;
+  pluginViewState: PluginViewState;
 }) {
   persistUserPreferences({
     theme: state.theme,
@@ -955,6 +1013,8 @@ function persistUserPreferencesFrom(state: {
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
+    pluginThemeId: state.pluginThemeId,
+    pluginViewState: state.pluginViewState,
   });
 }
 
@@ -1113,6 +1173,18 @@ export type AppState = {
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  // ── Plugin registry (ROOT store only) ──
+  //
+  // The tab rail renders above `AppStoreProvider`, so it resolves the root store
+  // — and the registry has to live where the rail can see it. Project-scoped
+  // components read it through `useRootAppStore`, NOT `useAppStore`: a copy in a
+  // per-project store would go stale the moment a plugin is installed or
+  // enabled, which is exactly when the rail needs to change.
+  installedPlugins: InstalledPlugin[];
+  /** False until the first `refreshInstalledPlugins` resolves. */
+  pluginsLoaded: boolean;
+  pluginThemeId: string | null;
+  pluginViewState: PluginViewState;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
   dictationPhase: DictationPhase;
   dictationElapsed: number;
@@ -1265,6 +1337,13 @@ export type AppState = {
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setPromptStashButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
+  /** Replace the registry from a host snapshot. Root store only. */
+  setInstalledPlugins: (plugins: InstalledPlugin[]) => void;
+  /** Pull the registry from the host. Resolves even when the host has no plugin surface. */
+  refreshInstalledPlugins: () => Promise<void>;
+  setPluginThemeId: (pluginId: string | null) => void;
+  /** Remember which panel a plugin tab was last showing. */
+  setLastPluginPanel: (pluginId: string, panelId: string) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
   setDictationPhase: (phase: DictationPhase) => void;
   setDictationElapsed: (seconds: number) => void;
@@ -1523,6 +1602,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
+  installedPlugins: [],
+  pluginsLoaded: false,
+  pluginThemeId: initialUserPreferences.pluginThemeId,
+  pluginViewState: initialUserPreferences.pluginViewState,
   dictationPhase: "idle",
   dictationElapsed: 0,
   dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
@@ -2044,6 +2127,31 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
       return { voiceInputEnabled: enabled };
+    }),
+  setInstalledPlugins: (plugins) => set({ installedPlugins: plugins, pluginsLoaded: true }),
+  refreshInstalledPlugins: async () => {
+    // `listInstalledPlugins` already absorbs a missing namespace and a rejected
+    // call, so this resolves to an empty registry on a host with no plugin
+    // support rather than leaving `pluginsLoaded` false forever.
+    const plugins = await listInstalledPlugins();
+    set({ installedPlugins: plugins, pluginsLoaded: true });
+  },
+  setPluginThemeId: (pluginId) =>
+    set((prev) => {
+      const value = normalizePluginThemeId(pluginId);
+      persistUserPreferencesFrom({ ...prev, pluginThemeId: value });
+      return { pluginThemeId: value };
+    }),
+  setLastPluginPanel: (pluginId, panelId) =>
+    set((prev) => {
+      if (!pluginId || !panelId) return {};
+      if (prev.pluginViewState.lastPanelByPlugin[pluginId] === panelId) return {};
+      const pluginViewState = normalizePluginViewState({
+        ...prev.pluginViewState,
+        lastPanelByPlugin: { ...prev.pluginViewState.lastPanelByPlugin, [pluginId]: panelId },
+      });
+      persistUserPreferencesFrom({ ...prev, pluginViewState });
+      return { pluginViewState };
     }),
   // Ephemeral dictation setters: NO persistUserPreferencesFrom — these describe
   // a live capture session, not a saved preference.
@@ -2936,6 +3044,16 @@ export function createProjectAppStore(
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
+    // Plugin PREFS are copied like every other appearance pref. The plugin
+    // REGISTRY deliberately is not: it changes whenever a plugin is installed
+    // or enabled, and a per-project copy would be stale from that moment on.
+    // Project-scoped readers use `useRootAppStore` for `installedPlugins`.
+    pluginThemeId: rootState.pluginThemeId,
+    pluginViewState: rootState.pluginViewState,
+    setPluginThemeId: rootState.setPluginThemeId,
+    setLastPluginPanel: rootState.setLastPluginPanel,
+    setInstalledPlugins: rootState.setInstalledPlugins,
+    refreshInstalledPlugins: rootState.refreshInstalledPlugins,
     workViewByProject: hydratedWorkViewByProject,
     laneWorkViewByScope: hydratedLaneWorkViewByScope,
     laneSelectionByProject: rootState.laneSelectionByProject,

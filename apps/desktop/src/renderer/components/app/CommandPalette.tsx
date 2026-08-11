@@ -292,6 +292,9 @@ export function CommandPalette({
   const selectLane = useAppStore((s) => s.selectLane);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+  // Root store: the registry changes on install, and the palette must not be
+  // reading a project-scoped snapshot of it.
+  const installedPlugins = useRootAppStore((s) => s.installedPlugins);
   // The palette lists settings, so it has to agree with the settings page about
   // which ones exist. On web that depends on whether a project tab is bound —
   // the manifest reads it back through this resolver.
@@ -710,6 +713,31 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/settings"),
       },
+      // Plugins the same way settings tabs are: generated from the registry, so
+      // the palette can never offer a tab the rail does not have — or miss one
+      // the rail just gained.
+      ...(isWebClientMode()
+        ? []
+        : [
+            {
+              id: "go-marketplace",
+              title: "Go to Marketplace",
+              hint: "Find plugins, themes, and extra tabs",
+              keywords: ["plugin", "plugins", "marketplace", "store", "theme", "extension"],
+              group: "Navigation",
+              run: () => navigate("/marketplace"),
+            },
+            ...installedPlugins
+              .filter((plugin) => plugin.enabled && plugin.tabs.length > 0)
+              .map((plugin) => ({
+                id: `go-plugin-${plugin.pluginId}`,
+                title: `Go to ${plugin.tabs[0]!.title || plugin.displayName}`,
+                hint: `${plugin.displayName} plugin`,
+                keywords: ["plugin", plugin.pluginId, plugin.displayName],
+                group: "Navigation",
+                run: () => navigate(`/plugin/${plugin.pluginId}`),
+              })),
+          ]),
       // One command per settings *tab*, generated from the manifest. The
       // manifest reports only the tabs this renderer can serve, so the web
       // client stops offering Secrets, Providers, Storage and the rest —
@@ -838,6 +866,7 @@ export function CommandPalette({
     return next;
   }, [
     hasActiveProject,
+    installedPlugins,
     lanes,
     navigate,
     project?.rootPath,

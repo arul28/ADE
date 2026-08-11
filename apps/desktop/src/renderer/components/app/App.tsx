@@ -31,6 +31,7 @@ import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteS
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { usePluginRegistrySync } from "../plugins/usePluginRegistry";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -106,6 +107,21 @@ const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const CtoPage = ctoRoute.Component;
 const preloadCtoPage = ctoRoute.preload;
+// Plugin surfaces are lazy and stay out of the sign-in graph: a user with no
+// plugins installed should never pay for the vocabulary renderer.
+// Marketplace is a machine-level surface with no preload trigger, so it uses
+// plain `React.lazy` like its neighbours Chats and Account. A plugin tab is a
+// project surface and gets the preloadable form the other tabs use.
+const MarketplacePage = React.lazy(() =>
+  import("../plugins/MarketplacePage").then((m) => ({ default: m.MarketplacePage }))
+);
+const pluginTabRoute = createPreloadableRoute<{ active?: boolean }>(() =>
+  import("../plugins/PluginTabPage").then((m) => ({ default: m.PluginTabPage }))
+);
+const PluginTabPage = pluginTabRoute.Component;
+const PluginsDevPage = React.lazy(() =>
+  import("../plugins/PluginsDevPage").then((m) => ({ default: m.PluginsDevPage }))
+);
 import {
   AppStoreProvider,
   createProjectAppStore,
@@ -587,6 +603,15 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
+          {/* Plugin tabs are project surfaces: they sit in the tool group of the
+              rail and a plugin's data is scoped to the machine the project is
+              open on. The Marketplace is not — it is machine-level, alongside
+              Chats and Account, so it still works with no project open. */}
+          <Route path="/plugin/:pluginId" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(PluginTabPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
           <Route path="/settings" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
@@ -724,6 +749,14 @@ function ProjectTabHost() {
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
+  const isMarketplaceRoute = location.pathname === "/marketplace"
+    || location.pathname.startsWith("/marketplace/");
+  // The vocabulary renderer's fixture page. Dev builds only — a production nav
+  // has no entry for it and a production route table has no path for it.
+  const isPluginsDevRoute = import.meta.env.DEV && location.pathname === "/plugins-dev";
+  // Machine-level routes are not project surfaces: they must not be clobbered by
+  // the active project's stored route, and they render with no project open.
+  const isMachineRoute = isPersonalChatsRoute || isAccountRoute || isMarketplaceRoute || isPluginsDevRoute;
   // The Hub is retired: the hosted client's landing surface is the shared
   // project welcome page. Old links and restored tabs still arrive here.
   const isLegacyHubRoute = location.pathname === "/hub";
@@ -776,10 +809,10 @@ function ProjectTabHost() {
   }, [isLegacyHubRoute, navigate]);
 
   React.useEffect(() => {
-    // Machine-level routes (personal chats, account) are not project surfaces;
-    // the route-restore below would otherwise clobber them with the active
-    // project's stored route on load.
-    if (isPersonalChatsRoute || isAccountRoute || isLegacyHubRoute) return;
+    // Machine-level routes (personal chats, account, marketplace) are not
+    // project surfaces; the route-restore below would otherwise clobber them
+    // with the active project's stored route on load.
+    if (isMachineRoute || isLegacyHubRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -802,7 +835,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isLegacyHubRoute, isMachineRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -956,7 +989,7 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isMachineRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
         <ProjectWelcomePage />
@@ -995,7 +1028,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!isMachineRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -1014,6 +1047,20 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <AccountPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isMarketplaceRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <MarketplacePage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isPluginsDevRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <PluginsDevPage />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
@@ -1378,7 +1425,12 @@ function BrowserHashRouteBridge() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
+  const pluginThemeId = useAppStore((s) => s.pluginThemeId);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+
+  // Keeps the root plugin registry live and re-applies the persisted plugin
+  // theme whenever the registry changes.
+  usePluginRegistrySync();
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };
@@ -1397,9 +1449,11 @@ export function App() {
     document.documentElement.setAttribute("data-theme", theme);
     document.body.setAttribute("data-theme", theme);
     // The Windows caption strip is painted by the OS from a colour ADE hands
-    // it, so it does not inherit `data-theme` the way the header does.
+    // it, so it does not inherit `data-theme` the way the header does. It reads
+    // the resolved token, which a plugin theme can change without changing
+    // `theme` — hence the plugin theme id in the dependency list.
     syncWindowsTitleBarOverlay({ theme });
-  }, [theme]);
+  }, [pluginThemeId, theme]);
 
   return (
     <LaunchGate>
