@@ -101,7 +101,11 @@ describe("settle-lifecycle writer", () => {
         }
       }
     };
-    for (const root of roots) if (fs.existsSync(root)) walk(root);
+    for (const root of roots) {
+      // A silently-skipped root would quietly stop enforcing half the invariant.
+      expect(fs.existsSync(root), `scan root missing: ${root}`).toBe(true);
+      walk(root);
+    }
     expect(files.length).toBeGreaterThan(100);
 
     const offenders: string[] = [];
@@ -330,6 +334,26 @@ describe("settle-lifecycle writer", () => {
       service.getSettleLifecycleRevision("session-1"),
       "a real mutation must be visible even when its token write failed",
     ).toBeGreaterThan(before);
+  });
+
+  /**
+   * Documents a deliberate choice rather than a bug. `sqlite3_changes` counts
+   * matched rows, not differing values, so re-clearing an already-clear tuple
+   * spends a revision. Predicating the UPDATE on "would actually change" was
+   * tried and reverted: it gates the caller's own columns too, and the preview
+   * silently stopped being written. Over-bumping is the safe direction — a spent
+   * revision costs a re-taken settle, a missed one accepts a stale decision —
+   * and step 2's swallow rule is what stops a session's idle output
+   * invalidating its own teardown.
+   */
+  it("spends a revision on a no-op clear, and still writes the caller's columns", async () => {
+    const service = await withService();
+    const before = service.getSettleLifecycleRevision("session-1");
+
+    service.setLastOutputPreview("session-1", "tick one", { clearSettled: true });
+
+    expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(before);
+    expect(service.get("session-1")?.lastOutputPreview).toBe("tick one");
   });
 
   it("keeps the revision table out of CRR replication", async () => {

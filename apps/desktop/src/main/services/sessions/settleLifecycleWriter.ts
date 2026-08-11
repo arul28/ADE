@@ -201,10 +201,17 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
       `update terminal_sessions set ${setClauses.join(", ")} where ${where}`,
       [...setParams, ...ids],
     );
-    // Only a write that actually moved a row bumps. A revision that counted
-    // attempts would reject later decisions for writes that changed nothing —
-    // and, on the throttled preview path, would churn against rows that are
-    // already unsettled.
+    // Only a write that MATCHED A ROW bumps — that is what this gate buys, and
+    // it is what stops a deleted or absent session inserting an orphan token.
+    //
+    // It is deliberately not "the tuple's values differed": `sqlite3_changes`
+    // counts matched rows, not changed values, so re-clearing an already-clear
+    // tuple still counts. Predicating the UPDATE on "would actually change"
+    // was tried and reverted — it gates the caller's own columns too, so a
+    // preview write silently stopped landing. Over-bumping is the safe
+    // direction anyway (a spent revision costs a re-taken settle; a missed one
+    // accepts a stale decision), and step 2's swallow rule is what keeps a
+    // session's own idle output from invalidating its teardown.
     if (changed <= 0) return;
     // Immediately adjacent, with no `await` between, and `bumpLifecycleRevisions`
     // cannot throw. `AdeDb` exposes no transaction helper and an explicit BEGIN
