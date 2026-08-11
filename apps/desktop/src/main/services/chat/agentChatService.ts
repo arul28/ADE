@@ -44295,6 +44295,17 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    /**
+     * Is a persisted Claude `--bg` job actually still running?
+     *
+     * `claudeBackgroundJobShort` is a RECORD, not a liveness signal — it stays
+     * on the session after the job finishes or is stopped. Settle teardown has
+     * to distinguish the two: counting a finished job as work makes every later
+     * settle spend the confirmation budget and then report residue that does
+     * not exist.
+     */
+    hasLiveClaudeBackgroundJob: async (short: string | null | undefined): Promise<boolean> =>
+      (await getLiveClaudeBackgroundSocket(short)) !== null,
     restoreCancelledQueue,
     recoverTurn,
     recoverCodexTurn,

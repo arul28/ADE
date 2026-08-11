@@ -101,7 +101,24 @@ const STOP_CONFIRM_MAX_POLL_MS = 800;
  */
 const PROVIDER_CALL_TIMEOUT_MS = 10_000;
 
-/** Resolves to not-ok rather than rejecting, so a slow provider is residue, not a crash. */
+/**
+ * Resolves to not-ok rather than rejecting, so a slow provider is residue, not
+ * a crash.
+ *
+ * KNOWN LIMITATION: the losing arm keeps running. `agentChatService.interrupt`
+ * takes no abort signal, so a provider stop that overruns the ceiling cannot be
+ * recalled — and a session-scoped one (OpenCode's `session.abort`) could land
+ * after the settle was abandoned and stop a turn the user has since started,
+ * which is the one thing §3c says must never happen.
+ *
+ * Shipped anyway, deliberately: the alternative is no ceiling, and an
+ * un-bounded await holds the settling window open forever and leaves the row
+ * permanently unsettleable — a certain failure traded for a narrow one. The
+ * window needs a provider stop to overrun 10s AND the user to start a turn
+ * inside it AND the late abort to still apply, and a provider hung that long is
+ * usually not delivering the abort either. Closing it properly means threading
+ * an AbortSignal through every provider branch of `interrupt`.
+ */
 async function withTimeout<T>(
   work: Promise<T>,
   expire: () => Promise<void>,

@@ -24,6 +24,8 @@ export type SettleTeardownChatService = {
     provider?: string | null;
     claudeBackgroundJobShort?: string | null;
   } | null>;
+  /** Liveness for a persisted Claude `--bg` job; the recorded short alone is not one. */
+  hasLiveClaudeBackgroundJob?: (short: string | null | undefined) => Promise<boolean>;
 };
 
 export type SettleTeardownWiringDeps = {
@@ -73,7 +75,16 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
       // looking at a restarted session, seeing it quiet, and filing it as done
       // over work it never stopped — the exact bug this feature exists to fix.
       const liveCount = summary.activeBackgroundTaskCount ?? 0;
-      const persistedBackgroundJob = summary.claudeBackgroundJobShort ? 1 : 0;
+      // Only asked when the live count says quiet AND a job is on record — the
+      // restart case. The daemon round-trip is not worth paying on every read,
+      // and the short is a record rather than a liveness signal: it survives the
+      // job finishing, so trusting it alone would make every later settle burn
+      // the confirmation budget and report residue that no longer exists.
+      const persistedBackgroundJob = liveCount === 0
+        && summary.claudeBackgroundJobShort
+        && await deps.agentChatService.hasLiveClaudeBackgroundJob?.(summary.claudeBackgroundJobShort)
+        ? 1
+        : 0;
       return {
         active: summary.status === "active",
         backgroundTaskCount: Math.max(liveCount, persistedBackgroundJob),

@@ -629,6 +629,22 @@ that needs the mobile side**, and either option costs something:
 
 Neither belongs in a desktop/CLI branch on its own.
 
+### 6c-ii. Known limitation: a timed-out provider stop cannot be recalled
+
+Every provider call has a 10s ceiling, without which a hung control call holds
+the settling window open forever and the row can never be settled again. The
+losing arm of that race keeps running, though: `agentChatService.interrupt`
+takes no abort signal. So a session-scoped stop that overruns — OpenCode's
+`session.abort` — could in principle land after the settle was abandoned and
+stop a turn the user started in the meantime, which §3c says must never happen.
+
+This is a trade between a certain failure and a narrow one. Removing the ceiling
+makes the wedge certain; keeping it needs a provider stop to overrun 10s AND the
+user to start a turn inside that window AND the late abort to still apply, and a
+provider hung that long is usually not delivering the abort either. Closing it
+properly means threading an `AbortSignal` through every provider branch of
+`interrupt`, which is its own change.
+
 ### 6d. Peer tuple writes: host authority finished, not consensus added
 
 R7's fix is in the **apply layer**: `db.sync.applyChanges`, the one place both

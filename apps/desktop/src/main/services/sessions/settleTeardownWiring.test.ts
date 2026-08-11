@@ -10,16 +10,18 @@ import { createSettleTeardownWiring } from "./settleTeardownWiring";
 describe("settle teardown wiring", () => {
   const neverAborted = { isAborted: () => false };
 
-  function harness(summary: Record<string, unknown> | null) {
+  function harness(summary: Record<string, unknown> | null, backgroundJobAlive = true) {
     const interrupt = vi.fn(async () => ({}));
+    const hasLiveClaudeBackgroundJob = vi.fn(async () => backgroundJobAlive);
     const wiring = createSettleTeardownWiring({
       agentChatService: {
         interrupt,
         getSessionSummary: async () => summary as never,
+        hasLiveClaudeBackgroundJob,
       },
       surface: "desktop",
     });
-    return { wiring, interrupt };
+    return { wiring, interrupt, hasLiveClaudeBackgroundJob };
   }
 
   it("never asks a provider to clear the user's queued turns", async () => {
@@ -47,6 +49,24 @@ describe("settle teardown wiring", () => {
     // Without this the settle sees a quiet session, stops nothing, and files it
     // as done over a job that never stopped.
     expect(interrupt, "a persisted background job must still be stopped").toHaveBeenCalled();
+  });
+
+  it("ignores a recorded background job the daemon says is already gone", async () => {
+    // The short is a RECORD, not a liveness signal — it survives the job
+    // finishing. Trusting it alone makes every later settle burn the
+    // confirmation budget and then report residue that does not exist.
+    const { wiring, interrupt, hasLiveClaudeBackgroundJob } = harness({
+      status: "idle",
+      provider: "claude",
+      activeBackgroundTaskCount: 0,
+      claudeBackgroundJobShort: "bg-42",
+    }, false);
+
+    const outcome = await wiring.runSettleTeardown("session-1", neverAborted);
+
+    expect(hasLiveClaudeBackgroundJob).toHaveBeenCalledWith("bg-42");
+    expect(interrupt, "a finished job must not be stopped again").not.toHaveBeenCalled();
+    expect(outcome.residue, "a finished job is not residue").toEqual([]);
   });
 
   it("does not interrupt a session that is genuinely idle", async () => {
