@@ -150,6 +150,13 @@ export type AdeDb = {
   setJson: (key: string, value: unknown) => void;
 
   run: (sql: string, params?: SqlValue[]) => void;
+  /**
+   * `run` with the row count. Additive — `run` still returns void, so no
+   * existing caller changes. For code where "did this actually change state?"
+   * is the question rather than "did the statement execute": the settle
+   * lifecycle bumps its revision only for a write that matched a row.
+   */
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 
@@ -1717,6 +1724,7 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
 
 type MigrationDb = {
   run: (sql: string, params?: SqlValue[]) => void;
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 };
@@ -1797,6 +1805,7 @@ function makeCrrAwareDb({
       }
       runStatement(db, sql, params);
     },
+    runChanged: (sql: string, params: SqlValue[] = []) => runStatement(getDb(), sql, params).changes,
     get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
       return getRow<T>(getDb(), sql, params);
     },
@@ -4141,6 +4150,7 @@ export async function openKvDb(
   };
 
   const run = crrAwareDb.run;
+  const runChanged = crrAwareDb.runChanged;
   const all = crrAwareDb.all;
   const get = crrAwareDb.get;
 
@@ -4650,6 +4660,7 @@ export async function openKvDb(
       setString(key, JSON.stringify(value));
     },
     run,
+    runChanged,
     all,
     get,
     sync,

@@ -82,22 +82,54 @@ describe("settle-lifecycle chokepoint", () => {
    * rather than trusting review, because the failure mode is someone adding an
    * eleventh path in six months.
    */
-  it("has no settle-tuple assignment outside the chokepoint's own generator", () => {
-    const source = fs.readFileSync(SESSION_SERVICE, "utf8");
-    // Explicit sentinels, not neighbouring identifiers: an unrelated rename must
-    // not silently turn this invariant into a no-op.
-    const generatorStart = source.indexOf("settle-tuple-sql:start");
-    const generatorEnd = source.indexOf("settle-tuple-sql:end");
-    expect(generatorStart, "start sentinel missing").toBeGreaterThan(-1);
-    expect(generatorEnd, "end sentinel missing").toBeGreaterThan(generatorStart);
+  it("has no settle-tuple assignment anywhere outside the chokepoint", () => {
+    // Repo-wide, not just this file. The invariant is "no other writer exists",
+    // and an eleventh path added in a new service would otherwise pass clean.
+    const roots = [
+      path.resolve(__dirname, "../../.."),                       // apps/desktop/src
+      path.resolve(__dirname, "../../../../../ade-cli/src"),     // apps/ade-cli/src
+    ];
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "dist") continue;
+          walk(full);
+        } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+          files.push(full);
+        }
+      }
+    };
+    for (const root of roots) if (fs.existsSync(root)) walk(root);
+    expect(files.length).toBeGreaterThan(100);
 
-    const outsideGenerator =
-      source.slice(0, generatorStart) + source.slice(generatorEnd);
-    const assignments = outsideGenerator.match(
-      /\b(settled_at|settle_override|settle_source)\s*=(?!=)/g,
-    ) ?? [];
+    const offenders: string[] = [];
+    for (const file of files) {
+      let source = fs.readFileSync(file, "utf8");
+      if (file === SESSION_SERVICE) {
+        // Explicit sentinels, not neighbouring identifiers: an unrelated rename
+        // must not silently turn this invariant into a no-op.
+        const start = source.indexOf("settle-tuple-sql:start");
+        const end = source.indexOf("settle-tuple-sql:end");
+        expect(start, "start sentinel missing").toBeGreaterThan(-1);
+        expect(end, "end sentinel missing").toBeGreaterThan(start);
+        source = source.slice(0, start) + source.slice(end);
+      }
+      // Strip comments first: prose describing what the host writes (the web
+      // adapter documents the host's SQL in JSDoc) is not a writer, and matching
+      // it would make this test cry wolf until someone weakened it.
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+      // `=` only, never `==` — a `where settle_override = ?` comparison in a
+      // SELECT is legitimate, so require the assignment form used in a SET list.
+      for (const match of code.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/g) ?? []) {
+        offenders.push(`${path.relative(roots[0], file)}: ${match}`);
+      }
+    }
 
-    expect(assignments).toEqual([]);
+    expect(offenders).toEqual([]);
   });
 
   it("bumps the revision on every settle-lifecycle path", async () => {
@@ -255,18 +287,26 @@ describe("settle-lifecycle chokepoint", () => {
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
 
+    const clockTable = (table: string) =>
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = ?",
+        [`${table}__crsql_clock`],
+      );
+
     // A host-local concurrency token must never reach another device: it is
     // meaningless there, and on the CRR `terminal_sessions` row it would add a
-    // per-column clock entry to the per-output-chunk write path.
-    const crr = db.get<{ present: number }>(
-      "select 1 as present from crsql_master where key = 'tbl_ver' and value like ?",
-      ["%session_lifecycle_revisions%"],
-    );
-    expect(crr).toBeNull();
+    // per-column clock entry to the throttled preview write path.
+    expect(clockTable("session_lifecycle_revisions")).toBeNull();
+    // Positive control. Without it this assertion passes for a table that does
+    // not exist, or if the clock naming convention ever changes — which is
+    // exactly how the first version of this test managed to assert nothing.
+    expect(clockTable("terminal_sessions")).not.toBeNull();
 
-    const table = db.get<{ name: string }>(
-      "select name from sqlite_master where type = 'table' and name = 'session_lifecycle_revisions'",
-    );
-    expect(table?.name).toBe("session_lifecycle_revisions");
+    expect(
+      db.get<{ name: string }>(
+        "select name from sqlite_master where type = 'table' and name = 'session_lifecycle_revisions'",
+      )?.name,
+    ).toBe("session_lifecycle_revisions");
   });
+
 });

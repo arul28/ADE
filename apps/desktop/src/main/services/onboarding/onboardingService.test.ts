@@ -24,6 +24,7 @@ function createInMemoryAdeDb(): AdeDb {
       kv.set(key, value);
     },
     run: () => {},
+    runChanged: () => 0,
     get: () => null,
     all: () => [],
     sync: {

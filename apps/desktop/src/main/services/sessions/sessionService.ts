@@ -368,16 +368,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
 
-  /**
-   * Shared skeleton for the single-session lifecycle mutators: trim, existence
-   * probe, run the update, broadcast. Keeps every SQL literal at its call site.
-   */
   // ---------------------------------------------------------------------
   // The settle-lifecycle chokepoint.
   //
   // Every mutation of the settle tuple — `settled_at`, `settle_override`,
   // `settle_source` — goes through `writeSettleLifecycle`, and no SQL literal
-  // anywhere else may assign those columns. `sessionService.settleWriter.test.ts`
+  // anywhere else may assign those columns. `settleLifecycleChokepoint.test.ts`
   // enforces that by scanning this file.
   //
   // The point is the REVISION. A settle decision is taken at t0 and (once
@@ -395,11 +391,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
   /** What a settle-lifecycle mutation is asking for. */
   type SettleLifecycleIntent =
     | { kind: "settle"; settledAt: string; source: SessionSettleSource }
-    /** Real activity: drop the whole declaration, pin included. */
-    | { kind: "clear" }
+    /** Real activity: drop the whole declaration, keep-active pin included. */
+    | { kind: "clearOnActivity" }
     /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
-    | { kind: "unsettle" }
-    | { kind: "override"; value: string | null; source: SessionSettleSource };
+    | { kind: "unsettleDeclared" }
+    | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource };
 
   // settle-tuple-sql:start — the ONLY region allowed to assign the settle tuple.
   // `settleLifecycleChokepoint.test.ts` scans for assignments outside these
@@ -411,9 +407,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
           sql: "settled_at = coalesce(settled_at, ?), settle_override = null, settle_source = ?",
           params: [intent.settledAt, intent.source],
         };
-      case "clear":
+      case "clearOnActivity":
         return { sql: "settled_at = null, settle_override = null, settle_source = null", params: [] };
-      case "unsettle":
+      case "unsettleDeclared":
         return {
           sql:
             "settled_at = null, "
@@ -437,12 +433,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
    * Per-process revision counter, incremented on EVERY bump — not only when the
    * table write fails.
    *
-   * The two stores answer different questions and both are needed. The table
-   * survives a restart; this map guarantees the value always moves. Bumping only
-   * on failure would let the revision stall: after a failed write the table is
-   * behind, and when it starts working again it restarts its own count at 1, so
-   * a real mutation could produce no observable change — a change the guard
-   * cannot see, which is the failure direction that matters.
+   * Both stores are needed, and not only for restart survival. ADE supports
+   * several processes against one database (`kvDb` sets `busy_timeout` for
+   * exactly that), and the desktop main process and the CLI brain each build a
+   * `sessionService` over the same file — so a table value can be AHEAD of this
+   * process, written by a sibling. Conversely, bumping memory only on failure
+   * would let the revision stall: after a failed write the table is behind, and
+   * on recovery it restarts its own count at 1, so a real mutation could produce
+   * no observable change — the failure direction that matters. Reading
+   * `max(table, in-process)` is correct against both.
    *
    * Bounded by the sessions this process has touched, same order as the row set
    * it shadows.
@@ -461,8 +460,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
           [id],
         );
       } catch {
-        // The in-process counter already moved, so the guard still works for the
-        // lifetime of this process; only restart-survival is lost.
+        // The in-process counter already moved, so the guard still holds within
+        // this process; restart survival and cross-process visibility are what
+        // a failed write costs.
       }
     }
   };
@@ -481,46 +481,81 @@ export function createSessionService({ db }: { db: AdeDb }) {
       persisted = 0;
     }
     // The MAXIMUM of the two stores, never whichever answered. After a restart
-    // the table is ahead; after a failed write the in-process counter is. Taking
-    // either one alone could hand back a LOWER number than a previous call did,
-    // and a revision that moves backwards is worse than no revision at all — it
-    // lets a stale settle match a token it should have missed. Monotonic within
-    // a process, and never regressing across a restart, are the only two
-    // properties this value has to have.
+    // — or a write by a sibling ADE process — the table is ahead; after a failed
+    // write the in-process counter is. Taking either alone could hand back a
+    // LOWER number than a previous call did, and a revision that moves backwards
+    // is worse than none: it lets a stale settle match a token it should have
+    // missed. Monotonic within a process is the property this value must have;
+    // across a restart it can reset only when table writes were failing, which
+    // is benign because a restart abandons any decision that was in flight.
     return Math.max(persisted, inProcessLifecycleRevisions.get(trimmed) ?? 0);
   };
 
   /**
+   * Columns a caller may set alongside the settle tuple. A closed union, so
+   * routing a tuple column through `extraSet` is a compile error rather than
+   * something only the source-scan test would catch.
+   */
+  type SettleExtraColumn =
+    | "status_note"
+    | "attention_requested_at"
+    | "attention_message"
+    | "attention_source"
+    | "last_output_preview"
+    | "last_output_at"
+    | "last_turn_failed_at";
+
+  /**
    * The ONLY writer of the settle tuple.
    *
-   * `extraSet` is for columns the caller owns and this function knows nothing
-   * about (a preview line, a failure timestamp). `where` scopes the update;
-   * `revisionIds` are the rows whose revision must move, which is normally the
-   * rows the `where` matches.
+   * `sessionIds` is both the scope of the update and the set whose revisions
+   * move — one array, so the two cannot drift. `guard` is an extra predicate
+   * ANDed onto the id match; it takes no parameters, and only `settleMany` uses
+   * one (its "still unsettled" check, which another ADE process could otherwise
+   * invalidate between the select and the update).
    */
   const writeSettleLifecycle = (args: {
     intent: SettleLifecycleIntent;
-    where: { sql: string; params: SqlValue[] };
-    revisionIds: readonly string[];
-    extraSet?: { sql: string; params: SqlValue[] };
+    sessionIds: readonly string[];
+    extraSet?: Partial<Record<SettleExtraColumn, SqlValue>>;
+    guard?: string;
   }): void => {
+    const ids = args.sessionIds.map((id) => id.trim()).filter(Boolean);
+    if (!ids.length) return;
     const tuple = settleTupleAssignment(args.intent);
-    const setClauses = args.extraSet ? [args.extraSet.sql, tuple.sql] : [tuple.sql];
-    const setParams = args.extraSet ? [...args.extraSet.params, ...tuple.params] : [...tuple.params];
-    db.run(
-      `update terminal_sessions set ${setClauses.join(", ")} where ${args.where.sql}`,
-      [...setParams, ...args.where.params],
+    const extraEntries = Object.entries(args.extraSet ?? {}) as Array<[SettleExtraColumn, SqlValue]>;
+    const setClauses = [...extraEntries.map(([column]) => `${column} = ?`), tuple.sql];
+    const setParams = [...extraEntries.map(([, value]) => value), ...tuple.params];
+    const idPlaceholders = ids.map(() => "?").join(", ");
+    const where = args.guard
+      ? `${args.guard} and id in (${idPlaceholders})`
+      : `id in (${idPlaceholders})`;
+
+    const changed = db.runChanged(
+      `update terminal_sessions set ${setClauses.join(", ")} where ${where}`,
+      [...setParams, ...ids],
     );
+    // Only a write that actually moved a row bumps. A revision that counted
+    // attempts would reject later decisions for writes that changed nothing —
+    // and, on the throttled preview path, would churn against rows that are
+    // already unsettled.
+    if (changed <= 0) return;
     // Immediately adjacent, with no `await` between, and `bumpLifecycleRevisions`
     // cannot throw. `AdeDb` exposes no transaction helper and an explicit BEGIN
-    // here could nest inside a caller's, so adjacency is what guarantees the
-    // ordering: the runtime is single-threaded and the revision is host-local,
-    // so no reader can observe the column write without the bump. The failure
-    // direction that matters — a column change the revision never saw — is the
-    // one this rules out.
-    bumpLifecycleRevisions(args.revisionIds);
+    // here could nest inside a caller's, so adjacency is what orders them: within
+    // this process no reader can see the column write without the bump. ADE does
+    // support several processes against one database, so a sibling process could
+    // observe the pair mid-flight; that window is microseconds and closing it
+    // needs a transaction helper `AdeDb` does not have.
+    bumpLifecycleRevisions(ids);
   };
 
+  /**
+   * Shared skeleton for the single-session lifecycle mutators: trim, existence
+   * probe, run the mutation, broadcast. Settle-tuple writes inside `run` go
+   * through `writeSettleLifecycle`; everything else keeps its SQL at the call
+   * site.
+   */
   const mutateSessionMeta = (sessionId: string, run: (id: string) => void): boolean => {
     const trimmed = sessionId.trim();
     if (!trimmed) return false;
@@ -844,14 +879,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
         source: options.source ?? "user",
       },
       extraSet: {
-        sql: `${hasOutcome ? "status_note = ?," : ""} attention_requested_at = null, attention_message = null, attention_source = null`,
-        params: hasOutcome ? [normalizeSessionStatusNote(options.outcome)] : [],
+        ...(hasOutcome ? { status_note: normalizeSessionStatusNote(options.outcome) } : {}),
+        attention_requested_at: null,
+        attention_message: null,
+        attention_source: null,
       },
-      where: {
-        sql: `(settled_at is null or settle_override is not null) and id in (${updatePlaceholders})`,
-        params: [...newlySettled],
-      },
-      revisionIds: newlySettled,
+      guard: "(settled_at is null or settle_override is not null)",
+      sessionIds: newlySettled,
     });
     for (const id of newlySettled) {
       emitChanged({ sessionId: id, reason: "meta-updated" });
@@ -1448,10 +1482,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
         return;
       }
       writeSettleLifecycle({
-        intent: { kind: "clear" },
-        extraSet: { sql: "last_output_preview = ?, last_output_at = ?", params: [preview, now] },
-        where: { sql: "id = ?", params: [sessionId] },
-        revisionIds: [sessionId],
+        intent: { kind: "clearOnActivity" },
+        extraSet: { last_output_preview: preview, last_output_at: now },
+        sessionIds: [sessionId],
       });
     },
 
@@ -1475,10 +1508,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
         return;
       }
       writeSettleLifecycle({
-        intent: { kind: "clear" },
-        extraSet: { sql: "last_output_at = ?", params: [at] },
-        where: { sql: "id = ?", params: [sessionId] },
-        revisionIds: [sessionId],
+        intent: { kind: "clearOnActivity" },
+        extraSet: { last_output_at: at },
+        sessionIds: [sessionId],
       });
     },
 
@@ -1583,11 +1615,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
         writeSettleLifecycle({
           intent: { kind: "settle", settledAt, source: opts.source ?? "user" },
           extraSet: {
-            sql: `${outcome ? "status_note = ?," : ""} attention_requested_at = null, attention_message = null, attention_source = null`,
-            params: outcome ? [outcome] : [],
+            ...(outcome ? { status_note: outcome } : {}),
+            attention_requested_at: null,
+            attention_message: null,
+            attention_source: null,
           },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          sessionIds: [id],
         });
       });
     },
@@ -1596,9 +1629,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
     unsettleSession(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "unsettle" },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          intent: { kind: "unsettleDeclared" },
+          sessionIds: [id],
         });
       });
       return changed;
@@ -1615,8 +1647,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       return mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
           intent: { kind: "override", value: normalized, source: normalizedSource },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          sessionIds: [id],
         });
       });
     },
@@ -1634,8 +1665,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const updatePlaceholders = present.map(() => "?").join(", ");
       writeSettleLifecycle({
         intent: { kind: "override", value: normalized, source: "user" },
-        where: { sql: `id in (${updatePlaceholders})`, params: [...present] },
-        revisionIds: present,
+        sessionIds: present,
       });
       for (const id of present) {
         emitChanged({ sessionId: id, reason: "meta-updated" });
@@ -1673,9 +1703,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (!ids.length) return;
       const placeholders = ids.map(() => "?").join(", ");
       writeSettleLifecycle({
-        intent: { kind: "unsettle" },
-        where: { sql: `id in (${placeholders})`, params: [...ids] },
-        revisionIds: ids,
+        intent: { kind: "unsettleDeclared" },
+        sessionIds: ids,
       });
       for (const id of ids) {
         emitChanged({ sessionId: id, reason: "meta-updated" });
@@ -1823,13 +1852,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
     ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clear" },
+          intent: { kind: "clearOnActivity" },
           extraSet: {
-            sql: "attention_requested_at = ?, attention_message = ?, attention_source = ?",
-            params: [new Date().toISOString(), normalizeOptionalText(message, 500), source],
+            attention_requested_at: new Date().toISOString(),
+            attention_message: normalizeOptionalText(message, 500),
+            attention_source: source,
           },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          sessionIds: [id],
         });
         wakeSnoozedRow(id, "needs_you");
       });
@@ -1852,10 +1881,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
         // settled/failed mutually exclusive at write time, so every surface's
         // precedence order agrees by construction.
         writeSettleLifecycle({
-          intent: { kind: "clear" },
-          extraSet: { sql: "last_turn_failed_at = ?", params: [failedAt] },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          intent: { kind: "clearOnActivity" },
+          extraSet: { last_turn_failed_at: failedAt },
+          sessionIds: [id],
         });
         // Early wake, but ONLY for an error newer than the snooze. Snoozing on
         // top of an existing failure must stay snoozed.
@@ -1878,13 +1906,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clear" },
+          intent: { kind: "clearOnActivity" },
           extraSet: {
-            sql: "last_turn_failed_at = null, attention_requested_at = null, attention_message = null, attention_source = null",
-            params: [],
+            last_turn_failed_at: null,
+            attention_requested_at: null,
+            attention_message: null,
+            attention_source: null,
           },
-          where: { sql: "id = ?", params: [id] },
-          revisionIds: [id],
+          sessionIds: [id],
         });
       });
       return changed;
@@ -1899,6 +1928,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
       );
       if (!existing) return false;
       db.run("delete from terminal_sessions where id = ?", [trimmed]);
+      // Reap the lifecycle token with its row. ADE has been bitten before by a
+      // local table with no reaper, and every other session-keyed side table is
+      // already cascaded here.
+      try {
+        db.run("delete from session_lifecycle_revisions where session_id = ?", [trimmed]);
+      } catch {
+        // The token is advisory; failing to reap it must not fail the delete.
+      }
+      inProcessLifecycleRevisions.delete(trimmed);
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },
