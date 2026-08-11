@@ -4,11 +4,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import {
+  PLUGIN_SERVICE_UNAVAILABLE_CODE,
+  requirePluginActionInvoker,
   requirePluginInstallService,
   type PluginInstallSource,
 } from "../plugins/pluginInstallServiceRef";
-import { getPluginPresenceService } from "../plugins/pluginPresenceService";
+import {
+  getPluginPresenceService,
+  PLUGIN_MACHINE_UNREACHABLE_CODE,
+} from "../plugins/pluginPresenceService";
 import type {
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
@@ -5634,42 +5640,157 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
     return pluginId;
   };
 
+  /**
+   * Route a mutating plugin command to the machine it names.
+   *
+   * `machineKey` is how the Marketplace's coverage matrix installs onto a
+   * computer other than the one the reader is looking at. Absent, or naming this
+   * machine, it runs here. Naming another machine it is FORWARDED — never
+   * silently applied locally, which would install a plugin on the wrong computer
+   * while reporting success for the row the reader actually clicked.
+   *
+   * The forwarded call arrives at the target as an ordinary remote command and
+   * is subject to that machine's own approval policy, so the trust decision
+   * still happens where the code will run. `machineKey` is stripped on the way
+   * out so the target cannot bounce it onward.
+   */
+  const runOnMachine = async <T>(
+    payload: Record<string, unknown>,
+    action: string,
+    runHere: () => Promise<T>,
+  ): Promise<T> => {
+    const machineKey = typeof payload.machineKey === "string" ? payload.machineKey.trim() : "";
+    if (!machineKey) return await runHere();
+    const presence = getPluginPresenceService();
+    if (!presence) {
+      throw codedError(
+        "This computer can't reach other computers on your account.",
+        PLUGIN_MACHINE_UNREACHABLE_CODE,
+      );
+    }
+    const { machineKey: _target, ...forwarded } = payload;
+    const matrix = await presence.readPresenceMatrix();
+    // The matrix is the only place this layer learns its own key. A payload
+    // naming THIS machine must run here rather than dial out to itself.
+    if (matrix.some((row) => row.machineKey === machineKey && row.isThisMachine)) {
+      return await runHere();
+    }
+    return await presence.callOnMachine<T>(machineKey, action, forwarded);
+  };
+
   register("plugins.list", { viewerAllowed: true }, async () =>
     ({ plugins: await requirePluginInstallService().list() }), "runtime");
 
-  register("plugins.install", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
-    const source = parsePluginInstallSource(payload);
-    const record = await requirePluginInstallService().install(source);
-    // Presence is republished by the machine that changed, not inferred by the
-    // caller: the installing machine is the only one that knows the result.
-    await getPluginPresenceService()?.publishLocalPresence();
-    return record;
+  /**
+   * The account-wide coverage matrix: which machines have which plugins.
+   *
+   * Read-only, so `viewerAllowed`. It answers from the replicated
+   * `plugin_presence` table rather than by polling peers, which means it still
+   * reports a machine that is asleep — the fan-out keeps that table current, and
+   * a coverage matrix that dropped every offline machine would read as "the
+   * plugin is not installed there" when it is.
+   */
+  register("plugins.presenceMatrix", { viewerAllowed: true }, async () => {
+    const presence = getPluginPresenceService();
+    // Same rule as `plugins.presenceList` below, for the same reason: an empty
+    // matrix is a claim ("no machine on this account has any plugin"), and a
+    // build without a plugin host has not earned it. Answering the typed
+    // `plugins_unavailable` lets a reader tell "nothing installed anywhere"
+    // apart from "this computer cannot say".
+    if (!presence) {
+      throw codedError(
+        "Plugins are not available on this computer.",
+        PLUGIN_SERVICE_UNAVAILABLE_CODE,
+      );
+    }
+    return { machines: await presence.readPresenceMatrix() };
   }, "runtime");
 
-  register("plugins.uninstall", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
-    const result = await requirePluginInstallService().uninstall(parsePluginId(payload));
-    await getPluginPresenceService()?.publishLocalPresence();
-    return result;
+  /**
+   * Run a plugin's own handler — every button, form and menu item a plugin
+   * puts on a phone arrives here.
+   *
+   * ONE generic action carrying `actionId` in the payload, because iOS gates
+   * outbound commands against an allowlist of action strings compiled into the
+   * app: a per-plugin action name could never pass a build that shipped before
+   * the plugin existed. `action` is accepted as a synonym so the desktop's own
+   * `plugin.invoke` vocabulary works here unchanged.
+   *
+   * NOT `viewerAllowed`: a handler may write anything, so this is treated as
+   * mutating for the same reason `plugin.invoke` is. It is deliberately not
+   * `requiresApproval` — the install lifecycle is the trust decision, and
+   * prompting per tap would make an installed plugin unusable from a phone.
+   */
+  register("plugins.invoke", { viewerAllowed: false }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const rawAction = typeof payload.actionId === "string" && payload.actionId.trim()
+      ? payload.actionId
+      : payload.action;
+    const action = typeof rawAction === "string" ? rawAction.trim() : "";
+    if (!action) throw new Error("A plugin action id is required.");
+    const invokeArgs = payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
+      ? payload.payload as Record<string, unknown>
+      : {};
+    const result = await requirePluginActionInvoker()({ pluginId, action, args: invokeArgs });
+    // `{ok, message}` is what the phone decodes; the raw handler return rides
+    // along for richer clients. A handler that answers nothing is still a
+    // success — the error path is for transport and policy failures only.
+    const message = typeof result === "string"
+      ? result
+      : (result && typeof result === "object" && typeof (result as { message?: unknown }).message === "string"
+        ? (result as { message: string }).message
+        : null);
+    return { ok: true, ...(message ? { message } : {}), result: result ?? null };
   }, "runtime");
 
-  register("plugins.enable", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
-    const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), true);
-    await getPluginPresenceService()?.publishLocalPresence();
-    return record;
-  }, "runtime");
+  register("plugins.install", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+    await runOnMachine(payload, "plugins.install", async () => {
+      const source = parsePluginInstallSource(payload);
+      const record = await requirePluginInstallService().install(source);
+      // Presence is republished by the machine that changed, not inferred by the
+      // caller: the installing machine is the only one that knows the result.
+      await getPluginPresenceService()?.publishLocalPresence();
+      return record;
+    }), "runtime");
 
-  register("plugins.disable", { viewerAllowed: false, requiresApproval: true }, async (payload) => {
-    const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), false);
-    await getPluginPresenceService()?.publishLocalPresence();
-    return record;
-  }, "runtime");
+  register("plugins.uninstall", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+    await runOnMachine(payload, "plugins.uninstall", async () => {
+      const result = await requirePluginInstallService().uninstall(parsePluginId(payload));
+      await getPluginPresenceService()?.publishLocalPresence();
+      return result;
+    }), "runtime");
+
+  register("plugins.enable", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+    await runOnMachine(payload, "plugins.enable", async () => {
+      const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), true);
+      await getPluginPresenceService()?.publishLocalPresence();
+      return record;
+    }), "runtime");
+
+  register("plugins.disable", { viewerAllowed: false, requiresApproval: true }, async (payload) =>
+    await runOnMachine(payload, "plugins.disable", async () => {
+      const record = await requirePluginInstallService().setEnabled(parsePluginId(payload), false);
+      await getPluginPresenceService()?.publishLocalPresence();
+      return record;
+    }), "runtime");
 
   // Read-only: this machine reporting its own install state. The CALLER files
   // the answer under the machine key its directory gave, so nothing here has to
   // (or gets to) name itself.
   register("plugins.presenceList", { viewerAllowed: true }, async () => {
     const service = getPluginPresenceService();
-    if (!service) return { plugins: [] };
+    // NEVER `{plugins: []}` when the service is unbound. An empty list is a
+    // load-bearing claim on this path — "this machine has no plugins installed"
+    // — and the caller acts on it by DELETING every presence row it holds for
+    // this machine. A build with no plugin host has to be distinguishable from
+    // a machine that genuinely installed nothing, so it answers the same typed
+    // `plugins_unavailable` the install path raises and the caller skips it.
+    if (!service) {
+      throw codedError(
+        "Plugins are not available on this computer.",
+        PLUGIN_SERVICE_UNAVAILABLE_CODE,
+      );
+    }
     return await service.listLocalPresence();
   }, "runtime");
 

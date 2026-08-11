@@ -1,5 +1,7 @@
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import {
+  readAllPluginPresence,
   replacePluginPresenceForMachine,
   type PluginPresenceRow,
 } from "./pluginTableWriters";
@@ -91,8 +93,38 @@ export type PluginPresenceServiceDeps = {
   nudgeDebounceMs?: number;
 };
 
+/** Error code for a machine that is not in the directory or not reachable. */
+export const PLUGIN_MACHINE_UNREACHABLE_CODE = "plugin_machine_unreachable";
+
+/**
+ * One machine's install state for one plugin, joined with who that machine is.
+ *
+ * The rows come from the replicated table and the identity from the directory,
+ * which is the same split the fan-out uses: the table knows what is installed,
+ * only the directory knows a machine's name and whether it is up right now.
+ */
+export type PluginPresenceMatrixRow = {
+  machineKey: string;
+  machineName: string;
+  pluginId: string;
+  version: string | null;
+  enabled: boolean;
+  displayName: string;
+  icon: string;
+  accent: string;
+  online: boolean;
+  /**
+   * Set here rather than left for the reader to work out. A renderer comparing
+   * keys itself has to know its own machine key, and guessing wrong shows
+   * someone another machine's install state as their own.
+   */
+  isThisMachine: boolean;
+};
+
 /** Remote command a machine calls to read another machine's presence rows. */
 export const PLUGIN_PRESENCE_LIST_ACTION = "plugins.presenceList";
+/** Remote command that returns the account-wide coverage matrix. */
+export const PLUGIN_PRESENCE_MATRIX_ACTION = "plugins.presenceMatrix";
 /** Remote command a machine calls to tell peers its install state changed. */
 export const PLUGIN_PRESENCE_SYNC_ACTION = "plugins.presenceSync";
 
@@ -128,6 +160,15 @@ function normalizePresenceResponse(value: unknown): PluginPresenceRow[] | null {
 }
 
 export type PluginPresenceService = {
+  /** Account-wide coverage matrix: every machine's rows, with identity joined. */
+  readPresenceMatrix(): Promise<PluginPresenceMatrixRow[]>;
+  /**
+   * Run a command on another machine in the account. Throws a typed
+   * `plugin_machine_unreachable` when the target is unknown, unpaired, or not
+   * connected — never falls back to running it here, which would act on the
+   * wrong computer.
+   */
+  callOnMachine<T>(machineKey: string, action: string, params?: Record<string, unknown>): Promise<T>;
   /** Write this machine's own rows, then tell reachable machines to re-pull. */
   publishLocalPresence(): Promise<void>;
   /** Pull presence from every reachable directory machine and store it. */
@@ -255,11 +296,79 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
     return await refreshInFlight;
   }
 
+  /**
+   * Directory identity per machine key, best-effort.
+   *
+   * A directory that cannot be reached is not an error here: the replicated
+   * rows are still the truth about what is installed, and the matrix degrades
+   * to unnamed, offline-looking machines rather than reporting that nobody has
+   * anything. Only `isThisMachine` and the row data are guaranteed.
+   */
+  async function directoryIdentities(): Promise<Map<string, PluginPresenceDirectoryMachine>> {
+    try {
+      const machines = await deps.listMachines();
+      return new Map((machines ?? []).map((machine) => [machine.machineKey, machine]));
+    } catch (error) {
+      deps.logger?.debug?.("plugin.presence.matrix_directory_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return new Map();
+    }
+  }
+
+  async function readPresenceMatrix(): Promise<PluginPresenceMatrixRow[]> {
+    const selfKey = deps.localMachineKey();
+    const identities = await directoryIdentities();
+    return readAllPluginPresence(deps.db).map((row) => {
+      const machine = identities.get(row.machineKey);
+      const isThisMachine = row.machineKey === selfKey;
+      return {
+        machineKey: row.machineKey,
+        machineName: machine?.label?.trim() || row.machineKey,
+        pluginId: row.pluginId,
+        // Empty is the table's default for "unknown", and null is what the
+        // reader renders as a missing version. Keeping them distinct matters:
+        // "" would print as an empty version string next to the name.
+        version: row.version.trim() || null,
+        enabled: row.enabled,
+        displayName: row.displayName || row.pluginId,
+        icon: row.icon,
+        accent: row.accent,
+        // This machine is online by definition — it is the one answering.
+        online: isThisMachine || machine?.online === true,
+        isThisMachine,
+      };
+    });
+  }
+
+  async function callOnMachine<T>(
+    machineKey: string,
+    action: string,
+    params: Record<string, unknown> = {},
+  ): Promise<T> {
+    const targetId = deps.resolveTargetIdForMachineKey(machineKey);
+    if (!targetId) {
+      throw codedError(
+        "That computer isn't paired with this one.",
+        PLUGIN_MACHINE_UNREACHABLE_CODE,
+      );
+    }
+    if (deps.isTargetConnected && !deps.isTargetConnected(targetId)) {
+      throw codedError(
+        "That computer isn't connected right now.",
+        PLUGIN_MACHINE_UNREACHABLE_CODE,
+      );
+    }
+    return await deps.callMachineMethod<T>(targetId, action, params, { timeoutMs });
+  }
+
   async function listLocalPresence(): Promise<PluginPresenceListResult> {
     return { plugins: await deps.listLocalPlugins() };
   }
 
   return {
+    readPresenceMatrix,
+    callOnMachine,
     async publishLocalPresence() {
       if (disposed) return;
       const plugins = await deps.listLocalPlugins();

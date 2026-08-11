@@ -6,6 +6,7 @@ import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/stat
 import {
   createPluginPresenceService,
   MAX_PRESENCE_FANOUT_MACHINES,
+  PLUGIN_MACHINE_UNREACHABLE_CODE,
   PLUGIN_PRESENCE_LIST_ACTION,
   PLUGIN_PRESENCE_SYNC_ACTION,
   type PluginPresenceDirectoryMachine,
@@ -174,5 +175,65 @@ describe("plugin presence fan-out", () => {
     const lists = callMachineMethod.mock.calls.filter((call) => call[1] === PLUGIN_PRESENCE_LIST_ACTION);
     expect(lists).toHaveLength(2);
     service.dispose();
+  });
+
+  it("joins replicated rows with directory identity and marks this machine", async () => {
+    const { service } = build();
+    await service.publishLocalPresence();
+    await service.refreshFromDirectory();
+
+    const matrix = await service.readPresenceMatrix();
+
+    expect(matrix.map((row) => [row.machineKey, row.isThisMachine, row.online])).toEqual([
+      ["machine-a", false, true],
+      ["machine-b", false, true],
+      ["machine-self", true, true],
+    ]);
+    expect(matrix.find((row) => row.isThisMachine)?.pluginId).toBe("local-plugin");
+    expect(matrix[0].machineName).toBe("machine-a");
+  });
+
+  it("still reports installs when the directory cannot be reached", async () => {
+    const { service } = build();
+    await service.publishLocalPresence();
+
+    const offline = build({ listMachines: async () => { throw new Error("directory down"); } });
+    const matrix = await offline.service.readPresenceMatrix();
+
+    // The replicated rows are the truth about what is installed; only the names
+    // and liveness come from the directory. Returning nothing here would read as
+    // "no machine has any plugin".
+    expect(matrix).toHaveLength(1);
+    expect(matrix[0]).toMatchObject({
+      machineKey: "machine-self",
+      machineName: "machine-self",
+      isThisMachine: true,
+      // This machine is online by definition — it is the one answering.
+      online: true,
+    });
+  });
+
+  it("reports an empty version as null rather than an empty string", async () => {
+    const { service } = build({ listLocalPlugins: () => [{ ...row("local-plugin"), version: "" }] });
+    await service.publishLocalPresence();
+
+    expect((await service.readPresenceMatrix())[0].version).toBeNull();
+  });
+
+  it("refuses to run a command on a machine it cannot reach", async () => {
+    const unpaired = build({ resolveTargetIdForMachineKey: () => null });
+    await expect(unpaired.service.callOnMachine("machine-b", "plugins.install"))
+      .rejects.toMatchObject({ code: PLUGIN_MACHINE_UNREACHABLE_CODE });
+
+    const disconnected = build({ isTargetConnected: () => false });
+    await expect(disconnected.service.callOnMachine("machine-b", "plugins.install"))
+      .rejects.toMatchObject({ code: PLUGIN_MACHINE_UNREACHABLE_CODE });
+
+    // Never a silent local fallback: running the command here would install a
+    // plugin on the wrong computer while reporting success.
+    const reachable = build();
+    await reachable.service.callOnMachine("machine-b", "plugins.install", { kind: "git", url: "u" });
+    expect(reachable.callMachineMethod.mock.calls[0][0]).toBe("target-machine-b");
+    expect(reachable.callMachineMethod.mock.calls[0][2]).toEqual({ kind: "git", url: "u" });
   });
 });

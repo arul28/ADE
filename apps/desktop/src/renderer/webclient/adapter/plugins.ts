@@ -5,6 +5,9 @@ import type {
   PluginInstallRequest,
   PluginInstallResult,
   PluginPanelRecord,
+  PluginPresenceRow,
+  PluginRuntimeStatus,
+  PluginTabDescriptor,
 } from "../../lib/pluginRuntimeBridge";
 import type {
   SyncPluginCollectionRow,
@@ -71,6 +74,7 @@ export type WebPluginBridge = {
     enabled: boolean;
     machineKey?: string;
   }) => Promise<void>;
+  readonly presence?: () => Promise<PluginPresenceRow[]>;
   readonly onChanged?: (listener: (event: PluginChangeEvent) => void) => () => void;
 };
 
@@ -84,6 +88,21 @@ type RemotePluginRecord = {
   accent: string;
   source: string;
   installedAt: string;
+  /** Optional by contract — absent means the host could not see it. */
+  status?: PluginRuntimeStatus;
+  tabs?: PluginTabDescriptor[];
+  theme?: { displayName: string; tokens: Record<string, unknown> } | null;
+};
+
+/** One row of the account-wide coverage matrix, as `plugins.presenceMatrix` sends it. */
+type RemotePresenceRow = {
+  machineKey: string;
+  machineName: string;
+  pluginId: string;
+  version: string | null;
+  enabled: boolean;
+  online: boolean;
+  isThisMachine: boolean;
 };
 
 function toInstalledPlugin(record: RemotePluginRecord): InstalledPlugin {
@@ -94,16 +113,17 @@ function toInstalledPlugin(record: RemotePluginRecord): InstalledPlugin {
     enabled: record.enabled,
     icon: record.icon || null,
     accent: record.accent || null,
-    // The install record carries no runtime information, and "none" is the
-    // honest reading of that: this transport knows the plugin is installed and
-    // does not know whether a child process is up. Claiming "running" from
+// Populated when the host sends them, and "unknown" when it does not.
+    // A host that omits `status` has not told us whether a child process is up,
+    // and "none" is the honest reading of that — inferring "running" from
     // `enabled` would put a green dot next to a crashed plugin.
-    status: "none",
-    // Same reasoning. Tabs and themes come from the manifest on disk, which a
-    // browser peer never sees; an empty list means "none known here", and the
-    // capability probe is what tells the UI not to promise otherwise.
-    tabs: [],
-    theme: null,
+    status: record.status ?? "none",
+    // Tabs and themes come from the manifest on disk, which a browser peer never
+    // sees for itself; absent means "none known here" rather than "none exist".
+    tabs: record.tabs ?? [],
+    theme: record.theme
+      ? { displayName: record.theme.displayName, tokens: record.theme.tokens as never }
+      : null,
   };
 }
 
@@ -207,6 +227,23 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     return typeof input.limit === "number" ? rows.slice(0, Math.max(0, input.limit)) : rows;
   };
 
+  const presence = async (): Promise<PluginPresenceRow[]> => {
+    const result = await commands.call<{ machines?: RemotePresenceRow[] } | null>(
+      "plugins.presenceMatrix",
+      {},
+      { fallback: () => null, idempotent: true },
+    );
+    return (result?.machines ?? []).map((row) => ({
+      machineKey: row.machineKey,
+      machineName: row.machineName || row.machineKey,
+      pluginId: row.pluginId,
+      version: row.version,
+      enabled: row.enabled,
+      online: row.online,
+      isThisMachine: row.isThisMachine,
+    }));
+  };
+
   // Mutations pass `idempotent: false`, which is what makes an unserved action
   // throw `UnsupportedRemoteCommandError` instead of resolving a fallback: no
   // request was sent, so reporting success would report an install that never
@@ -223,6 +260,9 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
         kind: "git",
         url: input.source,
         ...(input.version ? { ref: input.version } : {}),
+        // Forwarded by the host to the machine it names, so the Marketplace's
+        // coverage matrix can install onto a computer other than this one.
+        ...(input.machineKey ? { machineKey: input.machineKey } : {}),
       },
       { fallback: unavailableOnHost("Installing plugins isn't available on this computer."), idempotent: false },
     );
@@ -234,7 +274,10 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   };
 
   const uninstall = async (input: { pluginId: string; machineKey?: string }): Promise<unknown> =>
-    await commands.call<unknown>("plugins.uninstall", { pluginId: input.pluginId }, {
+    await commands.call<unknown>("plugins.uninstall", {
+      pluginId: input.pluginId,
+      ...(input.machineKey ? { machineKey: input.machineKey } : {}),
+    }, {
       fallback: unavailableOnHost("Removing plugins isn't available on this computer."),
       idempotent: false,
     });
@@ -244,16 +287,16 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     enabled: boolean;
     machineKey?: string;
   }): Promise<void> => {
-    // Refuse rather than silently act on the wrong machine. The remote commands
-    // this transport reaches always target the connected host, so honouring a
-    // `machineKey` for a different machine would toggle the plugin HERE while
-    // the reader pressed the button on another machine's row.
-    if (input.machineKey) {
-      throw new Error("Turning plugins on or off on another computer isn't supported from the web app.");
-    }
+    // `machineKey` is forwarded, not dropped. The host routes it to that
+    // machine and refuses loudly if it cannot reach it — the one outcome to
+    // avoid is toggling the plugin HERE when the reader pressed the button on
+    // another machine's row.
     await commands.call<unknown>(
       input.enabled ? "plugins.enable" : "plugins.disable",
-      { pluginId: input.pluginId },
+      {
+        pluginId: input.pluginId,
+        ...(input.machineKey ? { machineKey: input.machineKey } : {}),
+      },
       {
         fallback: unavailableOnHost("Turning plugins on or off isn't available on this computer."),
         idempotent: false,
@@ -296,6 +339,9 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       return commands.hasAction("plugins.enable") && commands.hasAction("plugins.disable")
         ? setEnabled
         : undefined;
+    },
+    get presence() {
+      return commands.hasAction("plugins.presenceMatrix") ? presence : undefined;
     },
     get onChanged() {
       return onChanged;

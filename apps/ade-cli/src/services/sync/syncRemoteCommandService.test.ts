@@ -11,6 +11,7 @@ import {
 } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import {
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
+  setPluginActionInvoker,
   setPluginInstallService,
 } from "../plugins/pluginInstallServiceRef";
 import { setPluginPresenceService } from "../plugins/pluginPresenceService";
@@ -3195,11 +3196,28 @@ describe("plugin remote commands", () => {
     "plugins.list",
     "plugins.presenceList",
     "plugins.presenceSync",
+    "plugins.presenceMatrix",
   ] as const;
+
+  function matrixRow(machineKey: string, isThisMachine: boolean) {
+    return {
+      machineKey,
+      machineName: machineKey,
+      pluginId: "graph",
+      version: "1.0.0",
+      enabled: true,
+      displayName: "Graph",
+      icon: "",
+      accent: "",
+      online: true,
+      isThisMachine,
+    };
+  }
 
   afterEach(() => {
     setPluginInstallService(null);
     setPluginPresenceService(null);
+    setPluginActionInvoker(null);
   });
 
   it("registers every plugin action as machine-scoped, with mutations behind approval", () => {
@@ -3213,7 +3231,15 @@ describe("plugin remote commands", () => {
       // method — a viewer must be able to tell "not allowed" from "not there".
       expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: false, requiresApproval: true });
     }
-    for (const action of ["plugins.list", "plugins.presenceList", "plugins.presenceSync"]) {
+    for (const action of [
+      "plugins.list",
+      "plugins.presenceList",
+      "plugins.presenceSync",
+      // Read-only: it reports which machines have which plugins and changes
+      // nothing, so it does not sit behind the approval gate its mutating
+      // siblings do.
+      "plugins.presenceMatrix",
+    ]) {
       expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: true });
     }
   });
@@ -3231,9 +3257,14 @@ describe("plugin remote commands", () => {
     const { service } = createService({});
     await expect(service.execute(makePayload("plugins.list")))
       .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
-    // Presence degrades to an empty answer instead: "this machine reports no
-    // plugins" is true and harmless, where a silent install is not.
-    await expect(service.execute(makePayload("plugins.presenceList"))).resolves.toEqual({ plugins: [] });
+    // Presence must NOT degrade to an empty answer. "This machine has no
+    // plugins" is load-bearing on that path — the caller deletes every presence
+    // row it holds for the machine — so a build with no plugin host has to be
+    // distinguishable from a machine that genuinely installed nothing.
+    for (const action of ["plugins.presenceList", "plugins.presenceMatrix"]) {
+      await expect(service.execute(makePayload(action)))
+        .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
+    }
   });
 
   it("installs through the bound service and republishes presence from the machine that changed", async () => {
@@ -3278,5 +3309,84 @@ describe("plugin remote commands", () => {
       .rejects.toThrow(/Unsupported plugin install source/);
     await expect(service.execute(makePayload("plugins.install", { kind: "git" })))
       .rejects.toThrow(/repository URL/);
+  });
+
+  it("returns the coverage matrix with every machine's rows", async () => {
+    const { service } = createService({});
+    const readPresenceMatrix = vi.fn().mockResolvedValue([
+      matrixRow("machine-a", true),
+      matrixRow("machine-b", false),
+    ]);
+    setPluginPresenceService({ readPresenceMatrix } as never);
+
+    await expect(service.execute(makePayload("plugins.presenceMatrix"))).resolves.toEqual({
+      machines: [matrixRow("machine-a", true), matrixRow("machine-b", false)],
+    });
+  });
+
+  it("forwards a machine-scoped install instead of running it here", async () => {
+    const install = vi.fn();
+    const callOnMachine = vi.fn().mockResolvedValue({ pluginId: "graph" });
+    setPluginInstallService({ install, uninstall: vi.fn(), setEnabled: vi.fn(), list: vi.fn() } as never);
+    setPluginPresenceService({
+      readPresenceMatrix: vi.fn().mockResolvedValue([matrixRow("machine-a", true)]),
+      callOnMachine,
+      publishLocalPresence: vi.fn(),
+    } as never);
+    const { service } = createService({});
+
+    await service.execute(makePayload("plugins.install", {
+      kind: "git",
+      url: "https://example.test/graph.git",
+      machineKey: "machine-b",
+    }));
+
+    // Never locally: installing here while reporting success for the row the
+    // reader clicked is the failure this routing exists to prevent.
+    expect(install).not.toHaveBeenCalled();
+    expect(callOnMachine).toHaveBeenCalledTimes(1);
+    expect(callOnMachine.mock.calls[0][0]).toBe("machine-b");
+    expect(callOnMachine.mock.calls[0][1]).toBe("plugins.install");
+    // `machineKey` is stripped so the target cannot bounce it onward.
+    expect(callOnMachine.mock.calls[0][2]).toEqual({
+      kind: "git",
+      url: "https://example.test/graph.git",
+    });
+  });
+
+  it("runs locally when the machine key names this machine", async () => {
+    const install = vi.fn().mockResolvedValue({ pluginId: "graph" });
+    const callOnMachine = vi.fn();
+    setPluginInstallService({ install, uninstall: vi.fn(), setEnabled: vi.fn(), list: vi.fn() } as never);
+    setPluginPresenceService({
+      readPresenceMatrix: vi.fn().mockResolvedValue([matrixRow("machine-a", true)]),
+      callOnMachine,
+      publishLocalPresence: vi.fn(),
+    } as never);
+    const { service } = createService({});
+
+    await service.execute(makePayload("plugins.install", {
+      kind: "git",
+      url: "https://example.test/graph.git",
+      machineKey: "machine-a",
+    }));
+
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(callOnMachine).not.toHaveBeenCalled();
+  });
+
+  it("refuses a machine-scoped toggle when it cannot reach other machines", async () => {
+    setPluginInstallService({
+      install: vi.fn(),
+      uninstall: vi.fn(),
+      setEnabled: vi.fn(),
+      list: vi.fn(),
+    } as never);
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.enable", {
+      pluginId: "graph",
+      machineKey: "machine-b",
+    }))).rejects.toMatchObject({ code: "plugin_machine_unreachable" });
   });
 });

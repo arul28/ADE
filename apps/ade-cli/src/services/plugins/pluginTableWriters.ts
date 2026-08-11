@@ -369,6 +369,40 @@ export function replacePluginPresenceForMachine(
   });
 }
 
+/** One machine's row for one plugin, as the presence table stores it. */
+export type PluginPresenceMachineEntry = PluginPresenceRow & { machineKey: string };
+
+/**
+ * Every machine's presence rows, for the coverage matrix.
+ *
+ * Reads the CRR table rather than asking peers: the rows are the durable floor
+ * the fan-out maintains, so this answers the same on a machine that is offline
+ * right now. Ordered by machine then plugin so the matrix renders stably
+ * instead of reshuffling on every poll.
+ */
+export function readAllPluginPresence(db: PluginWriterDb): PluginPresenceMachineEntry[] {
+  return db.all<{
+    machine_key: string;
+    plugin_id: string;
+    version: string;
+    enabled: number;
+    display_name: string;
+    icon: string;
+    accent: string;
+  }>(
+    `select machine_key, plugin_id, version, enabled, display_name, icon, accent
+       from plugin_presence order by machine_key, plugin_id`,
+  ).map((row) => ({
+    machineKey: row.machine_key,
+    pluginId: row.plugin_id,
+    version: row.version,
+    enabled: Number(row.enabled) !== 0,
+    displayName: row.display_name,
+    icon: row.icon,
+    accent: row.accent,
+  }));
+}
+
 export function readPluginPresenceForMachine(
   db: PluginWriterDb,
   machineKey: string,

@@ -12,6 +12,7 @@ import {
   installPlugin,
   listInstalledPlugins,
   readPluginPanel,
+  readPluginPresence,
   pluginsAvailable,
 } from "../../../lib/pluginRuntimeBridge";
 import { createAdeWebAdapter } from "../index";
@@ -24,6 +25,7 @@ const ALL_PLUGIN_ACTIONS = [
   "plugins.uninstall",
   "plugins.enable",
   "plugins.disable",
+  "plugins.presenceMatrix",
 ];
 
 function descriptors(actions: string[]): SyncRemoteCommandDescriptor[] {
@@ -150,8 +152,11 @@ describe("web plugin namespace", () => {
       install: true,
       uninstall: true,
       enable: true,
-      machines: false,
-      remoteInstall: false,
+      // Both true only because `plugins.presenceMatrix` exists AND the host
+      // forwards a `machineKey`. Reporting `remoteInstall` without the
+      // forwarding would offer a button that always acted on the wrong machine.
+      machines: true,
+      remoteInstall: true,
       config: false,
       contributions: false,
       usage: false,
@@ -200,11 +205,122 @@ describe("web plugin namespace", () => {
     })();
   });
 
-  it("refuses to toggle a plugin on another machine rather than acting on this one", async () => {
+  it("forwards a machine-scoped toggle instead of acting on this machine", async () => {
     mounted = mountAdapter(fake);
 
-    await expect(setPluginEnabled("graph", true, "machine-b")).rejects.toThrow(/another computer/);
-    expect(fake.commandCalls).toHaveLength(0);
+    await setPluginEnabled("graph", true, "machine-b");
+
+    // The host routes it and refuses loudly if it cannot; what must never
+    // happen is this machine's plugin toggling because the reader clicked
+    // another machine's row.
+    expect(fake.commandCalls[0]).toEqual({
+      action: "plugins.enable",
+      args: { pluginId: "graph", machineKey: "machine-b" },
+    });
+  });
+
+  it("reports the account-wide coverage matrix, offline machines included", async () => {
+    fake.commandResults.set("plugins.presenceMatrix", {
+      machines: [
+        {
+          machineKey: "machine-a",
+          machineName: "Studio",
+          pluginId: "graph",
+          version: "1.2.0",
+          enabled: true,
+          online: true,
+          isThisMachine: true,
+        },
+        {
+          machineKey: "machine-b",
+          machineName: "Laptop",
+          pluginId: "graph",
+          version: null,
+          enabled: false,
+          online: false,
+          isThisMachine: false,
+        },
+      ],
+    });
+    mounted = mountAdapter(fake);
+
+    const rows = await readPluginPresence();
+    expect(rows).toHaveLength(2);
+    // A sleeping machine still reports its installs — dropping it would read as
+    // "the plugin is not installed there" when it is.
+    expect(rows[1]).toMatchObject({ machineKey: "machine-b", online: false, isThisMachine: false });
+    expect(rows[0].isThisMachine).toBe(true);
+  });
+
+  it("hides the machines view when the host serves no matrix", () => {
+    fake.descriptors = descriptors(["plugins.list", "plugins.install"]);
+    mounted = mountAdapter(fake);
+
+    const capabilities = pluginMarketplaceCapabilities();
+    expect(capabilities.machines).toBe(false);
+    // Remote install rides presence; without the matrix there is no machine to
+    // name, so offering it would be offering a dead control.
+    expect(capabilities.remoteInstall).toBe(false);
+  });
+
+  it("carries the machine key on a remote install", async () => {
+    fake.commandResults.set("plugins.install", {
+      pluginId: "graph",
+      version: "1.2.0",
+      enabled: true,
+      displayName: "Graph",
+      icon: "",
+      accent: "",
+      source: "git",
+      installedAt: "2026-08-11T00:00:00.000Z",
+    });
+    mounted = mountAdapter(fake);
+
+    await installPlugin({ source: "https://example.test/graph.git", machineKey: "machine-b" });
+
+    expect(fake.commandCalls[0].args).toEqual({
+      kind: "git",
+      url: "https://example.test/graph.git",
+      machineKey: "machine-b",
+    });
+  });
+
+  it("renders manifest detail when the host sends it, and stays honest when it does not", async () => {
+    fake.commandResults.set("plugins.list", {
+      plugins: [
+        {
+          pluginId: "graph",
+          version: "1.2.0",
+          enabled: true,
+          displayName: "Graph",
+          icon: "graph",
+          accent: "#7C6FF0",
+          source: "git",
+          installedAt: "2026-08-11T00:00:00.000Z",
+          status: "running",
+          tabs: [{ id: "graph", title: "Graph", panelId: "main" }],
+        },
+        {
+          pluginId: "quiet",
+          version: "0.1.0",
+          enabled: true,
+          displayName: "Quiet",
+          icon: "",
+          accent: "",
+          source: "git",
+          installedAt: "2026-08-11T00:00:00.000Z",
+        },
+      ],
+    });
+    mounted = mountAdapter(fake);
+
+    const installed = await listInstalledPlugins();
+    expect(installed[0]).toMatchObject({ status: "running" });
+    expect(installed[0].tabs).toEqual([{ id: "graph", title: "Graph", panelId: "main" }]);
+    // The fields are optional by contract: a host that omits them means
+    // "unknown", and the reader must not invent a runtime state for it.
+    expect(installed[1].status).toBe("none");
+    expect(installed[1].tabs).toEqual([]);
   });
 
   it("throws the typed unsupported error for a write the host does not serve", async () => {

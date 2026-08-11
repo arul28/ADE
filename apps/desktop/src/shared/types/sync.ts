@@ -2085,8 +2085,15 @@ export type SyncRemoteCommandAction =
   | "plugins.enable"
   | "plugins.disable"
   | "plugins.list"
+  // Dispatches a plugin's own handler. Registered by the iOS socket work; a
+  // registration without a union member compiles only until something reads the
+  // union, so it belongs here beside the rest.
+  | "plugins.invoke"
   | "plugins.presenceList"
   | "plugins.presenceSync"
+  // Read-only account-wide coverage matrix. Read-only is why it is
+  // `viewerAllowed` while every mutating sibling above requires approval.
+  | "plugins.presenceMatrix"
   | "attention.getMachineSnapshot"
   | "attention.acknowledgeMachine"
   | "sync.getWebPairingInfo"
