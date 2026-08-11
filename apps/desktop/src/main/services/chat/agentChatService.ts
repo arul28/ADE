@@ -39533,7 +39533,13 @@ export function createAgentChatService(args: {
       // awaitDispatch so a first-run dispatch failure (unauthenticated provider,
       // no model configured) lands in the catch below instead of escaping as an
       // unhandled rejection from a fire-and-forget turn.
-      await sendMessage({ sessionId, text: CTO_INTRO_PROMPT }, { awaitDispatch: true });
+      await sendMessage({
+        sessionId,
+        text: CTO_INTRO_PROMPT,
+        // Host-authored seed, not a mission anyone assigned. Inert for the CTO
+        // session (it has no parent), marked so the rule holds everywhere.
+        metadata: { hostContinuation: { reason: "cto_intro" } },
+      }, { awaitDispatch: true });
       ctoStateService.completeOnboardingStep(CTO_INTRO_ONBOARDING_STEP);
       logger.info("agent_chat.cto_intro_seeded", { sessionId });
     } catch (error) {

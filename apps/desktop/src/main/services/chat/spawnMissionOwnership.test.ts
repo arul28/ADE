@@ -44,6 +44,8 @@ describe("isMissionDirective", () => {
     ["another agent relaying", { agentRelay: { fromSessionId: "grandchild" } }],
     ["a host continuation", { hostContinuation: { reason: "interrupted_turn_recovery" as const } }],
     ["a legacy continuity recovery", { kind: "continuity_recovery" }],
+    ["an orchestration worker status ping", { orchestrationOrigin: { runId: "r", fromSessionId: "worker", kind: "queue", intent: "status" } }],
+    ["an orchestration question", { orchestrationOrigin: { runId: "r", fromSessionId: "worker", kind: "queue", intent: "question" } }],
   ])("does not count %s as a directive", (_label, metadata) => {
     expect(isMissionDirective({ type: "user_message", text: "…", metadata })).toBe(false);
   });
@@ -54,6 +56,14 @@ describe("isMissionDirective", () => {
       expect(isMissionDirective({ type: "user_message", text: "…", metadata: { kind } })).toBe(true);
     },
   );
+
+  it("counts an explicit orchestration directive as a directive", () => {
+    expect(isMissionDirective({
+      type: "user_message",
+      text: "…",
+      metadata: { orchestrationOrigin: { runId: "r", fromSessionId: "lead", kind: "queue", intent: "directive" } },
+    })).toBe(true);
+  });
 
   it("does not count a queued message, whose delivered twin carries the real metadata", () => {
     expect(isMissionDirective({ type: "user_message", text: "…", deliveryState: "queued" })).toBe(false);
@@ -94,6 +104,17 @@ describe("parentShouldWakeForChildTurn", () => {
         steerId: "s1",
         deliveryState: "delivered",
         metadata: { scheduledWake: { scheduleId: "wake-1", kind: "wakeup", firedAt: "2026-08-11T00:10:00.000Z" } },
+      }),
+    ];
+    expect(shouldWake(history, "t2")).toBe(true);
+  });
+
+  it("keeps ownership when an orchestration worker reports status to a lead that is itself a subagent", () => {
+    const history = [
+      parentDispatch("t1"),
+      userMessage({
+        turnId: "t2",
+        metadata: { orchestrationOrigin: { runId: "r", fromSessionId: "worker", kind: "queue", intent: "status" } },
       }),
     ];
     expect(shouldWake(history, "t2")).toBe(true);

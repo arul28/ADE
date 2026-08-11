@@ -20,6 +20,8 @@ import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } f
  *   reporting in (which ADE's spawn guidance tells children to do), a sibling
  *   coordinating, or the child messaging itself. None of them own the mission,
  *   so none of them may take it from the parent.
+ * - `orchestrationOrigin` with any `intent` other than `"directive"` — status,
+ *   diff notices, questions and cancellations inside an orchestration run.
  * - `hostContinuation` — ADE prompting the child to resume/repair its own work.
  * - `kind: "continuity_recovery"` — the same thing on transcripts written
  *   before `hostContinuation` existed. Current writers set both.
@@ -44,6 +46,11 @@ export const isMissionDirective = (
   if (!metadata) return true;
   if (NON_DIRECTIVE_METADATA_KEYS.some((key) => metadata[key])) return false;
   if (metadata.kind === "continuity_recovery") return false;
+  // Orchestration pings: a worker reporting status, a diff notice, a question,
+  // or a cancellation is coordination inside a run. Only an explicit directive
+  // assigns work.
+  const orchestrationIntent = (metadata.orchestrationOrigin as { intent?: unknown } | undefined)?.intent;
+  if (orchestrationIntent != null && orchestrationIntent !== "directive") return false;
   return true;
 };
 
@@ -65,6 +72,9 @@ const NON_DIRECTIVE_METADATA_KEYS = [
  */
 export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   "spawnDispatch",
+  // Written in-process by the orchestration service, never accepted from a
+  // chat caller — its `intent` also feeds the directive test above.
+  "orchestrationOrigin",
   ...NON_DIRECTIVE_METADATA_KEYS,
 ] as const;
 

@@ -207,7 +207,8 @@ export type AgentChatHostContinuationMetadata = {
     | "provider_schedule_cleanup"
     | "plan_followup"
     | "interrupted_turn_recovery"
-    | "continuity_recovery";
+    | "continuity_recovery"
+    | "cto_intro";
 };
 
 export type AgentChatContinuityRecovery = {

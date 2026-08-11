@@ -172,6 +172,9 @@ finishes:
   reporting in, a sibling coordinating, the child writing to itself).
 - `hostContinuation` — ADE prompting the chat to resume or repair its own work
   (`kind: "continuity_recovery"` is still matched for older transcripts).
+- `orchestrationOrigin` with an `intent` other than `"directive"` — status
+  reports, diff notices, questions and cancellations inside a run, so a worker
+  reporting to a lead cannot cost that lead its own parent's wakes.
 - `deliveryState: "queued"` — superseded by the delivered copy, which carries
   the authoritative metadata (the queue path strips `scheduledWake`).
 
