@@ -717,9 +717,15 @@ provider availability from only `availableModelIds`. The ids are a discovered
 inventory and can lag authentication; for CLI-backed providers, a positive
 provider-auth status is enough to expose registry models. The full status read
 starts only while picker content is mounted, uses the shared project cache, and
-does not poll. Local and cross-machine fork handoffs additionally apply a
-same-provider descriptor filter, so they can show newly registered models from
-that provider without allowing a cross-provider fork.
+does not poll. When a caller **does** pass `providerAuthStatus` (Work chat's
+`AgentChatPane`), it opts the picker out of the live auth hook — so that caller
+must itself listen for `ade:ai-status-cache-updated` / `invalidated`, apply
+`peekAiStatusCached` on update, and at most settle an orphan invalidate with one
+coalesced non-force `getAiStatusCached` for the active tile. Otherwise Settings
+auth looks Connected while the Work picker stays Off until remount. Local and
+cross-machine fork handoffs additionally apply a same-provider descriptor
+filter, so they can show newly registered models from that provider without
+allowing a cross-provider fork.
 
 ### Attachment handling
 

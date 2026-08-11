@@ -25,7 +25,12 @@ import type {
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
-import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
@@ -1346,6 +1351,181 @@ describe("AgentChatPane remote startup", () => {
     await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("applies shared AI status cache updates so Cursor unlocks without remount or force refresh", async () => {
+    const projectRoot = "/tmp/project-under-test";
+    const unauthorizedStatus: AiSettingsStatus = {
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+      ],
+      availableModelIds: ["openai/gpt-5.4"],
+    } as AiSettingsStatus;
+    const authorizedStatus: AiSettingsStatus = {
+      ...unauthorizedStatus,
+      availableProviders: {
+        ...unauthorizedStatus.availableProviders,
+        cursor: true,
+      },
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+        { type: "api-key", provider: "cursor" },
+      ],
+      availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+    } as AiSettingsStatus;
+
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+    useAppStore.setState({
+      project: { rootPath: projectRoot } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      lanes: [{
+        id: session.laneId,
+        name: "Lane 1",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-1",
+        worktreePath: `${projectRoot}/lane-1`,
+      } as any],
+      selectedLaneId: session.laneId,
+    });
+    seedCursorRuntimeModelCatalog();
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+    expect(await screen.findByText("Connect Cursor")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    vi.mocked(window.ade.ai.getStatus).mockClear();
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+    // Simulate Settings writing the shared cache, then broadcasting UPDATED.
+    await act(async () => {
+      await getAiStatusCached({ projectRoot, force: true });
+    });
+    const forceCallsAfterSharedRefresh = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    expect(forceCallsAfterSharedRefresh).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent<AiStatusCacheUpdatedEventDetail>(
+        AI_STATUS_CACHE_UPDATED_EVENT,
+        { detail: { projectRoot } },
+      ));
+    });
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Connect Cursor")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: /Set up Cursor/i })).toBeNull();
+
+    const forceCallsAfterPickerOpen = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    // Pane must not issue another force probe after the shared-cache writer.
+    expect(forceCallsAfterPickerOpen).toBe(forceCallsAfterSharedRefresh);
+  });
+
+  it("settles an AI status invalidate with a non-force refill, not a force probe", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const unauthorizedStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+        ],
+        availableModelIds: ["openai/gpt-5.4"],
+      } as AiSettingsStatus;
+      const authorizedStatus: AiSettingsStatus = {
+        ...unauthorizedStatus,
+        availableProviders: {
+          ...unauthorizedStatus.availableProviders,
+          cursor: true,
+        },
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+          { type: "api-key", provider: "cursor" },
+        ],
+        availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-1", { status: "idle" });
+      installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+      seedCursorRuntimeModelCatalog();
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalled();
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+
+      const trigger = screen.getByRole("button", { name: /^Select model/ });
+      fireEvent.pointerDown(trigger, { button: 0 });
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+      await waitFor(() => {
+        expect(screen.queryByText("Connect Cursor")).toBeNull();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips mount-time session delta fetches for remote chats", async () => {
