@@ -210,6 +210,16 @@ and in tests.
   If chat hydration fails, a persisted resumable
   `status = "running"` row falls back to quiet idle/waiting instead of
   presenting a false live/green agent.
+- `apps/desktop/src/main/services/sessions/settleLifecycleWriter.ts` — the
+  single writer of the settle tuple (`settled_at`, `settle_override`,
+  `settle_source`) and the host-local revision that moves with it. It is a
+  separate module so the "no settle-tuple SQL anywhere else" invariant is a file
+  boundary its colocated test can enforce by scanning the rest of the tree.
+  `sessionService` holds the only instance; every settle, unsettle, override,
+  and activity-clear path routes through it. The revision detects changes made
+  by THIS host — a sibling ADE process or a paired desktop peer's CRR write is
+  outside its scope, which
+  [settle-teardown-design.md](settle-teardown-design.md) §3a states precisely.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
   registry. Settle writes lifecycle state only — it deliberately does NOT stop

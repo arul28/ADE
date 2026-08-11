@@ -68,6 +68,10 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
     raw,
     db: {
       run,
+      runChanged: (sql: string, params?: unknown[]) => {
+        run(sql, params as never);
+        return 1;
+      },
       get,
       all,
       getJson: () => null,

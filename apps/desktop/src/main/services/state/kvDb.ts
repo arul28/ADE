@@ -150,6 +150,13 @@ export type AdeDb = {
   setJson: (key: string, value: unknown) => void;
 
   run: (sql: string, params?: SqlValue[]) => void;
+  /**
+   * `run` with the row count. Additive — `run` still returns void, so no
+   * existing caller changes. For code where "did this actually change state?"
+   * is the question rather than "did the statement execute": the settle
+   * lifecycle bumps its revision only for a write that matched a row.
+   */
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 
@@ -884,6 +891,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
   "local_storage_lifecycle_runs",
+  // Host-local settle concurrency token. Never replicated: it is meaningless
+  // off the host that issued it, and putting it on the CRR `terminal_sessions`
+  // row would add a per-column clock entry to the per-output-chunk write path.
+  "session_lifecycle_revisions",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -1713,6 +1724,7 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
 
 type MigrationDb = {
   run: (sql: string, params?: SqlValue[]) => void;
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 };
@@ -1793,6 +1805,7 @@ function makeCrrAwareDb({
       }
       runStatement(db, sql, params);
     },
+    runChanged: (sql: string, params: SqlValue[] = []) => runStatement(getDb(), sql, params).changes,
     get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
       return getRow<T>(getDb(), sql, params);
     },
@@ -3808,6 +3821,25 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
 
+  // Host-local concurrency token for the session settle lifecycle. Every
+  // mutation of the settle tuple (`settled_at` / `settle_override` /
+  // `settle_source`) bumps the row's revision in the same transaction, so a
+  // settle decision taken at t0 can be applied conditionally on nothing having
+  // moved since.
+  //
+  // Deliberately LOCAL-ONLY rather than a column on `terminal_sessions`: that
+  // table is a CRR, its settle row is rewritten per terminal output chunk, and
+  // cr-sqlite clocks are per column — a revision column would add a clock entry
+  // to the highest-frequency write in the product, for a value no other device
+  // can use. Only the host runs the chokepoint, so only the host needs the
+  // token. Keyed by session id alone so the bump stays one atomic statement.
+  db.run(`
+    create table if not exists session_lifecycle_revisions (
+      session_id text primary key,
+      revision integer not null default 0
+    )
+  `);
+
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
   db.run(`
@@ -4118,6 +4150,7 @@ export async function openKvDb(
   };
 
   const run = crrAwareDb.run;
+  const runChanged = crrAwareDb.runChanged;
   const all = crrAwareDb.all;
   const get = crrAwareDb.get;
 
@@ -4627,6 +4660,7 @@ export async function openKvDb(
       setString(key, JSON.stringify(value));
     },
     run,
+    runChanged,
     all,
     get,
     sync,
