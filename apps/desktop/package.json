@@ -267,6 +267,10 @@
         "to": "ade-cli/adeRpcServer.cjs"
       },
       {
+        "from": "../ade-cli/dist/pluginChildBootstrap.cjs",
+        "to": "ade-cli/pluginChildBootstrap.cjs"
+      },
+      {
         "from": "../ade-cli/dist/tuiClient/cli.mjs",
         "to": "ade-cli/tuiClient/cli.mjs"
       },
