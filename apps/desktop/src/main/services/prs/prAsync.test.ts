@@ -1151,7 +1151,9 @@ describe("prMergeAutoSettlementService", () => {
     // ...and the retry must still announce. A merged PR falls out of the
     // watchable set every pass, so without keeping it alive the user would get
     // the settle and never the toast.
-    expect(emitEvent, "the retry must still announce the merge").toHaveBeenCalled();
+    expect(emitEvent, "the retry must still announce the merge").toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pr-sessions-auto-settled" }),
+    );
   });
 
   /**
@@ -1160,19 +1162,28 @@ describe("prMergeAutoSettlementService", () => {
    * teardown, stop the very work that beat the first attempt — once per poll.
    * The revision is the "something changed since" signal that gates it.
    */
-  it("cools off after an aborted settle, then re-arms", async () => {
+  it("holds the retry until the session is at rest, then re-arms", async () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
       settled: [] as string[],
       aborted: ids.map((sessionId) => ({ sessionId, reason: "turn_start" })),
     }));
+    // The turn that won the race is still running until the test says otherwise.
+    let sessionRuntimeState = "running";
     const service = createPrMergeAutoSettlementService({
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
-          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+          {
+            laneId: "lane-1",
+            id: "chat-owned",
+            toolType: "codex-chat",
+            archivedAt: null,
+            settledAt: null,
+            status: "running",
+            runtimeState: sessionRuntimeState,
+          },
         ]),
-        get: vi.fn(() => null),
         settleSessionsReportingAborts,
       }) as any,
       emitEvent: vi.fn(),
@@ -1196,11 +1207,12 @@ describe("prMergeAutoSettlementService", () => {
       "teardown must not be re-run against still-active work on every poll",
     ).toHaveBeenCalledTimes(1);
 
-    // ...but the window always expires, so the PR is never permanently skipped.
-    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
+    // The turn ends: the runtime goes idle and the retry re-arms.
+    sessionRuntimeState = "idle";
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:04:00.000Z" });
     expect(
       settleSessionsReportingAborts,
-      "the cooling-off window must re-arm",
+      "the retry must re-arm once the session is at rest",
     ).toHaveBeenCalledTimes(2);
   });
 

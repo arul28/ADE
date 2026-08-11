@@ -47,7 +47,12 @@ export function settleTeardownCompleted(): SettleTeardownCompleted {
 export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";
 
 /** Why a settle was abandoned, as reported to callers. */
-export type SettleAbortedReason = SettleAbortReason | "lifecycle_changed" | "teardown_failed";
+export type SettleAbortedReason =
+  | SettleAbortReason
+  | "lifecycle_changed"
+  | "teardown_failed"
+  /** Another settle owned the window; this caller filed nothing. */
+  | "joined_in_flight";
 
 export type SettleAbortedSession = {
   sessionId: string;

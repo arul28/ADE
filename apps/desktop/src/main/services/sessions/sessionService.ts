@@ -758,7 +758,14 @@ export function createSessionService({
       const begin = settleLifecycle.settling.begin(id, revisionBefore);
       // Joined an in-flight settle rather than starting a second teardown: R4.
       // The owner will report the outcome; reporting it twice would double-count.
-      if (begin.kind === "joined") continue;
+      if (begin.kind === "joined") {
+        // Report it. A joiner that returns nothing looks identical to a settle
+        // that was never eligible, and a caller with a durable consequence — the
+        // PR poller marking a merge handled — would consume the merge on the
+        // strength of someone else's in-flight settle that may yet abort.
+        aborted.push({ sessionId: id, reason: "joined_in_flight" });
+        continue;
+      }
       try {
         runSettleTeardown?.(id);
 

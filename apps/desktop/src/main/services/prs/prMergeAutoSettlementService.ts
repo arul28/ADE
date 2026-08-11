@@ -66,21 +66,20 @@ export function createPrMergeAutoSettlementService(args: {
   emitEvent: (event: PrEventPayload) => void;
 }) {
   /**
-   * When each session's auto-settle last aborted.
+   * Sessions whose auto-settle aborted and that have not been seen at rest
+   * since.
    *
-   * A revision check was tried and is wrong: a normal turn COMPLETING does not
-   * move the settle lifecycle (`clearLastTurnFailed` does not touch it, and chat
-   * output deliberately opts out of clearing), so the revision can stay equal
-   * forever and the merged PR would be skipped for good — worse than the
-   * over-retry it was meant to fix.
+   * Two earlier gates were wrong. A revision check never re-arms: a turn
+   * COMPLETING does not move the settle lifecycle, so the PR would be skipped
+   * forever. A time-based cooldown expires while a long turn is still running,
+   * so in step 3 the retry would stop the very work that won the race.
    *
-   * A cooling-off period is the honest gate: it always re-arms, so the PR is
-   * never permanently abandoned, while the poll interval stops re-running
-   * teardown against work that is still in progress. Instance-scoped, so it
-   * lives exactly as long as the poller.
+   * "At rest" is the actual signal, and it is the same one the canonical settle
+   * tier uses: a session is eligible again once it is no longer running, or its
+   * runtime has gone idle. It re-arms exactly when the activity ends.
+   * Instance-scoped, so it lives as long as the poller.
    */
-  const lastAbortedAtBySession = new Map<string, number>();
-  const RETRY_AFTER_ABORT_MS = 10 * 60 * 1000;
+  const abortedSessionIds = new Set<string>();
 
   /**
    * The currently open or draft PRs in the previous snapshot, so a merge we
@@ -211,20 +210,21 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        // Cool off after an abort. The abort signal is edge-triggered — a turn
-        // that is STILL running will not trip it again — so retrying every poll
-        // would, in step 3, stop the very work that beat the first attempt, over
-        // and over. The window always expires, so the merge is deferred, never
-        // abandoned.
-        const lastAbortedAt = lastAbortedAtBySession.get(session.id);
-        const polledAtMs = Date.parse(polledAt);
-        if (
-          lastAbortedAt !== undefined
-          && Number.isFinite(polledAtMs)
-          && polledAtMs - lastAbortedAt < RETRY_AFTER_ABORT_MS
-        ) {
-          abandonedThisPr = true;
-          continue;
+        // Wait for the activity that won the race to finish. The abort signal is
+        // edge-triggered, so a turn that is STILL running never re-trips it;
+        // retrying regardless would, in step 3, stop the very work that beat the
+        // first attempt. Gating on "at rest" defers the merge without ever
+        // abandoning it.
+        if (abortedSessionIds.has(session.id)) {
+          const current = args.sessionService.get(session.id);
+          const status = (current?.status ?? "").toLowerCase();
+          const runtime = (current?.runtimeState ?? "").toLowerCase();
+          const atRest = status !== "running" || runtime === "idle";
+          if (!atRest) {
+            abandonedThisPr = true;
+            continue;
+          }
+          abortedSessionIds.delete(session.id);
         }
         const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
@@ -235,11 +235,10 @@ export function createPrMergeAutoSettlementService(args: {
         if (settleResult.aborted.length) {
           // The session became active while the settle was in flight. Leaving
           // the PR unhandled is the point: a later pass retries, instead of this
-          // merge being consumed by a settle that never landed. Record the
-          // revision so that retry waits for the session to actually change.
+          // merge being consumed by a settle that never landed. Hold the retry
+          // until the session is seen at rest.
           abandonedThisPr = true;
-          const abortedAtMs = Date.parse(polledAt);
-          if (Number.isFinite(abortedAtMs)) lastAbortedAtBySession.set(session.id, abortedAtMs);
+          abortedSessionIds.add(session.id);
         }
       }
 

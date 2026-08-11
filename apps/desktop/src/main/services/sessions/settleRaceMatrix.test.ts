@@ -163,9 +163,15 @@ describe("settle race matrix (teardown is a no-op)", () => {
 
     expect(teardowns, "the joined settle must not start its own teardown").toBe(1);
     expect(outcome.settled).toEqual(["session-1"]);
-    // The joiner reports nothing: the owner reports the outcome, and
-    // double-counting would make a bulk caller see one session twice.
-    expect(inner).toMatchObject({ settled: [], aborted: [] });
+    // The joiner does NOT report success. It filed nothing, and a caller with a
+    // durable consequence — the PR poller marking a merge handled — must not
+    // consume that merge on the strength of someone else's in-flight settle,
+    // which may yet abort. It is also not counted as settled, so a bulk caller
+    // cannot see one session twice.
+    expect(inner).toMatchObject({
+      settled: [],
+      aborted: [{ sessionId: "session-1", reason: "joined_in_flight" }],
+    });
   });
 
   /**
