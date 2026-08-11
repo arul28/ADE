@@ -398,7 +398,22 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(form.fields[1].initialFlag, true)
   }
 
-  // MARK: - Fallback deeplinks
+  // MARK: - Media and fallback deeplinks
+
+  func testMediaLoadsOnlyFromSchemesAPanelIsAllowedToPointAt() {
+    // The same pair the desktop renderer allows (`vocabularyComponents.tsx`):
+    // the network case and the self-contained one, and nothing that would turn
+    // a `src` from another machine into a disk read, a cleartext fetch or an
+    // app launch.
+    XCTAssertNotNil(PluginMediaURL.resolve("https://cdn.example.com/a.png"))
+    XCTAssertNotNil(PluginMediaURL.resolve("data:image/png;base64,AAAA"))
+    XCTAssertNotNil(PluginMediaURL.resolve("HTTPS://cdn.example.com/a.png"), "Scheme match is case-insensitive.")
+
+    for refused in ["file:///etc/passwd", "http://cdn.example.com/a.png", "HTTP://x/a.png",
+                    "javascript:alert(1)", "someapp://open", "/relative.png"] {
+      XCTAssertNil(PluginMediaURL.resolve(refused), "\(refused) must not load")
+    }
+  }
 
   func testOnlyAdeAndHttpsDeeplinksResolve() {
     XCTAssertNotNil(PluginDeeplinkURL.resolve("ade://lane/abc"))

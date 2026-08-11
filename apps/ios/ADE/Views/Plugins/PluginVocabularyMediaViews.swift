@@ -74,13 +74,19 @@ struct PluginVocabImageView: View {
   }
 }
 
-/// Only `http(s)` and `file` media load. A plugin's schema is data from another
-/// machine, and every other scheme a `URL` will happily parse — `javascript:`,
-/// custom app schemes — is a way to make the phone act on that machine's say-so.
+/// Schemes a panel may point media at: `https` is the network case and `data`
+/// the self-contained one.
+///
+/// A `src` is a string from another machine that this renderer turns into a
+/// fetch, so everything else is a capability the plugin was never granted —
+/// `file:` reads the phone's own disk, plain `http:` puts a panel's contents on
+/// the wire in the clear, and a custom scheme hands the OS a launch. A relative
+/// path has no scheme at all and is refused rather than resolved. The same rule
+/// is enforced on desktop in `vocabularyComponents.tsx`.
 enum PluginMediaURL {
   static func resolve(_ raw: String) -> URL? {
     guard let url = URL(string: raw), let scheme = url.scheme?.lowercased() else { return nil }
-    return ["http", "https", "file"].contains(scheme) ? url : nil
+    return ["https", "data"].contains(scheme) ? url : nil
   }
 }
 
