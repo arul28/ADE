@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
+import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
 vi.mock("../git/git", () => ({
   getHeadSha: vi.fn(),
@@ -4569,6 +4570,142 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       .toBe("1 of 2 proof file(s) removed; see logs");
     expect(fs.existsSync(removedFile)).toBe(false);
     expect(fs.existsSync(failedFile)).toBe(true);
+  });
+
+  /** Seed a lane with the activity that ADE's lifetime counters are built from. */
+  function seedLaneActivity(db: any, laneId: string) {
+    const stamp = (day: string, time = "12:00:00") => `${day}T${time}.000Z`;
+    db.run(
+      `insert into terminal_sessions(id, lane_id, title, status, started_at, ended_at, tool_type, chat_session_id, transcript_path)
+       values (?, ?, ?, 'exited', ?, ?, ?, ?, ?)`,
+      ["sess-chat", laneId, "Chat", stamp("2026-03-12", "10:00:00"), stamp("2026-03-12", "10:05:00"), "claude-chat", "chat-1", "/tmp/a.log"],
+    );
+    db.run(
+      `insert into terminal_sessions(id, lane_id, title, status, started_at, ended_at, tool_type, chat_session_id, transcript_path)
+       values (?, ?, ?, 'exited', ?, null, ?, null, ?)`,
+      ["sess-term", laneId, "Shell", stamp("2026-03-13", "09:00:00"), "shell", "/tmp/b.log"],
+    );
+    db.run(
+      `insert into session_deltas(
+         session_id, project_id, lane_id, started_at, ended_at, head_sha_start, head_sha_end,
+         files_changed, insertions, deletions, touched_files_json, failure_lines_json, computed_at
+       ) values (?, 'proj-delete', ?, ?, null, null, null, 4, 120, 30, '[]', '[]', ?)`,
+      ["sess-chat", laneId, stamp("2026-03-12"), stamp("2026-03-12")],
+    );
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status, metadata_json)
+       values (?, 'proj-delete', ?, 'git_commit', ?, ?, 'succeeded', null)`,
+      ["op-commit", laneId, stamp("2026-03-14"), stamp("2026-03-14")],
+    );
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status, metadata_json)
+       values (?, 'proj-delete', ?, 'pr_land', ?, ?, 'succeeded', null)`,
+      ["op-land", laneId, stamp("2026-03-14", "15:00:00"), stamp("2026-03-14", "15:00:00")],
+    );
+  }
+
+  it("keeps a lane's usage counters in a tombstone after the rows are deleted", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    seedLaneActivity(db, "lane-child");
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    expect(db.all("select id from terminal_sessions where lane_id = 'lane-child'")).toEqual([]);
+    expect(db.all("select session_id from session_deltas where lane_id = 'lane-child'")).toEqual([]);
+
+    const tombstone = db.get<any>("select * from lane_usage_tombstones where lane_id = 'lane-child'");
+    expect(tombstone).toMatchObject({
+      project_id: "proj-delete",
+      lanes_created: 1,
+      chat_sessions: 1,
+      terminal_sessions: 1,
+      files_changed: 4,
+      insertions: 120,
+      deletions: 30,
+      commits_created: 1,
+      pr_landings: 1,
+      // Only the session that actually ended: 10:00 -> 10:05.
+      longest_session_ms: 300_000,
+    });
+    // Sessions on the 12th and 13th, code movement on the 12th, git on the 14th.
+    expect(decodeActiveDayKeys(tombstone.first_active_day, tombstone.active_day_bits)).toHaveLength(3);
+  });
+
+  it("stores no free text a deleted lane could be reconstructed from", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    seedLaneActivity(db, "lane-child");
+    const laneRow = db.get<any>("select name, branch_ref, worktree_path from lanes where id = 'lane-child'");
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    const tombstone = db.get<any>("select * from lane_usage_tombstones where lane_id = 'lane-child'");
+    const serialized = JSON.stringify(tombstone);
+    for (const secret of [laneRow.name, laneRow.branch_ref, laneRow.worktree_path, "Chat", "Shell", "/tmp/a.log"]) {
+      expect(serialized).not.toContain(secret);
+    }
+    // Every value is an integer counter, a YYYY-MM-DD key, a hex bitmap, or an id.
+    for (const [column, value] of Object.entries(tombstone as Record<string, unknown>)) {
+      if (value == null) continue;
+      if (typeof value === "number") continue;
+      expect(
+        column === "project_id" || column === "lane_id"
+          ? /^[\w-]+$/.test(String(value))
+          : /^(\d{4}-\d{2}-\d{2}|[0-9a-f]*)$/.test(String(value)),
+      ).toBe(true);
+    }
+  });
+
+  it("does not double-count when the same lane is tombstoned twice", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    seedLaneActivity(db, "lane-child");
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+    const afterFirst = db.get<any>("select * from lane_usage_tombstones where lane_id = 'lane-child'");
+
+    // The rows are gone, so a repeat pass sees nothing; the recorded counts must
+    // survive it rather than being summed or zeroed.
+    writeLaneUsageTombstone(db, { projectId: "proj-delete", laneId: "lane-child", mode: "deleted" });
+    const afterSecond = db.get<any>("select * from lane_usage_tombstones where lane_id = 'lane-child'");
+    expect(afterSecond).toEqual(afterFirst);
+    expect(db.all("select lane_id from lane_usage_tombstones")).toHaveLength(1);
+
+    // A second delete cannot even reach the cascade — the lane row is gone.
+    await expect(service.delete({ laneId: "lane-child", deleteBranch: false })).rejects.toThrow(/Lane not found/);
+    expect(db.get<any>("select * from lane_usage_tombstones where lane_id = 'lane-child'")).toEqual(afterFirst);
+  });
+
+  it("leaves no tombstone when a lane rolls back after a failed create", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db } = await setupWithLane({ teardown: fake, events });
+    writeLaneUsageTombstone(db, { projectId: "proj-delete", laneId: "lane-child", mode: "none" });
+    expect(db.all("select lane_id from lane_usage_tombstones")).toEqual([]);
   });
 
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {

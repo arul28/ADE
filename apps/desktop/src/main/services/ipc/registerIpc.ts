@@ -72,6 +72,8 @@ import {
   listPromptStashes,
 } from "../chat/promptStashService";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
+import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
+import type { AccountRollupFetcher } from "../usage/usageTrackingService";
 import {
   parseProductAnalyticsCapture,
   type ProductAnalyticsStatus,
@@ -5771,6 +5773,17 @@ export function registerIpc({
 
 
   // ── Usage tracking + budget cap IPC ──────────────────────────
+  /**
+   * Opportunistic account-wide usage refresh over the already-paired transport.
+   *
+   * Declared here but assigned far below, where the account bridge it needs is
+   * built. The handler reads it through a null check rather than relying on the
+   * declaration order: everything in this function runs before any IPC call
+   * arrives, but a fetcher that is merely "usually assigned by then" is not a
+   * property worth depending on.
+   */
+  let accountRollupFetcher: AccountRollupFetcher | null = null;
+
   ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
     const ctx = getCtx();
     if (arg != null && !isRecord(arg)) throw new Error("usage stats expects an object payload.");
@@ -5786,6 +5799,13 @@ export function registerIpc({
     if (arg?.until != null && Number.isNaN(Date.parse(arg.until))) {
       throw new Error("usage stats until must be an ISO timestamp.");
     }
+    // Installed here rather than at construction because the account directory
+    // and the remote connection pool are both built downstream of the usage
+    // service, and because a project switch replaces that service — re-setting
+    // on each read keeps the current instance wired without a lifecycle hook.
+    // Idempotent, and the service renders from its durable rollups regardless,
+    // so a fetcher that never gets installed costs freshness and nothing else.
+    if (accountRollupFetcher) ctx.usageTrackingService?.setAccountRollupFetcher(accountRollupFetcher);
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });
 
@@ -9509,6 +9529,18 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  accountRollupFetcher = createAccountRollupFetcher({
+    listMachines: () => accountBridge.listMachines(),
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity().machineKey,
+    logger: {
+      debug: (message, meta) => getCtx().logger.debug(message, meta),
+      warn: (message, meta) => getCtx().logger.warn(message, meta),
+    },
+  });
+
   accountBridge.onPairMachineProgress((progress) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;

@@ -62,7 +62,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `ade.runtime.events.release`, the renderer's explicit teardown for a
   subscription it has stopped reading, and `ade.remoteRuntime.updateAndRestart`,
   the desktop half of the host's `machine.updateAndRestart` runtime method (see
-  [`machine.updateAndRestart`](#machineupdateandrestart)).
+  [`machine.updateAndRestart`](#machineupdateandrestart)). Two members exist for
+  main-process callers that have no project binding at all: `callMachineMethod`
+  is machine-scoped RPC to an already-paired target — used by the account-wide
+  usage merge, which asks each machine for its own rollup — and deliberately
+  does not widen the separate method allowlist `IPC.remoteRuntimeCallSync`
+  keeps for the renderer; `isTargetConnected` (backed by
+  `RemoteConnectionService.isConnected`) lets an opportunistic background reader
+  skip a disconnected target, because a failed call there spends that machine's
+  automatic-reconnect budget and exhausting it pauses automatic reconnect for
+  every feature the target serves. The local machine identity those callers key
+  on moved to `services/account/localMachineIdentity.ts` — Electron-free, so the
+  usage rollup publisher and the CLI-hosted brain resolve the same machine key
+  without importing this bridge — and is re-exported here for existing callers.
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
   the store behind those streams. Subscriptions are keyed by
   `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one

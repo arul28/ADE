@@ -58,6 +58,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 |------|---------------|
 | `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, startup repair routines, branch switching, lane + session Linear issue linkage, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, records retryable residual-cleanup debt when manual deletion fails, and cleans the pack directory + DB rows. The lane-aware storage lifecycle adds `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive`: reclaim proves that the saved path and branch are the exact worktree registered by this project, rejects symlinks, rechecks directory identity immediately before removal, records machine-local retry state, and preserves the branch, chats, lane row, and metadata. Restore reuses the lane's own folder wherever it still exists, and only recreates a worktree — always inside `.ade/worktrees` — when that folder is gone. It also emits one-shot `LaneLifecycleEvent` notifications after successful create/adopt/rename/archive/reclaim/unarchive/restore/delete transitions so renderer surfaces can toast completed lifecycle changes and invalidate lane-list reads without polling. `list()` reconciles lane rows against `git worktree list` in both directions — adopting every unregistered worktree and reaping lanes whose worktree is gone from git and disk — from a single git call. Lane creation is wrapped so that any failure after the worktree is on disk routes through `cleanupCreatedWorktreeLaneAfterCreateFailure`, which removes the orphaned checkout rather than leaving a worktree no lane row references. Independent deletes can progress through teardown concurrently; only the `git_worktree_remove` step enters the shared worktree-mutation guard, so lane creation is not held behind unrelated stop/cleanup steps but still avoids concurrent edits to Git's worktree registry. Deletes run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `list()` also runs the residual-worktree cleanup retry sweep before duplicate/stale worktree repair so previous delete warnings can self-heal without blocking lane row cleanup. `getSummary(laneId, { includeStatus })` is the scoped summary path used by mobile detail commands so opening a lane does not rebuild the full lane list; `refreshSnapshots` honors `includeStatus` for light runtime-bucket refreshes. `upsertLaneStateSnapshot` guards its `lane_state_snapshots` write with a `where` clause that only touches the row when a field actually changed (`dirty`/`ahead`/`behind`/`remote_behind`/`rebase_in_progress`, and `agent_summary_json` only when the caller passed an `agentSummary`), so a status recompute that yields identical values no longer authors a redundant CRR row — which otherwise fans an empty update out to every synced device and triggers a full mobile lane-list reload for nothing. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. Branch switching rolls git checkout back to the previous branch when the database update fails. **Linear issue linkage:** `linkLinearIssues` / `unlinkLinearIssues` manage lane-scoped links in `lane_linear_issue_links` (never touching the primary `lane_linear_issues` row); `attachLinearIssueToSession` / `detachLinearIssueFromSession` / `listLinearIssuesForSession` / `listLinearIssuesForLaneSessions` manage session-scoped links in `session_linear_issues`. `attachLinearIssueToSession` resolves the session's lane from `claude_sessions` / `terminal_sessions` and mirrors each issue into the lane's `chat_attach` links when a lane exists, without ever promoting the lane's primary issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). **Branch drift:** `getBranchDrift({ laneId })` is the on-demand fresh read (`git symbolic-ref --quiet --short HEAD`) for callers that need an answer immediately before acting, and `resolveBranchDrift(args)` is the single entry point for both resolutions. The service object is built as a named `laneServiceApi` so drift resolution can delegate to sibling methods (`switchBranch`, rename) instead of duplicating their transaction and rollback handling. See [Branch drift](#branch-drift). |
 | `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, headBranchRef }` from the `git status --porcelain=v2 --branch` output that `computeLaneStatus` already collects — header lines start with `# `, entry lines never do, so the split is unambiguous, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift. `laneNameAdvertisesBranch(laneName, branchRef)` is true when the lane's display name merely restates the branch it tracks — the whole ref (`ade/fix-auth`) or its last segment (`fix-auth`) — and gates the rename that `keep-head` performs. |
+| `laneUsageTombstone.ts` | The one row a deleted lane leaves behind so ADE's lifetime stats are not survivor stats. See [What a deleted lane leaves behind](#what-a-deleted-lane-leaves-behind). `writeLaneUsageTombstone` is called from inside `cleanupLaneDatabaseRows` *before* the cascade, while the rows it counts still exist, and rides the caller's `begin immediate` so the tombstone and the deletes commit together. `encodeActiveDayBits` / `decodeActiveDayKeys` pack the lane's active local days into a hex bitmap (capped at a 4,096-day span) so `activeDays` and streaks stay reconstructible without a per-day breakdown. |
 | `worktreeResidualCleanup.ts` | Machine-local retry worker for managed worktree directories that survive lane deletion. It stores cleanup debt in `local_worktree_residual_cleanups`, retries during `laneService.list()`, drops unsafe records, skips registered Git worktrees, active lane paths, and pending creations, removes old empty untracked directories under the managed worktrees directory, and leaves unknown non-empty directories alone unless they were explicitly recorded from the delete path. |
 | `laneWorktreeLockService.ts` | Database-backed lease for any operation that mutates a lane worktree. PR conflict/integration work and storage reclaim/restore share the same lock table, so two processes cannot remove, restore, or edit the same worktree concurrently. Expired leases are swept; active blockers carry an owner label for clear UI errors. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
@@ -666,6 +667,44 @@ child of the managed directory). **Outside `.ade/worktrees` there is no
 filesystem fallback and nothing is queued**: ADE asks git to remove the
 worktree, and if git refuses, the git error is surfaced as the delete failure.
 Files ADE did not create are never removed by ADE's own `rm`.
+
+## What a deleted lane leaves behind
+
+Deleting a lane used to destroy the only record that it had ever existed:
+`lanes`, `terminal_sessions`, `claude_sessions`, `session_deltas`, and the
+lane's `operations` rows all go in one cascade, so every "lifetime" number on
+the Usage page counted only the lanes nobody had tidied up — 14 lanes created
+all-time against 436 real ones on one machine, 19 sessions against 105.
+
+`cleanupLaneDatabaseRows` therefore writes one `lane_usage_tombstones` row per
+removed lane before the cascade runs. The row holds integer counters (lanes
+created, chat and terminal sessions, files changed, insertions, deletions,
+commits, pushes, PR landings, artifacts captured, longest session), the created
+and deleted calendar days, and the active-day bitmap. It holds nothing else: no
+transcript text, no paths, no branch or lane names, no per-day counts — nothing
+that could reconstruct what the lane was working on. AI token totals were never
+affected either way, because those come from provider transcript files ADE does
+not own or delete.
+
+How a removal is counted is the `tombstoneMode` argument, and all three values
+are load-bearing:
+
+- `deleted` — the default, and what every real removal is, including the reap
+  of a lane whose worktree vanished. Counts toward `lanesCreated`.
+- `absorbed` — the duplicate-lane dedupe folding a create/recover race artifact
+  into its keeper. Its sessions already point at the keeper, so counting the
+  lane again would inflate `lanesCreated`; only residual code movement is
+  preserved.
+- `none` — the create-failure rollback. A lane that never finished being created
+  never counted as created and nothing ran inside it, so tombstoning it would
+  invent a lane.
+
+Artifacts are counted with the same `LANE_OWNED_ARTIFACT_IDS_SQL` predicate the
+delete itself uses, so a capture shared with a surviving lane is not recorded as
+lost. `usageStatsStore` reads the tombstones back and range-filters them by the
+lane's active span, excludes `absorbed` rows from creation and deletion counts,
+and folds the decoded active days into streaks. See
+[Usage tracking strategy](../onboarding-and-settings/usage-tracking.md).
 
 ## Lane color
 

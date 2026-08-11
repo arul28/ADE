@@ -591,6 +591,11 @@ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
 ade usage snapshot --text
+ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
+ade usage stats --scope account --text             # merged across every machine on the account
+ade usage stats --scope project --preset 30d --text
+ade usage stats --scope account --force --text     # skip the account fan-out rate floor (explicit refresh)
+ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
 ade --role cto usage refresh --text                # live Claude/Codex quota only
 ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text

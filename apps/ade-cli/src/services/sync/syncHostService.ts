@@ -337,6 +337,13 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   "worker_agent_cost_events",
   "pack_events",
   "cto_session_logs",
+  // Cross-machine usage rollups. These must replicate desktop-to-desktop —
+  // that is what makes an offline laptop still count toward account totals —
+  // but a phone reads its usage from the host over `usage.getAdeStats` and
+  // never queries these tables, so shipping every machine's day × provider ×
+  // model rows to it is pure churn.
+  "usage_machine_rollups",
+  "usage_machine_rollup_meta",
 ]);
 
 // Tables the host alone is authoritative for. `sync_cluster_state` is the

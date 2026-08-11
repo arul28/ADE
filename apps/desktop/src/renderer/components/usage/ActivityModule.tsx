@@ -13,17 +13,30 @@ import type {
   AdeUsageRangePreset,
   AdeUsageStats,
 } from "../../../shared/types";
-import { formatTokens } from "../../lib/format";
-import { useAppStore } from "../../state/appStore";
+import { formatCompact, formatDayShort, formatTokens } from "../../lib/format";
+import { type ThemeId, useAppStore } from "../../state/appStore";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { cn } from "../ui/cn";
 import {
+  type ActivityInsight,
   dayHasActivity,
+  describeActivityInsight,
 } from "./activityIntensity";
 import {
   ActivityHeatmap,
   computeHeatmapLayout,
+  fillMissingDays,
   useHeatmapCells,
+  weekAlignment,
 } from "./ActivityHeatmap";
+import {
+  USAGE_BAR_TRACK_CLASS,
+  USAGE_CARD_CLASS,
+  USAGE_OVERLAY_CLASS,
+  USAGE_SEGMENT_ITEM_ACTIVE_CLASS,
+  USAGE_SEGMENT_ITEM_IDLE_CLASS,
+  USAGE_TEXT,
+} from "./usageDesign";
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -102,20 +115,6 @@ function persistActivityPatch(patch: Partial<PersistedState>): void {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-function compact(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0";
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(value >= 10_000_000_000 ? 0 : 1)}B`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
-  return Math.floor(value).toLocaleString();
-}
-
-function formatDay(date: string): string {
-  const parsed = new Date(`${date}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
 function sessionsTotal(stats: AdeUsageStats): number {
   return (stats.summary.chatSessions ?? 0) + (stats.summary.terminalSessions ?? 0);
 }
@@ -124,16 +123,49 @@ function sessionsTotal(stats: AdeUsageStats): number {
 // Colors
 // ---------------------------------------------------------------------------
 
-const TOKEN_COLORS = { input: "#5B93F5", output: "#E0A82E", cache: "#8892A6" } as const;
-const CODE_COLORS = { insertions: "#3FB950", deletions: "#E5595C", github: "#8892A6" } as const;
+/**
+ * Series colours as light/dark pairs rather than dark-only literals, resolved
+ * against the active theme the same way `providerColors` does. Nothing here is
+ * a provider, so these do not borrow a brand token — but they must still stay
+ * legible on a light card.
+ */
+type SeriesKey = "input" | "output" | "cache" | "insertions" | "deletions" | "github";
 
-const CLIENT_COLORS: Record<AdeUsageClientSurface, string> = {
-  desktop: "#5B93F5",
-  mobile: "#E0729B",
-  tui: "#3FB950",
-  web: "#2DD4BF",
-  api: "#E0A82E",
+const SERIES_COLORS: Record<SeriesKey, { light: string; dark: string }> = {
+  input: { light: "#2C6FE0", dark: "#5B93F5" },
+  output: { light: "#B45309", dark: "#E0A82E" },
+  // Cache was the same grey as the GitHub underlay, which made a three-part
+  // stacked bar read as two parts and a shadow. Teal keeps all three token
+  // series separable at a glance and stays out of the additions green.
+  cache: { light: "#0F766E", dark: "#2DD4BF" },
+  insertions: { light: "#2DA44E", dark: "#3FB950" },
+  deletions: { light: "#C1443F", dark: "#E5595C" },
+  github: { light: "#6B7280", dark: "#8892A6" },
 };
+
+const CLIENT_COLORS_BY_THEME: Record<AdeUsageClientSurface, { light: string; dark: string }> = {
+  desktop: { light: "#2C6FE0", dark: "#5B93F5" },
+  mobile: { light: "#BE185D", dark: "#E0729B" },
+  tui: { light: "#2DA44E", dark: "#3FB950" },
+  web: { light: "#0F9E8E", dark: "#2DD4BF" },
+  api: { light: "#B45309", dark: "#E0A82E" },
+};
+
+function seriesPalette(theme: ThemeId): Record<SeriesKey, string> {
+  return {
+    input: SERIES_COLORS.input[theme],
+    output: SERIES_COLORS.output[theme],
+    cache: SERIES_COLORS.cache[theme],
+    insertions: SERIES_COLORS.insertions[theme],
+    deletions: SERIES_COLORS.deletions[theme],
+    github: SERIES_COLORS.github[theme],
+  };
+}
+
+function clientColor(client: AdeUsageClientSurface, theme: ThemeId): string {
+  return CLIENT_COLORS_BY_THEME[client][theme];
+}
+
 const CLIENT_LABELS: Record<AdeUsageClientSurface, string> = {
   desktop: "Desktop",
   mobile: "Mobile",
@@ -179,24 +211,20 @@ function useDayTooltip(containerRef: React.RefObject<HTMLElement | null>) {
   return { tip, show, toggle, hide };
 }
 
-function DayTooltip({ tip }: { tip: TooltipState }) {
+function DayTooltip({ tip, palette }: { tip: TooltipState; palette: Record<SeriesKey, string> }) {
   const { point } = tip;
   const code = point.insertions + point.deletions;
   return (
     <div
       role="tooltip"
-      className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full rounded-lg border px-2.5 py-2 text-left"
-      style={{
-        left: tip.left,
-        top: tip.top - 8,
-        minWidth: 150,
-        background: "color-mix(in srgb, var(--color-card) 96%, var(--color-fg) 4%)",
-        borderColor: "color-mix(in srgb, var(--color-border) 80%, transparent)",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-      }}
+      className={cn(
+        "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full px-2.5 py-2 text-left",
+        USAGE_OVERLAY_CLASS,
+      )}
+      style={{ left: tip.left, top: tip.top - 8, minWidth: 150 }}
     >
-      <div className="text-[11px] font-semibold text-fg">{formatDay(point.date)}</div>
-      <div className="mt-1 flex flex-col gap-0.5 text-[10px] text-muted-fg">
+      <div className={cn(USAGE_TEXT.detail, "font-semibold text-fg")}>{formatDayShort(point.date)}</div>
+      <div className={cn(USAGE_TEXT.micro, "mt-1 flex flex-col gap-0.5 text-muted-fg")}>
         <span>{formatTokens(point.totalTokens)} tokens</span>
         <span>
           {formatTokens(point.inputTokens)} in · {formatTokens(point.outputTokens)} out
@@ -205,9 +233,9 @@ function DayTooltip({ tip }: { tip: TooltipState }) {
         <span>{point.sessions} {point.sessions === 1 ? "session" : "sessions"}</span>
         {code > 0 ? (
           <span>
-            <span style={{ color: CODE_COLORS.insertions }}>+{compact(point.insertions)}</span>
+            <span style={{ color: palette.insertions }}>+{formatCompact(point.insertions)}</span>
             {" "}
-            <span style={{ color: CODE_COLORS.deletions }}>-{compact(point.deletions)}</span>
+            <span style={{ color: palette.deletions }}>-{formatCompact(point.deletions)}</span>
             {" lines"}
           </span>
         ) : null}
@@ -298,7 +326,7 @@ function useMeasuredWidth(ref: React.RefObject<HTMLElement | null>): number {
  * has data on other tabs (so the global warm-empty state does not apply). */
 function TabEmptyHint({ message }: { message: string }) {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center text-center text-[11px] text-muted-fg">
+    <div className={cn("flex min-h-0 flex-1 items-center justify-center text-center text-muted-fg", USAGE_TEXT.micro)}>
       {message}
     </div>
   );
@@ -309,11 +337,13 @@ function TokenBars({
   height,
   reduced,
   tooltip,
+  palette,
 }: {
   points: AdeUsageDailyPoint[];
   height: number;
   reduced: boolean;
   tooltip: ReturnType<typeof useDayTooltip>;
+  palette: Record<SeriesKey, string>;
 }) {
   const max = Math.max(1, ...points.map((p) => p.totalTokens));
   const anyCache = points.some((p) => (p.cachedTokens ?? 0) > 0);
@@ -337,9 +367,9 @@ function TokenBars({
               onPointerLeave={tooltip.hide}
               onClick={(event) => tooltip.toggle(point, event.currentTarget)}
             >
-              <span style={{ height: seg(point.inputTokens), background: TOKEN_COLORS.input }} />
-              <span style={{ height: seg(point.outputTokens), background: TOKEN_COLORS.output }} />
-              {anyCache ? <span style={{ height: seg(point.cachedTokens ?? 0), background: TOKEN_COLORS.cache }} /> : null}
+              <span style={{ height: seg(point.inputTokens), background: palette.input }} />
+              <span style={{ height: seg(point.outputTokens), background: palette.output }} />
+              {anyCache ? <span style={{ height: seg(point.cachedTokens ?? 0), background: palette.cache }} /> : null}
             </div>
           );
         })}
@@ -347,9 +377,9 @@ function TokenBars({
       )}
       <Legend
         items={[
-          { color: TOKEN_COLORS.input, label: "Input" },
-          { color: TOKEN_COLORS.output, label: "Output" },
-          ...(anyCache ? [{ color: TOKEN_COLORS.cache, label: "Cache" }] : []),
+          { color: palette.input, label: "Input" },
+          { color: palette.output, label: "Output" },
+          ...(anyCache ? [{ color: palette.cache, label: "Cache" }] : []),
         ]}
       />
     </div>
@@ -361,11 +391,13 @@ function CodeBars({
   height,
   reduced,
   tooltip,
+  palette,
 }: {
   points: AdeUsageDailyPoint[];
   height: number;
   reduced: boolean;
   tooltip: ReturnType<typeof useDayTooltip>;
+  palette: Record<SeriesKey, string>;
 }) {
   const anyGithub = points.some((p) => (p.githubAdditions ?? 0) + (p.githubDeletions ?? 0) > 0);
   const localMax = Math.max(1, ...points.map((p) => p.insertions + p.deletions));
@@ -397,15 +429,15 @@ function CodeBars({
               {githubHeight > 0 ? (
                 <span
                   className="absolute inset-x-0 bottom-0 rounded-t-[2px]"
-                  style={{ height: githubHeight, background: `color-mix(in srgb, ${CODE_COLORS.github} 32%, transparent)` }}
+                  style={{ height: githubHeight, background: `color-mix(in srgb, ${palette.github} 32%, transparent)` }}
                 />
               ) : null}
               <span
                 className="relative flex w-full flex-col-reverse overflow-hidden rounded-t-[2px]"
                 style={{ height: barHeight, transition: reduced ? undefined : "height 160ms ease" }}
               >
-                <span style={{ height: seg(point.insertions), background: CODE_COLORS.insertions }} />
-                <span style={{ height: seg(point.deletions), background: CODE_COLORS.deletions }} />
+                <span style={{ height: seg(point.insertions), background: palette.insertions }} />
+                <span style={{ height: seg(point.deletions), background: palette.deletions }} />
               </span>
             </div>
           );
@@ -414,16 +446,16 @@ function CodeBars({
       )}
       <Legend
         items={[
-          { color: CODE_COLORS.insertions, label: "Added" },
-          { color: CODE_COLORS.deletions, label: "Removed" },
-          ...(anyGithub ? [{ color: `color-mix(in srgb, ${CODE_COLORS.github} 45%, transparent)`, label: "GitHub" }] : []),
+          { color: palette.insertions, label: "Added" },
+          { color: palette.deletions, label: "Removed" },
+          ...(anyGithub ? [{ color: `color-mix(in srgb, ${palette.github} 45%, transparent)`, label: "GitHub" }] : []),
         ]}
       />
     </div>
   );
 }
 
-function ClientMix({ stats }: { stats: AdeUsageStats }) {
+function ClientMix({ stats, theme }: { stats: AdeUsageStats; theme: ThemeId }) {
   const clients = (stats.clients ?? []).filter((client) => client.interactions > 0);
   const total = clients.reduce((sum, client) => sum + client.interactions, 0);
   const Icon = ({ client }: { client: AdeUsageClientSurface }) => {
@@ -437,23 +469,23 @@ function ClientMix({ stats }: { stats: AdeUsageStats }) {
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-center gap-3">
-      <div className="flex h-3 overflow-hidden rounded-full" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+      <div className={cn("flex h-3", USAGE_BAR_TRACK_CLASS)}>
         {clients.map((client) => (
           <span
             key={client.client}
-            style={{ width: `${(client.interactions / total) * 100}%`, background: CLIENT_COLORS[client.client] }}
+            style={{ width: `${(client.interactions / total) * 100}%`, background: clientColor(client.client, theme) }}
             title={`${CLIENT_LABELS[client.client]}: ${client.interactions.toLocaleString()} actions`}
           />
         ))}
       </div>
       <div className="grid grid-cols-2 gap-x-5 gap-y-2">
         {clients.slice(0, 4).map((client) => (
-          <div key={client.client} className="flex items-center gap-2 text-[10px]">
-            <span className="flex" style={{ color: CLIENT_COLORS[client.client] }}>
+          <div key={client.client} className={cn("flex items-center gap-2", USAGE_TEXT.micro)}>
+            <span className="flex" style={{ color: clientColor(client.client, theme) }}>
               <Icon client={client.client} />
             </span>
-            <span className="min-w-0 flex-1 truncate text-fg/70">{CLIENT_LABELS[client.client]}</span>
-            <span className="text-fg/85">{Math.round((client.interactions / total) * 100)}%</span>
+            <span className="min-w-0 flex-1 truncate text-muted-fg">{CLIENT_LABELS[client.client]}</span>
+            <span className="text-fg">{Math.round((client.interactions / total) * 100)}%</span>
           </div>
         ))}
       </div>
@@ -465,7 +497,7 @@ function Legend({ items }: { items: Array<{ color: string; label: string }> }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       {items.map((item) => (
-        <span key={item.label} className="flex items-center gap-1.5 text-[10px] text-muted-fg">
+        <span key={item.label} className={cn("flex items-center gap-1.5 text-muted-fg", USAGE_TEXT.micro)}>
           <span className="h-2 w-2 rounded-[2px]" style={{ background: item.color }} />
           {item.label}
         </span>
@@ -496,20 +528,45 @@ function SkeletonChart({ height, bars }: { height: number; bars: number }) {
   );
 }
 
-function WarmEmpty({ height }: { height: number }) {
-  const heights = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.66, 0.4, 0.54];
+const EMPTY_BAR_HEIGHTS = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.66, 0.4, 0.54];
+const EMPTY_GRID_COLUMNS = 14;
+const EMPTY_GRID_ROWS = 7;
+const EMPTY_TILE_BG = "color-mix(in srgb, var(--color-fg) 8%, transparent)";
+
+/**
+ * A day with no data still has a shape. The activity tab previews the grid it
+ * is about to fill, the bar tabs preview bars — so an empty module reads as a
+ * waiting frame rather than a broken one.
+ */
+function WarmEmpty({ height, shape }: { height: number; shape: "grid" | "bars" }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center">
-      <div className="flex w-full max-w-[220px] items-end gap-[3px] opacity-40" style={{ height: height * 0.6 }} aria-hidden="true">
-        {heights.map((fraction, index) => (
-          <span
-            key={index}
-            className="flex-1 rounded-t-[2px]"
-            style={{ height: `${fraction * 100}%`, background: "color-mix(in srgb, var(--color-fg) 10%, transparent)" }}
-          />
-        ))}
-      </div>
-      <p className="max-w-[280px] text-[11px] text-muted-fg">
+      {shape === "grid" ? (
+        <div
+          className="grid opacity-50"
+          style={{
+            gap: 3,
+            gridTemplateRows: `repeat(${EMPTY_GRID_ROWS}, 8px)`,
+            gridTemplateColumns: `repeat(${EMPTY_GRID_COLUMNS}, 8px)`,
+          }}
+          aria-hidden="true"
+        >
+          {Array.from({ length: EMPTY_GRID_COLUMNS * EMPTY_GRID_ROWS }, (_, index) => (
+            <span key={index} className="rounded-[2px]" style={{ background: EMPTY_TILE_BG }} />
+          ))}
+        </div>
+      ) : (
+        <div className="flex w-full max-w-[220px] items-end gap-[3px] opacity-40" style={{ height: height * 0.6 }} aria-hidden="true">
+          {EMPTY_BAR_HEIGHTS.map((fraction, index) => (
+            <span
+              key={index}
+              className="flex-1 rounded-t-[2px]"
+              style={{ height: `${fraction * 100}%`, background: EMPTY_TILE_BG }}
+            />
+          ))}
+        </div>
+      )}
+      <p className={cn("max-w-[280px] text-muted-fg", USAGE_TEXT.micro)}>
         Your activity will appear here after your first chat.
       </p>
     </div>
@@ -528,8 +585,7 @@ function TabRow({ tab, onTabChange }: { tab: ActivityTab; onTabChange: (tab: Act
     <div
       role="tablist"
       aria-label="Activity views"
-      className="flex items-center rounded-md p-[2px]"
-      style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+      className="flex items-center rounded-md bg-surface-recessed p-[2px]"
     >
       {TABS.map((value) => {
         const active = value === tab;
@@ -541,9 +597,13 @@ function TabRow({ tab, onTabChange }: { tab: ActivityTab; onTabChange: (tab: Act
             aria-selected={active}
             tabIndex={0}
             onClick={() => onTabChange(value)}
-            className={`rounded-[5px] px-1.5 py-[3px] text-[10px] font-medium transition-colors ${
-              active ? "bg-white/[0.07] text-fg/90" : "text-muted-fg/70 hover:text-fg/75"
-            }`}
+            className={cn(
+              "rounded-[5px] border px-1.5 py-[3px] transition-[background-color,color,border-color] duration-150 motion-reduce:transition-none",
+              USAGE_TEXT.micro,
+              active
+                ? USAGE_SEGMENT_ITEM_ACTIVE_CLASS
+                : cn("border-transparent", USAGE_SEGMENT_ITEM_IDLE_CLASS),
+            )}
           >
             {TAB_LABELS[value]}
           </button>
@@ -570,7 +630,10 @@ function RangeControl({
           value={preset}
           onChange={(event) => onPresetChange(event.target.value as AdeUsageRangePreset)}
           aria-label="Time range"
-          className="cursor-pointer appearance-none rounded-md border border-white/[0.06] bg-transparent py-[3px] pl-1.5 pr-5 text-[10px] font-medium text-muted-fg/80 outline-none hover:bg-white/[0.05] hover:text-fg/80 focus-visible:ring-1 focus-visible:ring-white/20"
+          className={cn(
+            "cursor-pointer appearance-none rounded-md border border-border bg-transparent py-[3px] pl-1.5 pr-5 font-medium text-muted-fg outline-none hover:bg-muted hover:text-fg focus-visible:ring-1 focus-visible:ring-border",
+            USAGE_TEXT.micro,
+          )}
         >
           {RANGE_OPTIONS.map((option) => (
             <option key={option.preset} value={option.preset}>
@@ -578,12 +641,12 @@ function RangeControl({
             </option>
           ))}
         </select>
-        <span className="pointer-events-none absolute right-1 text-[9px] text-muted-fg/70">▾</span>
+        <span className={cn("pointer-events-none absolute right-1 text-muted-fg", USAGE_TEXT.micro)}>▾</span>
       </label>
     );
   }
   return (
-    <div className="flex items-center rounded-md bg-white/[0.035] p-0.5" role="group" aria-label="Time range">
+    <div className="flex items-center rounded-md bg-surface-recessed p-0.5" role="group" aria-label="Time range">
       {RANGE_OPTIONS.map((option) => {
         const active = preset === option.preset;
         return (
@@ -592,15 +655,51 @@ function RangeControl({
             type="button"
             aria-pressed={active}
             onClick={() => onPresetChange(option.preset)}
-            className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-              active ? "bg-white/[0.10] text-fg" : "text-muted-fg hover:text-fg/85"
-            }`}
+            className={cn(
+              "rounded border px-2 py-1 transition-[background-color,color,border-color] duration-150 motion-reduce:transition-none",
+              USAGE_TEXT.micro,
+              active
+                ? USAGE_SEGMENT_ITEM_ACTIVE_CLASS
+                : cn("border-transparent", USAGE_SEGMENT_ITEM_IDLE_CLASS),
+            )}
           >
             {option.label}
           </button>
         );
       })}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Headline fact
+// ---------------------------------------------------------------------------
+
+/** Turns the derived insight into one short sentence, value emphasised. */
+function InsightLine({ insight }: { insight: ActivityInsight }) {
+  let lead: string;
+  let value: string;
+  let trail = "";
+
+  if (insight.kind === "record") {
+    lead = insight.weeks == null ? "Your busiest day " : "Busiest day in ";
+    value = insight.weeks == null ? "so far" : `${insight.weeks} weeks`;
+  } else if (insight.kind === "trend") {
+    const up = insight.percent > 0;
+    lead = "This week ";
+    value = `${up ? "+" : "−"}${Math.abs(insight.percent)}%`;
+    trail = " vs last week";
+  } else {
+    lead = "Busiest day ";
+    value = formatDayShort(insight.date);
+  }
+
+  return (
+    <p className={cn("truncate text-muted-fg", USAGE_TEXT.micro)}>
+      {lead}
+      <b className="font-medium text-fg">{value}</b>
+      {trail}
+    </p>
   );
 }
 
@@ -612,7 +711,9 @@ function RangeControl({
  * Shows the measured all-provider lifetime total on the all-time range. Other
  * ranges retain the streak chip because their token total is range-scoped.
  */
-function useFooterChip(stats: AdeUsageStats | null): { icon: "trophy" | "fire"; label: string; fresh: boolean } | null {
+function useFooterChip(
+  stats: AdeUsageStats | null,
+): { icon: "trophy" | "fire"; label: string; title?: string; fresh: boolean } | null {
   return useMemo(() => {
     if (!stats) return null;
     if (stats.range.preset === "all" && stats.summary.totalTokens > 0) {
@@ -623,7 +724,19 @@ function useFooterChip(stats: AdeUsageStats | null): { icon: "trophy" | "fire"; 
       };
     }
     const streak = stats.summary.currentStreakDays ?? 0;
-    if (streak >= 3) return { icon: "fire", label: `${streak}-day streak`, fresh: false };
+    // The streak is a lifetime run, not a run within the selected range — the
+    // host stopped range-filtering it precisely so the number would not change
+    // when the filter did. The label stays short; the distinction lives in the
+    // tooltip, because "streak" already reads as an unbroken run to date and
+    // spelling it out in the chip would crowd the footer it shares.
+    if (streak >= 3) {
+      return {
+        icon: "fire",
+        label: `${streak}-day streak`,
+        title: `${streak} days in a row with activity, counted across all time — not just this range.`,
+        fresh: false,
+      };
+    }
     return null;
   }, [stats]);
 }
@@ -632,7 +745,7 @@ function FooterChip({
   chip,
   reduced,
 }: {
-  chip: { icon: "trophy" | "fire"; label: string; fresh: boolean };
+  chip: { icon: "trophy" | "fire"; label: string; title?: string; fresh: boolean };
   reduced: boolean;
 }) {
   const ref = useRef<HTMLSpanElement | null>(null);
@@ -650,14 +763,18 @@ function FooterChip({
   return (
     <span
       ref={ref}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-[1px] text-[9px] font-medium"
+      title={chip.title}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-[1px] font-medium",
+        USAGE_TEXT.micro,
+      )}
       style={{
         borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)",
         background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
         color: "color-mix(in srgb, var(--color-accent) 70%, var(--color-fg))",
       }}
     >
-      {chip.icon === "trophy" ? <Trophy size={9} weight="fill" /> : <Fire size={9} weight="fill" />}
+      {chip.icon === "trophy" ? <Trophy size={10} weight="fill" /> : <Fire size={10} weight="fill" />}
       {chip.label}
     </span>
   );
@@ -691,6 +808,8 @@ export function ActivityModule({
   className?: string;
 }) {
   const reduced = usePrefersReducedMotion();
+  const theme = useAppStore((state) => state.theme);
+  const palette = useMemo(() => seriesPalette(theme), [theme]);
   const [tab, setTab] = useState<ActivityTab>(() => readActivityPersisted().tab);
   const slotRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
@@ -702,7 +821,25 @@ export function ActivityModule({
   const heatmapMaxCell = compactMode ? 13 : 16;
   const maxBars = compactMode ? 40 : 64;
   const chartPoints = useChartPoints(stats?.daily ?? [], maxBars);
-  const hasActivity = (stats?.daily ?? []).some(dayHasActivity);
+  // Date-complete, like the grid below it.
+  //
+  // `describeActivityInsight` reads its week-over-week windows positionally
+  // (`scores.slice(-7)` against `slice(-14, -7)`) and counts a record streak in
+  // array steps, so on a series with gaps "the last seven entries" is not "the
+  // last seven days" — the headline sentence and the heatmap it sits above were
+  // computed from two different shapes of the same range. `useHeatmapCells`
+  // already fills the gaps; this hands the sentence the same series.
+  // Sorted first: `fillMissingDays` walks the series in order, and on the `all`
+  // preset the host appends out-of-order dates after the skeleton.
+  const daily = useMemo(
+    () => fillMissingDays([...(stats?.daily ?? [])].sort((a, b) => a.date.localeCompare(b.date))),
+    [stats?.daily],
+  );
+  const hasActivity = daily.some(dayHasActivity);
+  const insight = useMemo(
+    () => (hasActivity ? describeActivityInsight(daily) : null),
+    [daily, hasActivity],
+  );
 
   // The card is sized to the heatmap rather than stretched to the slot: a
   // ~53-column grid of 13px cells simply does not fill 820px, and the leftover
@@ -711,13 +848,16 @@ export function ActivityModule({
   const cardPaddingX = compactMode ? CARD_PADDING_X_COMPACT : CARD_PADDING_X_FULL;
   const slotWidth = useMeasuredWidth(slotRef);
   const heatmapCells = useHeatmapCells(stats?.daily ?? []);
+  const heatmapAlign = useMemo(() => weekAlignment(heatmapCells), [heatmapCells]);
   const heatmapLayout = useMemo(
     () => computeHeatmapLayout({
       cellCount: heatmapCells.length,
       maxCell: heatmapMaxCell,
       availableWidth: slotWidth > 0 ? Math.max(0, slotWidth - cardPaddingX) : 0,
+      leading: heatmapAlign.leading,
+      trailing: heatmapAlign.trailing,
     }),
-    [heatmapCells.length, heatmapMaxCell, slotWidth, cardPaddingX],
+    [heatmapCells.length, heatmapAlign, heatmapMaxCell, slotWidth, cardPaddingX],
   );
   // Held across tabs so switching to Tokens does not resize the card underneath
   // the pointer; the bar charts just fill whatever width the heatmap earned.
@@ -739,32 +879,33 @@ export function ActivityModule({
   const heatmapView = tab === "activity" && stats != null && hasActivity;
 
   let chart: React.ReactNode;
+  const emptyShape = tab === "activity" ? "grid" : "bars";
   if (loading && !stats) {
     chart = <SkeletonChart height={chartHeight} bars={compactMode ? 20 : 32} />;
   } else if (!stats) {
-    chart = <WarmEmpty height={chartHeight} />;
+    chart = <WarmEmpty height={chartHeight} shape={emptyShape} />;
   } else if (!hasActivity) {
-    chart = <WarmEmpty height={chartHeight} />;
+    chart = <WarmEmpty height={chartHeight} shape={emptyShape} />;
   } else if (tab === "activity") {
     chart = <ActivityHeatmap cells={heatmapCells} layout={heatmapLayout} reduced={reduced} tooltip={tooltip} />;
   } else if (tab === "tokens") {
-    chart = <TokenBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
+    chart = <TokenBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} palette={palette} />;
   } else if (tab === "code") {
-    chart = <CodeBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
+    chart = <CodeBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} palette={palette} />;
   } else {
-    chart = <ClientMix stats={stats} />;
+    chart = <ClientMix stats={stats} theme={theme} />;
   }
 
   return (
     <div ref={slotRef} className={`flex justify-center ${className}`}>
       <section
         ref={cardRef}
-        className={`relative flex max-w-full flex-col rounded-xl border ${compactMode ? "gap-1.5 px-2.5 py-2" : "gap-2 p-3"}`}
-        style={{
-          width: cardWidth,
-          background: "color-mix(in srgb, var(--color-card) 92%, transparent)",
-          borderColor: "color-mix(in srgb, var(--color-border) 70%, transparent)",
-        }}
+        className={cn(
+          "relative flex max-w-full flex-col",
+          USAGE_CARD_CLASS,
+          compactMode ? "gap-1.5 px-2.5 py-2" : "gap-2 p-3",
+        )}
+        style={{ width: cardWidth }}
         aria-label={ariaSummary(stats, preset)}
         data-activity-module
       >
@@ -775,6 +916,8 @@ export function ActivityModule({
           ) : null}
         </div>
 
+        {insight ? <InsightLine insight={insight} /> : null}
+
         <div
           role="tabpanel"
           aria-label={TAB_LABELS[tab]}
@@ -783,20 +926,20 @@ export function ActivityModule({
           }`}
         >
           {chart}
-          {tooltip.tip ? <DayTooltip tip={tooltip.tip} /> : null}
+          {tooltip.tip ? <DayTooltip tip={tooltip.tip} palette={palette} /> : null}
         </div>
 
-        <div className="flex items-center justify-between gap-2 border-t pt-1.5" style={{ borderColor: "color-mix(in srgb, var(--color-border) 45%, transparent)" }}>
-          <span className="min-w-0 truncate text-[10px] text-muted-fg/80">
+        <div className="flex items-center justify-between gap-2 border-t border-separator pt-1.5">
+          <span className={cn("min-w-0 truncate text-muted-fg", USAGE_TEXT.micro)}>
             {stats ? (
               <>
-                <b className="font-medium text-fg/75">{formatTokens(stats.summary.totalTokens)}</b> tokens
+                <b className="font-medium text-fg">{formatTokens(stats.summary.totalTokens)}</b> tokens
                 {" · "}
-                <b className="font-medium text-fg/75">{compact(sessionsTotal(stats))}</b> sessions
+                <b className="font-medium text-fg">{formatCompact(sessionsTotal(stats))}</b> sessions
                 {activeDays != null ? (
                   <>
                     {" · "}
-                    <b className="font-medium text-fg/75">{activeDays}</b> active {activeDays === 1 ? "day" : "days"}
+                    <b className="font-medium text-fg">{activeDays}</b> active {activeDays === 1 ? "day" : "days"}
                   </>
                 ) : null}
               </>

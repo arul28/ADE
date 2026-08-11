@@ -5294,6 +5294,13 @@ struct MobileAdeUsageSummary: Codable, Equatable {
   var totalInteractions: Int?
 }
 
+/// One provider's contribution to a single day. Both fields are optional so a
+/// partially-populated host entry decodes rather than dropping the whole day.
+struct MobileAdeUsageDailyProviderPoint: Codable, Equatable {
+  var totalTokens: Int?
+  var costUsd: Double?
+}
+
 struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
   var id: String { date }
   var date: String
@@ -5312,6 +5319,14 @@ struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
   var durationMs: Int?
   var interactions: Int?
   var clients: [String: Int]?
+  /// Per-provider split of this day's tokens and cost, keyed by provider id
+  /// ("claude", "codex", …).
+  ///
+  /// The flat `totalTokens` above answers "how much", but the daily chart plots
+  /// one series per provider, which cannot be recovered from a sum. Absent on
+  /// hosts predating the field — the chart falls back to a single combined
+  /// series rather than rendering empty.
+  var byProvider: [String: MobileAdeUsageDailyProviderPoint]?
   /// GitHub-reported measures for the same day, kept separate from local ones.
   var githubCommits: Int?
   var githubPrs: Int?
@@ -5369,6 +5384,11 @@ struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
   var rangeCostUsd: Double?
   /// "exact" | "chars" | "distribution" | "mixed" — omitted means exact.
   var estimation: String?
+  /// Which rate card priced this provider's tokens: "list" (the maintained
+  /// public rate list), "fallback" (ADE's built-in table), or "mixed". Two
+  /// machines can report different costs for identical usage depending on this,
+  /// so it is shown rather than guessed. Absent on hosts predating the field.
+  var pricingSource: String?
   /// False when this provider's ledger cannot be filtered to a project.
   var scopeSupported: Bool?
   var adeOriginatedTokens: Int?
@@ -5387,12 +5407,15 @@ struct MobileAdeUsageStats: Decodable, Equatable {
   var githubActivity: MobileAdeUsageGithubActivity?
   var localActivity: MobileAdeUsageLocalActivity?
   var providers: [MobileAdeUsageProviderSummary]?
+  /// When the loaded copy of the public rate list was fetched. Null/absent
+  /// means none is loaded, so every cost came from the built-in table.
+  var pricingUpdatedAt: String?
 }
 
 extension MobileAdeUsageStats {
   private enum CodingKeys: String, CodingKey {
     case generatedAt, scope, summary, clients, daily, freshness
-    case githubActivity, localActivity, providers
+    case githubActivity, localActivity, providers, pricingUpdatedAt
   }
 
   init(from decoder: Decoder) throws {
@@ -5405,6 +5428,7 @@ extension MobileAdeUsageStats {
     freshness = try container.decodeIfPresent(MobileAdeUsageFreshness.self, forKey: .freshness)
     githubActivity = try container.decodeIfPresent(MobileAdeUsageGithubActivity.self, forKey: .githubActivity)
     localActivity = try container.decodeIfPresent(MobileAdeUsageLocalActivity.self, forKey: .localActivity)
+    pricingUpdatedAt = try container.decodeIfPresent(String.self, forKey: .pricingUpdatedAt)
     // Lossy-decode the providers array so one malformed provider entry can't drop
     // the whole stats payload (mirrors ExternalSessionSummary's sessions decode).
     providers = (try? container.decode(ADELossyArray<MobileAdeUsageProviderSummary>.self, forKey: .providers))?.wrappedValue

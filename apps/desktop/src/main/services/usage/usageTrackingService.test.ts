@@ -38,6 +38,27 @@ vi.mock("../ai/codexExecutable", () => ({
 }));
 
 import { createUsageTrackingService, _testing } from "./usageTrackingService";
+import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
+import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
+// Cross-layer on purpose: the daily split is only useful if the renderer's
+// chart reducer sees it, so the service test asserts against the real reducer
+// rather than a local re-implementation of it. The model module, not the
+// component that renders it — this is a main-process test and has no business
+// pulling React and the icon set into its module graph.
+import {
+  buildDayColumns,
+  USAGE_CHART_COMBINED_ID,
+} from "../../../renderer/components/usage/usageDailyChartModel";
+import {
+  compareRecentFileCandidates,
+  runLedgerScanWithCompleteness,
+  sanitizeClaudeProjectPath,
+  usageLedgerTranscriptRootExists,
+  usageLedgerTranscriptRoots,
+} from "./ledgers/localUsageLedgers";
+import { providerScanners } from "./usageLedgerWorker";
+import type { TokenEntry } from "./ledgers/localUsageLedgers";
+import type { CostSnapshot } from "../../../shared/types";
 
 const {
   aggregateCosts,
@@ -76,6 +97,7 @@ const {
   scanCopilotLogs,
   scanGeminiLogs,
   findRecentFiles,
+  buildCostSnapshots,
 } = _testing;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -330,53 +352,6 @@ describe("aggregateCosts", () => {
     expect(result.todayCostUsd).toBe(0);
   });
 
-  it("keeps lifetime-only reconciliation out of recent and daily buckets", () => {
-    const now = Date.now();
-    const result = aggregateCosts([
-      {
-        messageId: "current:1",
-        model: "gpt-5.5",
-        inputTokens: 10,
-        outputTokens: 0,
-        cachedTokens: 0,
-        timestamp: now,
-      },
-      {
-        messageId: "codex-state:lifetime-total-remainder",
-        model: "codex",
-        lifetimeOnly: true as const,
-        inputTokens: 50,
-        outputTokens: 0,
-        cachedTokens: 0,
-        timestamp: 0,
-        costOverrideUsd: 0,
-      },
-    ], "codex");
-
-    expect(result.tokenBreakdownByPreset?.all?.codex?.input).toBe(50);
-    expect(result.tokenBreakdownByPreset?.today?.codex).toBeUndefined();
-    expect(Object.values(result.dailyTokensByPreset?.all ?? {}).reduce((sum, value) => sum + value, 0)).toBe(10);
-    expect(bucketDaily7d([
-      {
-        messageId: "current:1",
-        model: "gpt-5.5",
-        inputTokens: 10,
-        outputTokens: 0,
-        cachedTokens: 0,
-        timestamp: now,
-      },
-      {
-        messageId: "codex-state:lifetime-total-remainder",
-        model: "codex",
-        lifetimeOnly: true,
-        inputTokens: 50,
-        outputTokens: 0,
-        cachedTokens: 0,
-        timestamp: 0,
-      },
-    ], now).reduce((sum, value) => sum + value, 0)).toBe(10);
-  });
-
   it("separates today cost from 30d cost", () => {
     const now = Date.now();
     const yesterdayMs = now - 25 * 60 * 60 * 1000; // 25h ago
@@ -609,6 +584,219 @@ describe("local daily aggregation", () => {
     } as any);
 
     expect(stats.daily.find((point) => point.date === oldDate)?.totalTokens).toBe(6);
+  });
+});
+
+describe("daily byProvider split", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function snapshotWithCosts(costs: unknown[], lastPolledAtMs: number) {
+    return {
+      windows: [],
+      pacing: calculatePacing([]),
+      costs,
+      adeCosts: [],
+      extraUsage: [],
+      lastPolledAt: new Date(lastPolledAtMs).toISOString(),
+      errors: [],
+    } as any;
+  }
+
+  it("splits each day by provider and reconciles with the range cost", () => {
+    const nowMs = Date.now();
+    const todayMs = nowMs - 60_000;
+    const twoDaysAgoMs = nowMs - 2 * DAY_MS;
+    const claude = aggregateCosts([
+      {
+        messageId: "claude:today",
+        model: "claude-3-5-sonnet",
+        inputTokens: 1000,
+        outputTokens: 500,
+        cachedTokens: 0,
+        timestamp: todayMs,
+      },
+      {
+        messageId: "claude:older",
+        model: "claude-3-5-sonnet",
+        inputTokens: 200,
+        outputTokens: 100,
+        cachedTokens: 0,
+        timestamp: twoDaysAgoMs,
+      },
+    ], "claude");
+    const codex = aggregateCosts([
+      {
+        messageId: "codex:today",
+        model: "gpt-5.5",
+        inputTokens: 400,
+        outputTokens: 200,
+        cachedTokens: 0,
+        timestamp: todayMs,
+      },
+    ], "codex");
+
+    const stats = collectAdeUsageStats({
+      snapshot: snapshotWithCosts([claude, codex], nowMs),
+      args: { preset: "7d" },
+      nowMs,
+    });
+
+    const todayKey = localDayKey(todayMs);
+    const olderKey = localDayKey(twoDaysAgoMs);
+
+    // Multi-provider day.
+    const todayPoint = stats.daily.find((point) => point.date === todayKey);
+    expect(Object.keys(todayPoint?.byProvider ?? {}).sort()).toEqual(["claude", "codex"]);
+    expect(todayPoint?.byProvider?.claude?.totalTokens).toBe(1500);
+    expect(todayPoint?.byProvider?.codex?.totalTokens).toBe(600);
+    expect(todayPoint?.byProvider?.claude?.costUsd).toBeGreaterThan(0);
+    expect(todayPoint?.byProvider?.codex?.costUsd).toBeGreaterThan(0);
+
+    // Single-provider day.
+    const olderPoint = stats.daily.find((point) => point.date === olderKey);
+    expect(Object.keys(olderPoint?.byProvider ?? {})).toEqual(["claude"]);
+    expect(olderPoint?.byProvider?.claude?.totalTokens).toBe(300);
+
+    // Days with no provider attribution omit the map entirely.
+    const emptyDays = stats.daily.filter((point) => point.date !== todayKey && point.date !== olderKey);
+    expect(emptyDays.length).toBeGreaterThan(0);
+    for (const point of emptyDays) {
+      expect(point.byProvider).toBeUndefined();
+    }
+
+    // Provider keys line up with the summary rows, and the daily costs add up
+    // to the range cost those rows report.
+    expect(stats.providers.map((provider) => provider.provider).sort()).toEqual(["claude", "codex"]);
+    for (const provider of stats.providers) {
+      expect(provider.rangeCostUsd).toBeGreaterThan(0);
+      const summed = stats.daily.reduce(
+        (total, point) => total + (point.byProvider?.[provider.provider]?.costUsd ?? 0),
+        0,
+      );
+      expect(summed).toBeCloseTo(provider.rangeCostUsd, 2);
+    }
+  });
+
+  it("reconciles daily and range costs for an exact custom range", () => {
+    const nowMs = Date.now();
+    const todayMs = nowMs - 60_000;
+    const threeDaysAgoMs = nowMs - 3 * DAY_MS;
+    const cost = aggregateCosts([
+      {
+        messageId: "codex:in-range",
+        model: "gpt-5.5",
+        inputTokens: 800,
+        outputTokens: 300,
+        cachedTokens: 0,
+        timestamp: todayMs,
+      },
+      {
+        messageId: "codex:out-of-range",
+        model: "gpt-5.5",
+        inputTokens: 5000,
+        outputTokens: 2000,
+        cachedTokens: 0,
+        timestamp: threeDaysAgoMs,
+      },
+    ], "codex");
+
+    const dayStart = new Date(todayMs);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(todayMs);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const stats = collectAdeUsageStats({
+      snapshot: snapshotWithCosts([cost], nowMs),
+      args: { preset: "7d", since: dayStart.toISOString(), until: dayEnd.toISOString() },
+      nowMs,
+    });
+
+    const todayKey = localDayKey(todayMs);
+    const todayPoint = stats.daily.find((point) => point.date === todayKey);
+    expect(todayPoint?.byProvider?.codex?.totalTokens).toBe(1100);
+    // The out-of-range day is excluded from both the daily split and the summary.
+    expect(stats.daily.find((point) => point.date === localDayKey(threeDaysAgoMs))?.byProvider).toBeUndefined();
+
+    const summary = stats.providers.find((provider) => provider.provider === "codex");
+    expect(summary?.totalTokens).toBe(1100);
+    expect(summary?.rangeCostUsd).toBeGreaterThan(0);
+    expect(todayPoint?.byProvider?.codex?.costUsd).toBeCloseTo(summary?.rangeCostUsd ?? 0, 2);
+  });
+
+  it("apportions legacy flat daily totals without re-pricing them", () => {
+    const now = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const today = localDayKey(now);
+    const yesterday = localDayKey(new Date(2026, 4, 28, 12, 0, 0, 0));
+    const stats = collectAdeUsageStats({
+      snapshot: snapshotWithCosts([{
+        provider: "claude",
+        todayCostUsd: 1,
+        last30dCostUsd: 4,
+        tokenBreakdown: { "claude-3-5-sonnet": { input: 30, output: 10, cached: 0 } },
+        costUsdByPreset: { "7d": 4 },
+        dailyTokensByPreset: { "7d": { [today]: 30, [yesterday]: 10 } },
+      }], now.getTime()),
+      args: { preset: "7d" },
+      nowMs: now.getTime(),
+    });
+
+    expect(stats.daily.find((point) => point.date === today)?.byProvider?.claude)
+      .toEqual({ totalTokens: 30, costUsd: 3 });
+    expect(stats.daily.find((point) => point.date === yesterday)?.byProvider?.claude)
+      .toEqual({ totalTokens: 10, costUsd: 1 });
+    const summed = stats.daily.reduce(
+      (total, point) => total + (point.byProvider?.claude?.costUsd ?? 0),
+      0,
+    );
+    expect(summed).toBeCloseTo(
+      stats.providers.find((provider) => provider.provider === "claude")?.rangeCostUsd ?? 0,
+      2,
+    );
+  });
+
+  /**
+   * The split has to survive the whole way to the chart, not just exist in the
+   * stats payload. A stale persisted snapshot used to reach the renderer with
+   * no `byProvider` at all, and `buildDayColumns` — correctly — collapsed it to
+   * one "All providers" band, which is what the user saw. This test pins the
+   * two halves together so neither can drift alone.
+   */
+  it("reaches the renderer chart as a per-provider split, not a combined band", () => {
+    const nowMs = Date.now();
+    const todayMs = nowMs - 60_000;
+    const claude = aggregateCosts([{
+      messageId: "claude:today",
+      model: "claude-3-5-sonnet",
+      inputTokens: 1000,
+      outputTokens: 500,
+      cachedTokens: 0,
+      timestamp: todayMs,
+    }], "claude");
+    const codex = aggregateCosts([{
+      messageId: "codex:today",
+      model: "gpt-5.5",
+      inputTokens: 400,
+      outputTokens: 200,
+      cachedTokens: 0,
+      timestamp: todayMs,
+    }], "codex");
+
+    const stats = collectAdeUsageStats({
+      snapshot: snapshotWithCosts([claude, codex], nowMs),
+      args: { preset: "7d" },
+      nowMs,
+    });
+
+    const days = stats.daily.map((point) => point.date);
+    for (const metric of ["tokens", "cost"] as const) {
+      const columns = buildDayColumns(days, stats.daily, metric);
+      expect(columns.combined).toBe(false);
+      expect(columns.providers.sort()).toEqual(["claude", "codex"]);
+      expect(columns.providers).not.toContain(USAGE_CHART_COMBINED_ID);
+      const todayColumn = columns.columns.find((column) => column.date === localDayKey(todayMs));
+      expect(Object.keys(todayColumn?.values ?? {}).sort()).toEqual(["claude", "codex"]);
+      expect(todayColumn?.total).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -895,6 +1083,75 @@ describe("resolveTokenPrice", () => {
     const price = resolveTokenPrice("unknown-model");
     expect(price.input).toBe(0);
     expect(price.output).toBe(0);
+  });
+
+  /**
+   * Settled policy: the maintained public rate list wins whenever it prices a
+   * model, and ADE's static table is the fallback for when it cannot be
+   * fetched. Two machines — one with the cached list, one without — reporting
+   * different costs for identical usage is what this ordering prevents.
+   */
+  it("prefers the public rate list over the built-in table, and falls back cleanly", () => {
+    setDynamicTokenPricingForTest({
+      "claude-sonnet-5": {
+        input: 7 / 1_000_000,
+        output: 70 / 1_000_000,
+        cacheWrite: 8.75 / 1_000_000,
+        cacheRead: 0.7 / 1_000_000,
+      },
+    });
+    // The list's number, not the table's 2/10.
+    expect(resolveTokenPrice("claude-sonnet-5").input).toBe(7 / 1_000_000);
+    expect(tokenPriceSource("claude-sonnet-5")).toBe("list");
+    // A model the list has never heard of still prices from the table rather
+    // than falling to zero.
+    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
+    expect(tokenPriceSource("claude-opus-5")).toBe("fallback");
+
+    // No list at all — a failed fetch — leaves every rate intact.
+    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    expect(resolveTokenPrice("claude-sonnet-5").input).toBe(2 / 1_000_000);
+    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
+    expect(tokenPriceSource("claude-sonnet-5")).toBe("fallback");
+  });
+
+  /**
+   * Most list rows carry input and output and nothing else. Dropping such a row
+   * back to the whole static entry would hand the list's authority to a model
+   * the list actually prices; the missing field is filled on its own.
+   */
+  it("fills a partial rate-list entry field by field, not by falling back to the whole static row", () => {
+    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    const parsed = _pricingTesting.parsePricingMap({
+      // Input and output only, exactly as the OpenAI rows arrive.
+      "gpt-5.6-luna": { input_cost_per_token: 9 / 1_000_000, output_cost_per_token: 90 / 1_000_000 },
+    });
+    const price = parsed?.get("gpt-5.6-luna");
+    // The list's own input/output survive...
+    expect(price?.input).toBe(9 / 1_000_000);
+    expect(price?.output).toBe(90 / 1_000_000);
+    // ...and only the absent cache fields come from the table's entry for that
+    // same model, rather than the table's input/output overriding the list.
+    expect(price?.cacheRead).toBe(0.02 / 1_000_000);
+  });
+
+  // Reconciled against the list on 2026-08-10. These four moved, so a user's
+  // cost figures moved with them; the values are pinned so a silent drift back
+  // to the old table is a failing test rather than a quiet re-divergence.
+  it("carries the reconciled rates for the models where the table disagreed with the list", () => {
+    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    expect(resolveTokenPrice("gpt-5.6-luna").input).toBe(0.2 / 1_000_000);
+    expect(resolveTokenPrice("gpt-5.6-luna").output).toBe(1.2 / 1_000_000);
+    expect(resolveTokenPrice("gpt-5.6-terra").input).toBe(2 / 1_000_000);
+    expect(resolveTokenPrice("gpt-5.6-terra").output).toBe(12 / 1_000_000);
+    expect(resolveTokenPrice("gpt-4o-mini").input).toBe(0.165 / 1_000_000);
+    expect(resolveTokenPrice("claude-3-5-haiku").input).toBe(1 / 1_000_000);
+    // Sonnet 4.6 was aliased onto Sonnet 5 and billed at 2/10; the list prices
+    // it at 3/15, and every spelling of the name must agree.
+    for (const name of ["claude-sonnet-4.6", "claude-4.6-sonnet", "claude-4.6-sonnet-thinking", "anthropic--claude-4.6-sonnet"]) {
+      expect(resolveTokenPrice(name).input).toBe(3 / 1_000_000);
+      expect(resolveTokenPrice(name).output).toBe(15 / 1_000_000);
+    }
   });
 
   it("prefers Codeburn-style dynamic pricing with provider and date normalization", () => {
@@ -1655,6 +1912,45 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("records the attempt when a user retry is skipped by a rate-limit backoff", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const pollClaudeUsage = vi.fn(async () => ({
+      windows: [] as never[],
+      extraUsage: null,
+      errors: ["claude: 429 Too Many Requests"],
+      errorKind: "rate_limited" as const,
+      retryAfterMs: 8 * 60_000,
+    }));
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: { ...dependencies, pollClaudeUsage },
+    });
+
+    const first = await service.poll({ reason: "user" });
+    const firstStatus = first.providerStatus?.claude;
+    expect(firstStatus?.errorKind).toBe("rate_limited");
+    expect(firstStatus?.nextRetryAt).toBeTruthy();
+    expect(pollClaudeUsage).toHaveBeenCalledTimes(1);
+
+    // The provider asked us to wait, so the retry is still not sent — but the
+    // snapshot must move, or the Retry button is a silent no-op.
+    // Comfortably outside timer granularity and `Date.now()` resolution: at 2ms
+    // the strict comparison below sat inside the scheduler's own jitter and
+    // could see two identical timestamps on a loaded CI box.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const second = await service.poll({ reason: "user" });
+    const secondStatus = second.providerStatus?.claude;
+    expect(pollClaudeUsage).toHaveBeenCalledTimes(1);
+    expect(secondStatus?.errorKind).toBe("rate_limited");
+    expect(secondStatus?.nextRetryAt).toBeTruthy();
+    expect(Date.parse(secondStatus?.lastAttemptAt ?? "")).toBeGreaterThan(
+      Date.parse(firstStatus?.lastAttemptAt ?? ""),
+    );
+
+    service.dispose();
+  });
+
   it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
@@ -1988,7 +2284,7 @@ describe("createUsageTrackingService", () => {
       })),
     };
     const cachedSnapshot = {
-      version: 3,
+      version: _testing.USAGE_SNAPSHOT_CACHE_VERSION,
       snapshot: {
         windows: [],
         pacing: calculatePacing([]),
@@ -2046,6 +2342,60 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  /**
+   * The persisted snapshot is loaded straight into `cachedCosts`, and the cost
+   * TTL only gates re-scanning — it never invalidates numbers a previous build
+   * computed. So a build that changes the token math must be able to refuse the
+   * old build's snapshot outright, or it keeps serving figures it no longer
+   * believes (this is exactly how corrected Codex totals stayed hidden behind a
+   * "updated 2d ago" header).
+   */
+  it("discards a persisted snapshot stamped with a different computation version", () => {
+    const logger = createLogger();
+    const cachedAt = new Date().toISOString();
+    const cachedSnapshot = {
+      version: _testing.USAGE_SNAPSHOT_CACHE_VERSION - 1,
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        pacingByProvider: {},
+        providerStatus: {},
+        costs: [{
+          provider: "codex",
+          last30dCostUsd: 999,
+          todayCostUsd: 0,
+          tokenBreakdown: {},
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        costsLastPolledAt: cachedAt,
+        lastPolledAt: cachedAt,
+        errors: [],
+      },
+    };
+    const previousVitest = process.env.VITEST;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => (
+      JSON.stringify(cachedSnapshot)
+    )) as unknown as typeof fs.readFileSync);
+    let service: ReturnType<typeof createUsageTrackingService>;
+    try {
+      process.env.VITEST = "false";
+      process.env.NODE_ENV = "development";
+      service = createUsageTrackingService({ logger, dependencies: createFastDependencies() });
+    } finally {
+      readFileSync.mockRestore();
+      if (previousVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = previousVitest;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    // No costs carried over, so the next read has to scan rather than reuse.
+    expect(service.getUsageSnapshot()?.costs ?? []).toEqual([]);
+    service.dispose();
+  });
+
   it("preserves established costs and backs off failed project scans without blocking explicit refresh", async () => {
     const logger = createLogger();
     const now = Date.now();
@@ -2093,7 +2443,7 @@ describe("createUsageTrackingService", () => {
       daily: [],
     }));
     const cachedSnapshot = {
-      version: 3,
+      version: _testing.USAGE_SNAPSHOT_CACHE_VERSION,
       snapshot: {
         windows: [],
         pacing: calculatePacing([]),
@@ -2856,6 +3206,112 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  describe("scan completeness", () => {
+    /**
+     * Every failure in the ledger scanners is swallowed so a flaky file cannot
+     * blank the page. The cross-machine dedupe needs the opposite: it compares
+     * per-day token totals against a peer's and reads "content on one side the
+     * other could not possibly have" as proof the two read different files. A
+     * directory that would not list makes exactly that shape, so the scan has
+     * to say it read less than it set out to.
+     */
+    function makeProjectDir(tmpDir: string, name: string): string {
+      const projectDir = path.join(tmpDir, name);
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, "session.jsonl"),
+        `${JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-05-29T12:00:00.000Z",
+          message: { id: `msg-${name}`, model: "claude-opus-4-6", usage: { input_tokens: 10, output_tokens: 2 } },
+        })}\n`,
+      );
+      return projectDir;
+    }
+
+    it("reports a directory it could not list as an incomplete read", async () => {
+      const tmpDir = makeTmpDir();
+      try {
+        const readable = makeProjectDir(tmpDir, "readable");
+        const blocked = makeProjectDir(tmpDir, "blocked");
+        const realReaddir = fs.promises.readdir.bind(fs.promises);
+        vi.spyOn(fs.promises, "readdir").mockImplementation((async (target: fs.PathLike, options: unknown) => {
+          if (path.resolve(String(target)) === path.resolve(blocked)) {
+            const error: NodeJS.ErrnoException = new Error("permission denied");
+            error.code = "EACCES";
+            throw error;
+          }
+          return realReaddir(target as string, options as never);
+        }) as typeof fs.promises.readdir);
+
+        const partial = await runLedgerScanWithCompleteness(() => scanClaudeLogs([readable, blocked]));
+        // The readable half still counts — the page must not go blank — but the
+        // provider is no longer something this machine can be compared on.
+        expect(partial.value).toHaveLength(1);
+        expect(partial.complete).toBe(false);
+
+        vi.restoreAllMocks();
+        const whole = await runLedgerScanWithCompleteness(() => scanClaudeLogs([readable, blocked]));
+        expect(whole.value).toHaveLength(2);
+        expect(whole.complete).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("treats an absent directory as read in full, not as an incomplete read", async () => {
+      // The other failure direction: a provider that was never installed, and
+      // the optional subtrees almost no project has, are absent on every
+      // machine. Counting those as incompleteness would mark every provider
+      // incomplete, empty the compared provider set, and leave the dedupe
+      // unable to tell a clone from a shared mount.
+      const tmpDir = makeTmpDir();
+      try {
+        const readable = makeProjectDir(tmpDir, "readable");
+        const scan = await runLedgerScanWithCompleteness(() => (
+          scanClaudeLogs([readable, path.join(tmpDir, "never-existed")])
+        ));
+        expect(scan.value).toHaveLength(1);
+        expect(scan.complete).toBe(true);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("separates a provider that was never installed from one whose root is there", () => {
+      // What the worker uses to tell a genuinely empty provider from the silent
+      // half of a partial read, when nothing threw at all.
+      const tmpDir = makeTmpDir();
+      try {
+        const roots = { present: [tmpDir], absent: [path.join(tmpDir, "never-existed")] };
+        expect(usageLedgerTranscriptRootExists("present", roots)).toBe(true);
+        expect(usageLedgerTranscriptRootExists("absent", roots)).toBe(false);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("treats a provider with no root mapping as suspect, not as uninstalled", () => {
+      // `false` here means "genuinely not installed, so an empty scan is
+      // truthful" — and a provider missing from the map has proven nothing of
+      // the sort. It means nobody taught this function where that provider
+      // keeps its transcripts, which is exactly when an empty scan is least
+      // trustworthy, so the provider must keep its incompleteness signal.
+      expect(usageLedgerTranscriptRootExists("provider-nobody-mapped", { claude: [] })).toBe(true);
+    });
+
+    it("maps every provider the worker scans", () => {
+      // The mismatch the guard above covers for: a scanner slug that is not a
+      // key in the roots map silently loses its scan-completeness signal.
+      const roots = usageLedgerTranscriptRoots();
+      const unmapped = providerScanners
+        .map((scanner) => scanner.provider)
+        .filter((provider) => !roots[provider]);
+      expect(unmapped).toEqual([]);
+    });
+  });
 });
 
 describe("scanCodexLogs", () => {
@@ -2898,7 +3354,9 @@ describe("scanCodexLogs", () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({
-        messageId: "session-1:2026-07-12T12:00:02.000Z:15",
+        // Key namespace:cumulativeTotal:input:cached:output:reasoning — no
+        // timestamp, because forks re-timestamp the parent history they replay.
+        messageId: "codex:session-1:15:12:0:3:0",
         model: "gpt-5.5",
         inputTokens: 12,
         outputTokens: 3,
@@ -2943,7 +3401,9 @@ describe("scanCodexLogs", () => {
       const first = scanCodexLogs();
       const second = scanCodexLogs();
 
-      expect(second).toBe(first);
+      // Identity of the resolved value, not of the promise: each caller gets a
+      // thin wrapper so it can inherit the shared scan's completeness in its
+      // own async context. One scan, one entry set, two handles to it.
       const [firstEntries, secondEntries] = await Promise.all([first, second]);
       expect(secondEntries).toBe(firstEntries);
       expect(firstEntries).toHaveLength(1);
@@ -3013,19 +3473,23 @@ describe("scanCodexLogs", () => {
             payload: {
               type: "token_count",
               info: {
+                // Codex counts reasoning INSIDE output_tokens, so the totals
+                // add up to input + output with no separate reasoning term.
+                // This fixture previously used 1300 (input + output +
+                // reasoning), which no real Codex record does.
                 total_token_usage: {
                   input_tokens: 1200,
                   cached_input_tokens: 300,
                   output_tokens: 80,
                   reasoning_output_tokens: 20,
-                  total_tokens: 1300,
+                  total_tokens: 1280,
                 },
                 last_token_usage: {
                   input_tokens: 1200,
                   cached_input_tokens: 300,
                   output_tokens: 80,
                   reasoning_output_tokens: 20,
-                  total_tokens: 1300,
+                  total_tokens: 1280,
                 },
               },
             },
@@ -3042,7 +3506,9 @@ describe("scanCodexLogs", () => {
         inputTokens: 900,
         billableInputTokens: 900,
         outputTokens: 80,
-        billableOutputTokens: 100,
+        // Not 100: reasoning is already inside Codex's output_tokens, so
+        // adding it billed every reasoning token twice.
+        billableOutputTokens: 80,
         cachedTokens: 300,
         billableCachedTokens: 300,
       });
@@ -3056,67 +3522,43 @@ describe("scanCodexLogs", () => {
     }
   });
 
-  it("reconciles lifetime totals with Codex Desktop's read-only thread index", async () => {
+  it("counts a compact boundary once when no cumulative total is reported", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
-    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
     try {
       process.env.CODEX_HOME = tmpDir;
       const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
       fs.mkdirSync(sessionDir, { recursive: true });
+      // A compact-boundary token_count carries only `last_token_usage`, so its
+      // cumulative total reads as 0 on EVERY event. A duplicate guard that only
+      // fires when the total is above zero counts each boundary twice.
+      const compactEvent = (timestamp: string) => JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 500, cached_input_tokens: 100, output_tokens: 40 } },
+        },
+      });
       fs.writeFileSync(
-        path.join(sessionDir, "session-1.jsonl"),
+        path.join(sessionDir, "rollout-2026-05-29T12-00-00-compact.jsonl"),
         [
           JSON.stringify({
             timestamp: "2026-05-29T12:00:00.000Z",
             type: "session_meta",
-            payload: { id: "session-1", originator: "Codex Desktop", cwd: "/repo", model: "gpt-5.5" },
+            payload: { id: "session-compact", originator: "codex_cli_rs", cwd: "/repo", model: "gpt-5.5" },
           }),
-          JSON.stringify({
-            timestamp: "2026-05-29T12:00:01.000Z",
-            type: "event_msg",
-            payload: {
-              type: "token_count",
-              info: {
-                total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
-                last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
-              },
-            },
-          }),
+          compactEvent("2026-05-29T12:00:01.000Z"),
+          compactEvent("2026-05-29T12:00:02.000Z"),
+          compactEvent("2026-05-29T12:00:03.000Z"),
           "",
         ].join("\n"),
       );
-      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
-      db.exec(`
-        create table threads (
-          id text primary key,
-          tokens_used integer not null,
-          model text,
-          cwd text,
-          source text,
-          thread_source text,
-          created_at integer,
-          updated_at integer
-        );
-        insert into threads values (
-          'session-1', 100, 'gpt-5.5', '/repo', 'Codex Desktop',
-          'Codex Desktop', 1770000000, 1770000100
-        );
-      `);
-      db.close();
 
       const entries = await scanCodexLogs();
-      const total = entries.reduce((sum, entry) => (
-        sum + entry.inputTokens + entry.outputTokens + entry.cachedTokens + (entry.cacheWriteTokens ?? 0)
-      ), 0);
 
-      expect(total).toBe(100);
-      expect(entries).toContainEqual(expect.objectContaining({
-        messageId: "session-1:state-total-remainder",
-        model: "gpt-5.5",
-        estimation: "distribution",
-        costOverrideUsd: 0,
-      }));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ inputTokens: 400, cachedTokens: 100, outputTokens: 40 });
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;
@@ -3124,111 +3566,77 @@ describe("scanCodexLogs", () => {
     }
   });
 
-  it("preserves the exact Codex lifetime total within the remaining entry budget", async () => {
+  it("drops a fork's re-timestamped replay of its parent's token history", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
-    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
     try {
       process.env.CODEX_HOME = tmpDir;
-      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
-      db.exec(`
-        create table threads (
-          id text primary key,
-          tokens_used integer not null,
-          model text,
-          cwd text,
-          source text,
-          thread_source text,
-          created_at integer,
-          updated_at integer
-        );
-        insert into threads values
-          ('oldest', 10, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 100, 100),
-          ('middle', 20, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 200, 200),
-          ('newest', 30, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 300, 300);
-      `);
-      db.close();
-
-      const entries = await scanCodexLogs({ maxEntries: 2 });
-
-      expect(entries).toHaveLength(2);
-      expect(entries.map((entry) => entry.messageId)).toEqual([
-        "newest:state-total-remainder",
-        "codex-state:lifetime-total-remainder",
-      ]);
-      expect(entries.reduce(
-        (total, entry) => total + entry.inputTokens + entry.outputTokens + entry.cachedTokens,
-        0,
-      )).toBe(60);
-      expect(entries[1]).toMatchObject({ lifetimeOnly: true, inputTokens: 30, costOverrideUsd: 0 });
-    } finally {
-      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = originalCodexHome;
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("unions disjoint JSONL and SQLite threads within the bounded lifetime summary", async () => {
-    const tmpDir = makeTmpDir();
-    const originalCodexHome = process.env.CODEX_HOME;
-    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
-    try {
-      process.env.CODEX_HOME = tmpDir;
-      const sessionDir = path.join(tmpDir, "sessions", "2026", "07", "12");
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
       fs.mkdirSync(sessionDir, { recursive: true });
+      const tokenEvent = (timestamp: string, total: {
+        input_tokens: number;
+        cached_input_tokens: number;
+        output_tokens: number;
+        reasoning_output_tokens: number;
+        total_tokens: number;
+      }, last: Record<string, number>) => JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: { type: "token_count", info: { total_token_usage: total, last_token_usage: last } },
+      });
+      const parentTurn1 = {
+        total: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50, reasoning_output_tokens: 10, total_tokens: 1060 },
+        last: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50, reasoning_output_tokens: 10 },
+      };
+      const parentTurn2 = {
+        total: { input_tokens: 3000, cached_input_tokens: 900, output_tokens: 120, reasoning_output_tokens: 30, total_tokens: 3150 },
+        last: { input_tokens: 2000, cached_input_tokens: 700, output_tokens: 70, reasoning_output_tokens: 20 },
+      };
       fs.writeFileSync(
-        path.join(sessionDir, "json-only.jsonl"),
+        path.join(sessionDir, "rollout-2026-05-29T12-00-00-parent.jsonl"),
         [
           JSON.stringify({
-            timestamp: "2026-07-12T12:00:00.000Z",
+            timestamp: "2026-05-29T12:00:00.000Z",
             type: "session_meta",
-            payload: { id: "json-only", originator: "codex_cli_rs", model: "gpt-5.5" },
+            payload: { id: "session-parent", originator: "codex_cli_rs", cwd: "/repo", model: "gpt-5.5" },
           }),
-          JSON.stringify({
-            timestamp: "2026-07-12T12:00:01.000Z",
-            type: "event_msg",
-            payload: {
-              type: "token_count",
-              info: {
-                total_token_usage: { input_tokens: 80, output_tokens: 0, total_tokens: 80 },
-                last_token_usage: { input_tokens: 80, output_tokens: 0, total_tokens: 80 },
-              },
-            },
-          }),
+          tokenEvent("2026-05-29T12:00:01.000Z", parentTurn1.total, parentTurn1.last),
+          tokenEvent("2026-05-29T12:00:02.000Z", parentTurn2.total, parentTurn2.last),
           "",
         ].join("\n"),
       );
-      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
-      db.exec(`
-        create table threads (
-          id text primary key,
-          tokens_used integer not null,
-          model text,
-          cwd text,
-          source text,
-          thread_source text,
-          created_at integer,
-          updated_at integer
-        );
-        insert into threads values (
-          'state-only', 100, 'gpt-5.5', '/repo', 'Codex Desktop',
-          'Codex Desktop', 100, 100
-        );
-      `);
-      db.close();
+      // The fork copies the parent's whole history under NEW timestamps, then
+      // does one turn of genuinely new work. Only the new turn may be counted.
+      fs.writeFileSync(
+        path.join(sessionDir, "rollout-2026-05-29T13-00-00-fork.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2026-05-29T13:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "session-fork", forked_from_id: "session-parent", originator: "codex_cli_rs", cwd: "/repo", model: "gpt-5.5" },
+          }),
+          tokenEvent("2026-05-29T13:00:01.000Z", parentTurn1.total, parentTurn1.last),
+          tokenEvent("2026-05-29T13:00:02.000Z", parentTurn2.total, parentTurn2.last),
+          tokenEvent(
+            "2026-05-29T13:00:03.000Z",
+            { input_tokens: 4000, cached_input_tokens: 1200, output_tokens: 160, reasoning_output_tokens: 40, total_tokens: 4200 },
+            { input_tokens: 1000, cached_input_tokens: 300, output_tokens: 40, reasoning_output_tokens: 10 },
+          ),
+          "",
+        ].join("\n"),
+      );
 
-      const entries = await scanCodexLogs({ maxEntries: 2 });
-      const total = entries.reduce((sum, entry) => (
-        sum + entry.inputTokens + entry.outputTokens + entry.cachedTokens + (entry.cacheWriteTokens ?? 0)
-      ), 0);
+      const entries = await scanCodexLogs();
 
-      expect(entries).toHaveLength(2);
-      expect(entries.map((entry) => entry.messageId)).toEqual([
-        "json-only:2026-07-12T12:00:01.000Z:80",
-        "codex-state:lifetime-total-remainder",
-      ]);
-      expect(total).toBe(180);
-      expect(entries[1]).toMatchObject({ lifetimeOnly: true, inputTokens: 100, costOverrideUsd: 0 });
+      const totals = entries.reduce((sum, entry) => ({
+        input: sum.input + entry.inputTokens,
+        cached: sum.cached + entry.cachedTokens,
+        output: sum.output + entry.outputTokens,
+      }), { input: 0, cached: 0, output: 0 });
+      // Parent turn 1 + parent turn 2 + the fork's one new turn — the replay is
+      // gone even though every replayed event carries a different timestamp.
+      expect(entries).toHaveLength(3);
+      expect(totals).toEqual({ input: 800 + 1300 + 700, cached: 200 + 700 + 300, output: 50 + 70 + 40 });
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;
@@ -3421,7 +3829,9 @@ describe("scanCodexLogs", () => {
           "",
         ].join("\n"),
       );
-      fs.truncateSync(filePath, 769 * 1024 * 1024);
+      // One byte past CODEX_COST_SCAN_MAX_FILE_BYTES (1 GiB). Sparse, so this
+      // costs no disk.
+      fs.truncateSync(filePath, 1024 * 1024 * 1024 + 1);
 
       await expect(scanCodexLogs()).resolves.toEqual([]);
     } finally {
@@ -3537,17 +3947,22 @@ describe("scanDroidLogs", () => {
       const entries = await scanDroidLogs(path.join(tmpDir, "sessions"));
 
       expect(entries).toHaveLength(2);
+      // Thinking tokens are billed at the output rate but are not output: they
+      // show up only in `billableOutputTokens`, so the displayed output count
+      // stays reasoning-free.
       expect(entries[0]).toMatchObject({
         model: "claude-sonnet-5",
         inputTokens: 50,
-        outputTokens: 21,
+        outputTokens: 20,
+        billableOutputTokens: 21,
         cachedTokens: 4,
         billableCachedTokens: 4,
         cacheWriteTokens: 2,
       });
       expect(entries[1]).toMatchObject({
         inputTokens: 51,
-        outputTokens: 22,
+        outputTokens: 21,
+        billableOutputTokens: 22,
         cachedTokens: 5,
         billableCachedTokens: 5,
         cacheWriteTokens: 3,
@@ -3693,7 +4108,9 @@ describe("scanGeminiLogs", () => {
         messageId: "gemini:session-1:gemini-1",
         model: "gemini-3.1-pro-preview",
         inputTokens: 100,
-        outputTokens: 35,
+        // Gemini "thoughts" (5) bill at the output rate but are not output.
+        outputTokens: 30,
+        billableOutputTokens: 35,
         cachedTokens: 20,
         billableCachedTokens: 20,
       });
@@ -3744,7 +4161,10 @@ describe("scanOpenCodeLogs", () => {
         messageId: "opencode:session-1:msg-1",
         model: "openai/gpt-5.4",
         inputTokens: 100,
-        outputTokens: 23,
+        // Reasoning (3) is billed as output but is not output: it belongs in
+        // `billableOutputTokens` only, never in the displayed output count.
+        outputTokens: 20,
+        billableOutputTokens: 23,
         cachedTokens: 40,
         billableCachedTokens: 40,
         cacheWriteTokens: 5,
@@ -3875,6 +4295,46 @@ describe("findJsonlFiles", () => {
     const files = await _testing.findJsonlFiles(tmpDir, 30);
 
     expect(files).toEqual([smallPath]);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Two machines reading one shared (NFS/SMB) transcript directory get no
+  // guarantee of matching readdir order. Since the scan caps the file count,
+  // mtime ties decided by readdir order would hand each machine a different
+  // retained set, a different token total, and a false "diverged" verdict from
+  // the account-usage dedupe — which double-counts every shared token.
+  it("retains the same tied files regardless of directory read order", () => {
+    const tied = ["a.jsonl", "b.jsonl", "c.jsonl", "d.jsonl"].map((name) => ({
+      path: `/share/claude/${name}`,
+      mtimeMs: 1_700_000_000_000,
+    }));
+    const newer = { path: "/share/claude/z.jsonl", mtimeMs: 1_700_000_001_000 };
+
+    const retain = (candidates: typeof tied) =>
+      [...candidates].sort(compareRecentFileCandidates).slice(0, 3).map((file) => file.path);
+
+    const machineA = retain([newer, ...tied]);
+    const machineB = retain([tied[2]!, tied[0]!, newer, tied[3]!, tied[1]!]);
+    const machineC = retain([...tied].reverse().concat(newer));
+
+    expect(machineA).toEqual(["/share/claude/z.jsonl", "/share/claude/a.jsonl", "/share/claude/b.jsonl"]);
+    expect(machineB).toEqual(machineA);
+    expect(machineC).toEqual(machineA);
+  });
+
+  it("caps tied-mtime files deterministically on disk", async () => {
+    const tmpDir = makeTmpDir();
+    const stamp = new Date(Date.now() - 60_000);
+    const names = ["d.jsonl", "b.jsonl", "e.jsonl", "a.jsonl", "c.jsonl"];
+    for (const name of names) {
+      const filePath = path.join(tmpDir, name);
+      fs.writeFileSync(filePath, '{"test": true}\n');
+      fs.utimesSync(filePath, stamp, stamp);
+    }
+
+    const files = await _testing.findJsonlFiles(tmpDir, 1, { maxFiles: 3 });
+
+    expect(files).toEqual(["a.jsonl", "b.jsonl", "c.jsonl"].map((name) => path.join(tmpDir, name)));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
@@ -4456,6 +4916,158 @@ describe("ADE database usage aggregation", () => {
     service.dispose();
   });
 
+  /**
+   * Deleting a lane cascades away its `lanes`, session, delta and `operations`
+   * rows, so every one of these counts used to fall when a user tidied up —
+   * "lifetime" figures that were really survivor figures. The tombstone is the
+   * only surviving record, and until this it was written and never read.
+   */
+  function insertTombstone(db: AdeDb, overrides: Record<string, unknown> = {}): void {
+    const row = {
+      project_id: "project-1",
+      lane_id: "lane-gone",
+      created_day: "2026-07-06",
+      deleted_day: "2026-07-08",
+      lanes_created: 1,
+      chat_sessions: 3,
+      terminal_sessions: 2,
+      files_changed: 11,
+      insertions: 120,
+      deletions: 30,
+      commits_created: 4,
+      push_operations: 2,
+      pr_landings: 1,
+      artifacts_captured: 5,
+      longest_session_ms: 900_000,
+      first_active_day: "2026-07-06",
+      last_active_day: "2026-07-07",
+      ...overrides,
+    };
+    const columns = Object.keys(row);
+    db.run(
+      `insert into lane_usage_tombstones(${columns.join(", ")}, active_day_bits)
+       values (${columns.map(() => "?").join(", ")}, ?)`,
+      [
+        ...columns.map((column) => (row as Record<string, string | number>)[column]!),
+        encodeActiveDayBits([
+          String(row.first_active_day),
+          String(row.last_active_day),
+        ]).bits,
+      ],
+    );
+  }
+
+  it("does not count an absorbed duplicate as a deletion", async () => {
+    // The create/recover race folds a duplicate lane row onto its keeper and
+    // writes a tombstone with `lanes_created: 0` — it was never a lane the user
+    // made, and it was never one they deleted either. Counting it on only one
+    // side read as "1 created / 2 deleted" for a single real lane.
+    const db = await createStatsDb();
+    insertTombstone(db);
+    insertTombstone(db, {
+      lane_id: "lane-absorbed",
+      lanes_created: 0,
+      chat_sessions: 0,
+      terminal_sessions: 0,
+      files_changed: 0,
+      insertions: 0,
+      deletions: 0,
+      commits_created: 0,
+      push_operations: 0,
+      pr_landings: 0,
+      artifacts_captured: 0,
+      longest_session_ms: 0,
+    });
+
+    const stats = collectAdeDatabaseUsageStats(db, { since: null, until: "2026-07-09T23:59:59.999Z" });
+
+    // The real delete still counts; the absorb is invisible on both sides.
+    expect(stats?.summary.lanesDeleted).toBe(1);
+    expect(stats?.summary.lanesCreated).toBe(2);
+  });
+
+  it("counts a deleted lane's activity from its tombstone", async () => {
+    const db = await createStatsDb();
+    insertTombstone(db);
+
+    const stats = collectAdeDatabaseUsageStats(db, { since: null, until: "2026-07-09T23:59:59.999Z" });
+
+    expect(stats?.summary.chatSessions).toBe(3);
+    expect(stats?.summary.terminalSessions).toBe(2);
+    expect(stats?.summary.filesChanged).toBe(11);
+    expect(stats?.summary.insertions).toBe(120);
+    expect(stats?.summary.deletions).toBe(30);
+    expect(stats?.summary.commitsCreated).toBe(4);
+    expect(stats?.summary.pushOperations).toBe(2);
+    expect(stats?.summary.prLandings).toBe(1);
+    expect(stats?.summary.artifactsCaptured).toBe(5);
+    expect(stats?.summary.longestSessionMs).toBe(900_000);
+    // One surviving lane in the fixture, plus the deleted one.
+    expect(stats?.summary.lanesCreated).toBe(2);
+    // The `operations` row that recorded this delete is long pruned; the
+    // tombstone is exact and permanent.
+    expect(stats?.summary.lanesDeleted).toBe(1);
+    // Both of the tombstone's active days count, and they are consecutive.
+    expect(stats?.summary.activeDays).toBe(2);
+    expect(stats?.summary.longestStreakDays).toBe(2);
+    // Not folded into the per-day chart or the lane breakdown: the tombstone
+    // has no per-day counts and no lane name, and a bare UUID row would be
+    // worse than none.
+    expect(stats?.lanes?.some((lane) => lane.laneId === "lane-gone")).toBe(false);
+  });
+
+  it("counts a fresh delete once when the operations row and the tombstone both survive", async () => {
+    const db = await createStatsDb();
+    insertTombstone(db);
+    // `lane_delete` operations rows are written with a null `lane_id`, so the
+    // lane cleanup's `delete from operations where lane_id = ?` leaves them
+    // behind — for 60 days both this row and the tombstone describe the very
+    // same delete. Summing them reported 2 in the Activity breakdown while the
+    // summary, which reconciles, still said 1.
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      ["op-delete", "project-1", null, "lane_delete", "2026-07-08T12:00:00.000Z", "2026-07-08T12:00:01.000Z", "succeeded"],
+    );
+
+    const stats = collectAdeDatabaseUsageStats(db, { since: null, until: "2026-07-09T23:59:59.999Z" });
+
+    expect(stats?.summary.lanesDeleted).toBe(1);
+    expect(stats?.activities?.find((activity) => activity.kind === "lanes.delete")?.count).toBe(1);
+  });
+
+  it("attributes a tombstone to a window only when the window contains the lane's whole life", async () => {
+    const db = await createStatsDb();
+    // Lived 06–07, deleted on the 08th.
+    insertTombstone(db);
+
+    // Window ends before the lane stopped being active: its totals are not
+    // attributable to this window, because they have no per-day breakdown.
+    const before = collectAdeDatabaseUsageStats(db, {
+      since: "2026-07-01T00:00:00.000Z",
+      until: "2026-07-06T23:59:59.999Z",
+    });
+    expect(before?.summary.insertions).toBe(0);
+    expect(before?.summary.chatSessions).toBe(0);
+    // A day is atomic, so the day inside the window still counts as active.
+    expect(before?.summary.activeDays).toBe(1);
+
+    // Window that contains the whole life, right at the boundary.
+    const spanning = collectAdeDatabaseUsageStats(db, {
+      since: "2026-07-06T00:00:00.000Z",
+      until: "2026-07-07T23:59:59.999Z",
+    });
+    expect(spanning?.summary.insertions).toBe(120);
+    // …but the delete happened after this window, so it is not counted here.
+    expect(spanning?.summary.lanesDeleted).toBe(0);
+
+    const includingDelete = collectAdeDatabaseUsageStats(db, {
+      since: "2026-07-08T00:00:00.000Z",
+      until: "2026-07-08T23:59:59.999Z",
+    });
+    expect(includingDelete?.summary.lanesDeleted).toBe(1);
+  });
+
   it("without db yields null database stats and zero local aggregates", async () => {
     const range = { since: "2026-07-08T00:00:00.000Z", until: "2026-07-09T00:00:00.000Z" };
     expect(collectAdeDatabaseUsageStats(undefined, range)).toBeNull();
@@ -4532,12 +5144,15 @@ describe("ADE database usage aggregation", () => {
           }];
         }
         if (normalized.startsWith("select date(timestamp, 'localtime') active_date")) {
-          expect(normalized).toContain("from ( select timestamp, input_tokens, output_tokens, duration_ms");
-          expect(normalized).toContain("order by timestamp desc limit ? ) group by active_date");
+          // Grouped by provider as well as day so the gap-filled tokens land in
+          // a chart series instead of only in the day's total.
+          expect(normalized).toContain("from ( select timestamp, provider, input_tokens, output_tokens, duration_ms");
+          expect(normalized).toContain("order by timestamp desc limit ? ) group by active_date, provider");
           expect(params.at(-1)).toBe(250_000);
           checkedAiQuery = true;
           return [{
             active_date: "2026-07-08",
+            provider: "claude",
             input_tokens: 250_000,
             output_tokens: 0,
             duration_ms: 0,
@@ -4563,6 +5178,7 @@ describe("ADE database usage aggregation", () => {
       commits: 250_000,
       interactions: 250_000,
       clients: { desktop: 250_000 },
+      byProvider: { claude: { totalTokens: 250_000, costUsd: 0 } },
     }));
     expect(stats?.daily.some((point) => point.date === "2026-07-07")).toBe(false);
     expect(logger.debug).toHaveBeenCalledTimes(1);
@@ -4762,5 +5378,480 @@ describe("ADE database usage aggregation", () => {
 
     recordUsageInteraction(db, { client: "desktop", action: "lanes.list" });
     expect(db.get<{ count: number }>("select count(*) count from usage_events")?.count).toBe(0);
+  });
+});
+
+describe("usage ledger end-to-end accuracy", () => {
+  type TokenTotals = { input: number; output: number; cached: number; cacheWrite: number };
+  type TokenBreakdownValue = Omit<TokenTotals, "cacheWrite"> & { cacheWrite?: number };
+
+  function writeJsonl(filePath: string, records: unknown[], mtime: Date): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    fs.utimesSync(filePath, mtime, mtime);
+  }
+
+  function sumBreakdown(breakdown: Record<string, TokenBreakdownValue> | undefined): TokenTotals {
+    return Object.values(breakdown ?? {}).reduce<TokenTotals>((total, model) => ({
+      input: total.input + model.input,
+      output: total.output + model.output,
+      cached: total.cached + model.cached,
+      cacheWrite: total.cacheWrite + (model.cacheWrite ?? 0),
+    }), { input: 0, output: 0, cached: 0, cacheWrite: 0 });
+  }
+
+  function totalsFor(snapshot: CostSnapshot): TokenTotals {
+    return sumBreakdown(snapshot.tokenBreakdownByPreset?.all);
+  }
+
+  function dailyTotalsFor(snapshot: CostSnapshot): Record<string, TokenTotals> {
+    return Object.fromEntries(Object.entries(snapshot.dailyTokenBreakdownByPreset?.all ?? {})
+      .map(([day, breakdown]) => [day, sumBreakdown(breakdown)]));
+  }
+
+  function totalTokens(totals: TokenTotals): number {
+    return totals.input + totals.output + totals.cached + totals.cacheWrite;
+  }
+
+  function snapshotsByProvider(snapshots: CostSnapshot[]): Record<string, CostSnapshot> {
+    return Object.fromEntries(snapshots.map((snapshot) => [snapshot.provider, snapshot]));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("matches independently calculated provider, day, scope, origin, and estimation totals", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-e2e-"));
+    const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const originalClaudeConfigDirs = process.env.CLAUDE_CONFIG_DIRS;
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalFactoryDir = process.env.FACTORY_DIR;
+    try {
+      const beforeMidnight = new Date(2026, 9, 31, 23, 59, 0, 0);
+      const afterMidnight = new Date(2026, 10, 1, 0, 1, 0, 0);
+      const beforeDstChange = new Date(2026, 10, 1, 0, 30, 0, 0);
+      const afterDstChange = new Date(2026, 10, 1, 3, 30, 0, 0);
+      const today = new Date(2026, 10, 2, 9, 0, 0, 0);
+      const now = new Date(2026, 10, 2, 12, 0, 0, 0);
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+
+      const projectA = path.join(tmpDir, "project-a");
+      const projectB = path.join(tmpDir, "project-b");
+      const claudeConfigDir = path.join(tmpDir, "claude");
+      const claudeProjectA = path.join(claudeConfigDir, "projects", sanitizeClaudeProjectPath(projectA));
+      const claudeProjectB = path.join(claudeConfigDir, "projects", sanitizeClaudeProjectPath(projectB));
+      const claudeEntry = ({
+        id,
+        timestamp,
+        cwd,
+        input,
+        output,
+        cacheRead = 0,
+        cacheWrite = 0,
+        cache5m,
+        cache1h,
+      }: {
+        id: string;
+        timestamp: Date;
+        cwd: string;
+        input: number;
+        output: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        cache5m?: number;
+        cache1h?: number;
+      }) => ({
+        type: "assistant",
+        timestamp: timestamp.toISOString(),
+        cwd,
+        message: {
+          id,
+          model: "claude-opus-4-6",
+          usage: {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: cacheRead,
+            cache_creation_input_tokens: cacheWrite,
+            ...(cache5m != null || cache1h != null ? {
+              cache_creation: {
+                ephemeral_5m_input_tokens: cache5m ?? 0,
+                ephemeral_1h_input_tokens: cache1h ?? 0,
+              },
+            } : {}),
+            server_tool_use: { web_search_requests: 1 },
+          },
+        },
+      });
+
+      const resumedClaudeMessage = claudeEntry({
+        id: "claude-resume",
+        timestamp: beforeMidnight,
+        cwd: projectA,
+        input: 10,
+        output: 2,
+        cacheRead: 3,
+        cacheWrite: 4,
+      });
+      writeJsonl(path.join(claudeProjectA, "session-a.jsonl"), [
+        resumedClaudeMessage,
+        claudeEntry({ id: "claude-stream", timestamp: afterMidnight, cwd: projectA, input: 20, output: 4, cacheRead: 5, cacheWrite: 4 }),
+        claudeEntry({ id: "claude-stream", timestamp: new Date(2026, 10, 1, 0, 2), cwd: projectA, input: 30, output: 7, cacheRead: 8, cacheWrite: 6 }),
+        claudeEntry({
+          id: "claude-stream",
+          timestamp: new Date(2026, 10, 1, 0, 3),
+          cwd: projectA,
+          input: 40,
+          output: 9,
+          cacheRead: 10,
+          cacheWrite: 7,
+          cache5m: 3,
+          cache1h: 5,
+        }),
+      ], now);
+      writeJsonl(path.join(claudeProjectA, "session-b.jsonl"), [
+        resumedClaudeMessage,
+        claudeEntry({
+          id: "claude-ade",
+          timestamp: afterDstChange,
+          cwd: path.join(projectA, ".ade", "worktrees", "lane-a"),
+          input: 11,
+          output: 4,
+          cacheRead: 2,
+          cacheWrite: 3,
+        }),
+      ], new Date(now.getTime() - 1_000));
+      writeJsonl(path.join(claudeProjectA, "subagents", "workflows", "wf-1", "agent-explore.jsonl"), [
+        claudeEntry({ id: "claude-subagent", timestamp: new Date(2026, 10, 1, 3, 45), cwd: projectA, input: 7, output: 3, cacheRead: 1, cacheWrite: 2 }),
+      ], new Date(now.getTime() - 2_000));
+      writeJsonl(path.join(claudeProjectB, "session-c.jsonl"), [
+        claudeEntry({ id: "claude-project-b", timestamp: today, cwd: projectB, input: 13, output: 5, cacheRead: 4, cacheWrite: 6 }),
+      ], new Date(now.getTime() - 3_000));
+
+      process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+      delete process.env.CLAUDE_CONFIG_DIRS;
+
+      const codexHome = path.join(tmpDir, "codex");
+      const codexSessions = path.join(codexHome, "sessions", "2026", "11", "01");
+      const codexUsage = ({ timestamp, input, cached, output, reasoning, total }: {
+        timestamp: Date;
+        input: number;
+        cached: number;
+        output: number;
+        reasoning: number;
+        total: number;
+      }) => ({
+        timestamp: timestamp.toISOString(),
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: input,
+              cached_input_tokens: cached,
+              output_tokens: output,
+              reasoning_output_tokens: reasoning,
+              total_tokens: total,
+            },
+            last_token_usage: {
+              input_tokens: input,
+              cached_input_tokens: cached,
+              output_tokens: output,
+              reasoning_output_tokens: reasoning,
+              total_tokens: total,
+            },
+          },
+        },
+      });
+      writeJsonl(path.join(codexSessions, "parent.jsonl"), [
+        { type: "session_meta", payload: { id: "codex-parent", originator: "codex_cli_rs", cwd: projectA, model: "gpt-5.5" } },
+        codexUsage({ timestamp: beforeDstChange, input: 50, cached: 10, output: 5, reasoning: 1, total: 56 }),
+      ], now);
+      writeJsonl(path.join(codexSessions, "fork.jsonl"), [
+        { type: "session_meta", payload: { id: "codex-fork", forked_from_id: "codex-parent", originator: "ade_desktop", cwd: projectA, model: "gpt-5.5" } },
+        codexUsage({ timestamp: new Date(2026, 10, 1, 3, 1), input: 50, cached: 10, output: 5, reasoning: 1, total: 56 }),
+        {
+          ...codexUsage({ timestamp: new Date(2026, 10, 1, 3, 15), input: 70, cached: 15, output: 8, reasoning: 2, total: 80 }),
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 70, cached_input_tokens: 15, output_tokens: 8, reasoning_output_tokens: 2, total_tokens: 80 },
+              last_token_usage: { input_tokens: 20, cached_input_tokens: 5, output_tokens: 3, reasoning_output_tokens: 1, total_tokens: 24 },
+            },
+          },
+        },
+      ], new Date(now.getTime() - 1_000));
+      writeJsonl(path.join(codexHome, "sessions", "2026", "11", "02", "external-b.jsonl"), [
+        { type: "session_meta", payload: { id: "codex-project-b", originator: "codex_cli_rs", cwd: projectB, model: "gpt-5.5" } },
+        codexUsage({ timestamp: new Date(2026, 10, 2, 9, 15), input: 30, cached: 6, output: 4, reasoning: 0, total: 34 }),
+      ], new Date(now.getTime() - 2_000));
+      process.env.CODEX_HOME = codexHome;
+
+      const cursorDbPath = path.join(tmpDir, "cursor", "state.vscdb");
+      fs.mkdirSync(path.dirname(cursorDbPath), { recursive: true });
+      const { DatabaseSync } = requireForTest("node:sqlite") as {
+        DatabaseSync: new (dbPath: string) => {
+          exec: (sql: string) => void;
+          prepare: (sql: string) => { run: (...args: unknown[]) => void };
+          close: () => void;
+        };
+      };
+      const cursorDb = new DatabaseSync(cursorDbPath);
+      cursorDb.exec("create table cursorDiskKV (key text, value text);");
+      const insertCursor = cursorDb.prepare("insert into cursorDiskKV values (?, ?)");
+      insertCursor.run("bubbleId:cursor-1", JSON.stringify({
+        createdAt: new Date(2026, 10, 1, 0, 40).toISOString(),
+        tokenCount: { inputTokens: 12, outputTokens: 3 },
+        modelInfo: { modelName: "cursor-auto" },
+        type: 1,
+        text: "native",
+      }));
+      insertCursor.run("bubbleId:cursor-2", JSON.stringify({
+        createdAt: new Date(2026, 10, 1, 3, 40).toISOString(),
+        tokenCount: {},
+        modelInfo: { modelName: "default" },
+        type: 2,
+        text: "abcdefghijklmnop",
+      }));
+      cursorDb.close();
+
+      const geminiTmp = path.join(tmpDir, "gemini", "tmp");
+      writeJsonl(path.join(geminiTmp, "project-a", "chats", "session-gemini.jsonl"), [
+        { sessionId: "gemini-session", startTime: afterMidnight.toISOString(), projectHash: "project-a" },
+        { id: "gemini-before-dst", type: "gemini", timestamp: new Date(2026, 10, 1, 0, 45).toISOString(), model: "gemini-3.1-pro-preview", tokens: { input: 30, output: 7, cached: 5, thoughts: 2 } },
+        { id: "gemini-after-dst", type: "gemini", timestamp: new Date(2026, 10, 1, 3, 15).toISOString(), model: "gemini-3.1-pro-preview", tokens: { input: 20, output: 5, cached: 4, thoughts: 1 } },
+      ], now);
+
+      const factoryDir = path.join(tmpDir, "factory");
+      const droidSession = path.join(factoryDir, "sessions", "project-a", "session-droid.jsonl");
+      writeJsonl(droidSession, [
+        { type: "session_start", id: "droid-session", cwd: projectA },
+        { type: "message", id: "droid-before-dst", timestamp: new Date(2026, 10, 1, 0, 50).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "before" }] } },
+        { type: "message", id: "droid-after-dst", timestamp: new Date(2026, 10, 1, 3, 20).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", name: "Execute" }] } },
+      ], now);
+      fs.writeFileSync(droidSession.replace(/\.jsonl$/, ".settings.json"), JSON.stringify({
+        model: "custom:[anthropic]-claude-sonnet-5-20260501",
+        tokenUsage: { inputTokens: 21, outputTokens: 9, thinkingTokens: 3, cacheReadTokens: 5, cacheCreationTokens: 3 },
+      }));
+      process.env.FACTORY_DIR = factoryDir;
+
+      const entriesByProvider = new Map<string, TokenEntry[]>([
+        ["claude", await scanClaudeLogs([claudeProjectA, claudeProjectB])],
+        ["codex", await scanCodexLogs()],
+        ["cursor", await scanCursorLogs(cursorDbPath)],
+        ["gemini", await scanGeminiLogs(geminiTmp)],
+        ["droid", await scanDroidLogs()],
+      ]);
+      const machine = snapshotsByProvider(buildCostSnapshots(entriesByProvider, "machine", projectA));
+      const project = snapshotsByProvider(buildCostSnapshots(entriesByProvider, "project", projectA));
+
+      const expectedMachineTotals: Record<string, TokenTotals> = {
+        claude: { input: 81, output: 23, cached: 20, cacheWrite: 23 },
+        codex: { input: 79, output: 12, cached: 21, cacheWrite: 0 },
+        cursor: { input: 12, output: 7, cached: 0, cacheWrite: 0 },
+        // Gemini "thoughts" bill as output but are not output, so the display
+        // total carries only the 12 real output tokens.
+        gemini: { input: 41, output: 12, cached: 9, cacheWrite: 0 },
+        // Droid "thinking" tokens bill as output but are not output, so the
+        // display total carries only the 9 real output tokens.
+        droid: { input: 21, output: 9, cached: 5, cacheWrite: 3 },
+      };
+      const expectedProjectTotals: Record<string, TokenTotals> = {
+        claude: { input: 68, output: 18, cached: 16, cacheWrite: 17 },
+        codex: { input: 55, output: 8, cached: 15, cacheWrite: 0 },
+        // Cursor's IDE ledger records no workspace, so it stays machine-only
+        // and reports a zero row flagged `scopeSupported: false`.
+        cursor: { input: 0, output: 0, cached: 0, cacheWrite: 0 },
+        // Droid records `cwd` on `session_start`, so its project-A session now
+        // counts in project scope instead of vanishing from it.
+        droid: { input: 21, output: 9, cached: 5, cacheWrite: 3 },
+      };
+      const expectedDailyTotals: Record<string, Record<string, TokenTotals>> = {
+        claude: {
+          "2026-10-31": { input: 10, output: 2, cached: 3, cacheWrite: 4 },
+          "2026-11-01": { input: 58, output: 16, cached: 13, cacheWrite: 13 },
+          "2026-11-02": { input: 13, output: 5, cached: 4, cacheWrite: 6 },
+        },
+        codex: {
+          "2026-11-01": { input: 55, output: 8, cached: 15, cacheWrite: 0 },
+          "2026-11-02": { input: 24, output: 4, cached: 6, cacheWrite: 0 },
+        },
+        cursor: { "2026-11-01": { input: 12, output: 7, cached: 0, cacheWrite: 0 } },
+        gemini: { "2026-11-01": { input: 41, output: 12, cached: 9, cacheWrite: 0 } },
+        droid: { "2026-11-01": { input: 21, output: 9, cached: 5, cacheWrite: 3 } },
+      };
+
+      for (const provider of Object.keys(expectedMachineTotals)) {
+        expect(totalsFor(machine[provider]!), `${provider} machine totals`).toEqual(expectedMachineTotals[provider]);
+        expect(dailyTotalsFor(machine[provider]!), `${provider} daily totals`).toEqual(expectedDailyTotals[provider]);
+      }
+      // A provider that CAN be project-scoped and contributed nothing to this
+      // project is absent from project scope rather than listed at zero; one
+      // that cannot be scoped at all is listed at zero so the page can say so.
+      // Gemini's fixture writes no `.project_root`, so it is unattributable
+      // here and drops out.
+      expect(Object.keys(project).sort()).toEqual(["claude", "codex", "cursor", "droid"]);
+      expect(project.cursor?.scopeSupported).toBe(false);
+      for (const provider of Object.keys(expectedProjectTotals)) {
+        expect(totalsFor(project[provider]!), `${provider} project totals`).toEqual(expectedProjectTotals[provider]);
+      }
+
+      expect(Object.fromEntries(Object.entries(machine).map(([provider, snapshot]) => {
+        const total = totalTokens(totalsFor(snapshot));
+        const ade = snapshot.adeOriginatedTokensByPreset?.all ?? 0;
+        return [provider, { ade, external: total - ade }];
+      }))).toEqual({
+        claude: { ade: 20, external: 127 },
+        codex: { ade: 23, external: 89 },
+        cursor: { ade: 0, external: 19 },
+        // Gemini "thoughts" (3) and Droid "thinking" (3) are billed as output but
+        // are not output, so they no longer inflate the displayed token totals.
+        gemini: { ade: 0, external: 62 },
+        droid: { ade: 0, external: 38 },
+      });
+
+      expect(Object.fromEntries(Object.entries(machine).map(([provider, snapshot]) => [provider, {
+        estimation: snapshot.estimation ?? null,
+        scopeSupported: snapshot.scopeSupported,
+      }]))).toEqual({
+        // Only Cursor's IDE ledger genuinely records no workspace; every other
+        // agent CLI writes its cwd somewhere the ledger readers now capture.
+        claude: { estimation: null, scopeSupported: true },
+        codex: { estimation: null, scopeSupported: true },
+        cursor: { estimation: "mixed", scopeSupported: false },
+        gemini: { estimation: null, scopeSupported: true },
+        droid: { estimation: "distribution", scopeSupported: true },
+      });
+
+      const wallClockDeltaMs = 3 * 60 * 60 * 1_000;
+      const offsetChangeMs = (afterDstChange.getTimezoneOffset() - beforeDstChange.getTimezoneOffset()) * 60 * 1_000;
+      expect(afterDstChange.getTime() - beforeDstChange.getTime()).toBe(wallClockDeltaMs + offsetChangeMs);
+    } finally {
+      const restoreEnv = (key: "CLAUDE_CONFIG_DIR" | "CLAUDE_CONFIG_DIRS" | "CODEX_HOME" | "FACTORY_DIR", value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
+      restoreEnv("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
+      restoreEnv("CLAUDE_CONFIG_DIRS", originalClaudeConfigDirs);
+      restoreEnv("CODEX_HOME", originalCodexHome);
+      restoreEnv("FACTORY_DIR", originalFactoryDir);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  const ALL_PRESETS = ["today", "7d", "30d", "year", "all"] as const;
+  const round2 = (value: number): number => Math.round(value * 100) / 100;
+  const makeSnapshot = (overrides: { costs: CostSnapshot[] }) => ({
+    windows: [],
+    pacing: calculatePacing([]),
+    costs: overrides.costs,
+    adeCosts: [],
+    extraUsage: [],
+    lastPolledAt: new Date().toISOString(),
+    errors: [],
+  } as never);
+
+  it("keeps model rows, provider rows and the range total in agreement across every preset", () => {
+    // Costs were rounded to cents on every accumulate, so a provider's total
+    // was the sum of its own rounding steps and each model row the sum of a
+    // different set: the rows stopped adding up to the provider they belong to.
+    const entries: TokenEntry[] = [];
+    const base = Date.now();
+    for (let index = 0; index < 60; index += 1) {
+      entries.push({
+        messageId: `rounding-${index}`,
+        model: index % 3 === 0 ? "claude-opus-5" : index % 3 === 1 ? "claude-sonnet-5" : "claude-haiku-4-5",
+        inputTokens: 1_001 + index,
+        outputTokens: 307 + index,
+        cachedTokens: 5_003 + index,
+        cacheWriteTokens: 101 + index,
+        timestamp: base - index * 60 * 60 * 1000,
+      });
+    }
+    const costs = buildCostSnapshots(new Map([["claude", entries]]), "machine", null);
+
+    for (const preset of ALL_PRESETS) {
+      const stats = collectAdeUsageStats({
+        snapshot: makeSnapshot({ costs }),
+        args: { preset },
+        nowMs: base,
+      });
+      const providerCost = stats.providers.reduce((sum, provider) => sum + provider.rangeCostUsd, 0);
+      const providerTokens = stats.providers.reduce((sum, provider) => sum + provider.totalTokens, 0);
+      const modelTokens = stats.models.reduce((sum, model) => sum + model.totalTokens, 0);
+      expect(round2(providerCost), `${preset} providers vs range total`)
+        .toBe(stats.summary.observedProviderCostRangeUsd);
+      expect(providerTokens, `${preset} provider tokens vs summary`).toBe(stats.summary.observedProviderTokens);
+      expect(modelTokens, `${preset} model tokens vs provider tokens`).toBe(providerTokens);
+      // Per-row display rounding is inherent; the rows must still land within
+      // half a cent of their provider rather than drifting by a cent per row.
+      const modelCost = stats.models.reduce((sum, model) => sum + model.costUsd, 0);
+      expect(Math.abs(modelCost - providerCost), `${preset} models vs providers`)
+        .toBeLessThanOrEqual(0.005 * stats.models.length);
+    }
+  });
+
+  it("gives every day's tokens a provider so the chart series sum to the day total", () => {
+    const base = Date.now();
+    const costs = buildCostSnapshots(new Map([
+      ["claude", [{
+        messageId: "graph-claude",
+        model: "claude-opus-5",
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedTokens: 40,
+        cacheWriteTokens: 10,
+        timestamp: base,
+      }]],
+      ["droid", [{
+        messageId: "graph-droid",
+        model: "claude-opus-4-6",
+        inputTokens: 50,
+        outputTokens: 5,
+        cachedTokens: 7,
+        cacheWriteTokens: 0,
+        timestamp: base,
+      }]],
+    ]), "machine", null);
+
+    for (const preset of ALL_PRESETS) {
+      const stats = collectAdeUsageStats({
+        snapshot: makeSnapshot({ costs }),
+        args: { preset },
+        nowMs: base,
+      });
+      for (const point of stats.daily) {
+        const attributed = Object.values(point.byProvider ?? {})
+          .reduce((sum, entry) => sum + entry.totalTokens, 0);
+        expect(attributed, `${preset} ${point.date} byProvider vs totalTokens`).toBe(point.totalTokens);
+      }
+      const day = stats.daily.find((point) => point.totalTokens > 0);
+      expect(Object.keys(day?.byProvider ?? {}).sort()).toEqual(["claude", "droid"]);
+    }
+  });
+
+  it("attributes a database-gap-filled day to a provider instead of raising an unattributed total", () => {
+    const nowMs = Date.now();
+    const stats = collectAdeUsageStats({
+      snapshot: makeSnapshot({ costs: [] }),
+      databaseStats: {
+        summary: {} as never,
+        providers: [], models: [], agentProviders: [], agentModels: [],
+        features: [], lanes: [], activities: [], clients: [],
+        daily: [{
+          date: localDayKey(nowMs),
+          inputTokens: 400,
+          outputTokens: 100,
+          totalTokens: 500,
+          byProvider: { codex: { totalTokens: 500, costUsd: 0 } },
+        }],
+      } as never,
+      args: { preset: "today" },
+      nowMs,
+    });
+    const point = stats.daily.find((entry) => entry.date === localDayKey(nowMs));
+    expect(point?.totalTokens).toBe(500);
+    expect(point?.byProvider).toEqual({ codex: { totalTokens: 500, costUsd: 0 } });
   });
 });

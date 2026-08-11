@@ -5,6 +5,12 @@ import SwiftUI
 // and the Xcode project), but this is the tabbed activity module that matches the
 // desktop redesign — named tabs, a unified range control, split token/code bars,
 // tap tooltips, a warm empty state, exact lifetime totals, and live limits.
+//
+// Type, colour, and copy come from `ADEUsageDesign.swift`, the same vocabulary
+// the Settings Usage page uses, so the compact module on the new-chat screen and
+// the full page read as one surface. The module previously carried seven font
+// sizes of its own; it now uses only the five shared steps (and, being compact,
+// only the smaller three of them).
 
 private enum WorkUsageRange: String, CaseIterable, Identifiable {
   case today
@@ -44,16 +50,21 @@ private enum WorkUsageTab: String, CaseIterable, Identifiable {
   }
 }
 
+/// Chart palette, aligned with the Settings Usage page: the neutral accent
+/// carries the primary series, `textMuted` is reserved for merged/secondary
+/// magnitudes (GitHub, "Other"), and success/danger stay semantic. Cache is
+/// teal rather than that same grey, so a stacked token bar reads as three
+/// parts instead of two parts and a shadow. The heatmap has its own sequential
+/// ramp in `ADEUsageHeatmap` — a scale is a scale, not a theme token.
 private enum WorkUsageColors {
-  static let tokenInput = ADEColor.info
-  static let tokenOutput = ADEColor.warning
-  static let tokenCache = ADEColor.textMuted
+  static let tokenInput = ADEColor.purpleAccent
+  static let tokenOutput = ADEColor.info
+  static let tokenCache = ADEColor.seriesTokenCache
   static let insertions = ADEColor.success
   static let deletions = ADEColor.danger
-  static let github = ADEColor.textMuted
-  static let heatmap = ADEColor.info
+  static let github = ADEUsageChartStyle.otherColor
   static let client: [String: Color] = [
-    "desktop": ADEColor.info,
+    "desktop": ADEColor.purpleAccent,
     "mobile": Color.pink,
     "tui": ADEColor.success,
     "web": Color.teal,
@@ -186,30 +197,8 @@ private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: In
   }
 }
 
-private func workUsageCompact(_ value: Int) -> String {
-  if value >= 1_000_000_000 { return String(format: "%.1fB", Double(value) / 1_000_000_000) }
-  if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
-  if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000) }
-  return value.formatted()
-}
-
-private let workUsageDayParser: DateFormatter = {
-  let formatter = DateFormatter()
-  formatter.locale = Locale(identifier: "en_US_POSIX")
-  formatter.dateFormat = "yyyy-MM-dd"
-  return formatter
-}()
-
-private let workUsageDayDisplay: DateFormatter = {
-  let formatter = DateFormatter()
-  formatter.setLocalizedDateFormatFromTemplate("MMMd")
-  return formatter
-}()
-
-private func workUsageFormatDay(_ date: String) -> String {
-  guard let parsed = workUsageDayParser.date(from: date) else { return date }
-  return workUsageDayDisplay.string(from: parsed)
-}
+// Magnitude and day formatting come from ADEUsageDesign.swift so the module and
+// the Settings Usage page can never disagree about what "1.2M" or "Aug 8" means.
 
 struct WorkUsageActivityCarousel: View {
   let refreshRevision: Int
@@ -286,7 +275,7 @@ struct WorkUsageActivityCarousel: View {
     if tab == .limits { return "Live Claude and Codex limits from the connected machine." }
     guard let summary else { return "Activity for \(range.title). Loading." }
     let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
-    return "Activity for \(range.title): \(workUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
+    return "Activity for \(range.title): \(adeUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
   }
 
   private var header: some View {
@@ -317,9 +306,9 @@ struct WorkUsageActivityCarousel: View {
         Text(tab.title)
           .lineLimit(1)
         Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .semibold))
+          .font(ADEUsageType.microFont(.semibold))
       }
-      .font(.caption.weight(.semibold))
+      .font(ADEUsageType.detailFont(.semibold))
       .foregroundStyle(ADEColor.textPrimary)
       .padding(.horizontal, 10)
       .frame(minHeight: 32)
@@ -340,9 +329,9 @@ struct WorkUsageActivityCarousel: View {
       HStack(spacing: 4) {
         Text(range.title)
           .lineLimit(1)
-          .font(.caption.weight(.medium))
+          .font(ADEUsageType.detailFont(.medium))
         Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .semibold))
+          .font(ADEUsageType.microFont(.semibold))
       }
       .foregroundStyle(ADEColor.textSecondary)
       .padding(.horizontal, 9)
@@ -385,13 +374,13 @@ struct WorkUsageActivityCarousel: View {
     HStack(spacing: 6) {
       Group {
         if tab == .limits, let snapshot = quotaStore.snapshot {
-          Text("Checked \(mobileUsageRelativeTime(snapshot.lastPolledAt))")
+          Text("Checked \(adeUsageRelativeTime(snapshot.lastPolledAt))")
           if quotaStore.refreshing { ProgressView().controlSize(.mini) }
         } else if let summary {
           let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
-          Text("\(workUsageCompact(summary.totalTokens ?? 0)) tokens")
+          Text("\(adeUsageCompact(summary.totalTokens ?? 0)) tokens")
           Text("·")
-          Text("\(workUsageCompact(sessions)) sessions")
+          Text("\(adeUsageCompact(sessions)) sessions")
           if let activeDays = summary.activeDays, activeDays > 0 {
             Text("·")
             Text("\(activeDays) active \(activeDays == 1 ? "day" : "days")")
@@ -402,7 +391,7 @@ struct WorkUsageActivityCarousel: View {
           Text("No activity yet")
         }
       }
-      .font(.caption2)
+      .font(ADEUsageType.microFont())
       .foregroundStyle(ADEColor.textMuted)
       .lineLimit(1)
 
@@ -463,25 +452,25 @@ private struct WorkUsageTooltip: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
-      Text(workUsageFormatDay(detail.date))
-        .font(.caption2.weight(.semibold))
+      Text(adeUsageFormatDay(detail.date))
+        .font(ADEUsageType.detailFont(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
-      Text("\(workUsageCompact(detail.totalTokens)) tokens · \(workUsageCompact(detail.inputTokens)) in / \(workUsageCompact(detail.outputTokens)) out")
-        .font(.system(size: 11))
+      Text("\(adeUsageCompact(detail.totalTokens)) tokens · \(adeUsageCompact(detail.inputTokens)) in / \(adeUsageCompact(detail.outputTokens)) out")
+        .font(ADEUsageType.microFont())
         .foregroundStyle(ADEColor.textMuted)
       if detail.cachedTokens > 0 || detail.sessions > 0 {
-        Text("\(workUsageCompact(detail.cachedTokens)) cache · \(detail.sessions) \(detail.sessions == 1 ? "session" : "sessions")")
-          .font(.system(size: 11))
+        Text("\(adeUsageCompact(detail.cachedTokens)) cache · \(detail.sessions) \(detail.sessions == 1 ? "session" : "sessions")")
+          .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
       }
       if detail.code > 0 {
-        Text("+\(workUsageCompact(detail.insertions)) / -\(workUsageCompact(detail.deletions)) lines")
-          .font(.system(size: 11))
+        Text("+\(adeUsageCompact(detail.insertions)) / -\(adeUsageCompact(detail.deletions)) lines")
+          .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
       }
       if detail.githubCode > 0 {
-        Text("GitHub +\(workUsageCompact(detail.githubAdditions)) / -\(workUsageCompact(detail.githubDeletions))")
-          .font(.system(size: 11))
+        Text("GitHub +\(adeUsageCompact(detail.githubAdditions)) / -\(adeUsageCompact(detail.githubDeletions))")
+          .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
       }
     }
@@ -492,19 +481,6 @@ private struct WorkUsageTooltip: View {
     .shadow(color: Color.black.opacity(0.2), radius: 6, y: 2)
     .accessibilityElement(children: .combine)
   }
-}
-
-private func mobileUsageRelativeTime(_ iso: String) -> String {
-  let fractional = ISO8601DateFormatter()
-  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  guard let date = fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else {
-    return "recently"
-  }
-  let seconds = max(0, Int(Date().timeIntervalSince(date)))
-  if seconds < 60 { return "now" }
-  if seconds < 3_600 { return "\(seconds / 60)m ago" }
-  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
-  return "\(seconds / 86_400)d ago"
 }
 
 private struct WorkUsageQuotaCompact: View {
@@ -527,29 +503,34 @@ private struct WorkUsageQuotaCompact: View {
                 .accessibilityHidden(true)
             }
             Text(providerLabel(provider))
-              .font(.caption.weight(.semibold))
+              .font(ADEUsageType.detailFont(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .frame(width: 48, alignment: .leading)
-            Text(fiveHour.map { "5h \(Int($0.clampedPercentUsed))%" } ?? "5h —")
+            // Reserved widths: these tick while the module is on screen, and
+            // without a fixed advance every poll shuffles the neighbouring
+            // figures sideways.
+            Text(fiveHour.map { "5h \(Int($0.clampedPercentUsed.rounded()))%" } ?? "5h —")
+              .frame(width: 62, alignment: .leading)
             Text(weekly.map {
               let label = $0.windowType == "monthly" ? "month" : "week"
-              return "\(label) \(Int($0.clampedPercentUsed))%"
+              return "\(label) \(Int($0.clampedPercentUsed.rounded()))%"
             } ?? "week —")
+              .frame(width: 78, alignment: .leading)
             Spacer(minLength: 0)
             Text(mobileUsageStatusLabel(status))
               .foregroundStyle(ADEColor.textMuted)
           }
-          .font(.system(.caption2, design: .monospaced))
+          .font(ADEUsageType.microFont().monospacedDigit())
           if provider == "codex", snapshot.spendControlReached == true {
             Text("Spending cap reached")
-              .font(.caption2.weight(.semibold))
+              .font(ADEUsageType.detailFont(.semibold))
               .foregroundStyle(ADEColor.warning)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
       } else {
         Text("Connect to a machine to load live limits.")
-          .font(.caption2)
+          .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
       }
     }
@@ -564,25 +545,33 @@ private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> Str
   return status.state == "ok" ? source : "\(status.state.uppercased()) · \(source)"
 }
 private struct WorkUsageHeatmap: View {
+  /// Increase Contrast gets a hairline on every tile so the steps stay crisp
+  /// when the system flattens the fills.
+  @Environment(\.colorSchemeContrast) private var contrast
   let points: [MobileAdeUsageDailyPoint]
   let selectedId: String?
   let onSelect: (WorkUsageBucketDetail) -> Void
 
   var body: some View {
     let buckets = workUsageBuckets(points, maxCount: 70)
-    let maximum = max(1, buckets.map(\.activity).max() ?? 1)
+    // Quartiles over the non-zero days, exactly as desktop buckets them — a
+    // linear value/max ramp collapses every ordinary day onto the floor tone as
+    // soon as one outlier session lands in the range.
+    let levels = ADEUsageHeatmap.levels(buckets.map(\.activity))
+    let today = ADEUsageHeatmap.localDayKey()
     // Fill the box: a short range is one tall row of large cells; longer ranges
     // use a 7-row calendar grid (columns = weeks). Cells stretch to fill both
     // dimensions instead of leaving the chart area mostly blank.
     let rows = buckets.count <= 7 ? 1 : 7
-    let columns = stride(from: 0, to: buckets.count, by: rows).map { start in
-      Array(buckets[start..<min(start + rows, buckets.count)])
+    let indices = Array(buckets.indices)
+    let columns = stride(from: 0, to: indices.count, by: rows).map { start in
+      Array(indices[start..<min(start + rows, indices.count)])
     }
     HStack(spacing: 3) {
       ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
         VStack(spacing: 3) {
-          ForEach(column) { bucket in
-            cell(bucket, maximum: maximum)
+          ForEach(column, id: \.self) { index in
+            cell(buckets[index], level: levels[index], isToday: buckets[index].date == today)
           }
           if column.count < rows {
             ForEach(0..<(rows - column.count), id: \.self) { _ in
@@ -595,21 +584,34 @@ private struct WorkUsageHeatmap: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
-  private func cell(_ bucket: WorkUsageVisualBucket, maximum: Int) -> some View {
+  private func cell(_ bucket: WorkUsageVisualBucket, level: Int, isToday: Bool) -> some View {
     RoundedRectangle(cornerRadius: 2, style: .continuous)
-      .fill(bucket.activity == 0
-        ? ADEColor.textMuted.opacity(0.10)
-        : WorkUsageColors.heatmap.opacity(0.25 + 0.72 * Double(bucket.activity) / Double(maximum)))
+      .fill(ADEUsageHeatmap.fill(level: level))
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .overlay {
         if selectedId == bucket.date {
           RoundedRectangle(cornerRadius: 2, style: .continuous)
             .stroke(ADEColor.textPrimary.opacity(0.6), lineWidth: 1)
+        } else if isToday {
+          // Today's anchor: drawn inside the tile rather than outside it, since
+          // the 3pt gutter here is smaller than desktop's and an outer ring
+          // would bleed into the neighbouring day.
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .stroke(ADEColor.textPrimary.opacity(0.45), lineWidth: 1)
+        } else if contrast == .increased || level == 0 {
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .stroke(
+              ADEColor.textPrimary.opacity(contrast == .increased ? 0.26 : 0.06),
+              lineWidth: 0.5
+            )
         }
       }
       .contentShape(Rectangle())
       .onTapGesture { onSelect(detail(bucket)) }
-      .accessibilityLabel("\(workUsageFormatDay(bucket.date)), \(workUsageCompact(bucket.tokens)) tokens")
+      .accessibilityLabel(
+        "\(adeUsageFormatDay(bucket.date))\(isToday ? " (today)" : ""), "
+          + "\(adeUsageCompact(bucket.tokens)) tokens"
+      )
   }
 
   private func detail(_ bucket: WorkUsageVisualBucket) -> WorkUsageBucketDetail {
@@ -657,7 +659,7 @@ private struct WorkUsageBars: View {
         }
       } else {
         Text(mode == .tokens ? "No token usage in this range." : "No code changes in this range.")
-          .font(.caption2)
+          .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
@@ -666,8 +668,8 @@ private struct WorkUsageBars: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(mode == .tokens ? "AI token flow" : "Code movement")
     .accessibilityValue(mode == .tokens
-      ? "\(workUsageCompact(buckets.reduce(0) { $0 + $1.inputTokens })) input and \(workUsageCompact(buckets.reduce(0) { $0 + $1.outputTokens })) output tokens"
-      : "\(workUsageCompact(buckets.reduce(0) { $0 + $1.insertions })) additions and \(workUsageCompact(buckets.reduce(0) { $0 + $1.deletions })) deletions")
+      ? "\(adeUsageCompact(buckets.reduce(0) { $0 + $1.inputTokens })) input and \(adeUsageCompact(buckets.reduce(0) { $0 + $1.outputTokens })) output tokens"
+      : "\(adeUsageCompact(buckets.reduce(0) { $0 + $1.insertions })) additions and \(adeUsageCompact(buckets.reduce(0) { $0 + $1.deletions })) deletions")
   }
 
   @ViewBuilder
@@ -740,7 +742,7 @@ private struct WorkUsageBars: View {
       }
       Spacer(minLength: 0)
     }
-    .font(.system(size: 11))
+    .font(ADEUsageType.microFont())
     .foregroundStyle(ADEColor.textMuted)
   }
 
@@ -813,7 +815,7 @@ private struct WorkUsageClientMix: View {
             .lineLimit(1)
           }
         }
-        .font(.caption2)
+        .font(ADEUsageType.microFont())
         .foregroundStyle(ADEColor.textMuted)
       }
       .frame(maxHeight: .infinity, alignment: .center)
@@ -829,7 +831,7 @@ private struct WorkUsageTabEmptyHint: View {
   let message: String
   var body: some View {
     Text(message)
-      .font(.caption2)
+      .font(ADEUsageType.microFont())
       .foregroundStyle(ADEColor.textMuted)
       .multilineTextAlignment(.center)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -851,13 +853,13 @@ private struct WorkUsageWarmEmpty: View {
         }
       }
       .frame(height: 34)
-      Text("Your activity will appear here after your first chat.")
-        .font(.caption2)
+      Text("Nothing here yet — your first Claude or Codex turn shows up within a minute.")
+        .font(ADEUsageType.microFont())
         .foregroundStyle(ADEColor.textMuted)
         .multilineTextAlignment(.center)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    .accessibilityLabel("Your activity will appear here after your first chat.")
+    .accessibilityLabel("Nothing here yet. Your first Claude or Codex turn shows up within a minute.")
   }
 }
 

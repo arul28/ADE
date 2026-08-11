@@ -1,19 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise as RefreshCw, Gauge, X } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowClockwise as RefreshCw, ArrowSquareOut, Gauge, X } from "@phosphor-icons/react";
 import type {
   AiProviderConnections,
   UsageProvider,
   UsageSnapshot,
 } from "../../../shared/types";
 import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
+import { navigateToAppTarget } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
-import { UsageQuotaPanel } from "./UsageQuotaPanel";
+import { UsageLimitsBand } from "./UsageLimitsBand";
+import {
+  USAGE_BUTTON_CLASS,
+  USAGE_DIVIDER_COLOR_CLASS,
+  USAGE_HAIRLINE_CLASS,
+  USAGE_NUMERIC_CLASS,
+  USAGE_OVERLAY_BG_CLASS,
+  USAGE_TEXT,
+  usagePressureColor,
+} from "./usageDesign";
+import { formatUpdatedAge } from "./usageWindowFormat";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { shouldApplyUsageSnapshot } from "./usageSnapshotOrdering";
+import { useUsageSnapshot } from "./useUsageSnapshot";
 
 const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
@@ -29,11 +40,7 @@ function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?:
   return null;
 }
 
-function thresholdColor(percent: number): string {
-  if (percent >= 100) return "#EF4444";
-  if (percent >= 75) return "#F59E0B";
-  return "#22C55E";
-}
+const WARNING_COLOR = "var(--color-usage-warn, #F5A623)";
 
 function clampPercent(percent: number): number | null {
   if (!Number.isFinite(percent)) return null;
@@ -73,9 +80,16 @@ function percentLabel(percent: number | null): string {
   return percent == null ? "…" : `${Math.round(percent)}%`;
 }
 
+// The chip stays quota-led: it is the ambient "am I about to be cut off"
+// signal. Its thresholds are the shared ones, so "nearly dry" means the same
+// thing in the top bar as it does on the Usage page. Below the warn threshold
+// it reads calm green rather than a provider brand colour, because the chip
+// carries no provider identity.
 function percentStyle(percent: number | null): React.CSSProperties {
   return {
-    color: percent == null ? "var(--color-muted-fg)" : thresholdColor(percent),
+    color: percent == null
+      ? "var(--color-muted-fg)"
+      : usagePressureColor(percent, "var(--color-usage-ok, #34D399)"),
   };
 }
 
@@ -84,16 +98,8 @@ function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
 }
 
 function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string {
-  const t = snapshot ? Date.parse(snapshot.lastPolledAt) : Number.NaN;
-  if (!Number.isFinite(t)) return "";
-  const sec = Math.max(0, Math.round((nowMs - t) / 1000));
-  if (sec < 5) return "updated just now";
-  if (sec < 60) return `updated ${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `updated ${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `updated ${hr}h ago`;
-  return `updated ${Math.round(hr / 24)}d ago`;
+  const age = formatUpdatedAge(snapshot?.lastPolledAt, nowMs);
+  return age === "not updated" ? "" : `updated ${age}`;
 }
 
 // A quiet, non-destructive warning: data is being shown, but the last refresh
@@ -127,7 +133,9 @@ function HeaderProviderUsageChip({
       title={`${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`}
     >
       <ProviderLogo provider={provider} size={14} />
-      <span className="inline-flex items-center gap-0.5 font-mono text-[9px] font-semibold tabular-nums">
+      <span
+        className={cn("inline-flex items-center gap-0.5 font-semibold", USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}
+      >
         <span className="text-muted-fg">{usage.planLabel}</span>
         <span style={percentStyle(usage.planPercent)}>{percentLabel(usage.planPercent)}</span>
       </span>
@@ -145,16 +153,23 @@ export function HeaderUsageControl({
   deferInitialRead?: boolean;
 } = {}) {
   const [open, setOpen] = useState(false);
-  const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] =
     useState<AiProviderConnections | null | undefined>(undefined);
-  const [bindingRevision, setBindingRevision] = useState(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const snapshotRef = useRef<UsageSnapshot | null>(null);
-  const bindingGenerationRef = useRef(0);
-
-  const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // The single subscription behind this surface. The band inside the popover
+  // used to own a second one — its own ordering guard, binding generation and
+  // refresh path — and hand its snapshot back up through `onSnapshotChange`,
+  // so the copy here was only ever overwritten by the copy down there.
+  const usage = useUsageSnapshot({
+    readSnapshot: !deferInitialRead || open,
+    // Demand is raised only while the popover is actually on screen: it tells
+    // the adaptive scheduler this surface is being watched, which is not true
+    // of a closed popover behind a chip.
+    noteDemand: open,
+  });
+  const { snapshot, refreshing, bindingRevision, refreshNow } = usage;
 
   // Tick the "updated Xs ago" label only while the popup is open.
   useEffect(() => {
@@ -164,70 +179,17 @@ export function HeaderUsageControl({
     return () => window.clearInterval(timer);
   }, [open]);
 
-  const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
-    if (!shouldApplyUsageSnapshot(nextSnapshot, snapshotRef.current)) return;
-    snapshotRef.current = nextSnapshot;
-    setSnapshot(nextSnapshot);
-  }, []);
-
-  const handleRefresh = useCallback(async () => {
-    if (!window.ade?.usage?.refresh) return;
-    const requestedGeneration = bindingGenerationRef.current;
-    setRefreshing(true);
-    try {
-      const next = await window.ade.usage.refresh();
-      if (next && requestedGeneration === bindingGenerationRef.current) applySnapshot(next);
-    } catch {
-      // swallow
-    } finally {
-      setRefreshing(false);
-    }
-  }, [applySnapshot]);
-
+  // Drop the previous runtime's answer the moment the binding changes, so the
+  // old project's meters are not drawn for the fraction of a second the new
+  // answer is in flight. Keyed off a ref rather than folded into the fetch
+  // effect below, which also re-runs when the popover opens — clearing there
+  // would flicker the chips on every open.
+  const clearedBindingRef = useRef(bindingRevision);
   useEffect(() => {
-    if (!window.ade?.usage) return;
-    const usageBridge = window.ade.usage;
-    let cancelled = false;
-    const readSnapshot = async () => {
-      try {
-        const nextSnapshot = await usageBridge.getSnapshot();
-        return { failed: false, snapshot: nextSnapshot };
-      } catch {
-        return { failed: true, snapshot: null };
-      }
-    };
-    const unsubscribe = usageBridge.onUpdate?.((nextSnapshot) => {
-      if (!cancelled) applySnapshot(nextSnapshot);
-    });
-    const readCachedSnapshot = () => {
-      if (cancelled) return;
-      const requestedGeneration = bindingGenerationRef.current;
-      void readSnapshot().then(({ failed, snapshot: nextSnapshot }) => {
-        if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
-        const currentSnapshot = snapshotRef.current;
-        if (failed && currentSnapshot) return;
-        applySnapshot(nextSnapshot);
-      });
-    };
-    const unsubscribeBinding = window.ade.app.onProjectBindingChanged?.(() => {
-      bindingGenerationRef.current += 1;
-      snapshotRef.current = null;
-      setSnapshot(null);
-      setProviderConnections(undefined);
-      setBindingRevision((revision) => revision + 1);
-      readCachedSnapshot();
-    });
-
-    if (!deferInitialRead || open) {
-      readCachedSnapshot();
-    }
-
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-      unsubscribeBinding?.();
-    };
-  }, [applySnapshot, deferInitialRead, open]);
+    if (clearedBindingRef.current === bindingRevision) return;
+    clearedBindingRef.current = bindingRevision;
+    setProviderConnections(undefined);
+  }, [bindingRevision]);
 
   // Fetch provider connection status so the header only shows configured
   // Claude/Codex usage meters.
@@ -237,6 +199,13 @@ export function HeaderUsageControl({
       setProviderConnections(undefined);
       return;
     }
+    // `bindingRevision` is a dependency, not a value: provider connections are
+    // resolved by whichever runtime the project is bound to, so a rebind (open
+    // a project, connect a remote) has to re-ask. The bare `void` is what keeps
+    // it in the dependency array — nothing reads it, and without the reference
+    // it reads as an unused dep and gets removed, which silently pins the chips
+    // to the previous runtime's answer.
+    void bindingRevision;
     const aiBridge = window.ade.ai;
     let cancelled = false;
     const loadProviderStatus = () => {
@@ -318,7 +287,8 @@ export function HeaderUsageControl({
       type="button"
       role="menuitem"
       className={cn(
-        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90",
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left font-medium text-muted-fg transition-colors duration-150 hover:bg-muted hover:text-fg",
+        USAGE_TEXT.micro,
       )}
       onClick={openUsage}
       title={buttonTitle}
@@ -330,11 +300,11 @@ export function HeaderUsageControl({
         size={12}
         weight="regular"
         className={cn("shrink-0", hasErrors && "animate-pulse")}
-        style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
+        style={{ color: hasErrors ? WARNING_COLOR : "var(--color-accent)" }}
       />
       <span className="min-w-0 flex-1 truncate">Usage</span>
       {providersWithUsage.length > 0 ? (
-        <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/55">
+        <span className={cn("shrink-0 text-muted-fg", USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}>
           {providersWithUsage.map(({ provider, usage }) => (
             `${PROVIDER_LABEL[provider]} ${percentLabel(usage.planPercent)}`
           )).join(" · ")}
@@ -346,7 +316,8 @@ export function HeaderUsageControl({
       type="button"
       className={cn(
         "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1",
-        "text-[11px] font-medium transition-colors duration-150",
+        "font-medium transition-colors duration-150",
+        USAGE_TEXT.micro,
       )}
       data-variant="ghost"
       onClick={() => setOpen((value) => !value)}
@@ -366,7 +337,7 @@ export function HeaderUsageControl({
           size={18}
           weight="regular"
           className={cn(hasErrors && "animate-pulse")}
-          style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
+          style={{ color: hasErrors ? WARNING_COLOR : "var(--color-accent)" }}
         />
       )}
     </button>
@@ -384,9 +355,22 @@ export function HeaderUsageControl({
         >
           <div
             ref={panelRef}
+            // The shell surface, the same hook every other top-bar popover
+            // reads. An earlier pass moved this to `bg-surface-overlay`, which
+            // is `rgba(255,255,255,0.92)` on the light theme — the popover read
+            // as see-through and unanchored. A popover over live content needs
+            // to be opaque; that is what this variable is for.
+            //
+            // The fallback is the theme's raised token rather than the shell's
+            // literal `#121019`, because everything inside is drawn in `text-fg`
+            // and a fixed dark plate would be dark-on-dark under the light
+            // theme. `USAGE_OVERLAY_BG_CLASS` keeps this identical to the chart
+            // and heatmap readouts.
             className={cn(
-              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(520px,calc(100vw-24px))] overflow-y-auto",
-              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45"
+              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(420px,calc(100vw-24px))] overflow-y-auto",
+              "rounded-xl border shadow-2xl shadow-black/45",
+              USAGE_HAIRLINE_CLASS,
+              USAGE_OVERLAY_BG_CLASS,
             )}
             role="dialog"
             aria-modal="true"
@@ -400,37 +384,47 @@ export function HeaderUsageControl({
               }
             }}
           >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
+            <div
+              className={cn(
+                "sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3",
+                USAGE_DIVIDER_COLOR_CLASS,
+                USAGE_OVERLAY_BG_CLASS,
+              )}
+            >
               <div className="flex min-w-0 items-center gap-2">
-                <Gauge size={16} weight="regular" className="shrink-0 opacity-85" />
-                <div id="header-usage-title" className="truncate text-[13px] font-semibold">
+                <Gauge size={16} weight="regular" className="shrink-0 text-muted-fg" />
+                <div id="header-usage-title" className={cn("truncate font-semibold text-fg", USAGE_TEXT.body)}>
                   Usage
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {updatedAgo ? (
-                  <span className="flex items-center gap-1.5 text-[10.5px] tabular-nums text-fg/40">
-                    <span>{updatedAgo}</span>
-                    {warning.warn ? (
-                      <span
-                        className="h-1.5 w-1.5 rounded-full bg-amber-400/80"
-                        title={warning.detail ?? "Some usage couldn't be refreshed"}
-                        aria-label={warning.detail ?? "Some usage couldn't be refreshed"}
-                      />
-                    ) : (
-                      <span
-                        className="h-1.5 w-1.5 rounded-full bg-emerald-400/70"
-                        title="Usage is up to date"
-                        aria-hidden
-                      />
+                  <span
+                    className={cn(
+                      "flex items-center gap-1.5 text-muted-fg",
+                      USAGE_TEXT.micro,
+                      USAGE_NUMERIC_CLASS,
                     )}
+                  >
+                    <span>{updatedAgo}</span>
+                    <span
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{
+                        background: warning.warn
+                          ? WARNING_COLOR
+                          : "var(--color-usage-ok, #34D399)",
+                      }}
+                      title={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : "Usage is up to date"}
+                      aria-label={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : undefined}
+                      aria-hidden={warning.warn ? undefined : true}
+                    />
                   </span>
                 ) : null}
                 <button
                   type="button"
                   className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
                   data-variant="ghost"
-                  onClick={() => void handleRefresh()}
+                  onClick={() => void refreshNow()}
                   disabled={refreshing}
                   title="Refresh usage"
                 >
@@ -447,8 +441,19 @@ export function HeaderUsageControl({
                 </button>
               </div>
             </div>
-            <div className="space-y-3 p-3">
-              <UsageQuotaPanel onSnapshotChange={applySnapshot} />
+            <div className="flex flex-col gap-3 p-3">
+              <UsageLimitsBand nowMs={nowMs} usage={usage} />
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  navigateToAppTarget({ kind: "settings", tab: "stats", anchor: "ade-usage" });
+                }}
+                className={cn(USAGE_BUTTON_CLASS, "min-h-9 justify-center", USAGE_TEXT.detail)}
+              >
+                Open Usage
+                <ArrowSquareOut size={12} weight="regular" />
+              </button>
             </div>
           </div>
         </div>

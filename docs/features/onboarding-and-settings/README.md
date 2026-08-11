@@ -272,7 +272,7 @@ Renderer — settings:
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The ten tabs are General, Appearance, Agents & Models,
   Lanes, Integrations, Notifications, Activity, Secrets, Diagnostics, and
-  ADE Stats. Every tab id ADE has ever shipped in
+  Usage. Every tab id ADE has ever shipped in
   a URL still resolves via `LEGACY_TAB_ALIASES`
   (`settingsManifest.test.ts` asserts this); the one exception is
   `keybindings`, dropped because it pointed at a tab with no keybindings
@@ -567,7 +567,7 @@ Renderer — settings:
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
   and directs signed-out users to account sign-in.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
-  and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
+  and `UsageLimitsBand.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget
   guardrails are consolidated here. The header renders one compact
   chip per detected tracked provider with the 5-hour window and the
@@ -585,9 +585,11 @@ Renderer — settings:
   reject an older snapshot within the same project binding, and clear then
   reload both quota and provider-connection state when the binding changes.
   This keeps the compact percentages and the open panel on the same live
-  machine-brain snapshot even across fast project or machine switches. The
-  panel drills down into 5-hour, weekly, monthly, and other reset windows with
-  explicit source, updated time, stale state, and inline provider errors.
+  machine-brain snapshot even across fast project or machine switches.
+  `UsageLimitsBand` is one component with two hosts — the popover body and the
+  **Live limits** band on Settings > Usage — so a window reads identically in
+  both. It drills down into 5-hour, weekly, monthly, and other reset windows
+  with explicit source, updated time, stale state, and inline provider errors.
   Claude background polling never prompts Keychain and explicit local refresh
   can fall back from OAuth to a bounded CLI probe. When a non-interactive
   caller cannot authoritatively read Claude credentials, the service preserves
@@ -606,31 +608,76 @@ Renderer — settings:
   the first snapshot for a binding and newer/equal poll timestamps, while each
   component explicitly resets the guard when the project binding changes.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
-  — Settings > Usage, split into **Limits** and **Activity** tabs. Limits
-  renders the same live quota contract as the header without starting a local
-  ledger scan. Activity is a sectioned dashboard rather than a single
-  carousel. Its header carries two segmented controls — a **scope** toggle (This
-  project / This machine, persisted to `ade.stats.scope.v1`, default project)
-  and a **range** toggle (Today / 7d / 30d / year / all, default all) — plus
-  a Refresh button. Below the header: an **Overview** row of stat tiles (AI tokens,
-  estimated cost, code movement, pull requests), an **Activity** section that
-  mounts `ActivityModule` (`variant="full"`, `showRangeControl={false}`), and
-  a two-panel row of **AI usage** (deduplicated per-provider token totals and
-  per-model breakdown, with per-provider estimation notes) and **Code & PRs**
-  (GitHub activity and ADE-local activity as separate labeled columns, never
-  max-merged). A meta line at the bottom reports freshness ("refreshing"),
-  estimation caveats, and which scope the provider totals were computed at.
-  It reads `window.ade.usage.getAdeStats({ preset, scope })` and calls
-  `window.ade.usage.refreshHistory()` for explicit Activity refresh; the first render is
+  — Settings > Usage. One scrolling page, deliberately not split by where a
+  number comes from: dividing live limits from history means "am I spending a
+  lot, and am I about to be cut off" takes two screens held in your head.
+  Reading order is cost incurred, the
+  shape of how it was incurred, then the limits that decide whether you can
+  keep going: an estimated-cost hero with a per-provider split, the layered
+  daily chart (`UsageDailyChart`), the **Live limits** band
+  (`UsageLimitsBand`, the same component the header popover uses), a metric
+  strip, **Activity** (`ActivityModule`, `variant="full"`,
+  `showRangeControl={false}`), a **Breakdown** panel (per-provider and
+  per-model totals with estimation notes, plus GitHub and ADE-local activity as
+  separate labeled columns, never max-merged), and a **Machines** list for
+  account scope. The header carries a three-way **scope** control (All machines
+  / This machine / This project, persisted to `ade.stats.scope.v1`), a **range**
+  control (Today / 7d / 30d / year / all, `ade.stats.range.v1`), and Refresh.
+  A meta line reports freshness ("refreshing"), estimation caveats, and the
+  scope the provider totals were computed at. It reads
+  `window.ade.usage.getAdeStats({ preset, scope })` and calls
+  `window.ade.usage.refreshHistory()` for explicit refresh; the first render is
   stale-while-revalidate (cached provider/GitHub data plus live project-DB
   aggregates return immediately while expensive provider-ledger and `gh` scans
   refresh in the background). Provider colors come from `providerColor`.
+- `apps/desktop/src/renderer/components/usage/UsageDailyChart.tsx` — the
+  layered daily chart, plotting one series per provider from
+  `AdeUsageDailyPoint.byProvider` for either cost or tokens. Top-N providers by
+  volume get their own series and the tail merges into a neutral **Other**; a
+  host that reports no per-provider split falls back to one combined series
+  rather than rendering empty. `buildDayColumns` / `selectTopSeries` do the
+  bucketing and series selection outside render.
+- `apps/desktop/src/renderer/components/usage/usageDailyChartModel.ts` — that
+  chart's React-free half: day-column reduction, series selection, scale, curve
+  maths, and SVG path geometry, with the component left to measure a box and
+  render what comes back. Being React-free is load-bearing rather than tidy:
+  `usageTrackingService.test.ts` asserts the main process's daily split against
+  this reducer instead of a re-implementation, and importing the component to do
+  that dragged React and the whole icon graph into a main-process test.
+  Everything is re-exported from `UsageDailyChart.tsx`, so no call site needs to
+  know about the split.
+- `apps/desktop/src/renderer/components/usage/useUsageSnapshot.ts` — the single
+  subscription to the host's live usage snapshot (`getSnapshot` / `onUpdate` /
+  `onProjectBindingChanged`, the binding-generation guard, and
+  `shouldApplyUsageSnapshot` ordering), owned by the popover and passed down.
+  The popover and the quota band each used to keep a private copy with its own
+  guard and then hand it back up through a callback — two readers and two guards
+  over one number, which is the arrangement where a late response is discarded
+  by one and accepted by the other.
+- `apps/desktop/src/renderer/components/usage/usageDesign.ts` — the shared
+  visual vocabulary for every usage surface: five type steps and no more, card
+  and section rhythm, pressure colors, and the chart's top-N/Other rule.
+  Everything resolves to the app's Tailwind theme variables, which is what
+  makes the usage surfaces follow light and dark instead of the dark-only
+  `rgba()` literals they used to bake in.
+- `apps/desktop/src/renderer/components/usage/usageWindowFormat.ts` — window
+  labels, reset countdowns, percentages, and pace/trend phrasing, shared so the
+  header chip and the Live limits band describe one window with the same words.
+- `apps/desktop/src/renderer/components/usage/UsagePaceBar.tsx` and
+  `UsageSegmented.tsx` — the quota pace bar and the segmented control used by
+  both usage surfaces.
 - `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
   live quota snapshot plus the retrospective `getAdeUsageStats(args)`
-  projection. `args.scope` selects `machine` (every session in the provider's
-  local ledgers, codeburn-comparable) or `project` (only sessions attributable
+  projection. `args.scope` selects `account` (every machine on the ADE account,
+  merged from published rollups), `machine` (every session in the provider's
+  local ledgers, codeburn-comparable), or `project` (only sessions attributable
   to the current project root by cwd match); GitHub and ADE-DB metrics are
-  always project/repo scoped regardless of scope. Provider token totals are
+  always project/repo scoped regardless of scope. The three are one control
+  rather than two axes — a project normally lives on one machine. `account`
+  merges historical cost, tokens, and code movement only; it deliberately does
+  not change the live quota windows, because provider rate limits are tied to
+  the provider account rather than the machine, so every machine already
+  reports the same window. Provider token totals are
   deduplicated from the local provider ledgers, all daily buckets and range
   boundaries key on machine-local calendar days (`localDay.ts`), and GitHub vs
   local activity are reported as separate labeled groups (never max-merged).
@@ -644,6 +691,89 @@ Renderer — settings:
   awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
   and coalesces stale provider/GitHub revalidation in the background
   (`refreshStatsInBackground`, single-flight per range + source).
+- `apps/desktop/src/main/services/usage/accountUsageRollup.ts` — folds one
+  machine's cost snapshots into day × provider × model rows and merges the
+  machines' rollups into an `account`-scoped `AdeUsageStats`, including the
+  `machines` contribution list (`live` / `rollup` / `stale` / `deduped` /
+  `failed`). Aggregates only: no transcript record, session id, or path crosses
+  the machine boundary. GitHub metrics are deliberately excluded from the merge
+  because they are repo-scoped, not machine-scoped — three machines with the
+  same clone would triple one PR count — so the account page shows the local
+  machine's GitHub numbers and says so in `sourceNotes`.
+- `apps/desktop/src/main/services/usage/accountUsageRollupStore.ts` — durable,
+  CRR-replicated storage for those rollups in `usage_machine_rollups` /
+  `usage_machine_rollup_meta`, retaining `ROLLUP_RETAINED_DAYS` (400) so the
+  longest `year` preset is never short a day at its far edge. Uniqueness is the
+  composite primary key `(machine_key, day, provider, model)`, because a
+  CRR-converted table may not carry any UNIQUE index besides its primary key.
+  Writers skip no-op upserts so republishing unchanged history does not churn
+  the CRR clock. The store never throws at its caller: a Usage page that cannot
+  read its own cache shows one machine's numbers, not an error.
+- `apps/desktop/src/main/services/usage/accountUsageSource.ts` — dedupe of two
+  machines that read the *same* transcript files (a synced home, an SMB/NFS
+  share, a roaming profile), which would otherwise double every token. Identity
+  travels with the files: a `.ade-usage-source` marker id written once into the
+  transcript home, so whoever mounts that directory reads that id wherever it is
+  mounted. `isSameTranscriptSource` is marker-then-roots and nothing else — when
+  both sides carry a marker, equal ids are the same source and different ids are
+  not; when either side has none, the folded root digests must match exactly.
+  Roots are sha256 digests of `pathKey`-normalized paths, so no absolute path
+  leaves the machine that scanned it. The known trade: two machines cloned from
+  one disk image share a marker and merge, under-counting — visible in the
+  Machines list as `deduped`, and the opposite direction from silent
+  double-counting. Deleting the marker on one of them mints a fresh id.
+- `apps/desktop/src/main/services/usage/accountUsageLiveRefresh.ts` — the
+  opportunistic half: ask whichever machines are reachable right now for a fresh
+  rollup over the paired remote-connection pool
+  (`usage.getUsageRollup`), capped at `MAX_LIVE_MACHINES` (12) so a large fleet
+  cannot turn one page open into a fan-out storm. Best effort by design — the
+  durable rollups are the floor the page renders from and this only raises it,
+  so an unreachable machine becomes a `failure` entry, never a rejected promise
+  that takes the other machines' numbers down with it. A peer that genuinely
+  does not know the method is reported as too old to share usage; the guard
+  explicitly excludes authorization denials, which ADE also dresses in
+  `methodNotFound`.
+- `apps/desktop/src/main/services/usage/usagePricing.ts` — per-model token
+  rates. The maintained public rate list (BerriAI/litellm's
+  `model_prices_and_context_window.json`, fetched with a 10 s timeout, cached to
+  `~/.ade/litellm-pricing.json`, refreshed daily, and also read from
+  codeburn's cache) wins whenever it prices the model; ADE's static table is the
+  fallback for an offline machine and for models the list has never heard of.
+  Missing fields fill one at a time — a list entry with input and output but no
+  cache-write rate takes that one field from the static row, then from the
+  conventional ratios — rather than dropping the whole entry back to the static
+  table. A cached list stops outranking the table after 30 days.
+  `tokenPriceSource(model)` reports `list` or `fallback` so a cost headline can
+  say where its rates came from. See
+  [Usage tracking strategy](./usage-tracking.md#where-a-token-price-comes-from).
+- `apps/desktop/src/main/services/usage/githubActivityStats.ts` — commits, pull
+  requests, and the code movement inside them, lifted out of
+  `usageTrackingService.ts` because it is the one part of it that talks to
+  something off the machine. It shells out to `gh` under a 60 s command timeout
+  and fails soft: no `gh`, no auth, and no remote are the common case, not an
+  error state, so every path returns an empty stats object carrying a sentence
+  about why instead of throwing into the page. The service consumes it through
+  `scanGithubActivityStats` and merges the result into the daily series itself.
+- `apps/desktop/src/main/services/usage/usageLedgerWorkerClient.ts` — spawns and
+  folds the isolated ledger scan. The worker streams NDJSON (a roster header,
+  then one line per provider as it finishes) so a timeout returns the providers
+  that landed instead of discarding every finished scan along with the running
+  one. `incompleteProviders` — providers reached but not fully readable, plus
+  providers whose root yielded nothing — becomes `publishLocalRollup`'s
+  `skipReconcileProviders` so a partial round is never read as a deletion, and
+  carries the previous round's snapshots forward so it cannot lower a totals
+  figure. Its `LEDGER_WORKER_TIMEOUT_MS` is the origin of every budget above it:
+  `USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS` (remote JSON-RPC leg) and
+  `USAGE_REFRESH_HISTORY_TIMEOUT_MS` (renderer IPC and the runtime-backed
+  `usage.refreshHistory` action) are derived from it so the chain increases
+  monotonically outward rather than racing.
+- `apps/desktop/src/main/services/account/localMachineIdentity.ts` — the single
+  answer to "which machine is this?" for the account directory: the key peers
+  stamp onto incoming usage rollups and the directory files this computer's data
+  under. It depends on nothing from Electron, so the rollup publisher and the
+  CLI-hosted brain resolve the same identity without importing the IPC bridge —
+  publishing under a different key would mint a phantom machine no peer ever
+  reconciles with the real one.
 - `apps/desktop/src/main/services/usage/providerQuotaParsers.ts` — normalizes
   Claude and Codex live-quota response variants. Codex buckets use their
   advertised duration (minute- or second-based fields) to determine whether a
@@ -1008,9 +1138,9 @@ changing rather than which service backs it:
 | Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| ADE Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
-> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`) and Settings > Usage > Limits. The Activity tab is the retrospective cross-client dashboard.
+> Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
 
 
 Legacy deep links are forwarded by `LEGACY_TAB_ALIASES` /

@@ -65,11 +65,21 @@ export type AdeUsageClientSurface = "desktop" | "mobile" | "tui" | "web" | "api"
 
 /**
  * Scope of provider-ledger metrics.
+ * - `account` — every machine on the ADE account, merged from published rollups.
  * - `machine` — every session found in the provider's local ledgers (codeburn-comparable).
  * - `project` — only sessions attributable to the current project root (cwd match).
  * GitHub and ADE-DB metrics are always project/repo scoped regardless of this value.
+ *
+ * The three are mutually exclusive rather than two independent axes. A project
+ * normally lives on one machine, so "this project across all machines" is a
+ * combination worth neither the second control nor the four states to test.
+ *
+ * `account` deliberately does not change the live quota windows: provider rate
+ * limits are tied to the provider account, not the machine, so every machine
+ * already reports the same window and splitting it per machine would imply a
+ * difference that does not exist.
  */
-export const ADE_USAGE_SCOPES = ["machine", "project"] as const;
+export const ADE_USAGE_SCOPES = ["account", "machine", "project"] as const;
 
 export type AdeUsageScope = (typeof ADE_USAGE_SCOPES)[number];
 
@@ -94,7 +104,26 @@ export type GetAdeUsageStatsArgs = {
   until?: string | null;
   /** Defaults to "machine" (legacy behavior). */
   scope?: AdeUsageScope;
+  /**
+   * Bypass the account fan-out's rate floor for this read.
+   *
+   * Set only by an explicit user action (the Refresh button). The floor exists
+   * because an account-scoped read starts a refresh whose update causes another
+   * read; a user pressing Refresh is outside that loop and must not be silently
+   * suppressed merely because the page already read on mount.
+   */
+  force?: boolean;
 };
+
+/**
+ * Where the rates behind a cost figure came from.
+ *
+ * `list` = the maintained public rate list (BerriAI/litellm's published JSON,
+ * fetched or from its cache), which is authoritative; `fallback` = ADE's
+ * built-in table, used when the list is unavailable or does not price the
+ * model; `mixed` = both, across different models.
+ */
+export type AdeUsagePricingSource = "list" | "fallback" | "mixed";
 
 export type AdeUsageProviderSummary = {
   provider: string;
@@ -107,6 +136,11 @@ export type AdeUsageProviderSummary = {
   last30dCostUsd: number;
   /** Omitted/`exact` when counts are provider-recorded. */
   estimation?: AdeUsageEstimationKind;
+  /**
+   * Which rate card priced this provider's tokens: the maintained public rate
+   * list, ADE's built-in fallback, or both across different models.
+   */
+  pricingSource?: AdeUsagePricingSource;
   /** False when this provider's ledger cannot be filtered to a project (machine-only). */
   scopeSupported?: boolean;
   /** Tokens attributed to ADE-originated sessions (subset of totalTokens). */
@@ -172,6 +206,16 @@ export type AdeUsageClientSummary = {
   lastActiveAt: string | null;
 };
 
+/** One provider's contribution to a single day. */
+export type AdeUsageDailyProviderPoint = {
+  totalTokens: number;
+  /**
+   * Cost of this provider's tokens for the day, at full API rates. Not money
+   * spent — subscription plans bill separately.
+   */
+  costUsd: number;
+};
+
 export type AdeUsageDailyPoint = {
   /** Local calendar day (YYYY-MM-DD in the machine's timezone). */
   date: string;
@@ -190,6 +234,15 @@ export type AdeUsageDailyPoint = {
   durationMs?: number;
   interactions?: number;
   clients?: Partial<Record<AdeUsageClientSurface, number>>;
+  /**
+   * Per-provider split of this day's tokens and cost, keyed by provider id.
+   *
+   * The flat `totalTokens` above answers "how much", but the daily chart plots
+   * one series per provider, which cannot be recovered from a sum. Optional
+   * because hosts predating this field still report the flat totals, and the
+   * chart falls back to a single combined series rather than rendering empty.
+   */
+  byProvider?: Record<string, AdeUsageDailyProviderPoint>;
   /** GitHub-reported measures for the same day, kept separate from local ones. */
   githubCommits?: number;
   githubPrs?: number;
@@ -304,11 +357,114 @@ export type AdeUsageStats = {
     error: string | null;
   };
   sourceNotes?: string[];
+  /**
+   * When the loaded copy of the public rate list was fetched. Null = none is
+   * loaded, so every cost here came from the built-in fallback table.
+   */
+  pricingUpdatedAt?: string | null;
   freshness?: {
     state: "fresh" | "refreshing" | "stale";
     providerUpdatedAt: string | null;
     githubUpdatedAt: string | null;
   };
+  /**
+   * Which machines contributed to an `account`-scoped result, and how well.
+   * Optional so a host predating account scope still returns a valid payload —
+   * the UI then shows the single-machine numbers with no machine list.
+   */
+  machines?: AdeUsageMachineContribution[];
+};
+
+// ---------------------------------------------------------------------------
+// Account-wide (multi-machine) usage merge
+// ---------------------------------------------------------------------------
+
+/**
+ * How one machine ended up in (or out of) an account-scoped total.
+ *
+ * - `live`    — refreshed directly from the machine while the page was open.
+ * - `rollup`  — counted from the machine's last published daily rollup.
+ * - `stale`   — counted from a rollup older than the freshness horizon. Still
+ *               in the totals; the UI should say the numbers lag.
+ * - `deduped` — excluded because another machine reads the same transcript
+ *               source (synced home directory, shared mount). Counting both
+ *               would double every token.
+ * - `failed`  — reported nothing usable. Missing from the totals, never an
+ *               error that empties the page.
+ */
+export type AdeUsageMachineState = "live" | "rollup" | "stale" | "deduped" | "failed";
+
+export type AdeUsageMachineContribution = {
+  machineKey: string;
+  /** Best available display label (custom name, then hostname, then key). */
+  label: string;
+  platform: string | null;
+  /** True for the machine that produced this response. */
+  isLocal: boolean;
+  state: AdeUsageMachineState;
+  /** When this machine's counted data was captured. */
+  lastReportedAt: string | null;
+  /** Machine key this one was deduped against, when `state` is "deduped". */
+  dedupedAgainstMachineKey?: string | null;
+  /** Tokens this machine contributed to the merged range total (0 when excluded). */
+  totalTokens: number;
+  /** Cost this machine contributed to the merged range total (0 when excluded). */
+  costUsd: number;
+  /** Log-free reason for `failed`/`stale`, safe to show. */
+  message?: string | null;
+};
+
+/** One day × provider × model aggregate row. Never a transcript record. */
+export type AdeUsageRollupRow = {
+  /** Local calendar day, YYYY-MM-DD. */
+  date: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  calls: number;
+};
+
+/**
+ * Identity of the transcript files a machine read.
+ *
+ * Two machines that mount the same home directory read the same marker id
+ * (`sourceId`, written into that directory so it travels with the files) and
+ * fold the same paths into the same `roots`.
+ *
+ * The rule the merge applies (`isSameTranscriptSource`): when both sides carry
+ * a marker, equal ids are the same source and different ids are not — full
+ * stop. When either side has no marker, the folded `roots` must match exactly.
+ *
+ * A marker is a file, so a disk image or a restored backup hands two genuinely
+ * separate machines the same id and they merge, under-counting. That is a
+ * deliberate trade for a rule with no moving parts, and it shows up in the
+ * machine list rather than silently — see `accountUsageSource.ts`.
+ */
+export type AdeUsageTranscriptSource = {
+  /** Marker id read from the transcript home, or null when unavailable. */
+  sourceId: string | null;
+  /**
+   * sha256 digests of the comparison-normalized transcript roots, sorted.
+   * Digested, not raw: no absolute path leaves the machine that scanned it.
+   */
+  roots: string[];
+};
+
+/** A machine's compact, self-describing contribution to account totals. */
+export type AdeUsageRollup = {
+  /** Rollup wire version. Bump when the row shape changes meaning. */
+  version: 1;
+  machineKey: string;
+  label: string;
+  platform: string | null;
+  /** When the underlying ledger scan produced these rows. */
+  capturedAt: string;
+  source: AdeUsageTranscriptSource;
+  rows: AdeUsageRollupRow[];
 };
 
 // ---------------------------------------------------------------------------
@@ -424,6 +580,8 @@ export type CostSnapshot = {
   dailyTokensByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, number>>>;
   /** How this provider's token counts were obtained. Omitted = exact. */
   estimation?: AdeUsageEstimationKind;
+  /** Which rate card priced this provider's models. */
+  pricingSource?: AdeUsagePricingSource;
   /** False when this ledger cannot be filtered to a project scope. */
   scopeSupported?: boolean;
   /** Tokens attributed to ADE-originated sessions, by preset. */

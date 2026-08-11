@@ -48,6 +48,12 @@ import {
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import {
+  ADE_USAGE_RANGE_PRESETS,
+  ADE_USAGE_SCOPES,
+  isAdeUsageRangePreset,
+  isAdeUsageScope,
+} from "../../desktop/src/shared/types/usage";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
@@ -699,7 +705,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget  Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
@@ -2377,10 +2383,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Usage and provider quotas
 
   Reads authoritative Claude and Codex quota windows, pacing, cached local
-  history, and budget guardrails. Live quota refresh is intentionally separate
-  from local provider-ledger scans.
+  history, token/cost stats, and budget guardrails. Live quota refresh is
+  intentionally separate from local provider-ledger scans.
 
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
+    $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
+    $ ade usage stats --scope account --text        Merge every machine on the account
+    $ ade usage stats --scope project --preset 30d  This project only
+    $ ade usage stats --scope account --force       Skip the account fan-out rate floor
+    $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade --role cto usage refresh --text           Refresh live provider quota only
     $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
@@ -10872,6 +10883,47 @@ function buildUsagePlan(args: string[]): CliPlan {
       kind: "execute",
       label: "usage snapshot",
       steps: [actionStep("result", "usage", "getUsageSnapshot", {})],
+    };
+  }
+  // The token/cost half of the desktop Usage page. `snapshot` above answers
+  // "how much quota is left"; this answers "what has been spent", which is a
+  // different service call with its own range and scope.
+  if (sub === "stats" || sub === "ade" || sub === "spend") {
+    const preset = readValue(args, ["--preset", "--range"]);
+    if (preset != null && !isAdeUsageRangePreset(preset)) {
+      throw new CliUsageError(
+        `usage stats --preset must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
+      );
+    }
+    const scope = readValue(args, ["--scope"]);
+    if (scope != null && !isAdeUsageScope(scope)) {
+      throw new CliUsageError(
+        `usage stats --scope must be one of ${ADE_USAGE_SCOPES.join(", ")}.`,
+      );
+    }
+    const since = readValue(args, ["--since"]);
+    if (since != null && Number.isNaN(Date.parse(since))) {
+      throw new CliUsageError("usage stats --since must be an ISO timestamp.");
+    }
+    const until = readValue(args, ["--until"]);
+    if (until != null && Number.isNaN(Date.parse(until))) {
+      throw new CliUsageError("usage stats --until must be an ISO timestamp.");
+    }
+    // Only meaningful for --scope account: it bypasses the fan-out's rate
+    // floor, which exists so a page that reads on every update cannot loop.
+    const force = readFlag(args, ["--force", "--refresh"]);
+    return {
+      kind: "execute",
+      label: "usage stats",
+      steps: [
+        actionStep("result", "usage", "getAdeUsageStats", collectGenericObjectArgs(args, {
+          ...(preset != null ? { preset } : {}),
+          ...(isAdeUsageScope(scope) ? { scope } : {}),
+          ...(since != null ? { since } : {}),
+          ...(until != null ? { until } : {}),
+          ...(force ? { force: true } : {}),
+        })),
+      ],
     };
   }
   if (sub === "refresh" || sub === "poll") {

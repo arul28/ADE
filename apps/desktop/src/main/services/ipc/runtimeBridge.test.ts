@@ -2856,10 +2856,13 @@ describe("registerIpc sync bridge", () => {
 
   it("validates usage range arguments before forwarding renderer IPC", async () => {
     const getAdeUsageStats = vi.fn(async () => ({ generatedAt: "2026-07-09T12:00:00.000Z" }));
+    // The stats handler also installs the account live-refresh fetcher on the
+    // current usage service, so the stub has to carry that seam.
+    const setAccountRollupFetcher = vi.fn();
     registerIpc({
       getCtx: () => ({
         logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
-        usageTrackingService: { getAdeUsageStats },
+        usageTrackingService: { getAdeUsageStats, setAccountRollupFetcher },
       }) as any,
       getWindowSession: () => ({
         windowId: 7,

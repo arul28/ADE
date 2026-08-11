@@ -23,6 +23,10 @@ import {
   type ProductAnalyticsService,
 } from "./productAnalyticsService";
 import { createUsageProductAnalyticsExporter } from "./usageProductAnalyticsExporter";
+import {
+  usageScopeSelectedCapture,
+  USAGE_SCOPE_ANALYTICS_MIN_INTERVAL_MS,
+} from "./usageScopeAnalytics";
 
 function makeHarness(options: {
   token?: string;
@@ -295,6 +299,74 @@ describe("productAnalyticsService", () => {
       dedupeKey: "chat_mention_expanded",
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("accepts one usage scope fact per scope per day and strips everything but the scope", () => {
+    let nowMs = Date.parse("2026-08-09T09:00:00.000Z");
+    const harness = makeHarness({ now: () => nowMs });
+
+    // The account-scope read carries a machine list, machine keys, a project
+    // path and token totals locally. None of that may cross the boundary: the
+    // capture is built by `usageScopeSelectedCapture`, and everything below is
+    // what a careless caller would bolt on.
+    expect(harness.service.capture({
+      ...usageScopeSelectedCapture("account"),
+      properties: {
+        ...usageScopeSelectedCapture("account").properties,
+        machine_count: 4,
+        machine_key: "not-a-real-machine-key",
+        project_path: "/Users/alice/secret-project",
+        total_tokens: 918_233,
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "usage",
+      action: "scope_selected",
+      outcome: "account",
+    });
+    for (const forbidden of ["machine_count", "machine_key", "project_path", "total_tokens"]) {
+      expect(harness.messages[0]?.properties).not.toHaveProperty(forbidden);
+    }
+    expect(JSON.stringify(harness.messages[0])).not.toContain("secret-project");
+
+    // The Usage page re-reads on every `usage.onUpdate`. A hundred of those
+    // must cost nothing, or this becomes a per-poll event.
+    for (let read = 0; read < 100; read += 1) {
+      nowMs += 60_000;
+      expect(harness.service.capture(usageScopeSelectedCapture("account")))
+        .toEqual({ accepted: false, reason: "duplicate" });
+    }
+    expect(harness.messages).toHaveLength(1);
+
+    // The other two scopes are separate facts, so switching the control still
+    // reports — three accepted events per installation per UTC day, total.
+    expect(harness.service.capture(usageScopeSelectedCapture("machine")))
+      .toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.capture(usageScopeSelectedCapture("project")))
+      .toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages.map((message) => (message.properties as Record<string, unknown>).outcome))
+      .toEqual(["account", "machine", "project"]);
+
+    // A day later the same scope is news again.
+    nowMs += 24 * 60 * 60 * 1_000;
+    expect(harness.service.capture(usageScopeSelectedCapture("account")))
+      .toEqual({ accepted: true, reason: "accepted" });
+
+    // A scope outside the closed set is dropped rather than widening it: the
+    // event still lands, but with no `outcome` at all.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "usage", action: "scope_selected", outcome: "everything" },
+      projectId: null,
+      dedupeKey: "usage_scope:everything",
+      minimumIntervalMs: USAGE_SCOPE_ANALYTICS_MIN_INTERVAL_MS,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages.at(-1)?.properties).not.toHaveProperty("outcome");
+
+    // The local fingerprint is never transmitted, hashed or otherwise.
+    expect(JSON.stringify(harness.messages)).not.toContain("usage_scope:");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 

@@ -50,6 +50,21 @@ export function formatDate(ts: string | null, fallback = "-"): string {
   return d.toLocaleString();
 }
 
+/**
+ * A `YYYY-MM-DD` calendar day as a short, localized label ("Aug 9").
+ *
+ * Two of these existed on the usage page: this one, and a hand-rolled twin in
+ * the daily chart that indexed a hardcoded English month table — so the same
+ * date read in the user's locale under the heatmap and in English on the axis
+ * above it. Parsed at local midnight rather than through `Date.parse`, which
+ * reads a bare `YYYY-MM-DD` as UTC and shifts the label a day west of GMT.
+ */
+export function formatDayShort(date: string): string {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 /** Format an ISO timestamp to HH:MM time string. */
 export function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -100,19 +115,69 @@ export function formatElapsedSince(startIso: string): string {
   return `${secs}s`;
 }
 
-/** Format a token count with K/M/B suffixes. */
-export function formatTokens(n: number): string {
+/**
+ * Group the integer part of an already-formatted number with thousands
+ * separators. Applied inside `formatCost` and `formatCompact` so every surface
+ * printing a full-precision figure gets them without re-deriving it. Suffixed
+ * output (`1.2M`) never reaches four integer digits, so it needs none.
+ */
+function withThousandsSeparators(value: string): string {
+  const [integer = "", ...rest] = value.split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return rest.length > 0 ? `${grouped}.${rest.join(".")}` : grouped;
+}
+
+/**
+ * A large count, shortened. `1.2K` / `3.4M` / `1.1B`, grouped below 1000.
+ *
+ * The one compactor *for the usage surfaces*. Three lived on the usage page
+ * alone — this one, a `k/M/B` variant inside the daily chart, and a third in
+ * the activity module that dropped the decimal above 10M — so the same figure
+ * printed three ways across three panels of a single screen. Upper-case `K` is
+ * the settled form there.
+ *
+ * It is not the app's only compactor: the composer's context meter
+ * (`chat/usage/contextUsageModel.ts`, `shared/contextCompaction.ts`) and the PR
+ * badges (`prs/shared/prVisuals.tsx`, `prs/shared/prListGrouping.ts`) still emit
+ * lower-case `k` on their own rounding. Unifying those is a change to three
+ * unrelated surfaces and their pinned tests, not a formatting cleanup.
+ *
+ * The `999_950` boundaries are deliberate. Rounding happens before the suffix
+ * is chosen, so a plain `>= 1_000_000` test prints `1000.0K` for 999,999. Below
+ * that boundary the value is at most 999 once floored, so no grouping applies —
+ * it prints as a plain integer.
+ */
+export function formatCompact(n: number): string {
   const value = Number.isFinite(n) ? Math.max(0, n) : 0;
   if (value >= 999_950_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
   if (value >= 999_950) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  if (value >= 999.95) return `${(value / 1_000).toFixed(1)}K`;
   return String(Math.floor(value));
 }
 
-/** Format a USD cost value. */
-export function formatCost(usd: number): string {
+/** A token count. Named for its call sites; `formatCompact` does the work. */
+export function formatTokens(n: number): string {
+  return formatCompact(n);
+}
+
+/**
+ * Format a cost value, USD unless told otherwise.
+ *
+ * Grouped: lifetime spend runs into five figures, and `$23127.73` is read as a
+ * different order of magnitude than `$23,127.73` at a glance.
+ *
+ * `currency` takes an ISO 4217 code and hands off to `Intl`, which is the only
+ * thing that knows where a symbol goes and what it is. Callers must validate
+ * the code first — `Intl` throws a RangeError on a malformed one, and a cost
+ * formatter that can take a render down is worse than one that cannot show EUR.
+ */
+export function formatCost(usd: number, currency?: string): string {
+  if (!Number.isFinite(usd)) return currency ? formatCost(0, currency) : "$0.00";
+  if (currency) {
+    return usd.toLocaleString("en-US", { style: "currency", currency });
+  }
   if (usd < 0.01) return "<$0.01";
-  return `$${usd.toFixed(2)}`;
+  return `$${withThousandsSeparators(usd.toFixed(2))}`;
 }
 
 /** Map a status string to Tailwind text+border classes (automations style). */

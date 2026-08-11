@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   _testing,
+  LEDGER_STREAM_HEADER_KIND,
   parseUsageLedgerWorkerResult,
   resolveUsageLedgerWorkerPath,
   scanUsageLedgersInWorker,
@@ -147,6 +148,90 @@ describe("usage ledger worker client", () => {
 
     await expect(promise).rejects.toMatchObject({ name: "AbortError" });
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("folds the per-provider stream and marks providers that never reported", async () => {
+    const child = fakeChild();
+    const promise = scanUsageLedgersInWorker(null, {
+      workerPath: __filename,
+      spawnWorker: (() => child) as never,
+    });
+    child.stdout.write(`${JSON.stringify({
+      kind: LEDGER_STREAM_HEADER_KIND,
+      providers: ["claude", "codex", "droid"],
+    })}\n`);
+    child.stdout.write(`${JSON.stringify({
+      provider: "claude",
+      costs: [{ provider: "claude", todayCostUsd: 1, last30dCostUsd: 2, tokenBreakdown: {} }],
+      projectCosts: [],
+      daily7d: [0, 0, 0, 0, 0, 0, 3],
+      entryCount: 5,
+    })}\n`);
+    // A line split across two chunks, and a malformed line between two good
+    // ones: neither may cost the scan a provider it already read.
+    child.stdout.write(`{"provider":"codex","costs":[],"projectCosts":[],"entr`);
+    child.stdout.write(`yCount":7,"incomplete":true}\nnot json\n`);
+    child.stdout.end();
+    child.emit("close", 0, null);
+
+    const result = await promise;
+    expect(result.entryCounts).toEqual({ claude: 5, codex: 7 });
+    expect(result.daily7d).toEqual({ claude: [0, 0, 0, 0, 0, 0, 3] });
+    expect(result.costs).toHaveLength(1);
+    // `droid` was on the roster and never wrote a line, so it did not run. That
+    // is "unread", not "removed" — the distinction `publishLocalRollup` needs
+    // to avoid deleting the provider's replicated history.
+    expect(result.incompleteProviders.sort()).toEqual(["codex", "droid"]);
+  });
+
+  it("returns the providers that finished when the worker times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const promise = scanUsageLedgersInWorker(null, {
+        workerPath: __filename,
+        spawnWorker: (() => child) as never,
+      });
+      child.stdout.write(`${JSON.stringify({
+        kind: LEDGER_STREAM_HEADER_KIND,
+        providers: ["claude", "codex"],
+      })}\n`);
+      child.stdout.write(`${JSON.stringify({
+        provider: "claude",
+        costs: [],
+        projectCosts: [],
+        entryCount: 4,
+      })}\n`);
+      // Codex is still scanning when the deadline lands. Rejecting here is what
+      // left `costCacheTimestamp` at 0 and the Usage page permanently at zero
+      // on a machine with a large Codex history.
+      await vi.advanceTimersByTimeAsync(_testing.LEDGER_WORKER_TIMEOUT_MS + 1);
+
+      const result = await promise;
+      expect(result.entryCounts).toEqual({ claude: 4 });
+      expect(result.incompleteProviders).toEqual(["codex"]);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still rejects a timeout that produced nothing at all", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const promise = scanUsageLedgersInWorker(null, {
+        workerPath: __filename,
+        spawnWorker: (() => child) as never,
+      });
+      // The assertion is attached before the clock moves: `advanceTimersByTimeAsync`
+      // drains microtasks, so a rejection with no handler yet reads as unhandled.
+      const rejects = expect(promise).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(_testing.LEDGER_WORKER_TIMEOUT_MS + 1);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects non-zero exits with bounded stderr context", async () => {

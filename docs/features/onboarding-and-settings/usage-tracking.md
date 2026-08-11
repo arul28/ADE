@@ -111,6 +111,183 @@ sidecar. Desktop packaging validation derives its required ADE CLI payload from
 This keeps Activity useful on large Codex histories without putting live Limits
 refreshes or the ADE runtime behind an unbounded disk/memory pass.
 
+### The worker streams, so a timeout is partial rather than total
+
+The worker used to buffer every provider and write one JSON object at the very
+end, which meant a timeout — or any failure — threw away eight finished scans
+along with the one still running. It now writes NDJSON: a
+`ade-usage-ledger-stream/1` header naming the full roster it is about to walk,
+then one line per provider as that provider finishes. The header is what lets
+the client tell "this provider reported nothing" from "this provider never got
+to run" and mark the latter incomplete rather than removed. On timeout the
+client folds whatever arrived and returns it.
+
+`incompleteProviders` is the load-bearing half of that result. It carries both
+providers the scan reached but could not read in full and providers whose root
+exists and yielded nothing, and it is consumed in exactly one place: as
+`publishLocalRollup`'s `skipReconcileProviders`. Rows a round failed to produce
+must not be read as a deletion, or one partial scan would wipe replicated
+history on every peer; the same set carries the previous round's cost snapshots
+forward so a partial scan cannot lower a provider's totals.
+
+The worker's own ceiling (`LEDGER_WORKER_TIMEOUT_MS`, ten minutes) is a bound on
+a wedged child, not a budget for a normal scan — 32 GB of Codex sessions
+measured at 78 s for all nine providers. Every budget in front of it is derived
+from it rather than guessed, and increases monotonically outward: the remote
+JSON-RPC transport (`USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS`,
+worker + 15 s), then the renderer IPC and local-runtime action budget
+(`USAGE_REFRESH_HISTORY_TIMEOUT_MS`, worker + 30 s). On the old 30 s IPC default
+the renderer rejected with a raw timeout and blanked the page while the daemon
+kept scanning for another nine minutes.
+
+## Where a token price comes from
+
+Cost is an estimate, but it must be the *same* estimate everywhere: two machines
+reporting different dollars for identical usage is the failure the ordering in
+`usagePricing.ts` exists to prevent.
+
+The maintained public rate list — BerriAI/litellm's
+`model_prices_and_context_window.json` — wins whenever it prices the model.
+ADE's static table is the fallback: what answers when the list cannot be fetched
+and has never been cached, and what answers for models the list has never heard
+of (a bare `qwen3.5-9b`, ADE's own coarse `claude-opus` / `codex` buckets at the
+end of `resolveTokenPrice`). `tokenPriceSource(model)` reports which of the two
+answered, as `list` or `fallback`, so a headline cost figure can say where its
+rates came from.
+
+Mechanics:
+
+- the list is fetched with a 10 s timeout, cached to `~/.ade/litellm-pricing.json`,
+  and refreshed once a day; a failed refresh keeps whatever is loaded. A
+  codeburn-written cache at `~/.cache/codeburn/litellm-pricing.json` is read too,
+  and the newer of the two wins.
+- a cached copy stops outranking the static table after 30 days. Without that
+  bound a machine that went offline in March would still be pricing this year's
+  usage at March's rates, beating a table that had been corrected since.
+- entries fill field by field. A list entry gives `input_cost_per_token` and
+  `output_cost_per_token`; when it omits cache-write or cache-read rates,
+  `fillMissingPriceFields` takes them from the static entry for that model and
+  only then falls back to the `input × 1.25` / `input × 0.1` ratios. An entry
+  with no usable input or output rate is skipped entirely rather than stored as
+  a partial price.
+- lookup tries the provider-prefixed name, then the canonical name, then an
+  alias, then the longest key the canonical name extends — so a dated model id
+  resolves to its family without a per-release table edit.
+- the static table is a hand-maintained snapshot and is expected to drift. It
+  was last reconciled against the list on 2026-08-10, taking the list's number
+  wherever the two disagreed, so a machine with the cache and a machine without
+  it report the same cost.
+
+The answer reaches the page rather than staying an implementation detail. Each
+provider's stats carry `pricingSource` (`list`, `fallback`, or `mixed` when its
+models resolved both ways) and the payload carries `pricingUpdatedAt` — when the
+loaded copy of the list was fetched, or null when nothing but the built-in table
+priced anything. Settings > Usage turns the two into one plain sentence under
+the cost figures. The number is the page's headline, and an unexplained headline
+cost has burned users before.
+
+## Lifetime stats survive lane deletion
+
+Lane deletion cascades away `lanes`, `terminal_sessions`, `claude_sessions`,
+`session_deltas`, and the lane's `operations` rows, so every all-time ADE figure
+used to count only the lanes nobody had tidied up. Deleting a lane now writes one
+aggregate `lane_usage_tombstones` row first — integer counters, the created and
+deleted calendar days, and a hex active-day bitmap, and nothing that could
+reconstruct what the lane was doing. `usageStatsStore` range-filters those rows
+by the lane's active span, excludes duplicate-absorb rows from creation and
+deletion counts, and folds their decoded active days into streaks. AI token
+totals were never affected: they come from provider transcript files ADE does
+not own or delete. See
+[Lanes: what a deleted lane leaves behind](../lanes/README.md#what-a-deleted-lane-leaves-behind).
+
+## Account scope: usage across every machine
+
+`ADE_USAGE_SCOPES` is `account`, `machine`, `project` — one three-way control,
+not two independent axes. A project normally lives on one machine, so "this
+project across all machines" is a combination worth neither the second control
+nor the four states to test.
+
+Two rules shape the account scope:
+
+- **Aggregates only.** A machine publishes day × provider × model totals and
+  nothing else. Raw transcript records never leave the machine that scanned
+  them, never enter the sync layer, and are never held in memory by the merge.
+  A heavy year of use is a few thousand small rows.
+- **Historical only.** Cost, tokens, and code history merge; the live quota
+  windows do not. Provider rate limits are tied to the provider account rather
+  than the machine, so every machine already reports the same window, and
+  merging them would either double a shared limit or imply a per-machine
+  difference that does not exist.
+
+GitHub metrics are excluded from the merge for the same reason in a different
+direction: they are repo-scoped, so three machines with the same clone each
+report the same pull requests and summing them would triple work that happened
+once. The account page shows the local machine's GitHub numbers and says so in
+`sourceNotes`.
+
+### Transport: a durable floor plus an opportunistic refresh
+
+Each machine writes its own rollup to `usage_machine_rollups` and
+`usage_machine_rollup_meta`, and the existing cr-sqlite CRR pump replicates
+those tables desktop-to-desktop. That durable copy is the floor the page renders
+from, which is what lets an offline laptop still count toward account totals.
+On top of it, `accountUsageLiveRefresh.ts` asks whichever machines are reachable
+right now for a fresh rollup over the paired remote-connection pool
+(`usage.getUsageRollup`, `viewerAllowed`), capped at 12 machines per refresh so
+a large fleet cannot turn one page open into a fan-out storm. Everything in that
+path is best effort: an asleep, unpaired, or slow machine produces a failure
+entry and keeps its published rollup rather than taking the other machines'
+numbers down with it. An account-scoped read has a rate floor because the read
+starts a refresh whose update causes another read; `force` (set only by the
+Refresh button) bypasses it.
+
+Both tables are in `MOBILE_CHANGESET_EXCLUDED_TABLES`. The phone reads its usage
+from the host over `usage.getAdeStats` and never queries them, so shipping every
+machine's rows to it would be pure churn.
+
+`usage_machine_rollups` carries its uniqueness in the composite primary key
+`(machine_key, day, provider, model)`: a CRR-converted table may not carry any
+UNIQUE index besides its primary key. Writers upsert on that key and skip no-op
+updates so republishing unchanged history does not churn the CRR clock.
+
+### Dedupe: one transcript source, counted once
+
+Two machines that mount the same home directory — a synced home, an SMB/NFS
+share, a roaming profile — scan the same transcript files and would otherwise
+double every token. Nothing about a machine's own identity detects that: both
+report distinct machine keys and hostnames, and usually the very same
+`/Users/<name>` path, so comparing paths is both a false-positive risk across
+separate machines with the same username and a false negative when one side
+mounts the share elsewhere.
+
+So the identity travels with the files: a `.ade-usage-source` marker id written
+once into the transcript home. `isSameTranscriptSource` is marker-then-roots and
+nothing else:
+
+- when both sides carry a marker, equal ids are the same source and different
+  ids are not — full stop;
+- when either side has no marker (a read-only mount, a locked-down profile), the
+  folded roots must match exactly.
+
+Roots are sha256 digests of `pathKey`-normalized paths, so no absolute path
+leaves the machine that scanned it, and no comparison uses `===` on a raw path.
+
+The marker is terminal. The trade it buys: two machines cloned from one disk
+image share a marker, merge, and under-count. That failure is visible — the
+Machines list shows the second machine as `deduped` against the first — and
+deleting `.ade-usage-source` on one of them mints a fresh id on its next scan.
+It is deliberately the opposite direction from silently doubling every number on
+the page.
+
+### What the Machines list reports
+
+Every machine appears with a state: `live` (refreshed while the page was open),
+`rollup` (counted from its last published rollup), `stale` (counted from a
+rollup older than the six-hour freshness horizon, with the lag stated),
+`deduped` (excluded, with the machine it was deduped against), or `failed`
+(reported nothing usable — missing from the totals, never an error that empties
+the page).
+
 ## Claude credential hygiene (refresh storms)
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits
@@ -199,8 +376,9 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
 
 ## Desktop, CLI, remote, and mobile parity
 
-- Desktop Settings shows Limits and Activity tabs. Limits reads cached live
-  quota; Activity explicitly owns expensive history refresh.
+- Desktop Settings > Usage is one scrolling page. The Live limits band reads
+  cached live quota without starting a ledger scan; the rest of the page owns
+  the expensive history refresh explicitly.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
   the separate history path. `ade code` `/usage` reads the runtime snapshot for
   every tracked quota provider and displays source metadata.
@@ -213,3 +391,10 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   unsupported or unidentified machine, shows source/staleness, and never
   receives provider credentials. Older hosts that do not advertise the two
   quota actions remain connected in limited mode and show update guidance.
+- Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
+  composed in the same reading order as the desktop page: cost hero and
+  per-provider split, daily chart, Live limits, metric strip, breakdown. It
+  reads history through `usage.getAdeStats` and shows update guidance when the
+  host does not advertise it. Type, colour, and the chart's top-N/Other rule
+  come from `ADEUsageDesign.swift`, the iOS counterpart of `usageDesign.ts`, so
+  the page and the new-chat activity module read as one surface.

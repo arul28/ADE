@@ -7335,6 +7335,23 @@ final class ADETests: XCTestCase {
     }
   }
 
+  /// The Refresh path must send `force`, and only the Refresh path. The host
+  /// reads it by identity to bypass the account fan-out's rate floor; dropping
+  /// it fails silently (throttled, stale numbers, no error), so the argument
+  /// dictionary is asserted directly.
+  func testAdeUsageStatsCommandArgsCarryForceOnlyForExplicitRefresh() {
+    let normal = adeUsageStatsCommandArgs(preset: "30d", force: false)
+    XCTAssertEqual(normal["preset"] as? String, "30d")
+    XCTAssertNil(normal["force"])
+    // Mobile never pins a scope: the host normalizes an absent scope to
+    // "machine", while an explicit value would hard-fail older brains.
+    XCTAssertNil(normal["scope"])
+
+    let refreshed = adeUsageStatsCommandArgs(preset: "today", force: true)
+    XCTAssertEqual(refreshed["preset"] as? String, "today")
+    XCTAssertEqual(refreshed["force"] as? Bool, true)
+  }
+
   func testMobileAdeUsageStatsDecodesPayloadWithoutNewOptionalBreakdowns() throws {
     let json = """
     {
@@ -7418,6 +7435,111 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(stats.providers?.first?.adeOriginatedTokens, 70)
     XCTAssertEqual(stats.providers?.last?.estimation, "chars")
     XCTAssertEqual(stats.providers?.last?.scopeSupported, false)
+  }
+
+  /// The per-day provider split and the rate-card fields are the two additions
+  /// this release makes to the usage contract. Both decode to nil silently on a
+  /// mismatch — the page would just render a combined chart and no rates line —
+  /// so the wire shape is asserted directly.
+  func testMobileAdeUsageStatsDecodesPerProviderDailySplitAndPricingSource() throws {
+    let json = """
+    {
+      "generatedAt": "2026-08-10T12:00:00.000Z",
+      "summary": { "totalTokens": 300 },
+      "pricingUpdatedAt": "2026-08-10T11:00:00.000Z",
+      "daily": [
+        {
+          "date": "2026-08-10",
+          "totalTokens": 300,
+          "byProvider": {
+            "claude": { "totalTokens": 200, "costUsd": 1.25 },
+            "codex": { "totalTokens": 100 }
+          }
+        }
+      ],
+      "providers": [
+        { "provider": "claude", "totalTokens": 200, "rangeCostUsd": 1.25, "pricingSource": "list" },
+        { "provider": "codex", "totalTokens": 100, "pricingSource": "fallback" }
+      ]
+    }
+    """
+
+    let stats = try JSONDecoder().decode(MobileAdeUsageStats.self, from: Data(json.utf8))
+
+    XCTAssertEqual(stats.pricingUpdatedAt, "2026-08-10T11:00:00.000Z")
+    XCTAssertEqual(stats.daily.first?.byProvider?["claude"]?.totalTokens, 200)
+    XCTAssertEqual(stats.daily.first?.byProvider?["claude"]?.costUsd, 1.25)
+    XCTAssertEqual(stats.daily.first?.byProvider?["codex"]?.totalTokens, 100)
+    // A partially-populated entry keeps the day rather than dropping it.
+    XCTAssertNil(stats.daily.first?.byProvider?["codex"]?.costUsd)
+    XCTAssertEqual(stats.providers?.first?.pricingSource, "list")
+    XCTAssertEqual(stats.providers?.last?.pricingSource, "fallback")
+  }
+
+  /// A host predating `byProvider` still reports flat daily totals. The chart
+  /// must then draw one combined series rather than an empty plot under a
+  /// non-zero hero.
+  func testAdeUsageChartFallsBackToCombinedSeriesWithoutProviderSplit() throws {
+    func point(_ json: String) throws -> MobileAdeUsageDailyPoint {
+      try JSONDecoder().decode(MobileAdeUsageDailyPoint.self, from: Data(json.utf8))
+    }
+
+    let legacy = [
+      try point(#"{ "date": "2026-08-09", "totalTokens": 100 }"#),
+      try point(#"{ "date": "2026-08-10", "totalTokens": 300 }"#),
+    ]
+    // Cost is requested (the range has a cost) but no day carries per-provider
+    // cost, so the chart quietly plots tokens instead of an empty cost axis.
+    let combined = ADEUsageChartModel.build(points: legacy, metric: .cost)
+    XCTAssertTrue(combined.isCombinedFallback)
+    XCTAssertEqual(combined.metric, .tokens)
+    XCTAssertEqual(combined.series.count, 1)
+    XCTAssertEqual(combined.series.first?.total, 400)
+    XCTAssertTrue(combined.hasData)
+
+    let split = [
+      try point("""
+      {
+        "date": "2026-08-09",
+        "totalTokens": 300,
+        "byProvider": { "claude": { "totalTokens": 200, "costUsd": 2 }, "codex": { "totalTokens": 100, "costUsd": 1 } }
+      }
+      """),
+    ]
+    let perProvider = ADEUsageChartModel.build(points: split, metric: .cost)
+    XCTAssertFalse(perProvider.isCombinedFallback)
+    XCTAssertEqual(perProvider.metric, .cost)
+    XCTAssertEqual(perProvider.series.map(\.id), ["claude", "codex"])
+    XCTAssertEqual(perProvider.series.first?.total, 2)
+  }
+
+  /// The cost hero is only honest if it says which rate card produced it: the
+  /// public list and ADE's built-in table price identical usage differently.
+  func testAdeUsageRatesNoteNamesTheRateCard() {
+    XCTAssertNil(adeUsageRatesNote(sources: [], pricingUpdatedAt: nil))
+    XCTAssertEqual(
+      adeUsageRatesNote(sources: ["fallback"], pricingUpdatedAt: nil),
+      "Rates from ADE's built-in list — the public rate list couldn't be reached."
+    )
+    XCTAssertEqual(
+      adeUsageRatesNote(sources: ["list", "list"], pricingUpdatedAt: nil),
+      "Rates from the public rate list."
+    )
+    // Two different sources across providers reads the same as an explicit
+    // "mixed" from a single one.
+    let mixed = adeUsageRatesNote(sources: ["list", "fallback"], pricingUpdatedAt: nil)
+    XCTAssertEqual(mixed, adeUsageRatesNote(sources: ["mixed"], pricingUpdatedAt: nil))
+    XCTAssertEqual(mixed?.hasSuffix("only ADE's built-in list knows."), true)
+    // An unparseable timestamp must not surface a "not yet" age.
+    XCTAssertEqual(
+      adeUsageRatesNote(sources: ["list"], pricingUpdatedAt: "nonsense"),
+      "Rates from the public rate list."
+    )
+    let dated = adeUsageRatesNote(
+      sources: ["list"],
+      pricingUpdatedAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-7_200))
+    )
+    XCTAssertEqual(dated, "Rates from the public rate list, updated 2h ago.")
   }
 
   func testWorkUsageDayActivityScoreCoversEveryDimension() throws {

@@ -101,10 +101,18 @@ struct ConnectionSettingsView: View {
             SettingsAppearanceSection()
               .padding(.horizontal, 16)
 
-            SettingsUsageQuotaSection(syncService: syncService)
-              .padding(.horizontal, 16)
-
             VStack(spacing: 8) {
+              // One Usage destination — cost, activity, and live limits on a
+              // single scroll rather than a limits section here and a stats
+              // screen somewhere else.
+              SettingsNavigationRow(
+                title: "Usage",
+                subtitle: "Cost, activity, and live limits",
+                systemImage: "chart.line.uptrend.xyaxis"
+              ) {
+                SettingsUsagePage(syncService: syncService)
+              }
+
               SettingsNavigationRow(
                 title: "Connection details",
                 subtitle: "Route and connection performance",
@@ -605,219 +613,6 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     let suffix = trimmed.suffix(4)
     return "\(prefix)…\(suffix)"
   }
-}
-
-private struct SettingsUsageQuotaSection: View {
-  let syncService: SyncService
-
-  @ObservedObject private var store = MobileUsageQuotaStore.shared
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .firstTextBaseline) {
-        SettingsSectionHeader(label: "AI USAGE", hint: "Live limits from your machine")
-        Spacer(minLength: 8)
-        Button {
-          Task { await store.load(using: syncService, refresh: true) }
-        } label: {
-          if store.refreshing {
-            ProgressView().controlSize(.small)
-          } else {
-            Image(systemName: "arrow.clockwise")
-          }
-        }
-        .frame(width: 44, height: 44)
-        .buttonStyle(.plain)
-        .accessibilityLabel("Refresh AI usage limits")
-        .disabled(!syncService.supportsRemoteAction("usage.refreshQuota") || store.refreshing)
-      }
-
-      VStack(spacing: 0) {
-        if let snapshot = store.snapshot {
-          ForEach(["claude", "codex"], id: \.self) { provider in
-            SettingsUsageProviderCard(
-              provider: provider,
-              windows: snapshot.windows.filter { $0.provider == provider },
-              status: snapshot.providerStatus?[provider],
-              spendControlReached: provider == "codex" && snapshot.spendControlReached == true
-            )
-            if provider == "claude" { Divider().opacity(0.14) }
-          }
-        } else {
-          Text("Pair with an updated ADE machine to load Claude and Codex limits.")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-        }
-      }
-      .background(ADEColor.surfaceBackground.opacity(0.82), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
-
-      if let error = store.errorMessage {
-        Text(error)
-          .font(.caption2)
-          .foregroundStyle(ADEColor.warning)
-      }
-    }
-    .task(id: syncService.connectionState.rawValue) {
-      await store.load(using: syncService)
-    }
-  }
-}
-
-private struct SettingsUsageProviderCard: View {
-  let provider: String
-  let windows: [MobileUsageQuotaWindow]
-  let status: MobileUsageProviderStatus?
-  let spendControlReached: Bool
-
-  private var displayName: String { providerLabel(provider) }
-  private var providerTint: Color { ADEColor.providerBrand(for: provider) }
-  private var usageURL: URL {
-    if provider == "claude" {
-      return URL(string: "https://claude.ai/new#settings/usage")!
-    }
-    return URL(string: "https://chatgpt.com/codex/cloud/settings/analytics#usage")!
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        if let assetName = providerAssetName(provider) {
-          Image(assetName)
-            .resizable()
-            .scaledToFit()
-            .frame(width: 18, height: 18)
-            .accessibilityHidden(true)
-        }
-
-        Text(displayName)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-
-        Link(destination: usageURL) {
-          Image(systemName: "arrow.up.right")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Open \(displayName) usage in browser")
-
-        Spacer()
-        Text("\(mobileUsageProviderSource(status)) · \(mobileUsageSettingsRelativeTime(status?.updatedAt ?? status?.lastSuccessAt))")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-
-      if spendControlReached {
-        Text("Spending cap reached")
-          .font(.caption.weight(.medium))
-          .foregroundStyle(ADEColor.warning)
-      }
-
-      ForEach(windows) { window in
-        let percentUsed = window.clampedPercentUsed
-        VStack(alignment: .leading, spacing: 5) {
-          HStack {
-            Text(mobileUsageWindowLabel(window))
-            Spacer()
-            Text(String(format: "%.1f%% used", percentUsed))
-              .fontWeight(.semibold)
-          }
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-
-          ProgressView(value: percentUsed, total: 100)
-            .tint(percentUsed > 90 ? ADEColor.danger : percentUsed > 70 ? ADEColor.warning : providerTint)
-
-          Text(mobileUsageSettingsResetLabel(window.resetsAt))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-
-      if windows.isEmpty, status?.state == "ok" {
-        Text("Waiting for the next usage reading")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-
-      if let statusMessage = mobileUsageStatusMessage(status) {
-        Text(statusMessage)
-          .font(.caption2)
-          .foregroundStyle(ADEColor.warning)
-      }
-    }
-    .padding(14)
-    .accessibilityElement(children: .contain)
-  }
-}
-
-private func mobileUsageProviderSource(_ status: MobileUsageProviderStatus?) -> String {
-  switch status?.source {
-  case "oauth": return "OAuth"
-  case "http": return "HTTP"
-  case "cli": return "CLI"
-  default: return "Waiting"
-  }
-}
-
-private func mobileUsageWindowLabel(_ window: MobileUsageQuotaWindow) -> String {
-  if window.windowType == "five_hour",
-     let durationMs = window.windowDurationMs,
-     durationMs > 0 {
-    let minutes = Int((durationMs / 60_000).rounded())
-    if minutes < 60 { return "\(minutes)-min" }
-    let hours = Double(minutes) / 60
-    if hours.rounded() == hours { return "\(Int(hours))-hour" }
-    return String(format: "%.1f-hour", hours)
-  }
-  switch window.windowType {
-  case "five_hour": return "5-hour"
-  case "weekly": return "Weekly"
-  case "monthly": return "Monthly"
-  case "weekly_oauth_apps": return "OAuth apps"
-  case "weekly_cowork": return "Cowork"
-  default: return window.windowType.replacingOccurrences(of: "_", with: " ").capitalized
-  }
-}
-
-private func mobileUsageStatusMessage(_ status: MobileUsageProviderStatus?) -> String? {
-  guard let status, status.state != "ok" else { return nil }
-  if let message = status.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-    return message
-  }
-  return status.state == "stale" ? "Showing last known quota" : "Quota is unavailable"
-}
-
-private func mobileUsageSettingsDate(_ iso: String?) -> Date? {
-  guard let iso else { return nil }
-  let fractional = ISO8601DateFormatter()
-  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  return fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
-}
-
-private func mobileUsageSettingsRelativeTime(_ iso: String?) -> String {
-  guard let date = mobileUsageSettingsDate(iso) else { return "not updated" }
-  let seconds = max(0, Int(Date().timeIntervalSince(date)))
-  if seconds < 60 { return "now" }
-  if seconds < 3_600 { return "\(seconds / 60)m ago" }
-  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
-  return "\(seconds / 86_400)d ago"
-}
-
-private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
-  guard let date = mobileUsageSettingsDate(iso) else { return "Resetting soon" }
-  let seconds = max(0, Int(date.timeIntervalSinceNow))
-  if seconds == 0 { return "Resetting now" }
-  let days = seconds / 86_400
-  let hours = (seconds % 86_400) / 3_600
-  let minutes = (seconds % 3_600) / 60
-  if days > 0 { return "Resets in \(days)d \(hours)h" }
-  if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
-  return "Resets in \(minutes)m"
 }
 
 // MARK: - Machines section (M5 / M14)

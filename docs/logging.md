@@ -130,6 +130,25 @@ spec is deliberately untouched: there is no product question attached to this
 event yet, so it stays out of `scripts/posthog/dashboard-spec.mjs` until there
 is one.
 
+Which usage scope an installation actually looks at records the existing
+`ade_feature_used` event at the durable owner boundary
+(`usageTrackingService.getAdeUsageStats`, where the scope is normalized) with
+`feature: "usage"`, `action: "scope_selected"`, and the coarse scope on
+`outcome` — `machine`, `project`, or `account`. Reusing `outcome` rather than
+adding a parallel `scope` key follows the update transaction's use of the same
+key for its failed step. The product question is only whether cross-machine
+("account") usage is used at all, so nothing finer crosses the boundary: no
+machine count, machine key, project path, range preset, token count, or cost.
+The Usage page re-reads on every `usage.onUpdate`, so the renderer's segmented
+control is deliberately not the emitter; a persisted `usage_scope:<scope>`
+deduplication key with a 24-hour minimum interval collapses that read stream to
+at most three accepted events per installation per UTC day (one per scope),
+inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling — no ceiling was raised. A scope value outside the
+closed set is dropped rather than widening the allowlist. The dashboard spec is
+deliberately untouched: adoption of the scope control has no dashboard card yet,
+so it stays out of `scripts/posthog/dashboard-spec.mjs` until it does.
+
 `ade_relay_suppressed` is the same shape for the relay leg. The relay keeps one host control socket per machine and evicts the previous holder, so two ADE brains on one machine can evict each other in a loop until relay is unusable for both. When the tunnel client exhausts its eviction budget and stops dialing, it emits one event carrying only `attempt` (the bounded eviction count) and a coarse `code` (`control_replaced`). It is keyed to the suppression *episode*, not the eviction, so a whole war collapses into one accepted event, and a 24-hour deduplication window bounds it further; a recovered control socket ends the episode so a genuinely new one still reports. The relay URL, machineKey, and raw WebSocket close reason stay in local logs and never reach the payload. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `escalation_reason` to `hard_deadline` / `post_staging`, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
 
 `ade_account_session_unreadable` covers the credential-store half of the same

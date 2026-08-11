@@ -76,7 +76,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // (they import straight from `.env`), so the tab is named for what it holds.
   { id: "secrets", label: "Secrets", description: "Encrypted key/value pairs for ADE agents, desktop, and the CLI." },
   { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear." },
-  { id: "stats", label: "ADE Stats", description: "Usage, spend, and pacing across your providers." },
+  { id: "stats", label: "Usage", description: "Spend, limits, and pacing across your providers and machines." },
 ] as const;
 
 export type SettingEntry = {

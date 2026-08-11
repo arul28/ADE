@@ -1684,6 +1684,7 @@ export type SyncRemoteCommandAction =
   | "analytics.setClientEnabled"
   | "usage.getAdeStats"
   | "usage.getQuotaSnapshot"
+  | "usage.getUsageRollup"
   | "usage.refreshQuota"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
