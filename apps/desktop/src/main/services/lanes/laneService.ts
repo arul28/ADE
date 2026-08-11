@@ -3741,6 +3741,13 @@ export function createLaneService({
     );
     db.run("delete from claude_sessions where lane_id = ?", [laneId]);
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
+    // The settle-lifecycle token table is local-only with no foreign key, so a
+    // bulk session delete would otherwise leave permanent orphans. Sweep by
+    // absence rather than by id list: that covers this path and any future one,
+    // which is the failure mode a targeted cascade keeps re-introducing.
+    db.run(
+      "delete from session_lifecycle_revisions where session_id not in (select id from terminal_sessions)",
+    );
     db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from test_runs where lane_id = ? and project_id = ?", [laneId, projectId]);

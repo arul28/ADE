@@ -120,12 +120,17 @@ describe("settle-lifecycle writer", () => {
         .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
       // `=` only, never `==` — a `where settle_override = ?` comparison in a
       // SELECT is legitimate, so require the assignment form used in a SET list.
-      for (const match of code.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/g) ?? []) {
+      for (const match of code.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/gi) ?? []) {
         offenders.push(`${path.relative(roots[0], file)}: ${match}`);
       }
     }
 
     expect(offenders).toEqual([]);
+
+    // The scan is the enforcement mechanism, so prove it still bites — including
+    // for a spelling nobody in this codebase uses today.
+    const upperFixture = "UPDATE terminal_sessions SET SETTLED_AT = NULL WHERE id = ?";
+    expect(upperFixture.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/gi)).not.toBeNull();
   });
 
   it("bumps the revision on every settle-lifecycle path", async () => {
@@ -276,6 +281,55 @@ describe("settle-lifecycle writer", () => {
     service.unsettleSessions(["session-1"]);
 
     expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(afterFallback);
+  });
+
+  /**
+   * The dangerous direction, and the subtle one. Another ADE process can push
+   * the persisted revision ahead of this process's private counter. If a local
+   * mutation's table write then fails, incrementing the private counter alone
+   * can leave `max(persisted, inProcess)` UNCHANGED across a real change — and a
+   * teardown holding that token would accept a decision the world has already
+   * invalidated.
+   */
+  it("still advances when a sibling process is ahead and the local write fails", async () => {
+    const projectRoot = makeProjectRoot();
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-1",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Chat",
+      startedAt: "2026-08-11T00:01:00.000Z",
+      transcriptPath: "/tmp/session-1.log",
+      toolType: "codex-chat",
+    });
+
+    // A sibling process advanced the token to 5; this process has seen nothing.
+    db.run(
+      "insert into session_lifecycle_revisions (session_id, revision) values (?, 5)"
+      + " on conflict(session_id) do update set revision = 5",
+      ["session-1"],
+    );
+    const before = service.getSettleLifecycleRevision("session-1");
+    expect(before).toBe(5);
+
+    // Now this process mutates, and its own token write fails.
+    const realRun = db.run.bind(db);
+    (db as unknown as { run: typeof db.run }).run = (sql: string, params?: unknown[]) => {
+      if (sql.includes("session_lifecycle_revisions")) throw new Error("token write failed");
+      return realRun(sql, params as never);
+    };
+    service.settleSessions(["session-1"]);
+    (db as unknown as { run: typeof db.run }).run = realRun;
+
+    expect(
+      service.getSettleLifecycleRevision("session-1"),
+      "a real mutation must be visible even when its token write failed",
+    ).toBeGreaterThan(before);
   });
 
   it("keeps the revision table out of CRR replication", async () => {

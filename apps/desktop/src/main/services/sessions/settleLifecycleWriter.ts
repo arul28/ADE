@@ -112,21 +112,41 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
    */
   const inProcessLifecycleRevisions = new Map<string, number>();
 
+  const persistedRevision = (sessionId: string): number => {
+    const row = db.get<{ revision: number }>(
+      "select revision from session_lifecycle_revisions where session_id = ?",
+      [sessionId],
+    );
+    return row ? Number(row.revision) || 0 : 0;
+  };
+
   const bumpLifecycleRevisions = (sessionIds: readonly string[]): void => {
     for (const id of sessionIds) {
-      inProcessLifecycleRevisions.set(id, (inProcessLifecycleRevisions.get(id) ?? 0) + 1);
       try {
-        // One atomic statement, PK lookup, local-only table. This runs on the
-        // per-output-chunk path (C4), so it must not grow a pre-read.
+        // One atomic statement, PK lookup, local-only table. No pre-read: this
+        // sits on the session output path.
         db.run(
           `insert into session_lifecycle_revisions (session_id, revision) values (?, 1)
              on conflict(session_id) do update set revision = session_lifecycle_revisions.revision + 1`,
           [id],
         );
+        inProcessLifecycleRevisions.set(id, (inProcessLifecycleRevisions.get(id) ?? 0) + 1);
       } catch {
-        // The in-process counter already moved, so the guard still holds within
-        // this process; restart survival and cross-process visibility are what
-        // a failed write costs.
+        // The write failed, so this process must produce a strictly higher value
+        // on its own — and "higher" has to mean higher than what a READER would
+        // have seen, which is `max(persisted, inProcess)`. Incrementing the
+        // private counter alone is not enough: if a sibling ADE process has
+        // pushed the table ahead of it, `max` would return the same number
+        // across a real mutation, and a teardown holding that token would accept
+        // a decision the world has already invalidated. Reading here is safe —
+        // this branch is the rare one, not the output path.
+        let anchor = inProcessLifecycleRevisions.get(id) ?? 0;
+        try {
+          anchor = Math.max(anchor, persistedRevision(id));
+        } catch {
+          // Table unreadable too; the private counter is all there is.
+        }
+        inProcessLifecycleRevisions.set(id, anchor + 1);
       }
     }
   };
@@ -136,11 +156,7 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     if (!trimmed) return 0;
     let persisted = 0;
     try {
-      const row = db.get<{ revision: number }>(
-        "select revision from session_lifecycle_revisions where session_id = ?",
-        [trimmed],
-      );
-      persisted = row ? Number(row.revision) || 0 : 0;
+      persisted = persistedRevision(trimmed);
     } catch {
       persisted = 0;
     }
