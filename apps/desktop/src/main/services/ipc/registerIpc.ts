@@ -694,11 +694,15 @@ import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { PluginHostService } from "../plugins/pluginHostService";
-import { isValidPluginId } from "../../../shared/plugins/manifest";
+import { isValidPluginId, type PluginManifest } from "../../../shared/plugins/manifest";
+import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
+import { PLUGIN_ENTITY_KINDS, PLUGIN_SURFACE_IDS } from "../../../shared/plugins/sockets";
 import {
   assertPluginCollectionName,
   type PluginCollectionRow,
+  type PluginContributionRecord,
   type PluginDetail,
+  type PluginLogEntry,
   type PluginMarketplaceIndex,
   type PluginPanelRecord,
   type PluginPresenceMachineRow,
@@ -5972,6 +5976,35 @@ export function registerIpc({
     return ctx.pluginHostService.domainService(ctx.projectId).getReadme({ pluginId: requirePluginId(arg) });
   });
 
+  ipcMain.handle(IPC.pluginGetManifest, async (_event, arg: unknown): Promise<PluginManifest | null> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).getManifest({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginOpenLogs, async (_event, arg: unknown): Promise<PluginLogEntry[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    return ctx.pluginHostService.domainService(ctx.projectId).openLogs({ pluginId: requirePluginId(arg) });
+  });
+
+  ipcMain.handle(IPC.pluginListContributions, async (_event, arg: unknown): Promise<PluginContributionRecord[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["pluginHostService"]);
+    if (!isRecord(arg)) throw new Error("plugin listContributions expects an object payload.");
+    const surface = PLUGIN_SURFACE_IDS.find((id) => id === arg.surface);
+    if (!surface) throw new Error("plugin listContributions surface is not a core surface.");
+    const entityKind = PLUGIN_ENTITY_KINDS.find((kind) => kind === arg.entityKind);
+    const entityIds = Array.isArray(arg.entityIds)
+      ? arg.entityIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : undefined;
+    return ctx.pluginHostService.domainService(ctx.projectId).listContributions({
+      surface,
+      ...(entityKind ? { entityKind } : {}),
+      ...(entityIds && entityIds.length > 0 ? { entityIds } : {}),
+    });
+  });
+
   ipcMain.handle(IPC.pluginInspectSource, async (_event, arg: unknown): Promise<PluginSourceInspection | null> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["pluginHostService"]);
@@ -9749,6 +9782,31 @@ export function registerIpc({
       debug: (message, meta) => getCtx().logger.debug(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
+  });
+
+  // Presence answers from every machine, but only this process can ASK: the
+  // paired-target registry and the machine-to-machine call path live here, not
+  // in the brain that constructed the presence service. Without this the
+  // coverage matrix shows one machine — the pull is bound and inert.
+  getPluginPresenceService()?.setDirectoryClient({
+    // `null` for anything but a good listing: the presence contract reads null
+    // as "the directory could not answer" and skips the sweep, whereas an empty
+    // array would read as "this account has no other machines".
+    listMachines: async () => {
+      const listed = await accountBridge.listMachines();
+      if (listed.state !== "ok") return null;
+      return listed.machines.map((machine) => ({
+        machineKey: machine.machineKey,
+        // The user's own name for the machine wins over the reported hostname,
+        // matching how every other account surface labels it.
+        label: machine.customName?.trim() || machine.name,
+        platform: machine.platform,
+        online: machine.online,
+      }));
+    },
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
   });
 
   accountBridge.onPairMachineProgress((progress) => {

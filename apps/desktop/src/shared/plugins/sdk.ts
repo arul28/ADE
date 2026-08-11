@@ -443,6 +443,25 @@ export type PluginPresenceMachineRow = {
   isThisMachine: boolean;
 };
 
+/**
+ * One materialized socket contribution, joined to the surface it renders on.
+ *
+ * `surface` is not stored — `plugin_contributions` keys on the socket KIND, and
+ * which surface that socket belongs to lives in the plugin's manifest. The host
+ * performs that join so every client does not have to hold every manifest.
+ */
+export type PluginContributionRecord = {
+  entityKind: PluginEntityKind;
+  entityId: string;
+  pluginId: string;
+  socket: PluginSocketKind;
+  surface: PluginSurfaceId;
+  /** The manifest socket id this row fills, for ordering and per-socket toggles. */
+  socketId: string;
+  payload: unknown;
+  updatedAt: string | null;
+};
+
 /** The plugin directory, as the Marketplace reads it. */
 export type PluginMarketplaceIndex = {
   entries: PluginRegistryEntry[];
@@ -549,8 +568,25 @@ export type PluginDomainService = {
    * "this machine only" rather than as an error.
    */
   presence(): Promise<PluginPresenceMachineRow[]>;
+  /**
+   * Dynamic per-entity contributions for one surface.
+   *
+   * The half of the socket taxonomy that a manifest cannot express: static
+   * sockets say a plugin CAN badge a lane, these rows say what it says about
+   * lane 7 right now. Rows from disabled plugins and switched-off sockets are
+   * filtered here, so no caller has to re-derive that.
+   */
+  listContributions(args: {
+    surface: PluginSurfaceId;
+    entityKind?: PluginEntityKind;
+    entityIds?: string[];
+  }): Promise<PluginContributionRecord[]>;
+  /** An installed plugin's parsed manifest, or null when it has none readable. */
+  getManifest(args: { pluginId: string }): Promise<PluginManifest | null>;
   /** An installed plugin's README, or null when it ships none. */
   getReadme(args: { pluginId: string }): Promise<string | null>;
+  /** Recent log lines from the plugin's child process ring buffer. */
+  openLogs(args: { pluginId: string }): Promise<PluginLogEntry[]>;
   /** Read an install source WITHOUT installing it. See {@link PluginSourceInspection}. */
   inspectSource(args: { source: string }): Promise<PluginSourceInspection | null>;
   /**
@@ -594,13 +630,16 @@ export const PLUGIN_DOMAIN_ACTIONS = [
   "enable",
   "get",
   "getCollection",
+  "getManifest",
   "getPanel",
   "getReadme",
   "inspectSource",
   "install",
   "invoke",
   "list",
+  "listContributions",
   "marketplaceIndex",
+  "openLogs",
   "presence",
   "reload",
   "setConfig",
@@ -622,6 +661,9 @@ export const PLUGIN_READ_ONLY_DOMAIN_ACTIONS: readonly PluginDomainAction[] = [
   "getPanel",
   "getCollection",
   "getReadme",
+  "getManifest",
+  "listContributions",
+  "openLogs",
   // Reading a source is deliberately a READ: it parses a manifest the machine
   // can already see and never fetches or installs anything.
   "inspectSource",

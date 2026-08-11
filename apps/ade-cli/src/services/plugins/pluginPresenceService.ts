@@ -159,7 +159,33 @@ function normalizePresenceResponse(value: unknown): PluginPresenceRow[] | null {
   return rows;
 }
 
+/**
+ * The half of presence that can reach other machines.
+ *
+ * Supplied after construction because it only exists in the desktop main
+ * process: resolving a machine key to a paired target, and calling it, live in
+ * `remoteConnectionService`, which the brain does not have. Until it is set the
+ * pull is inert — presence still converges, because every peer pulls FROM this
+ * machine, but this machine learns nothing about theirs.
+ */
+export type PluginPresenceDirectoryClient = {
+  listMachines: () => Promise<PluginPresenceDirectoryMachine[] | null>;
+  resolveTargetIdForMachineKey: (machineKey: string) => string | null;
+  isTargetConnected?: (targetId: string) => boolean;
+  callMachineMethod: <T>(
+    targetId: string,
+    method: string,
+    params?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ) => Promise<T>;
+};
+
 export type PluginPresenceService = {
+  /**
+   * Give this machine the ability to pull, once something can. Passing null
+   * restores the inert default rather than leaving a stale caller behind.
+   */
+  setDirectoryClient(client: PluginPresenceDirectoryClient | null): void;
   /** Account-wide coverage matrix: every machine's rows, with identity joined. */
   readPresenceMatrix(): Promise<PluginPresenceMatrixRow[]>;
   /**
@@ -206,11 +232,32 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
   const labelFor = (machine: PluginPresenceDirectoryMachine): string =>
     machine.label?.trim() || machine.machineKey;
 
+  /**
+   * The reach-other-machines half, which may arrive after construction.
+   *
+   * Defaults to whatever `deps` supplied — inert in the brain, which has no
+   * machine-to-machine client — and is replaced by `setDirectoryClient` when
+   * the desktop main process, which does have one, wires itself in.
+   */
+  const defaultDirectoryClient = (): PluginPresenceDirectoryClient => ({
+    listMachines: () => deps.listMachines(),
+    resolveTargetIdForMachineKey: (machineKey: string) => deps.resolveTargetIdForMachineKey(machineKey),
+    ...(deps.isTargetConnected ? { isTargetConnected: deps.isTargetConnected } : {}),
+    callMachineMethod: <T>(
+      targetId: string,
+      method: string,
+      params?: Record<string, unknown>,
+      options?: { timeoutMs?: number },
+    ): Promise<T> => deps.callMachineMethod<T>(targetId, method, params, options),
+  });
+
+  let directoryClient: PluginPresenceDirectoryClient = defaultDirectoryClient();
+
   async function reachableTargets(): Promise<Array<{ machine: PluginPresenceDirectoryMachine; targetId: string }>> {
     const selfKey = deps.localMachineKey();
     let machines: PluginPresenceDirectoryMachine[] | null;
     try {
-      machines = await deps.listMachines();
+      machines = await directoryClient.listMachines();
     } catch (error) {
       deps.logger?.warn?.("plugin.presence.list_machines_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -222,9 +269,9 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
     for (const machine of machines) {
       if (candidates.length >= maxMachines) break;
       if (machine.machineKey === selfKey || !machine.online) continue;
-      const targetId = deps.resolveTargetIdForMachineKey(machine.machineKey);
+      const targetId = directoryClient.resolveTargetIdForMachineKey(machine.machineKey);
       if (!targetId) continue;
-      if (deps.isTargetConnected && !deps.isTargetConnected(targetId)) continue;
+      if (directoryClient.isTargetConnected && !directoryClient.isTargetConnected(targetId)) continue;
       candidates.push({ machine, targetId });
     }
     return candidates;
@@ -242,7 +289,7 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
     const nowIso = new Date(now()).toISOString();
     await Promise.all(candidates.map(async ({ machine, targetId }) => {
       try {
-        const response = await deps.callMachineMethod<unknown>(
+        const response = await directoryClient.callMachineMethod<unknown>(
           targetId,
           PLUGIN_PRESENCE_LIST_ACTION,
           {},
@@ -359,7 +406,7 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
         PLUGIN_MACHINE_UNREACHABLE_CODE,
       );
     }
-    return await deps.callMachineMethod<T>(targetId, action, params, { timeoutMs });
+    return await directoryClient.callMachineMethod<T>(targetId, action, params, { timeoutMs });
   }
 
   async function listLocalPresence(): Promise<PluginPresenceListResult> {
@@ -367,6 +414,9 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
   }
 
   return {
+    setDirectoryClient(client) {
+      directoryClient = client ?? defaultDirectoryClient();
+    },
     readPresenceMatrix,
     callOnMachine,
     async publishLocalPresence() {
@@ -384,7 +434,7 @@ export function createPluginPresenceService(deps: PluginPresenceServiceDeps): Pl
       // refresh, and presence is never worth surfacing an error for.
       await Promise.all(candidates.map(async ({ machine, targetId }) => {
         try {
-          await deps.callMachineMethod(targetId, PLUGIN_PRESENCE_SYNC_ACTION, {}, { timeoutMs });
+          await directoryClient.callMachineMethod(targetId, PLUGIN_PRESENCE_SYNC_ACTION, {}, { timeoutMs });
         } catch (error) {
           deps.logger?.debug?.("plugin.presence.nudge_failed", {
             machineKey: machine.machineKey,

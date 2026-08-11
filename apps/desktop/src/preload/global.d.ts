@@ -2160,15 +2160,15 @@ declare global {
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
       /**
-       * SINGULAR, matching the one `plugin` action domain. No `plugins` alias
-       * exists: the renderer's bridge accepts either name so an older host keeps
-       * working, but this build publishes exactly one.
+       * Shaped by type-only imports from `renderer/lib/pluginRuntimeBridge`, so
+       * drift between what preload publishes and what the UI calls is a compile
+       * error rather than a runtime empty state. One name, no alias.
        *
-       * Members with no action behind them yet (`openLogs`) are absent rather
-       * than stubbed: the renderer's bridge treats a missing member as
-       * "unavailable", and a stub would read as "supported".
+       * A member with no action behind it is absent rather than stubbed: the
+       * bridge reads a missing member as "this host cannot do it", and a stub
+       * would read as "supported".
        */
-      plugin: {
+      plugins: {
         list: () => Promise<InstalledPlugin[]>;
         getPanel: (args: {
           pluginId: string;

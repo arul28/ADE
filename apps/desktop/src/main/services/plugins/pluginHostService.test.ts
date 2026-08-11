@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Logger } from "../logging/logger";
 import { PluginSdkError } from "../../../shared/plugins/sdk";
+import { openKvDb, type AdeDb } from "../state/kvDb";
+import { createPluginDataStore } from "./pluginDataStore";
 import { disposeSharedPluginHostService, getSharedPluginHostService } from "./pluginHostService";
 
 /**
@@ -27,6 +29,10 @@ function testLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
 }
 
+function silentLogger(): Logger {
+  return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as unknown as Logger;
+}
+
 async function hostWithFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-host-"));
   scratchDirs.push(dir);
@@ -34,7 +40,7 @@ async function hostWithFixture() {
   const host = getSharedPluginHostService({ logger: testLogger(), pluginsRoot });
   const plugins = host.domainService(null);
   await plugins.install({ source: fixtureRoot });
-  return { plugins, pluginsRoot };
+  return { plugins, pluginsRoot, host };
 }
 
 function storedConfig(pluginsRoot: string): Record<string, unknown> {
@@ -175,5 +181,101 @@ describe("plugin contributions, readme and source inspection", () => {
     // Empty reads as "this machine only" rather than as an error — the rows
     // live in a project database this host has not been given.
     expect(await plugins.presence()).toEqual([]);
+  });
+
+  it("reads a plugin's manifest and its log ring, without inventing either", async () => {
+    const { plugins } = await hostWithFixture();
+
+    expect((await plugins.getManifest({ pluginId: "hello-plugin" }))?.name).toBe("hello-plugin");
+    expect(await plugins.getManifest({ pluginId: "not-installed" })).toBeNull();
+    // A plugin that has never started has no lines rather than an error.
+    expect(await plugins.openLogs({ pluginId: "hello-plugin" })).toEqual([]);
+  });
+
+  it("refuses logs for a plugin that is not installed", async () => {
+    const { plugins } = await hostWithFixture();
+
+    const rejected = await plugins.openLogs({ pluginId: "not-installed" }).catch((error: unknown) => error);
+    expect((rejected as PluginSdkError).code).toBe("plugin_not_found");
+  });
+});
+
+/**
+ * `listContributions` — the dynamic half of the socket taxonomy.
+ *
+ * The fixture declares one socket: a `row-badge` on `lanes`, id `greeting`.
+ * Everything here turns on the manifest join, because the table stores a socket
+ * KIND and only the manifest says which surface it belongs to.
+ */
+describe("plugin.listContributions", () => {
+  const openDatabases: AdeDb[] = [];
+
+  afterEach(async () => {
+    await disposeSharedPluginHostService();
+    while (openDatabases.length) openDatabases.pop()?.close();
+    while (scratchDirs.length) fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
+  });
+
+  async function hostWithProject() {
+    const { plugins, pluginsRoot, host } = await hostWithFixture();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-project-"));
+    scratchDirs.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), silentLogger());
+    openDatabases.push(db);
+    host.attachProject({
+      projectId: "project-1",
+      projectRoot,
+      db,
+      invokeAdeAction: async () => null,
+    });
+    const store = createPluginDataStore({ db });
+    return { plugins, pluginsRoot, store };
+  }
+
+  it("returns only the sockets the manifest declares for the surface asked for", async () => {
+    const { plugins, store } = await hostWithProject();
+
+    store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "3 refs", tone: "accent" });
+
+    const lanes = await plugins.listContributions({ surface: "lanes" });
+    expect(lanes).toHaveLength(1);
+    expect(lanes[0]).toMatchObject({
+      pluginId: "hello-plugin",
+      entityKind: "lane",
+      entityId: "lane-1",
+      socket: "row-badge",
+      surface: "lanes",
+      // The manifest socket id, which the row itself does not carry — it is
+      // what per-socket toggles and ordering key on.
+      socketId: "greeting",
+      payload: { text: "3 refs", tone: "accent" },
+    });
+
+    // The same row is not a PRs contribution: this plugin declares no PR socket.
+    expect(await plugins.listContributions({ surface: "prs" })).toEqual([]);
+  });
+
+  it("drops rows whose socket the user switched off, and restores them when re-enabled", async () => {
+    const { plugins, store } = await hostWithProject();
+    store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "ok", tone: "success" });
+
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "greeting", enabled: false });
+    expect(await plugins.listContributions({ surface: "lanes" })).toEqual([]);
+
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "greeting", enabled: true });
+    expect(await plugins.listContributions({ surface: "lanes" })).toHaveLength(1);
+  });
+
+  it("drops rows from a disabled plugin and narrows by entity kind", async () => {
+    const { plugins, store } = await hostWithProject();
+    store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "ok", tone: "success" });
+
+    expect(await plugins.listContributions({ surface: "lanes", entityKind: "pr" })).toEqual([]);
+    expect(await plugins.listContributions({ surface: "lanes", entityKind: "lane" })).toHaveLength(1);
+
+    await plugins.disable({ pluginId: "hello-plugin" });
+    // A disabled plugin contributes nothing, without anything having to delete
+    // its rows — they come back untouched when it is enabled again.
+    expect(await plugins.listContributions({ surface: "lanes" })).toEqual([]);
   });
 });

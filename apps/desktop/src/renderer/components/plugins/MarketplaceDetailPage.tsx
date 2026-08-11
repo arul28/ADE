@@ -945,9 +945,9 @@ function UsageRail({ usage }: { usage: PluginUsageRow }) {
         budget={usage.rowBudget}
         valueText={`${usage.rows} of ${usage.rowBudget}`}
       />
-      {usage.syncBytes24h !== null ? (
+      {usage.syncBytesTotal !== null ? (
         <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-          {formatBytes(usage.syncBytes24h)} synced in the last day
+          {formatBytes(usage.syncBytesTotal)} synced
         </span>
       ) : null}
     </RailSection>

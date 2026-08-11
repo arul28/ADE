@@ -18,7 +18,9 @@ import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import {
   PLUGIN_READ_ONLY_DOMAIN_ACTIONS,
   type PluginCollectionRow as PluginHostCollectionRow,
+  type PluginContributionRecord,
   type PluginDetail,
+  type PluginLogEntry,
   type PluginMarketplaceIndex,
   type PluginPresenceMachineRow,
   type PluginRuntimeStatus as PluginHostRuntimeStatus,
@@ -2518,6 +2520,17 @@ function dispatchRemoteRuntimeEventPayload(
     }
   }
 
+  const pluginChanged = toPluginChangeEvent(payload);
+  if (pluginChanged) {
+    for (const cb of [...remotePluginChangeCallbacks]) {
+      try {
+        cb(pluginChanged);
+      } catch (error) {
+        console.error("preload remote plugin change listener failed", error);
+      }
+    }
+  }
+
   const sessionChanged = toTerminalSessionChangedEvent(payload);
   if (sessionChanged) {
     sessionDeltaCache.clear();
@@ -3544,6 +3557,32 @@ const pluginChangeEventFanout = createIpcEventFanout<PluginChangeEvent>(
 );
 
 /**
+ * Plugin-change subscribers, fed from the DAEMON's runtime event stream.
+ *
+ * The `IPC.pluginChanged` channel above exists for a main-process emitter, and
+ * there is none: the plugin host lives in the daemon by design, so every real
+ * change arrives as a `plugin_changed` runtime event on the stream this preload
+ * already polls. Both paths feed the same subscriber set, so a caller registers
+ * once and does not care which side noticed.
+ */
+const remotePluginChangeCallbacks = new Set<(payload: PluginChangeEvent) => void>();
+
+/** Wire shape of the daemon's event. Kept local: this is a decode, not a model. */
+function toPluginChangeEvent(payload: unknown): PluginChangeEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const raw = payload as Record<string, unknown>;
+  if (raw.type !== "plugin_changed") return null;
+  const kind = raw.kind;
+  if (typeof kind !== "string") return null;
+  return {
+    kind: kind as PluginChangeEvent["kind"],
+    ...(typeof raw.pluginId === "string" ? { pluginId: raw.pluginId } : {}),
+    ...(typeof raw.panelId === "string" ? { panelId: raw.panelId } : {}),
+    ...(typeof raw.collection === "string" ? { collection: raw.collection } : {}),
+  };
+}
+
+/**
  * The host reports lifecycle detail the plugin surfaces do not draw: a plugin
  * that never started and one that was stopped are the same dot, and a restart
  * reads as a start. `no-entry` is `none` — that plugin has no child at all.
@@ -3597,9 +3636,9 @@ function toPluginUsageRows(summary: PluginUsageSummary): PluginUsageRow[] {
     collectionBudgetBytes: summary.budgets.collectionBytesPerPlugin,
     rows: entry.collectionRows,
     rowBudget: summary.budgets.collectionRowsPerPlugin,
-    // The host meters bytes out cumulatively; it publishes no 24h window, so
-    // this is the closest true number rather than an invented one.
-    syncBytes24h: entry.syncBytesOut,
+    // Cumulative, and named so. The host publishes no windowed number, and a
+    // field called `24h` carrying a lifetime total is a lie the UI then repeats.
+    syncBytesTotal: entry.syncBytesOut,
   }));
 }
 
@@ -7668,10 +7707,12 @@ contextBridge.exposeInMainWorld("ade", {
   // AppContext whose services are null, so the silently-falling-back family
   // would answer a routing failure with a crash or a wrong empty result.
   //
-  // SINGULAR, matching the single `plugin` action domain (D1). There is no
-  // `plugins` alias: two names for one namespace is how half the renderer ends
-  // up reading a namespace nobody publishes.
-  plugin: {
+  // PLURAL, and typed against `renderer/lib/pluginRuntimeBridge` through
+  // type-only imports: the RPC DOMAIN is singular `plugin`, this renderer
+  // namespace is `plugins`, and the two are different things. One name each,
+  // no alias — the bridge's `plugin ?? plugins` read is compatibility for
+  // older hosts, not licence to publish both.
+  plugins: {
     list: async (): Promise<InstalledPlugin[]> => {
       // Disabled plugins are part of the list the UI draws — it renders the
       // on/off state, so asking only for enabled ones would hide the switch.
@@ -7804,6 +7845,24 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionStrictOr("plugin", "getReadme", { args: input }, () =>
         ipcRenderer.invoke(IPC.pluginGetReadme, input),
       ),
+    getManifest: async (input: { pluginId: string }): Promise<unknown | null> =>
+      callProjectRuntimeActionStrictOr("plugin", "getManifest", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginGetManifest, input),
+      ),
+    openLogs: async (input: { pluginId: string }): Promise<PluginLogEntry[]> =>
+      callProjectRuntimeActionStrictOr("plugin", "openLogs", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginOpenLogs, input),
+      ),
+    // The dynamic half of the socket taxonomy. Static manifest sockets say a
+    // plugin CAN badge a lane; these rows say what it says about lane 7 now.
+    listContributions: async (input: {
+      surface: string;
+      entityKind?: string;
+      entityIds?: string[];
+    }): Promise<PluginContributionRecord[]> =>
+      callProjectRuntimeActionStrictOr("plugin", "listContributions", { args: input }, () =>
+        ipcRenderer.invoke(IPC.pluginListContributions, input),
+      ),
     inspectSource: async (input: { source: string }): Promise<PluginSourceInspection | null> =>
       callProjectRuntimeActionStrictOr("plugin", "inspectSource", { args: input }, () =>
         ipcRenderer.invoke(IPC.pluginInspectSource, input),
@@ -7818,8 +7877,17 @@ contextBridge.exposeInMainWorld("ade", {
       );
       return toPluginUsageRows(summary);
     },
-    onChanged: (cb: (event: PluginChangeEvent) => void): (() => void) =>
-      pluginChangeEventFanout(cb),
+    onChanged: (cb: (event: PluginChangeEvent) => void): (() => void) => {
+      // Both sources, one registration: the main-process channel (unused today)
+      // and the daemon's runtime event stream, which is where every real change
+      // comes from.
+      const unsubscribeIpc = pluginChangeEventFanout(cb);
+      remotePluginChangeCallbacks.add(cb);
+      return () => {
+        remotePluginChangeCallbacks.delete(cb);
+        unsubscribeIpc();
+      };
+    },
   },
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {

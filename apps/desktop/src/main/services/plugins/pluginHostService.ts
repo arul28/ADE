@@ -9,6 +9,7 @@ import { getPluginPresenceService } from "../../../../../ade-cli/src/services/pl
 import type { PluginSyncMeter } from "../../../../../ade-cli/src/services/plugins/pluginSyncMeter";
 import {
   readAllPluginPresence,
+  readPluginContributions,
   type PluginPresenceRow,
 } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
 import {
@@ -27,6 +28,7 @@ import { writeTextAtomic } from "../shared/utils";
 import {
   PluginSdkError,
   type PluginCollectionRow,
+  type PluginContributionRecord,
   type PluginDetail,
   type PluginDomainService,
   type PluginLogEntry,
@@ -38,6 +40,11 @@ import {
   type PluginSummary,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
+import type {
+  PluginEntityKind,
+  PluginSocketKind,
+  PluginSurfaceId,
+} from "../../../shared/plugins/sockets";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { createPluginChildSupervisor, type PluginChildSupervisor } from "./pluginChildSupervisor";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
@@ -265,6 +272,9 @@ function toSummary(
       title: surface.title,
       panelId: surface.panelId,
       ...(surface.icon ? { icon: surface.icon } : {}),
+      // Passed through, not interpreted: the extraction pilot gates a builtin
+      // tab on this, and a summary that drops it makes the gate impossible.
+      ...(surface.builtin ? { builtin: surface.builtin } : {}),
     })),
     // Present only when the manifest declares tokens: the renderer's theme
     // engine treats a non-null `theme` as "this plugin can be applied as one".
@@ -367,7 +377,28 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   // The sync layer resolves this handle at call time to answer `plugins.*` from
   // another machine; `dispose()` clears it, because a stale handle answering
   // after teardown is worse than "plugins are unavailable on this computer".
-  setPluginInstallService(createPluginInstallServiceAdapter({ install: installs, onChanged: publishPresence }));
+  setPluginInstallService(createPluginInstallServiceAdapter({
+    install: installs,
+    onChanged: publishPresence,
+    // Live child state, so a peer (the web client especially) sees a contained
+    // or crashed plugin as dead rather than falling back to "none". Absent
+    // without this, and a guess from `enabled` would put a green dot on a
+    // crashed plugin.
+    runtimeStatus: (pluginId) => supervisors.get(pluginId)?.status() ?? null,
+    // A remote "install graph" names a directory entry; only the directory maps
+    // that to a repository. The cached index answers when it can, and a refresh
+    // is attempted once before giving up, because a machine that has never
+    // opened the Marketplace has no cache to answer from.
+    resolveRegistrySource: async (pluginId, version) => {
+      const find = (result: { entries: { pluginId: string; source: string; version: string }[] } | null) =>
+        result?.entries.find((entry) => entry.pluginId === pluginId) ?? null;
+      const entry = find(registry().readCachedIndex()) ?? find(await registry().fetchIndex({ refresh: true }));
+      if (!entry) return null;
+      // The version is a tag on the entry's repository; an entry that does not
+      // publish the asked-for version still installs from its default ref.
+      return { source: entry.source, ref: version && version !== entry.version ? version : null };
+    },
+  }));
   // Every plugin tap from a phone lands here: `plugins.invoke` resolves this at
   // call time and runs the same domain path the desktop's `plugin.invoke` does,
   // so a handler cannot behave differently depending on which device asked.
@@ -604,6 +635,71 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             isThisMachine,
           };
         });
+      },
+
+      async listContributions(contributionArgs): Promise<PluginContributionRecord[]> {
+        const surface = requireId(contributionArgs?.surface, "surface");
+        const attached = scopedProject();
+        if (!attached) return [];
+        // Manifest sockets are the join: the table stores a socket KIND, and
+        // which surface that kind renders on is per-plugin manifest detail.
+        // Built once per call rather than per row — a Lanes list asks for this
+        // on every render, and a plugin declares a handful of sockets.
+        const declared = new Map<string, { socketId: string; enabled: boolean }>();
+        for (const installed of installs.list()) {
+          if (!installed.record.enabled || !installed.manifest) continue;
+          const off = new Set(installed.record.disabledContributions ?? []);
+          for (const socket of installed.manifest.sockets) {
+            if (socket.surface !== surface) continue;
+            declared.set(`${installed.record.pluginId} ${socket.socket}`, {
+              socketId: socket.id,
+              enabled: !off.has(socket.id),
+            });
+          }
+        }
+        if (declared.size === 0) return [];
+        const rows = readPluginContributions(attached.binding.db, {
+          entityKind: contributionArgs.entityKind ?? null,
+          entityIds: contributionArgs.entityIds ?? null,
+        });
+        const results: PluginContributionRecord[] = [];
+        for (const row of rows) {
+          const match = declared.get(`${row.pluginId} ${row.socket}`);
+          // Disabled plugins, switched-off sockets and rows left behind by a
+          // plugin that stopped declaring a socket all drop out here, so no
+          // caller has to re-derive any of it.
+          if (!match || !match.enabled) continue;
+          let payload: unknown = null;
+          try {
+            payload = JSON.parse(row.payloadJson) as unknown;
+          } catch {
+            payload = null;
+          }
+          results.push({
+            entityKind: row.entityKind as PluginEntityKind,
+            entityId: row.entityId,
+            pluginId: row.pluginId,
+            socket: row.socket as PluginSocketKind,
+            surface: surface as PluginSurfaceId,
+            socketId: match.socketId,
+            payload,
+            updatedAt: row.updatedAt || null,
+          });
+        }
+        return results;
+      },
+
+      async getManifest(manifestArgs): Promise<PluginManifest | null> {
+        return installs.get(requireId(manifestArgs?.pluginId, "pluginId"))?.manifest ?? null;
+      },
+
+      async openLogs(logArgs): Promise<PluginLogEntry[]> {
+        const pluginId = requireId(logArgs?.pluginId, "pluginId");
+        requireInstalled(pluginId);
+        // The ring buffer lives on the supervisor, so a plugin that has never
+        // started has no lines rather than an error — "nothing logged yet" is
+        // the honest answer for an idle plugin.
+        return supervisors.get(pluginId)?.logs() ?? [];
       },
 
       async getReadme(readmeArgs): Promise<string | null> {

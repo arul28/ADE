@@ -369,6 +369,74 @@ export function replacePluginPresenceForMachine(
   });
 }
 
+export type PluginContributionRecord = {
+  entityKind: string;
+  entityId: string;
+  pluginId: string;
+  socket: string;
+  /** Still JSON. The caller decides what a payload means; this module sizes it. */
+  payloadJson: string;
+  updatedAt: string;
+};
+
+/** Rows one `listContributions` answer may carry, before surface filtering. */
+export const PLUGIN_CONTRIBUTIONS_READ_LIMIT = 2_000;
+
+/**
+ * Materialized socket outputs, optionally narrowed to one entity kind.
+ *
+ * Reads live here beside the writers so "what is a contribution" has one
+ * definition. Deliberately NOT filtered by surface: the table stores the socket
+ * KIND, and which surface a socket belongs to is a manifest fact the caller
+ * holds — pushing that join into SQL would mean this module parsing manifests.
+ *
+ * Bounded because this answers a per-render read on core surfaces: a plugin at
+ * its 2,000-contribution ceiling must not be able to make the Lanes list pay
+ * for all of them at once.
+ */
+export function readPluginContributions(
+  db: PluginWriterDb,
+  args: { entityKind?: string | null; entityIds?: readonly string[] | null; limit?: number } = {},
+): PluginContributionRecord[] {
+  const limit = Math.min(
+    Math.max(1, Math.trunc(args.limit ?? PLUGIN_CONTRIBUTIONS_READ_LIMIT)),
+    PLUGIN_CONTRIBUTIONS_READ_LIMIT,
+  );
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (args.entityKind) {
+    where.push("entity_kind = ?");
+    params.push(args.entityKind);
+  }
+  if (args.entityIds && args.entityIds.length > 0) {
+    where.push(`entity_id in (${args.entityIds.map(() => "?").join(", ")})`);
+    params.push(...args.entityIds);
+  }
+  params.push(limit);
+  return db.all<{
+    entity_kind: string;
+    entity_id: string;
+    plugin_id: string;
+    socket: string;
+    payload_json: string;
+    updated_at: string;
+  }>(
+    `select entity_kind, entity_id, plugin_id, socket, payload_json, updated_at
+       from plugin_contributions
+       ${where.length > 0 ? `where ${where.join(" and ")}` : ""}
+      order by entity_kind, entity_id, plugin_id, socket
+      limit ?`,
+    params,
+  ).map((row) => ({
+    entityKind: row.entity_kind,
+    entityId: row.entity_id,
+    pluginId: row.plugin_id,
+    socket: row.socket,
+    payloadJson: row.payload_json,
+    updatedAt: row.updated_at,
+  }));
+}
+
 /** One machine's row for one plugin, as the presence table stores it. */
 export type PluginPresenceMachineEntry = PluginPresenceRow & { machineKey: string };
 

@@ -137,7 +137,8 @@ export type PluginUsageRow = {
   rows: number;
   rowBudget: number;
   /** Bytes this plugin put on the sync wire in the last 24h, when metered. */
-  syncBytes24h: number | null;
+  /** Cumulative sync bytes attributed to this plugin. Null when unmetered. */
+  syncBytesTotal: number | null;
 };
 
 export type PluginInstallRequest = {
@@ -461,7 +462,7 @@ export async function readPluginUsage(pluginId?: string): Promise<PluginUsageRow
         collectionBudgetBytes,
         rows: typeof row.collectionRows === "number" ? row.collectionRows : 0,
         rowBudget,
-        syncBytes24h: syncOut === null && syncIn === null ? null : (syncOut ?? 0) + (syncIn ?? 0),
+        syncBytesTotal: syncOut === null && syncIn === null ? null : (syncOut ?? 0) + (syncIn ?? 0),
       }];
     });
   } catch {

@@ -260,6 +260,7 @@ function entityIdOf(context: PluginSurfaceContext): string {
       return String(context.number);
     case "lane":
     case "session":
+    case "automation":
       return context.id;
     case "file":
       return context.path;

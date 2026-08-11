@@ -93,12 +93,39 @@ describe("pluginInstallServiceAdapter", () => {
     expect(record.source).toBe("https://example.com/graph.git#main");
   });
 
-  it("refuses a registry install rather than reporting one that never ran", async () => {
+  it("refuses a registry install it cannot resolve rather than guessing a source", async () => {
     const { service, calls } = stubInstallService();
-    const adapter = createPluginInstallServiceAdapter({ install: service });
+    // No resolver at all, and a resolver that does not know the id, are the
+    // same answer: a guessed URL is an arbitrary repository running as this
+    // plugin, and a record for an install that never ran is indistinguishable
+    // from success on the machine that asked.
+    const withoutResolver = createPluginInstallServiceAdapter({ install: service });
+    await expect(withoutResolver.install({ kind: "registry", pluginId: "graph" }))
+      .rejects.toThrow(/plugin directory/i);
 
-    await expect(adapter.install({ kind: "registry", pluginId: "graph" })).rejects.toThrow(/registry id/i);
+    const withEmptyResolver = createPluginInstallServiceAdapter({
+      install: service,
+      resolveRegistrySource: async () => null,
+    });
+    await expect(withEmptyResolver.install({ kind: "registry", pluginId: "graph" }))
+      .rejects.toThrow(/plugin directory/i);
     expect(calls).toHaveLength(0);
+  });
+
+  it("installs a registry id from the source the directory resolved for it", async () => {
+    const { service, calls } = stubInstallService();
+    const adapter = createPluginInstallServiceAdapter({
+      install: service,
+      resolveRegistrySource: async (pluginId, version) => ({
+        source: `https://example.com/${pluginId}.git`,
+        ref: version,
+      }),
+    });
+
+    const record = await adapter.install({ kind: "registry", pluginId: "graph", version: "v2" });
+
+    expect(calls).toEqual([{ source: "https://example.com/graph.git", ref: "v2" }]);
+    expect(record).toMatchObject({ pluginId: "graph" });
   });
 
   it("fires onChanged for every install-state change but not for a read", async () => {

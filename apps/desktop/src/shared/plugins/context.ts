@@ -58,6 +58,20 @@ export type PluginFileContext = {
   workspaceId: string | null;
 };
 
+/**
+ * One automation rule, for the `automation` entity kind.
+ *
+ * Minimal on purpose: a plugin badging or acting on an automation needs to know
+ * which rule and whether it is live, and nothing about its schedule, its ingress
+ * configuration or its run history — all of which are ADE's model to change.
+ */
+export type PluginAutomationContext = {
+  kind: "automation";
+  id: string;
+  name: string;
+  enabled: boolean;
+};
+
 /** A surface with no per-entity subject (toolbar actions, empty states, chips). */
 export type PluginSurfaceOnlyContext = {
   kind: "surface";
@@ -69,6 +83,7 @@ export type PluginSurfaceContext =
   | PluginLaneContext
   | PluginSessionContext
   | PluginFileContext
+  | PluginAutomationContext
   | PluginSurfaceOnlyContext;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -154,6 +169,16 @@ export function parsePluginSurfaceContext(raw: unknown): PluginSurfaceContext | 
         workspaceId: str(raw.workspaceId),
       };
     }
+    case "automation": {
+      const automationId = str(raw.id);
+      if (!automationId) return null;
+      return {
+        kind: "automation",
+        id: automationId,
+        name: str(raw.name) ?? automationId,
+        enabled: raw.enabled !== false,
+      };
+    }
     case "surface": {
       const surface = PLUGIN_SURFACE_IDS.find((id) => id === raw.surface);
       return surface ? { kind: "surface", surface } : null;
@@ -179,6 +204,8 @@ export function pluginContributionKeyForContext(
       return { entityKind: "session", entityId: context.id };
     case "file":
       return { entityKind: "file", entityId: context.path };
+    case "automation":
+      return { entityKind: "automation", entityId: context.id };
     case "surface":
       return null;
   }

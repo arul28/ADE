@@ -51,6 +51,8 @@ function contextIdentity(context: PluginSurfaceContext | null): string {
       return `session:${context.id}`;
     case "file":
       return `file:${context.path}`;
+    case "automation":
+      return `automation:${context.id}`;
     case "surface":
       return `surface:${context.surface}`;
   }

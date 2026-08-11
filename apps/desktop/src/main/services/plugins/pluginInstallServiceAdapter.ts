@@ -108,6 +108,14 @@ export function createPluginInstallServiceAdapter(deps: {
    * `enabled`, which would put a green dot next to a crashed plugin.
    */
   runtimeStatus?: (pluginId: string) => PluginRuntimeStatus | null;
+  /**
+   * Map a directory entry id to something installable. Null when the directory
+   * is unreachable or does not list it — see the refusal in `install`.
+   */
+  resolveRegistrySource?: (
+    pluginId: string,
+    version: string | null,
+  ) => Promise<{ source: string; ref?: string | null } | null>;
 }): SyncPluginInstallService {
   const changed = (): void => {
     deps.onChanged?.();
@@ -118,11 +126,22 @@ export function createPluginInstallServiceAdapter(deps: {
   return {
     async install(source: SyncPluginInstallSource): Promise<SyncPluginInstallRecord> {
       if (source.kind === "registry") {
-        // Resolving a registry id to a source is the registry service's job and
-        // it is not wired here yet. Refusing is the honest answer: returning a
-        // record for an install that never ran is indistinguishable from success
-        // on the machine that asked.
-        throw new Error("Installing a plugin by registry id is not supported on this computer yet.");
+        // A registry id names an entry, not a place to clone from. The
+        // directory is the only thing that maps one to the other, and a machine
+        // that cannot reach it refuses rather than guessing a URL from the id —
+        // a guessed source is an arbitrary repository running as this plugin.
+        const resolved = await deps.resolveRegistrySource?.(source.pluginId, source.version ?? null);
+        if (!resolved) {
+          throw new Error(
+            `"${source.pluginId}" is not in the plugin directory this computer can see, so there is nothing to install from.`,
+          );
+        }
+        const installed = await deps.install.install({
+          source: resolved.source,
+          ...(resolved.ref ? { ref: resolved.ref } : {}),
+        });
+        changed();
+        return record(installed);
       }
       const installed = source.kind === "path"
         ? await deps.install.install({ source: source.path })
