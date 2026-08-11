@@ -16,32 +16,57 @@
  * would be a lie on every other device the moment this host died.
  */
 
-declare const settleTeardownCompletedBrand: unique symbol;
+/**
+ * What a teardown could not confirm it stopped (§3d, option 3).
+ *
+ * The settle still lands — that is the signed-off decision — but it lands WITH
+ * this attached, so "settled" never quietly means "and something is still
+ * running". A label alone would just be a prettier way of losing the process,
+ * so each item says what it was, why the stop did not confirm, and whether the
+ * existing ppid-based orphan reaper can still reach it.
+ */
+export type SettleResidueItem = {
+  /** Coarse and closed: this is also the analytics dimension. */
+  kind: "background_tasks" | "active_turn" | "scheduled_work";
+  /**
+   * Why the stop did not confirm. `no_stop_control` is a provider that offers
+   * no way to stop this work at all (a Codex chat's subagents); `timeout` and
+   * `rejected` are a stop that was attempted and did not land.
+   */
+  reason: "no_stop_control" | "timeout" | "rejected";
+  /**
+   * Whether the orphan reaper can still reach it. Work that escaped the process
+   * tree (`nohup`/`setsid`/`disown`) is unreachable and must be reported as
+   * such rather than folded into the reapable count.
+   */
+  reapable: boolean;
+  /** Human-readable, for the diagnostics surface. Never analytics. */
+  detail: string;
+};
+
+/** Checked BETWEEN stop calls, per §3c. A turn start trips it. */
+export type SettleTeardownContext = {
+  isAborted: () => boolean;
+};
 
 /**
- * Proof that a teardown finished synchronously.
+ * The result of a real teardown.
  *
- * The settle path is synchronous in step 2, and a teardown that defers is not
- * merely unsupported — it is actively harmful: the settling window would close
- * while the unowned continuation kept stopping processes, so C4/C5 output from
- * those stops would no longer be swallowed and would clear the settle that just
- * landed. Losing the work AND the settle is the R2 shape.
+ * `stopped` is what confirmed, in the order attempted; `residue` is §3d.
  *
- * A runtime check cannot prevent this. `async (id) => {}` is caught by its
- * constructor, but the common adapter `id => asyncStop(id)` is an ordinary
- * `Function` and has already started the work by the time any check runs. So the
- * seam demands a value only a synchronous body can produce: an `async` function
- * or a promise-returning adapter returns `Promise<...>`, which is not assignable
- * to this brand, and fails to COMPILE.
- *
- * Step 3 replaces this with an awaited seam once the settle path itself is async.
+ * This replaces step 2's synchronous `SettleTeardownCompleted` brand. That
+ * brand existed to make an async teardown a COMPILE error while the settle path
+ * was still synchronous — bolting a deferred teardown onto a synchronous write
+ * was exactly the mistake that produced a P1 in each of #1059's six rounds. It
+ * is safe to await now for one specific reason: the settling window (step 2) is
+ * exclusive, abortable and crash-safe, so it can be HELD across the await. The
+ * revision re-check and the abort flag after the await are what make the
+ * suspension point survivable, and both are tested by the race matrix.
  */
-export type SettleTeardownCompleted = { readonly [settleTeardownCompletedBrand]: true };
-
-/** The only way to produce a `SettleTeardownCompleted`. */
-export function settleTeardownCompleted(): SettleTeardownCompleted {
-  return {} as SettleTeardownCompleted;
-}
+export type SettleTeardownOutcome = {
+  stopped: string[];
+  residue: SettleResidueItem[];
+};
 
 /** Why a settle was abandoned. Only ever set by a human-decision clearer. */
 export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";

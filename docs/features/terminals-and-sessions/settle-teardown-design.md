@@ -1,10 +1,11 @@
 # Settle teardown — design
 
-**Status:** reviewed and approved with amendments. Steps 0-2 of §5 are cleared
-to implement; step 3 (attaching real teardown) waits until 1 and 2 are merged
-and the race-matrix tests have been seen to pass.
+**Status:** implemented. Steps 0-2 shipped in #1069, #1073 and #1075; the
+race-matrix review passed and cleared step 3, which attaches real teardown. §6
+records what step 3 actually built, including where it departed from the plan
+and why.
 
-**Steps 0, 1 and 2 are implemented.** Step 0's host-side half is "Host enforcement
+**Steps 0-3 are implemented.** Step 0's host-side half is "Host enforcement
 for pre-fix clients" in §3c-i; step 1 is the chokepoint and revision in §3a,
 whose implemented shape is recorded at the end of that section.
 
@@ -414,7 +415,7 @@ of per-statement fsync and does not describe ADE. The persisted table therefore
 stays, with the in-process counter alongside it — see §3a, where that counter
 turned out to be load-bearing for monotonicity rather than merely a fallback.
 
-### 3c-iii. Step 3 must bound the PR-merge retry (open requirement)
+### 3c-iii. Bounding the PR-merge retry — resolved
 
 When `settleSessions` reports an abort, `prMergeAutoSettlementService` leaves the
 merged PR unhandled so a later poll retries it — otherwise the merge is consumed
@@ -433,7 +434,7 @@ different way, so the next attempt should start from why:
 | Elapsed timer | Re-arms while a long turn is still running — exactly the case the bound exists to prevent. |
 | `session.runtimeState !== "running"` on the persisted row | Never observes turn completion for chat at all. Chat rows deliberately hold `status = "running"` between turns; only `chatSessionProjection` resolves an idle chat to `idle`. |
 
-The workable signal is therefore **projected** chat state. Step 2 wires it as a
+The workable signal is therefore **projected** chat state. It is wired as a
 narrow injected callback (`getChatLiveness`, matching
 `chatMentionService.listChatSessions`): the chat service answers `status` and
 `awaitingInput`, and only a tracked CLI session — whose row does not lie — falls
@@ -525,8 +526,109 @@ three, and that is why it produced a defect every round.
    directly against the revision in `settleRaceMatrix.test.ts`, including the
    C4/C5 swallow on all three axes — the case that decides whether a real
    teardown can finish at all.
-3. Only then attach real teardown, reusing `stopLaneRuntimeWork`'s shape.
-4. Resolve 3d by decision before step 3.
+3. **Landed.** Real teardown, reusing `stopLaneRuntimeWork`'s *shape* — an
+   ordered list of steps, each in its own try/catch — but not its body: that
+   function disposes chat sessions because it serves lane deletion, and a settle
+   must leave the session usable. See §6.
+4. **Resolved** — 3d option 3, implemented in §6.
 
 Steps 1 and 2 are independently valuable: the chokepoint alone would have
 prevented findings 1, 3, 4, 6, 7, 9, 12, 13, and 15.
+
+
+---
+
+## 6. Step 3 as built
+
+### 6a. The seam became async, and why that is now safe
+
+Step 2 shipped a synchronous seam whose return type (`SettleTeardownCompleted`,
+a branded value only a synchronous body can produce) made an awaited teardown a
+**compile** error. Real stops are async — `agentChatService.interrupt` returns a
+promise, as does every provider stop under it — so step 3 had to remove that
+guard. It was not an obstacle to route around; it was a tripwire that had done
+its job.
+
+The guard existed because bolting a deferred teardown onto a synchronous write
+path is what produced a P1 in each of #1059's six rounds. What changed is not
+the risk but the machinery: the settling window is **exclusive** (a second
+settle joins rather than starting its own teardown, R4), **abortable** (a turn
+start trips it mid-flight, R1/R6), and **in-memory** so a crash resolves to
+not-settled. That is precisely what makes it safe to *hold across an await*. The
+revision re-check and the abort check after the await are the suspension-point
+guards, and the race matrix exercises both.
+
+So: `settleManyWithTeardown` is `async`, and `settleSessions`,
+`settleSessionsReportingAborts`, `settleSession` and
+`settleSessionReportingAbort` return promises. The typed outcome is unchanged.
+
+### 6b. What teardown actually stops
+
+`sessionSettleTeardown.ts`. Ordered, cheapest-to-lose first, abort checked
+**before** each step, since the point of the abort is to skip work not yet done.
+
+| Step | Behavior |
+|---|---|
+| Read active work | No turn and no background work -> return immediately. A settle with nothing to tear down must not interrupt the session. |
+| `interrupt` | Stops the active turn and its background work. A throw is `rejected`, not a silent pass. |
+| Confirm | Poll `getSessionSummary` until quiet or the 5s budget expires. A single read straight after `interrupt` would call work that was already stopping "residue". |
+
+**Terminals are never touched, at any step.** A settle files a session as done;
+it does not take the user's shell away, and ADE cannot re-spawn one it killed.
+
+### 6c. Residue (3d option 3, as implemented)
+
+Anything still running when the budget expires is recorded, and the settle still
+lands. Each item carries a coarse `reason` — `no_stop_control` (a Codex chat has
+no per-subagent stop at all), `timeout`, or `rejected` — and a `reapable` flag.
+Everything counted is still a child of this ADE process, so it stays eligible
+for the ppid-based orphan reaper; work that escaped the tree
+(`nohup`/`setsid`/`disown`) is invisible to the confirmation read and is
+therefore never folded into that count rather than being overstated as reapable.
+
+Residue lives in `session_settle_residue`, a **local-only** table: it describes
+processes on this host, and a peer showing "1 job could not be stopped" for a
+machine it cannot see would be a lie. `getSettleResidue` returns null unless the
+session is still settled, so reactivating a session clears the marker without a
+second write path to keep in sync. Residue is recorded **only when the settle
+actually landed** — an abandoned settle has no settled row to describe.
+
+Analytics: one `ade_feature_used` per settle that had residue — never one per
+failed job — with `provider`, the coarse `outcome` reason, and a bucketed
+`count_bucket`. No session ids, task ids, commands, or error text.
+
+### 6d. Peer tuple writes: host authority finished, not consensus added
+
+R7's fix is in the **apply layer**, and it is a hold-back rather than a drop.
+
+`db.sync.applyChanges` is the single place both the host and peer paths funnel
+through, so the check lives there: an inbound change to `settled_at`,
+`settle_override` or `settle_source` is held out of the raw apply and handed to
+`sessionService.reconcileRemoteSettleTuple`, which replays the remote's intent
+**through the chokepoint**. The remote decision therefore gains this host's
+revision bump, settling-window exclusion and abort semantics.
+
+Three details that are load-bearing:
+
+- **Held, not dropped.** Step 0 drops these columns from *phone* peers, and its
+  own comment says a paired desktop's settle writes "must keep replicating"
+  because that desktop runs the same chokepoint. Both are true: the decision is
+  legitimate, it just has to arrive through the front door. Extending the phone
+  drop to desktops would discard a real decision.
+- **After the commit.** The handler writes, and re-entering a write inside the
+  batch's `BEGIN IMMEDIATE` would risk rolling back a peer's entire changeset
+  over one session row.
+- **Undecodable key -> plain apply.** Only a single TEXT primary key is decoded.
+  Anything else is not claimed, so an unfamiliar encoding degrades to today's
+  behavior instead of a silently dropped change.
+
+**No peer-visible concurrency token was built.** That is a protocol change, and
+the evidence does not justify it yet — which is what `onRemoteSettleWrite` is
+for. Post-step-0 it should never fire; if the field says otherwise, we will know
+which columns and how often before designing anything.
+
+R7/R7b are unchanged and still write the row with a raw `db.run` — a bypass no
+inbound changeset can produce any more. They are kept because they pin the
+property that motivates the interception: a write that reaches the tuple without
+the chokepoint is invisible to the guard. Deleting them would delete the
+evidence for the fix. The reconciled path is asserted separately.

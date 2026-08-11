@@ -87,6 +87,7 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
           rebuiltFts: false,
         }),
         discardUnpublishedChangesForTables: () => {},
+    setRemoteSettleTupleHandler: () => {},
       },
       flushNow: () => undefined,
       close: () => raw.close(),

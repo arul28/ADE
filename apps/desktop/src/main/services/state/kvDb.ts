@@ -108,6 +108,12 @@ export type AdeDbSyncApi = {
   }) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
+   * Claim inbound settle-tuple writes so they are reconciled through the settle
+   * chokepoint instead of landing raw. Registered by the session layer; `null`
+   * restores the plain apply.
+   */
+  setRemoteSettleTupleHandler: (handler: ((changes: RemoteSettleTupleChange[]) => void) | null) => void;
+  /**
    * Suppress unpublished local-site CRR rows for specific tables. Used when
    * local viewer state must be cleared without relaying those clears to sync
    * peers.
@@ -895,7 +901,55 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
   "session_lifecycle_revisions",
+  // Host-local record of work a settle teardown could not confirm it stopped.
+  // Not replicated: it describes processes on THIS host, and a peer showing
+  // "1 job could not be stopped" for a machine it cannot see would be a lie.
+  "session_settle_residue",
 ]);
+
+/**
+ * The settle tuple, as it appears in an inbound changeset.
+ *
+ * Kept next to `LOCAL_ONLY_CRR_EXCLUDED_TABLES` because it answers the same
+ * question — "may this remote row be written straight to the table?" — and the
+ * two lists drift apart if they live in different files.
+ */
+const SETTLE_TUPLE_COLUMNS: ReadonlySet<string> = new Set([
+  "settled_at",
+  "settle_override",
+  "settle_source",
+]);
+
+function isSettleTupleChange(change: CrsqlChangeRow): boolean {
+  return change.table === "terminal_sessions" && SETTLE_TUPLE_COLUMNS.has(change.cid);
+}
+
+/**
+ * The inverse of `packedCrsqlPrimaryKey` for the one shape that matters here:
+ * a single TEXT primary key, which is what `terminal_sessions.id` is.
+ *
+ * Returns null for anything else — a composite key, a non-text key, an
+ * unfamiliar packing. The caller then does NOT claim the row, so an
+ * unrecognised encoding degrades to the plain apply rather than to a silently
+ * dropped change.
+ */
+function decodeSingleTextCrsqlPrimaryKey(value: SyncScalar): string | null {
+  if (typeof value === "string") return value || null;
+  if (!isSyncScalarBytes(value)) return null;
+  const bytes = Buffer.from(value.base64, "base64");
+  // [column count][type tag 0x0b = text][byte length][utf8 …]
+  if (bytes.length < 3 || bytes[0] !== 0x01 || bytes[1] !== 0x0b) return null;
+  const length = bytes[2] ?? 0;
+  if (bytes.length !== 3 + length) return null;
+  return bytes.subarray(3, 3 + length).toString("utf8") || null;
+}
+
+/** One inbound settle-tuple column write, decoded for the session layer. */
+export type RemoteSettleTupleChange = {
+  sessionId: string;
+  column: "settled_at" | "settle_override" | "settle_source";
+  value: SyncScalar;
+};
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
@@ -3840,6 +3894,17 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
 
+  // What a settle teardown could not confirm it stopped (design 3d, option 3).
+  // Replaced wholesale per settle, so the row always describes the LAST settle
+  // rather than accumulating history the user cannot clear.
+  db.run(`
+    create table if not exists session_settle_residue (
+      session_id text primary key,
+      recorded_at text not null,
+      items text not null
+    )
+  `);
+
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
   db.run(`
@@ -4393,6 +4458,8 @@ export async function openKvDb(
     ),
   };
 
+  // Registered by the session layer once the settle chokepoint exists.
+  let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
@@ -4565,10 +4632,22 @@ export async function openKvDb(
           seq: Number(row.seq),
         }));
     },
+    setRemoteSettleTupleHandler: (handler: ((changes: RemoteSettleTupleChange[]) => void) | null) => {
+      remoteSettleTupleHandler = handler;
+    },
     applyChanges: (changes: CrsqlChangeRow[]) => {
       if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
       let appliedCount = 0;
       const touchedTables = new Set<string>();
+      // Settle-tuple writes are held back from the raw apply and reconciled
+      // through the settle chokepoint afterwards. Applying them here would let
+      // a remote write land WITHOUT this host's lifecycle revision, settling
+      // window, or abort semantics — which is R7 in the race matrix.
+      //
+      // Held back rather than dropped: post-step-0 a peer desktop still runs
+      // the same chokepoint, so its decision is legitimate and must not be
+      // silently discarded. It just has to arrive through the front door.
+      const heldSettleTuple: RemoteSettleTupleChange[] = [];
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
@@ -4588,6 +4667,19 @@ export async function openKvDb(
           // Reachable whenever a table is moved local-only while a paired peer
           // is still on a build that replicates it — i.e. during every rollout.
           if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
+          if (remoteSettleTupleHandler && isSettleTupleChange(rawChange)) {
+            const sessionId = decodeSingleTextCrsqlPrimaryKey(rawChange.pk);
+            if (sessionId) {
+              heldSettleTuple.push({
+                sessionId,
+                column: rawChange.cid as RemoteSettleTupleChange["column"],
+                value: rawChange.val,
+              });
+              continue;
+            }
+            // Undecodable key: fall through to the plain apply rather than
+            // dropping a change nobody will ever resend.
+          }
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,
@@ -4615,6 +4707,19 @@ export async function openKvDb(
       } catch (err) {
         runStatement(db, "rollback");
         throw err;
+      }
+
+      // AFTER the commit on purpose. The handler writes through the chokepoint,
+      // and re-entering a write inside this `BEGIN IMMEDIATE` would put a
+      // peer's whole batch at risk of rollback over one session row.
+      if (heldSettleTuple.length && remoteSettleTupleHandler) {
+        try {
+          remoteSettleTupleHandler(heldSettleTuple);
+          touchedTables.add("terminal_sessions");
+        } catch {
+          // Reconciliation is best-effort: the rest of the batch already landed
+          // and must not be undone by a single session's settle decision.
+        }
       }
 
       return {

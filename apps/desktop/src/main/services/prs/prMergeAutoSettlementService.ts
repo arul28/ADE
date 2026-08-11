@@ -264,7 +264,7 @@ export function createPrMergeAutoSettlementService(args: {
           }
           abortedSessionIds.delete(session.id);
         }
-        const settleResult = args.sessionService.settleSessionsReportingAborts([session.id], {
+        const settleResult = await args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
           settledAt: polledAt,
           source: "pr_merge",
@@ -280,7 +280,7 @@ export function createPrMergeAutoSettlementService(args: {
           // wait for inactivity would never stop that work again, because the
           // work is exactly what it would be waiting on. `lifecycle_changed` and
           // `joined_in_flight` are momentary and clear on their own.
-          if (settleResult.aborted.some((entry) => ACTIVITY_ABORTS.has(entry.reason))) {
+          if (settleResult.aborted.some((entry: { reason: string }) => ACTIVITY_ABORTS.has(entry.reason))) {
             abortedSessionIds.add(session.id);
           }
         }

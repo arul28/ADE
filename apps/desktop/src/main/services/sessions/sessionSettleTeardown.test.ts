@@ -1,0 +1,149 @@
+import { describe, expect, it, vi } from "vitest";
+import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
+import type { SessionActiveWork, SessionSettleTeardownDeps } from "./sessionSettleTeardown";
+
+/**
+ * R5 and the teardown contract itself. The race matrix drives the settle path
+ * through a hand-written seam; this drives the REAL seam, which is where the
+ * "cannot confirm the stop" decision (design 3d, option 3) actually lives.
+ */
+describe("session settle teardown", () => {
+  const neverAborted = { isAborted: () => false };
+
+  function harness(overrides: Partial<SessionSettleTeardownDeps> = {}) {
+    const interrupt = vi.fn(async () => {});
+    const onResidue = vi.fn();
+    // Instant polling: the confirmation budget is real time in production, and
+    // a test that actually slept 5s per case would be deleted within a month.
+    let clock = 0;
+    const run = createSessionSettleTeardown({
+      interrupt,
+      readActiveWork: async () => null,
+      onResidue,
+      now: () => clock,
+      sleep: async (ms: number) => { clock += ms; },
+      ...overrides,
+    });
+    return { run, interrupt, onResidue };
+  }
+
+  const work = (over: Partial<SessionActiveWork> = {}): SessionActiveWork => ({
+    active: false,
+    backgroundTaskCount: 0,
+    provider: "claude",
+    ...over,
+  });
+
+  it("does not stop anything for a session with no work", async () => {
+    const { run, interrupt } = harness({ readActiveWork: async () => work() });
+
+    const outcome = await run("session-1", neverAborted);
+
+    // A settle with nothing to tear down must not interrupt the session: that
+    // would be a visible side effect on a row the user only meant to file.
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ stopped: [], residue: [] });
+  });
+
+  it("stops background work and reports no residue once the session goes quiet", async () => {
+    const states = [work({ backgroundTaskCount: 2 }), work({ backgroundTaskCount: 2 }), work()];
+    const readActiveWork = vi.fn(async () => states.shift() ?? work());
+    const { run, interrupt, onResidue } = harness({ readActiveWork });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(interrupt).toHaveBeenCalledWith("session-1");
+    expect(outcome.stopped).toEqual(["interrupt"]);
+    // The stop is asynchronous inside the provider, so a single read straight
+    // after `interrupt` would call work that was already stopping "residue".
+    expect(outcome.residue, "work that drained must not be reported as residue").toEqual([]);
+    expect(onResidue).not.toHaveBeenCalled();
+  });
+
+  /**
+   * R5. The stop is attempted, the work does not go away, and the settle still
+   * lands — but never silently: the residue is returned for the row and the
+   * analytics hook fires exactly once.
+   */
+  it("R5: reports residue when the stop never confirms, rather than blocking the settle", async () => {
+    const { run, onResidue } = harness({
+      readActiveWork: async () => work({ backgroundTaskCount: 3 }),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue).toEqual([{
+      kind: "background_tasks",
+      reason: "timeout",
+      reapable: true,
+      detail: "3 jobs on claude could not be stopped",
+    }]);
+    expect(onResidue, "residue must be measured, not just displayed").toHaveBeenCalledTimes(1);
+    expect(onResidue).toHaveBeenCalledWith({
+      provider: "claude",
+      items: outcome.residue,
+    });
+  });
+
+  it("R5: calls out a provider that has no stop control at all", async () => {
+    const { run } = harness({
+      // A Codex chat cannot stop an individual subagent. That is a different
+      // fact from "the stop failed", and the field exists to keep them apart.
+      readActiveWork: async () => work({ backgroundTaskCount: 1, provider: "codex" }),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue[0]?.reason).toBe("no_stop_control");
+  });
+
+  it("R5: distinguishes a stop the provider rejected from one that timed out", async () => {
+    const { run } = harness({
+      interrupt: vi.fn(async () => { throw new Error("provider refused"); }),
+      readActiveWork: async () => work({ backgroundTaskCount: 1 }),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(outcome.residue[0]?.reason).toBe("rejected");
+    // The stop never landed, so it must not be claimed as a completed step.
+    expect(outcome.stopped).toEqual([]);
+  });
+
+  /**
+   * §3c: an accepted turn beats the settle, never the reverse. The abort is
+   * checked BEFORE each step, so the work that won the race keeps running.
+   */
+  it("stops issuing stop calls the moment a turn aborts the settle", async () => {
+    const { run, interrupt } = harness({
+      readActiveWork: async () => work({ active: true }),
+    });
+
+    const outcome = await run("session-1", { isAborted: () => true });
+
+    expect(interrupt, "an aborted settle must not stop the work that won the race").not.toHaveBeenCalled();
+    expect(outcome).toEqual({ stopped: [], residue: [] });
+  });
+
+  it("does not report residue for a session the user reclaimed mid-teardown", async () => {
+    let aborted = false;
+    const { run, onResidue } = harness({
+      interrupt: vi.fn(async () => { aborted = true; }),
+      readActiveWork: async () => work({ active: true, backgroundTaskCount: 1 }),
+    });
+
+    const outcome = await run("session-1", { isAborted: () => aborted });
+
+    // The settle is being abandoned, so there is no settled row to hang a
+    // "1 job could not be stopped" marker on. Reporting it would label a
+    // session that is actively working as one that failed to stop.
+    expect(outcome.residue).toEqual([]);
+    expect(onResidue).not.toHaveBeenCalled();
+  });
+
+  it("buckets residue counts so a large fleet cannot widen the analytics dimension", () => {
+    expect(residueCountBucket(1)).toBe("1");
+    expect(residueCountBucket(5)).toBe("2_5");
+    expect(residueCountBucket(40)).toBe("6_plus");
+  });
+});

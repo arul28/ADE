@@ -132,7 +132,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_project_opened: new Set(["route_kind", "source", "mode", "connection_state"]),
   ade_feature_used: new Set([
     "feature", "action", "outcome", "source", "mode", "provider", "model_family", "duration_bucket", "connection_state",
-    "bytes_freed", "files_compressed",
+    "bytes_freed", "files_compressed", "count_bucket",
   ]),
   ade_work_session_started: new Set(["feature", "action", "outcome", "source", "mode", "provider"]),
   ade_work_session_completed: new Set([
@@ -183,6 +183,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
     "partial", "failed", "idle_only", "immediate",
+    // Settle teardown could not confirm a stop (design 3d). `timeout` above
+    // covers the third case. Coarse on purpose: never the task or its error.
+    "no_stop_control", "rejected",
     // Which half of a post-update transaction did not land. `swap` is
     // deliberately absent: the app half is already reported by
     // `ade_update_install_did_not_land`, so only the brain half is new signal.
@@ -200,6 +203,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "grok", "local", "other",
   ]),
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
+  // Bucketed, never a raw count: a fleet that fails to stop must not become a
+  // high-cardinality dimension.
+  count_bucket: new Set(["1", "2_5", "6_plus"]),
   route_kind: new Set(["desktop", "web"]),
   connection_state: new Set(["connected", "disconnected", "pairing", "direct", "relay", "error"]),
   drop_reason: new Set([

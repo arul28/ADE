@@ -85,6 +85,8 @@ import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecyc
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import { createSessionService } from "./services/sessions/sessionService";
+import { createSessionSettleTeardown, residueCountBucket } from "./services/sessions/sessionSettleTeardown";
+import type { SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/settlingStateRegistry";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
@@ -2870,9 +2872,40 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
     });
 
-    const sessionService = createSessionService({ db });
+    // Late-bound: the chat service that owns the work does not exist yet at
+    // this point, and the settle path must not depend on construction order.
+    // Same shape as `laneTeardownDeps` below.
+    const settleTeardownRef: {
+      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+    } = { run: null };
+    const sessionService = createSessionService({
+      db,
+      onRemoteSettleWrite: ({ columns }) => {
+        // Expected to be zero post-step-0. Coarse on purpose: the column names
+        // are a fixed set, and no session id or value is recorded.
+        logger.warn("settle.remote_tuple_write_reconciled", { columns });
+        productAnalyticsService?.captureInternal({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "work", action: "settle_remote_write_reconciled", outcome: "partial" },
+        });
+      },
+      runSettleTeardown: async (sessionId, ctx) =>
+        settleTeardownRef.run
+          ? await settleTeardownRef.run(sessionId, ctx)
+          // Before the chat service is up there is no background work to stop,
+          // so an empty teardown is the honest answer, not a skipped one.
+          : { stopped: [], residue: [] },
+    });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
+    });
+    // Inbound settle-tuple writes go through the chokepoint instead of landing
+    // raw, so a peer's decision gains this host's revision, settling window and
+    // abort semantics (R7). Registered here because the DB layer must not know
+    // what a settle means.
+    db.sync.setRemoteSettleTupleHandler((changes) => {
+      sessionService.reconcileRemoteSettleTuple(changes);
     });
     const processRegistry = createProcessRegistryService({
       db,
@@ -3600,6 +3633,37 @@ app.whenReady().then(async () => {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
+    settleTeardownRef.run = createSessionSettleTeardown({
+      interrupt: async (sessionId) => {
+        await agentChatService.interrupt({ sessionId, mode: "stop_and_clear" });
+      },
+      readActiveWork: async (sessionId) => {
+        const summary = await agentChatService.getSessionSummary(sessionId);
+        if (!summary) return null;
+        return {
+          active: summary.status === "active",
+          backgroundTaskCount: summary.activeBackgroundTaskCount ?? 0,
+          provider: summary.provider ?? null,
+        };
+      },
+      logger,
+      onResidue: ({ provider, items }) => {
+        // One event per settle that had residue, not one per failed job: a
+        // fleet that fails to stop must not become a burst. Coarse properties
+        // only — no session id, task id, command, or error text.
+        productAnalyticsService?.captureInternal({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: {
+            feature: "work",
+            action: "settle_teardown_residue",
+            outcome: items[0]?.reason ?? "failed",
+            count_bucket: residueCountBucket(items.length),
+            ...(provider ? { provider } : {}),
+          },
+        });
+      },
+    });
     autoRebaseActivityReady = true;
     void autoRebaseService
       .refreshActiveRebaseNeeds("activity_services_ready")
