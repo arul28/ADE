@@ -400,7 +400,12 @@ only**. Two properties make it different from the table-level
 - **It is peer-scoped, and deliberately so.** A paired desktop runs the same
   `sessionService` chokepoint, so its settle writes are host-decided too and
   must keep replicating; broadening the filter would silently stop settle
-  propagating between two of one user's machines.
+  propagating between two of one user's machines. Those writes are not applied
+  blind, though: `applyChanges` reports settle-tuple columns whose value
+  actually moved, and the receiving host re-asserts them through its own
+  chokepoint so they gain its lifecycle revision and abort an in-flight settle
+  rather than overwriting it. See
+  [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md) §6d.
 - **A paired phone cannot opt out of it.** `isMobilePeer` resolves a
   record-backed peer through its **pairing record** — host-side truth — and
   falls back to the peer's own `hello` metadata only when the auth kind is not

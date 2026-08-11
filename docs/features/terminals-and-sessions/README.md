@@ -217,25 +217,31 @@ and in tests.
   boundary its colocated test can enforce by scanning the rest of the tree.
   `sessionService` holds the only instance; every settle, unsettle, override,
   and activity-clear path routes through it. The revision detects changes made
-  by THIS host — a sibling ADE process or a paired desktop peer's CRR write is
-  outside its scope, which
-  [settle-teardown-design.md](settle-teardown-design.md) §3a states precisely.
+  by THIS host; a peer's replicated settle-tuple write reaches it because the
+  changeset apply layer re-asserts the merged value through the chokepoint, so
+  an in-flight settle sees the world move and abandons — see
+  [settle-teardown-design.md](settle-teardown-design.md) §3a and §6d.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
-  registry. Settle writes lifecycle state only — it deliberately does NOT stop
-  the session's background work. That was attempted and removed: teardown is
-  async, and `settled_at` is written and cleared from seven places, so a
-  teardown-then-write settle races real activity (a user starting a turn during
-  a provider stop call gets their background work stopped AND no settle), and
-  every guard tried against it either read a column that turn-start never
-  updates or had to be repeated at each of the settle entry points. Making
-  settle stop work needs a synchronous lifecycle revision that teardown can be
-  serialized against; it is not a wrapper around the existing write. The approved
-  plan for doing it is
-  [settle-teardown-design.md](settle-teardown-design.md); its step 0
-  precondition — `settled_at` becoming host-authoritative, so a phone replica
-  cannot defeat the coming revision guard by CRDT merge — has landed. Archive is
-  the one lifecycle path that does stop processes — see
+  registry. Settle now DOES stop the session's outstanding work, through
+  `sessionSettleTeardown.ts`: it interrupts the active turn and its background
+  work, confirms the session went quiet, and records what it could not confirm.
+  **Terminals are never touched** — a settle files a session as done, it does
+  not take the user's shell away.
+
+  Getting there needed the whole of
+  [settle-teardown-design.md](settle-teardown-design.md), because the obvious
+  version was built and cut in #1059 after producing a P1 in each of six review
+  rounds. Teardown is async and the settle tuple is written and cleared from ten
+  places, so a teardown-then-write settle races real activity, and every guard
+  tried against it either read a column that turn-start never updates or had to
+  be repeated at each entry point. What made it work was doing it in order: the
+  tuple became host-authoritative (§3c-i), then one chokepoint owned every
+  mutation and moved a revision (§3a), then a settling window made teardown
+  visible, exclusive and abortable (§3b) — and only then could teardown be
+  awaited inside that window (§6). An unconfirmed stop still settles, with
+  recorded residue rather than silence (§3d option 3). Archive remains a
+  different, heavier path: it disposes sessions outright — see
   `laneService.archive`, where the ordering is load-bearing.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked

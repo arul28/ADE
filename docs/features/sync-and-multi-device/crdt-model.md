@@ -259,8 +259,12 @@ standard SQL on the host side, so iOS stays in parity.
   validation there closes it. Such columns are declared host-authoritative
   and filtered out of the offending peer's inbound changesets;
   `terminal_sessions.settled_at` / `settle_override` / `settle_source` are
-  the current set. See
-  [Host-authoritative columns](./README.md#host-authoritative-columns-are-peer-scoped).
+  the current set. A peer that legitimately runs the same chokepoint still
+  replicates them; the receiving host re-asserts the merged value through its
+  own chokepoint so the write cannot bypass its lifecycle revision. See
+  [Host-authoritative columns](./README.md#host-authoritative-columns-are-peer-scoped)
+  and
+  [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md) §6d.
 
 ## Schema implications
 
