@@ -684,7 +684,14 @@ export function createPluginInstallService(deps: {
           `Plugin "${parsed.manifest.name}" requires ADE ${parsed.manifest.minAdeVersion} or newer.`,
         );
       }
-      await verifyStagedTree(stagingDir, parsed.manifest);
+      // A bundled package skips the directory entirely. The digest gate exists
+      // to check bytes that arrived over the NETWORK against what the directory
+      // vouches for; these bytes arrived inside ADE's own signed app, and there
+      // is nothing further to compare them to. Without this the official
+      // pilots and starter themes are uninstallable by every path at once —
+      // they are `official: true` with no published checksum until release
+      // tagging, which the gate below correctly refuses for a downloaded tree.
+      if (!bundled) await verifyStagedTree(stagingDir, parsed.manifest);
       manifest = parsed.manifest;
       warnings = parsed.warnings;
     } catch (error) {

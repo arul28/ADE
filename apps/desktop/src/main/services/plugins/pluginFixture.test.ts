@@ -11,6 +11,7 @@ import {
   listPluginAgentSkillRoots,
   resolveBuiltinPluginsRoot,
 } from "./pluginInstallService";
+import { createPluginInstallServiceAdapter } from "./pluginInstallServiceAdapter";
 
 /**
  * End-to-end acceptance for the install half of the platform, driven by the
@@ -50,6 +51,65 @@ afterEach(() => {
  * launching ADE from a directory that happens to have a `plugins/` folder next
  * to it runs third-party code nobody chose.
  */
+/**
+ * The web/phone install path, end to end.
+ *
+ * A browser and a phone never hold a directory path — they send an id, which
+ * reaches this machine as `{kind: "registry"}` and lands in the adapter. The
+ * package they ask for may be one ADE ships and deliberately does not seed (the
+ * starter themes), so this drives the REAL bundled theme through the REAL
+ * install service to prove the whole chain, not a stub of it.
+ */
+describe("installing a bundled package the way the web client does", () => {
+  const repoPluginsRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../../../../../plugins",
+  );
+
+  it("installs a bundled-only id sent as a registry source, with no directory to clone from", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: repoPluginsRoot,
+      // What the real directory says about a starter theme today: official, and
+      // no checksum published for the version until release tagging. For a
+      // DOWNLOADED tree that is a refusal; for one that shipped inside the app
+      // there is nothing to compare against, so it must not be consulted.
+      resolveRegistryEntry: async () => ({
+        status: "entry",
+        entry: { official: true, checksums: {} },
+      }),
+    });
+    const adapter = createPluginInstallServiceAdapter({ install });
+
+    const record = await adapter.install({ kind: "registry", pluginId: "ade-theme-ink" });
+
+    expect(record.pluginId).toBe("ade-theme-ink");
+    expect(record.theme?.tokens).toBeTruthy();
+    expect(fs.existsSync(path.join(pluginsRoot, "ade-theme-ink", "plugin.json"))).toBe(true);
+    // Recorded as builtin, so a later app update ships a newer copy over it.
+    expect(install.get("ade-theme-ink")?.record.source).toEqual({ kind: "builtin" });
+  });
+
+  it("installs a bundled package while the plugin directory is unreachable", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: repoPluginsRoot,
+      resolveRegistryEntry: async () => ({ status: "unreachable" }),
+    });
+    const adapter = createPluginInstallServiceAdapter({ install });
+
+    // The theme's own manifest says `official: true`, which for a downloaded
+    // tree means "refuse while offline". These bytes came from ADE's app
+    // bundle, so an offline machine installs them.
+    expect((await adapter.install({ kind: "registry", pluginId: "ade-theme-paper" })).pluginId)
+      .toBe("ade-theme-paper");
+  });
+});
+
 describe("builtin plugins root", () => {
   function tree(files: Record<string, string>): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-builtin-root-"));
