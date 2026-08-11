@@ -512,6 +512,11 @@ struct WorkSidebarSectionHeader: View {
 struct WorkSessionLaneMenuActions {
   var colorAvailable: Bool = false
   var manageAvailable: Bool = false
+  /// The attached machine has the Linear plugin. Sharing an issue link is part
+  /// of the Linear surface that plugin owns, so it disappears with the rest of
+  /// it — a machine that shows no Linear anywhere should not still offer to
+  /// hand one out from a menu.
+  var linearLinkAvailable: Bool = false
   var onStartChat: (LaneSummary) -> Void = { _ in }
   var onCopyLaneLink: (LaneSummary) -> Void = { _ in }
   var onCopyBranchLink: (LaneSummary) -> Void = { _ in }
@@ -1017,8 +1022,10 @@ struct WorkSessionListRow: View {
             Label("Branch link", systemImage: "arrow.triangle.branch")
           }
           // Only a lane that actually carries a Linear issue URL — the copy is
-          // that URL verbatim, so there is nothing to offer without one.
-          if primaryLaneLinearIssue(for: lane)?.url != nil {
+          // that URL verbatim, so there is nothing to offer without one — and
+          // only while the machine still has the Linear plugin that owns every
+          // Linear affordance in the app.
+          if laneMenu.linearLinkAvailable, primaryLaneLinearIssue(for: lane)?.url != nil {
             Button {
               laneMenu.onCopyLinearLink(lane)
             } label: {

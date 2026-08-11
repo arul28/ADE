@@ -1906,6 +1906,124 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("bridges the usage rollup without demanding a projectId, and passes a null answer through unchanged", async () => {
+    // Usage is read from a machine's own ledger of what its agents spent, so
+    // the call carries no projectId. Registered in the remote-command service
+    // but missing from this server's dispatch, it fell through to the project
+    // router and came back as `invalidParams: requires params.projectId` —
+    // which is every remote machine account usage asked, so the account-wide
+    // fan-out reported nothing but failures.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const rollup = {
+      machineKey: "machine-a",
+      days: [{ day: "2026-08-10", provider: "anthropic", model: "opus", totalCostUsd: 1.5 }],
+    };
+    const replies: unknown[] = [rollup, null];
+    const executeRemoteCommand = vi.fn(async () => replies.shift());
+    const getRemoteCommandDescriptor = vi.fn((action: string) => ({
+      action,
+      scope: "runtime" as const,
+      policy: { viewerAllowed: true },
+    }));
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService: { executeRemoteCommand, getRemoteCommandDescriptor } },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "usage.getUsageRollup",
+      params: {},
+    })).resolves.toEqual(rollup);
+    expect(executeRemoteCommand).toHaveBeenCalledWith({
+      commandId: expect.stringMatching(/^local-runtime-/),
+      action: "usage.getUsageRollup",
+      args: {},
+    });
+
+    // `null` is an answer, not an absence: the machine has not finished its
+    // first ledger scan, and the caller records a retryable failure. A bridge
+    // that helpfully turned it into `{}` would hand the merger an
+    // authoritative empty history, which its reconcile pass reads as every
+    // charge this machine ever recorded having been removed.
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "usage.getUsageRollup",
+      params: {},
+    })).resolves.toBeNull();
+
+    handler.dispose();
+  });
+
+  it("runs the descriptor's policy gate before bridging the usage rollup", async () => {
+    // The rollup is viewerAllowed today, so nothing about the shipped policy
+    // denies it. This pins the plumbing rather than the policy:
+    // `executeRemoteCommand` runs a registered handler unconditionally and
+    // never consults the descriptor, so if the bridge ever stopped running the
+    // gate, a later tightening of this command's policy would be silently
+    // ignored on the local RPC path.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const executeRemoteCommand = vi.fn(async () => ({ days: [] }));
+    const getRemoteCommandDescriptor = vi.fn(() => ({
+      action: "usage.getUsageRollup" as const,
+      scope: "runtime" as const,
+      policy: { viewerAllowed: false },
+    }));
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService: { executeRemoteCommand, getRemoteCommandDescriptor } },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "usage.getUsageRollup",
+      params: {},
+    })).rejects.toMatchObject({
+      code: JsonRpcErrorCode.policyDenied,
+      message: expect.stringMatching(/not available to paired controller devices/),
+    });
+    expect(executeRemoteCommand).not.toHaveBeenCalled();
+
+    handler.dispose();
+  });
+
   it("does not switch the active sync host for read-only sync polls with a projectId", async () => {
     const { root, projectRoot, registry } = createRegistry();
     const active = registry.add(projectRoot);

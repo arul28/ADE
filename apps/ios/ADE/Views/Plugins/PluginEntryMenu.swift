@@ -13,9 +13,13 @@ struct PluginEntry: Identifiable, Equatable {
 ///
 /// Two sources, and which answers what is the whole design:
 ///
-/// - **The attached machine** (`plugins.presenceList`) answers *availability*.
-///   It has to: `plugin_presence` carries rows for every machine on the account,
-///   and the phone can only open a pane for the one machine it is talking to.
+/// - **The attached machine** answers *availability*, via the shared
+///   ``PluginPresenceGate``. It has to: `plugin_presence` carries rows for every
+///   machine on the account, and the phone can only open a pane for the one
+///   machine it is talking to. The gate owns the round trip and the
+///   hidden-by-default rules so this list and the gated built-in surfaces
+///   (the Linear pane) cannot drift into two different definitions of
+///   "installed".
 /// - **The local mirror** (`plugin_panels`, `plugin_presence`) answers *what to
 ///   draw* — labels, icons, panel counts — with no round trip.
 ///
@@ -26,35 +30,22 @@ struct PluginEntry: Identifiable, Equatable {
 final class PluginEntryListModel: ObservableObject {
   @Published private(set) var entries: [PluginEntry] = []
 
+  private let gate: PluginPresenceGate
   private let sync: PluginEntryListSyncing
-  private var isRefreshing = false
 
-  init(sync: PluginEntryListSyncing) {
+  init(gate: PluginPresenceGate, sync: PluginEntryListSyncing) {
+    self.gate = gate
     self.sync = sync
   }
 
   func refresh() async {
-    guard !isRefreshing else { return }
-    isRefreshing = true
-    defer { isRefreshing = false }
-
-    guard sync.supportsPluginPresenceList else {
-      entries = []
-      return
-    }
-    // A failed call clears the list rather than leaving stale entries: an entry
-    // that opens a pane the machine can no longer serve is worse than no entry.
-    guard let available = try? await sync.fetchAttachedMachinePlugins() else {
-      entries = []
-      return
-    }
+    await gate.refresh()
 
     let catalog = sync.pluginPresenceCatalog()
     let panelCounts = Dictionary(grouping: sync.pluginPanels(pluginId: nil), by: \.pluginId)
       .mapValues(\.count)
 
-    entries = available.plugins
-      .filter { $0.enabled && !$0.pluginId.isEmpty }
+    entries = gate.installedPlugins
       .compactMap { plugin in
         let panelCount = panelCounts[plugin.pluginId] ?? 0
         guard panelCount > 0 else { return nil }
@@ -70,10 +61,10 @@ final class PluginEntryListModel: ObservableObject {
   }
 }
 
+/// Only the *drawing* half. Availability lives on ``PluginPresenceGateSyncing``,
+/// which the gate owns — one fetch, one set of failure rules, one answer.
 @MainActor
 protocol PluginEntryListSyncing: AnyObject {
-  var supportsPluginPresenceList: Bool { get }
-  func fetchAttachedMachinePlugins() async throws -> PluginPresenceListResult
   func pluginPresenceCatalog() -> PluginPresenceCatalog
   func pluginPanels(pluginId: String?) -> [PluginPanelRecord]
 }
@@ -91,7 +82,10 @@ struct PluginEntryMenuButton: View {
   @StateObject private var model: PluginEntryListModel
 
   init(syncService: SyncService) {
-    _model = StateObject(wrappedValue: PluginEntryListModel(sync: syncService))
+    _model = StateObject(wrappedValue: PluginEntryListModel(
+      gate: syncService.pluginPresenceGate,
+      sync: syncService
+    ))
   }
 
   var body: some View {
@@ -148,8 +142,9 @@ struct PluginEntryMenuButton: View {
   }
 
   /// Cheap identity for the refresh trigger: which machine, and how many times
-  /// plugin rows have changed.
+  /// plugin rows have changed. Shared with every other gated surface via
+  /// `SyncService.pluginPresenceTrigger` so they refresh on the same events.
   private var refreshKey: String {
-    "\(syncService.activeProjectHostIdentity ?? "-")|\(syncService.pluginsProjectionRevision)"
+    syncService.pluginPresenceTrigger
   }
 }

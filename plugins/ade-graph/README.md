@@ -16,7 +16,7 @@ is in your rail; remove it and the rail is one item shorter.
 - The canvas is drawn by the desktop app rather than published as a panel, so
   the tab is the desktop's own page. On a phone or in the terminal the plugin
   shows a card pointing at the machine that holds the repository.
-- The `/graph` route keeps working even with the tab hidden, so links minted
-  before you removed it still open.
+- The `/graph` route and Graph deeplinks open only while this plugin is
+  installed and enabled. Otherwise ADE shows a plain unavailable error.
 - It runs no code at all: the card is `panels/main.json`, which ADE reads from
   the manifest. Nothing is read, and nothing is stored.

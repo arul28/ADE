@@ -45,6 +45,9 @@ import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
+import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
   {
@@ -97,10 +100,26 @@ function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
   return REMOTE_WORK_SIDEBAR_TAB_IDS.has(tab);
 }
 
-function isAvailableWorkSidebarTab(
+/**
+ * Terminal, Git, Files and Browser are ADE itself and are never gated. iOS Sim
+ * and App Control are compiled panes owned by plugins, so each needs its
+ * owner installed and enabled on top of the host checks it already had —
+ * a Mac with no iOS Simulator plugin has no iOS Sim tab.
+ *
+ * Pure on purpose: the caller passes the gate in, so the rail filter, the
+ * fallback and the force-switch effect all ask the same question, and the
+ * answer can be tested without rendering a sidebar.
+ */
+export function isAvailableWorkSidebarTab(
   tab: WorkSidebarTab,
-  options: { isRemoteProject: boolean; supportsIosSimulator: boolean },
+  options: {
+    isRemoteProject: boolean;
+    supportsIosSimulator: boolean;
+    builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+  },
 ): boolean {
+  if (tab === "ios" && !options.builtinSurfaceVisible("ios")) return false;
+  if (tab === "app-control" && !options.builtinSurfaceVisible("app-control")) return false;
   if (options.isRemoteProject) return isRemoteWorkSidebarTab(tab);
   return tab !== "ios" || options.supportsIosSimulator;
 }
@@ -253,17 +272,20 @@ export function WorkSidebar({
   const supportsIosSimulator = isMacPlatform();
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
-  const sidebarTabs = useMemo(
-    () => WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, {
-      isRemoteProject,
-      supportsIosSimulator,
-    })),
-    [isRemoteProject, supportsIosSimulator],
+  const builtinGateInput = useBuiltinGateInput();
+  const builtinSurfaceVisible = useCallback(
+    (id: PluginBuiltinSurfaceId) => isBuiltinSurfaceVisible(id, builtinGateInput),
+    [builtinGateInput],
   );
-  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, {
-    isRemoteProject,
-    supportsIosSimulator,
-  }) ? tab : "git";
+  const tabAvailability = useMemo(
+    () => ({ isRemoteProject, supportsIosSimulator, builtinSurfaceVisible }),
+    [builtinSurfaceVisible, isRemoteProject, supportsIosSimulator],
+  );
+  const sidebarTabs = useMemo(
+    () => WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, tabAvailability)),
+    [tabAvailability],
+  );
+  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, tabAvailability) ? tab : "git";
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -277,14 +299,14 @@ export function WorkSidebar({
     setSelectedCommit(null);
   }, [laneId]);
 
+  // Also the uninstall path: the pane the user is sitting in can lose its
+  // plugin mid-session, and `tabAvailability` changing is what moves them off
+  // it instead of leaving a rail with no matching tab.
   useEffect(() => {
-    if (!isAvailableWorkSidebarTab(tab, {
-      isRemoteProject,
-      supportsIosSimulator,
-    })) {
+    if (!isAvailableWorkSidebarTab(tab, tabAvailability)) {
       onTabChange("git");
     }
-  }, [isRemoteProject, onTabChange, supportsIosSimulator, tab]);
+  }, [onTabChange, tab, tabAvailability]);
 
   useEffect(() => {
     const el = sidebarRef.current;

@@ -4175,6 +4175,11 @@ final class SyncService: ObservableObject {
   private var attentionDrawerStorage: ActivityDrawerModel?
   private var attentionDrawerCancellables: Set<AnyCancellable> = []
 
+  /// Backing storage for `pluginPresenceGate`. Lazily built on first access for
+  /// the same reason the drawer is: a phone that never renders a gated surface
+  /// should not allocate an extra `ObservableObject`.
+  private var pluginPresenceGateStorage: PluginPresenceGate?
+
   /// Drawer surface injected into the root view via `.environmentObject`.
   /// Rebuilt from the App Group `WorkspaceSnapshot` each time the host
   /// state changes — no independent transport.
@@ -9007,6 +9012,25 @@ final class SyncService: ObservableObject {
   /// the entry point disappear instead of failing.
   var supportsPluginPresenceList: Bool {
     supportsRemoteAction("plugins.presenceList")
+  }
+
+  /// Scope of a presence answer, in one cheap string: which machine, and how
+  /// many times plugin rows have changed. Every surface that gates on an
+  /// installed plugin refreshes off this — one definition so a top-bar button
+  /// and a deep link cannot disagree about when the answer went stale.
+  var pluginPresenceTrigger: String {
+    "\(activeProjectHostIdentity ?? "-")|\(pluginsProjectionRevision)"
+  }
+
+  /// Is a given plugin installed and enabled on the machine this phone is
+  /// attached to? Lazily built for the same reason ``attentionDrawer`` is —
+  /// tests and previews that never gate on a plugin allocate nothing — and
+  /// shared so a machine switch costs one round trip, not one per entry point.
+  var pluginPresenceGate: PluginPresenceGate {
+    if let existing = pluginPresenceGateStorage { return existing }
+    let fresh = PluginPresenceGate(sync: self)
+    pluginPresenceGateStorage = fresh
+    return fresh
   }
 
   /// Display metadata for installed plugins, folded across machines. See

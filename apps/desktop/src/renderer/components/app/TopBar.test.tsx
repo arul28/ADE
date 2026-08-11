@@ -9,6 +9,10 @@ import { applyShellHeaderInset } from "../../lib/zoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import {
+  resetBuiltinSurfacePlugins,
+  seedBuiltinSurfacePlugins,
+} from "../../../test/builtinSurfaces";
+import {
   activityStore,
   resetActivityStoreForTests,
 } from "../../state/activityStore";
@@ -403,10 +407,15 @@ describe("TopBar", () => {
         onEvent: vi.fn(() => () => {}),
       },
     } as any;
+    // The Linear quick view is a plugin surface: a machine without the Linear
+    // plugin has no button and no pane, whatever its connection says. These
+    // tests are about the connection half, so they install the plugin.
+    seedBuiltinSurfacePlugins(["linear"]);
   });
 
   afterEach(() => {
     cleanup();
+    resetBuiltinSurfacePlugins();
     vi.restoreAllMocks();
     globalThis.window.localStorage.clear();
     if (originalAde === undefined) {

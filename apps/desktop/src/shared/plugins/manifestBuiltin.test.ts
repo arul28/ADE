@@ -63,9 +63,16 @@ describe("manifest builtin surfaces", () => {
   });
 
   it("keeps the gateable list closed", () => {
-    // A new entry here is a platform change: every client has to grow a route
-    // for it, so the list moving is worth a failing test rather than a review
-    // comment.
-    expect([...PLUGIN_BUILTIN_SURFACE_IDS]).toEqual(["graph"]);
+    // A new entry here is a platform change: every client has to grow an owner,
+    // an entry-point gate and a route or pane for it, so the list moving is
+    // worth a failing test rather than a review comment.
+    expect([...PLUGIN_BUILTIN_SURFACE_IDS]).toEqual([
+      "graph",
+      "review",
+      "history",
+      "linear",
+      "ios",
+      "app-control",
+    ]);
   });
 });

@@ -119,6 +119,10 @@ struct WorkRootScreen: View {
   /// destinations below since `navigationDestination` builds outside the view
   /// tree and does not inherit environment objects.
   @EnvironmentObject var dictationController: DictationController
+  /// Which plugin-owned surfaces exist on the attached machine. Observed (not
+  /// read once) so the `Lane ▸ Copy ▸ Linear issue link` row and the top bar's
+  /// Linear button appear and disappear together the moment the answer changes.
+  @EnvironmentObject var pluginGate: PluginPresenceGate
   @Namespace var sessionTransitionNamespace
   var isTabActive = true
 
@@ -660,8 +664,9 @@ struct WorkRootScreen: View {
             // first with per-session navigation. Do not reintroduce a
             // replacement here, and do not re-derive the counts that fed it.
             //
-            // Real-Linear-logo button, immediately left of the bell; gated on the
-            // active project's Linear connection.
+            // Real-Linear-logo button, immediately left of the bell. Gated on
+            // the attached machine having the Linear plugin — not on the
+            // account's Linear connection, which the pane itself resolves.
             LinearPaneToolbarButton()
             // One slot for every plugin with a panel, and nothing at all when
             // there are none. Opens the pane directly for a single plugin, a
@@ -974,13 +979,16 @@ struct WorkRootScreen: View {
 
   /// The `Lane ▸` submenu's wiring. Every entry is a command the Lanes tab
   /// already sends, so the two surfaces cannot disagree about what a lane action
-  /// does. The two flags are per-command capability gates: a host that does not
-  /// advertise `lanes.updateAppearance` or `lanes.rename` shows no colour or
-  /// manage row at all rather than one that fails on tap.
+  /// does. The flags are availability gates: a host that does not advertise
+  /// `lanes.updateAppearance` or `lanes.rename` shows no colour or manage row at
+  /// all rather than one that fails on tap, and a machine without the Linear
+  /// plugin shows no Linear row rather than copying a link to a screen it no
+  /// longer has.
   var workLaneMenuActions: WorkSessionLaneMenuActions {
     WorkSessionLaneMenuActions(
       colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),
       manageAvailable: syncService.canInvokeRemoteAction("lanes.rename"),
+      linearLinkAvailable: pluginGate.owns(.linear),
       onStartChat: startChatInLane,
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyLaneBranchLink,

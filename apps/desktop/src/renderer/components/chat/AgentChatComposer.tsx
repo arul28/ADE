@@ -78,6 +78,7 @@ import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
@@ -2024,7 +2025,13 @@ export function AgentChatComposer({
     attachmentCount: attachmentSlotsUsed,
   });
   const contextAttachmentCount = contextAttachments.length;
-  const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
+  // Linear is the only issue source this menu can actually attach from —
+  // GitHub is a placeholder row — so without the Linear plugin the whole
+  // "Issue context" entry opens onto nothing and goes with it.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  const canAttachIssueContext =
+    linearSurfaceVisible && !composerInputLocked && typeof onAddContextAttachment === "function";
+  const showIssueContextEntry = linearSurfaceVisible;
   const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
   const showLaunchClipboardNotice =
@@ -4507,7 +4514,7 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
+  const issueContextMenu = issueContextMenuOpen && linearSurfaceVisible && issueContextButtonRef.current ? createPortal(
     <div
       className="ade-chat-drawer-glass fixed z-[1000] overflow-hidden"
       data-issue-context-menu="true"
@@ -4575,7 +4582,7 @@ export function AgentChatComposer({
     <>
       {issueContextMenu}
       <LinearIssueSelectModal
-        open={linearIssuePickerOpen}
+        open={linearIssuePickerOpen && linearSurfaceVisible}
         ariaLabel="Attach Linear issue"
         selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
@@ -5354,21 +5361,23 @@ export function AgentChatComposer({
             <ComposerOverflowMenu
               triggerRef={issueContextButtonRef}
               items={[
-                {
-                  id: "issue-context",
-                  label: "Issue context",
-                  icon: <Bug size={14} weight={contextAttachmentCount ? "fill" : "regular"} />,
-                  // Reads as "on" while issues are attached, so the collapsed
-                  // trigger's dot reports them without needing its own badge.
-                  active: contextAttachmentCount > 0,
-                  disabled: !canAttachIssueContext,
-                  badge: contextAttachmentCount || undefined,
-                  onSelect: () => {
-                    if (!canAttachIssueContext) return;
-                    setAttachmentPickerOpen(false);
-                    setIssueContextMenuOpen((open) => !open);
-                  },
-                },
+                ...(showIssueContextEntry
+                  ? [{
+                      id: "issue-context",
+                      label: "Issue context",
+                      icon: <Bug size={14} weight={contextAttachmentCount ? "fill" : "regular"} />,
+                      // Reads as "on" while issues are attached, so the collapsed
+                      // trigger's dot reports them without needing its own badge.
+                      active: contextAttachmentCount > 0,
+                      disabled: !canAttachIssueContext,
+                      badge: contextAttachmentCount || undefined,
+                      onSelect: () => {
+                        if (!canAttachIssueContext) return;
+                        setAttachmentPickerOpen(false);
+                        setIssueContextMenuOpen((open) => !open);
+                      },
+                    }]
+                  : []),
                 ...(showOrchestratorModeButton
                   ? [{
                       id: "orchestrator",

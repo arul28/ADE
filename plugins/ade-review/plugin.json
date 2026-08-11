@@ -1,0 +1,27 @@
+{
+  "name": "ade-review",
+  "version": "1.0.0",
+  "displayName": "Review",
+  "description": "AI review passes over your project and pull requests \u2014 as an optional tab.",
+  "icon": "git-pull-request",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "review",
+      "title": "Review",
+      "icon": "git-pull-request",
+      "panelId": "main",
+      "builtin": "review"
+    }
+  ],
+  "panels": [
+    {
+      "id": "main",
+      "schemaFile": "panels/main.json",
+      "title": "Review"
+    }
+  ],
+  "official": true
+}

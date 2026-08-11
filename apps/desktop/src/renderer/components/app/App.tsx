@@ -32,6 +32,10 @@ import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavig
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { usePluginRegistrySync } from "../plugins/usePluginRegistry";
+import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
+import { builtinGateForRoute, isBuiltinSurfaceVisible, isBuiltinTabVisible } from "../plugins/builtinTabs";
+import { BuiltinRouteGuard } from "../plugins/BuiltinRouteGuard";
+import { showToast } from "./toast/toastStore";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -258,6 +262,11 @@ function PageErrorBoundary({ children }: { children: React.ReactNode }) {
       {children}
     </PageErrorBoundaryInner>
   );
+}
+
+/** A compiled surface's route, refused when its owner plugin is not installed. */
+function GatedRoute({ route, children }: { route: string; children: React.ReactNode }) {
+  return <BuiltinRouteGuard route={route} pending={LazyFallback}>{children}</BuiltinRouteGuard>;
 }
 
 const RouteLoadingFallback = (
@@ -573,7 +582,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           } />
           <Route path="/graph" element={
             <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(WorkspaceGraphPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              <GatedRoute route="/graph">
+                <React.Suspense fallback={LazyFallback}>{React.createElement(WorkspaceGraphPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              </GatedRoute>
             </PageErrorBoundary>
           } />
           <Route path="/prs" element={
@@ -583,12 +594,16 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           } />
           <Route path="/review" element={
             <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(ReviewPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              <GatedRoute route="/review">
+                <React.Suspense fallback={LazyFallback}>{React.createElement(ReviewPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              </GatedRoute>
             </PageErrorBoundary>
           } />
           <Route path="/history" element={
             <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(HistoryPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              <GatedRoute route="/history">
+                <React.Suspense fallback={LazyFallback}>{React.createElement(HistoryPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              </GatedRoute>
             </PageErrorBoundary>
           } />
           <Route path="/automations" element={
@@ -1147,12 +1162,39 @@ function AppNavigationBridge() {
     return true;
   }, [resolveActiveProjectRepo]);
 
+  // Read through a ref rather than as a dependency: `dispatchTarget` is stored
+  // in `dispatchTargetRef` and re-run after a project switch, and rebuilding it
+  // every time the plugin registry ticks would swap the callback out from under
+  // an in-flight retry.
+  const builtinGateInput = useBuiltinGateInput();
+  const builtinGateInputRef = React.useRef(builtinGateInput);
+  builtinGateInputRef.current = builtinGateInput;
+
   const dispatchTarget = React.useCallback(async (
     target: AppNavigationTarget,
     options: InboundDeeplinkDispatchOptions = {},
   ): Promise<boolean> => {
     const laneById = (laneId: string | null | undefined) =>
       laneId ? lanesRef.current.find((lane) => lane.id === laneId) ?? null : null;
+
+    /**
+     * A link into a surface this machine does not have.
+     *
+     * Answered rather than swallowed: the link resolved, ADE understood it, and
+     * the thing it names is genuinely not here. Silence would read as a dead
+     * link, and sending them to the Marketplace instead would advertise what
+     * they removed. Returns true because the target WAS handled — refusing is
+     * the handling — and a false would send the caller into its unresolved-link
+     * fallbacks looking for another machine to try.
+     */
+    const refuseGatedTarget = (title: string): boolean => {
+      showToast({
+        title: `${title} isn't part of this ADE`,
+        message: "It comes from a plugin that isn't installed on this computer.",
+        tone: "info",
+      });
+      return true;
+    };
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
@@ -1238,6 +1280,9 @@ function AppNavigationBridge() {
     if (target.kind === "artifact") {
       // History does not expose a stable focused-artifact URL yet; route to the
       // local proof/history surface optimistically.
+      if (!isBuiltinTabVisible("/history", builtinGateInputRef.current)) {
+        return refuseGatedTarget("History");
+      }
       navigate("/history");
       return true;
     }
@@ -1296,6 +1341,9 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "linear-issue") {
+      if (!isBuiltinSurfaceVisible("linear", builtinGateInputRef.current)) {
+        return refuseGatedTarget("Linear");
+      }
       requestLinearIssueQuickView({
         issueIdentifier: target.issueIdentifier,
         branch: target.branch ?? null,
@@ -1313,7 +1361,15 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "route") {
-      navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
+      const route = target.route.startsWith("/") ? target.route : `/${target.route}`;
+      // The open kind: any main-process card, `ade` deeplink or nav target can
+      // name a route directly, so this one branch reaches all three gated pages
+      // without going near the rail that hides them.
+      const gate = builtinGateForRoute(route);
+      if (gate && !isBuiltinTabVisible(route, builtinGateInputRef.current)) {
+        return refuseGatedTarget(gate.title);
+      }
+      navigate(route);
       return true;
     }
 

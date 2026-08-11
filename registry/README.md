@@ -4,9 +4,10 @@ This directory is the plugin directory ADE fetches: a static `index.json` plus
 the curated files and the crawler that produces it.
 
 It lives here so it can be reviewed with the code that reads it. It is meant to
-be **extracted** into a standalone public repository — `ade-plugins-registry`
-— once the platform ships. Nothing here runs in this repository, and nothing
-here is deployed by this repository's CI.
+be **extracted** into a standalone public repository —
+`github.com/arul28/ade-plugins-registry` — once the platform ships. Nothing
+here runs in this repository, and nothing here is deployed by this repository's
+CI.
 
 ## Why a repository and not a service
 
@@ -172,7 +173,7 @@ treats it as one.
 
 ## Extraction
 
-To move this into `ade-plugins-registry`:
+To move this into `github.com/arul28/ade-plugins-registry`:
 
 1. Create the public repository.
 2. Copy the contents of this directory to its root, so `index.json`,
@@ -193,7 +194,7 @@ To move this into `ade-plugins-registry`:
    `apps/desktop/src/shared/plugins/registryIndex.test.ts` skips itself when the
    directory is gone.
 
-**Sequencing, for the five plugins ADE bundles.** Do not publish directory
+**Sequencing, for the ten plugins ADE bundles.** Do not publish directory
 entries for them until their repositories actually exist. A directory entry
 REPLACES the bundled listing for the same id — `mergeMarketplaceCatalogue` is
 last-writer-wins by plugin id — so the Install button stops resolving the
@@ -202,7 +203,7 @@ repositories are empty that turns a working offline install into a failing one.
 The index format cannot soften this: `repo` must be an https URL or the entry is
 dropped, and `source` falls back to `repo` unless it is also a URL
 (`registryIndex.ts:212` and `:215`), so a directory entry can never name a
-bundled package. Either create the repositories first, or leave those five ids
+bundled package. Either create the repositories first, or leave those ten ids
 out of the first published index and let the bundled listings serve them.
 
 Until then, ADE works without any of it: the Marketplace ships a bundled index
@@ -211,8 +212,8 @@ top when one becomes reachable.
 
 ### What the seed index does NOT claim
 
-`index.json` here is hand-written, and it names repositories under
-`github.com/ade-plugins` that **do not exist yet**. Those are where these
+`seed-entries.json` is hand-written, and it names repositories under
+`github.com/arul28` that **do not exist yet**. Those are where these
 plugins will be published; today the packages live in this repository under
 `plugins/`, and the app installs them from its own bundled copy. So the seed is
 a directory of ids and descriptions, not a set of working install sources — an
@@ -246,6 +247,10 @@ To exercise it without a network, against fixtures:
     node --test registry/scripts/crawl.test.mjs
 
 Those cases build a throwaway registry per run, so nothing here is touched.
-They are not part of the ADE test suites (which only collect `src/**`), which is
-deliberate while this directory is a guest in the ADE repository: after
-extraction they are the registry repository's own CI.
+No vitest project collects them — the ADE suites only collect `src/**` — so ADE
+CI runs them directly, in the `typecheck-ade-cli` job's `node --test` step,
+alongside the other repo scripts vitest cannot see. Without that they were green
+by never running, and this directory is where a silent break is most expensive:
+a crawler that drops entries publishes a directory missing plugins, with nothing
+anywhere saying why. After extraction they become the registry repository's own
+CI and the ADE step drops the path.

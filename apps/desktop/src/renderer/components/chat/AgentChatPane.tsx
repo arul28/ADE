@@ -219,6 +219,7 @@ import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import {
   effectiveNewLaneBaseSource,
   fetchNewLaneBaseBranches,
@@ -3593,7 +3594,11 @@ export function AgentChatPane({
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
-  const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
+  // Host support only: "this machine can run a simulator". Whether the product
+  // has an iOS Simulator at all is the plugin's answer, folded in below.
+  const [iosSimulatorHostSupported, setIosSimulatorHostSupported] = useState(isLikelyMacRenderer);
+  const iosSimulatorSurfaceVisible = useBuiltinSurfaceVisible("ios");
+  const appControlSurfaceVisible = useBuiltinSurfaceVisible("app-control");
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
@@ -3615,7 +3620,7 @@ export function AgentChatPane({
   const [appControlOpen, setAppControlOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
   );
-  const [appControlAvailable, setAppControlAvailable] = useState(false);
+  const [appControlHostSupported, setAppControlHostSupported] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
@@ -3933,8 +3938,16 @@ export function AgentChatPane({
       return next;
     });
   }, []);
-  const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
-  const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
+  // Both gates are folded in here, at the single source every button, toggle
+  // prop, probe effect and drawer render already reads, so there is no call
+  // site left that can reveal a pane its plugin no longer owns. `*Open` still
+  // holds the user's saved preference: a stored open drawer is ignored while
+  // the plugin is gone and comes back as they left it if they reinstall, so
+  // uninstalling never silently rewrites what they chose.
+  const iosSimulatorAvailable = iosSimulatorSurfaceVisible && iosSimulatorHostSupported;
+  const appControlAvailable = appControlSurfaceVisible && appControlHostSupported;
+  const effectiveIosSimulatorOpen = iosSimulatorSurfaceVisible && !hideLaneToolDrawers && iosSimulatorOpen;
+  const effectiveAppControlOpen = appControlSurfaceVisible && !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
   const chatTerminalVisible = Boolean(showWorkspaceChrome && laneId);
   const laneDisplayLabel = useMemo(() => {
@@ -3953,11 +3966,11 @@ export function AgentChatPane({
     void api.getStatus()
       .then((status) => {
         if (cancelled) return;
-        setIosSimulatorAvailable(status.platform === "darwin");
+        setIosSimulatorHostSupported(status.platform === "darwin");
       })
       .catch(() => {
         if (cancelled) return;
-        setIosSimulatorAvailable(false);
+        setIosSimulatorHostSupported(false);
       });
     return () => {
       cancelled = true;
@@ -3967,26 +3980,26 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.appControl;
     if (!api?.getStatus) {
-      setAppControlAvailable(false);
+      setAppControlHostSupported(false);
       return;
     }
     if (!laneToolsVisible) {
-      setAppControlAvailable(false);
+      setAppControlHostSupported(false);
       return;
     }
     if (isRemoteProject && !effectiveAppControlOpen) {
-      setAppControlAvailable(false);
+      setAppControlHostSupported(false);
       return;
     }
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
         if (cancelled) return;
-        setAppControlAvailable(Boolean(status.supported));
+        setAppControlHostSupported(Boolean(status.supported));
       })
       .catch(() => {
         if (cancelled) return;
-        setAppControlAvailable(false);
+        setAppControlHostSupported(false);
       });
     return () => {
       cancelled = true;
@@ -6761,7 +6774,11 @@ export function AgentChatPane({
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
-    if (!api?.onEvent || hideLaneToolDrawers) return undefined;
+    // `ade ios-sim` reaches this over IPC and force-opens the drawer, which is
+    // the one path into the pane that never passes a button. Refusing to
+    // subscribe while the plugin is absent is what keeps an agent from
+    // revealing a surface the user cannot otherwise see.
+    if (!api?.onEvent || hideLaneToolDrawers || !iosSimulatorSurfaceVisible) return undefined;
     return api.onEvent((event) => {
       if (event.type !== "drawer-open-requested") return;
       const eventChatSessionId = typeof event.chatSessionId === "string" && event.chatSessionId.trim().length
@@ -6773,14 +6790,14 @@ export function AgentChatPane({
       if (eventChatSessionId && eventChatSessionId !== selectedSessionIdRef.current) return;
       if (eventLaneId && laneId && eventLaneId !== laneId) return;
       if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
-      setIosSimulatorAvailable(true);
+      setIosSimulatorHostSupported(true);
       setChatActionsOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
-  }, [hideLaneToolDrawers, isTileActive, laneId]);
+  }, [hideLaneToolDrawers, iosSimulatorSurfaceVisible, isTileActive, laneId]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {

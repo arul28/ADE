@@ -281,6 +281,15 @@ export type UseUniversalSearchOptions = {
    * truth for the keyboard index.
    */
   excludeSessionIds?: ReadonlySet<string>;
+  /**
+   * Result kinds whose only destination is a surface this machine does not
+   * have — Linear issues and artifacts, when their plugin is not installed.
+   *
+   * Dropped here rather than at the click, because a row that answers "nothing
+   * happens" is worse than no row: the index still holds these documents, and
+   * the palette is not the place to learn that a tab is missing.
+   */
+  hiddenKinds?: ReadonlySet<SearchDocKind>;
 };
 
 /**
@@ -295,6 +304,7 @@ export function useUniversalSearch(
   options: UseUniversalSearchOptions = {},
 ): UseUniversalSearchResult {
   const excludeSessionIds = options.excludeSessionIds;
+  const hiddenKinds = options.hiddenKinds;
   const [results, setResults] = useState<SearchResultItem[] | null>(null);
   const [totalByKind, setTotalByKind] = useState<
     Partial<Record<SearchDocKind, number>>
@@ -357,6 +367,9 @@ export function useUniversalSearch(
     // total stays honest against the rows actually rendered.
     const excludedByKind = new Map<SearchDocKind, number>();
     for (const item of results) {
+      // Not counted as an exclusion: the whole kind is gone, so there is no
+      // section left for a "show N more" total to be honest about.
+      if (hiddenKinds?.has(item.kind)) continue;
       if (
         excludeSessionIds &&
         item.sessionId &&
@@ -382,7 +395,7 @@ export function useUniversalSearch(
       });
     }
     return next;
-  }, [excludeSessionIds, results, totalByKind]);
+  }, [excludeSessionIds, hiddenKinds, results, totalByKind]);
 
   // Flattened, keyboard-navigable sequence of entity rows + show-more rows,
   // continuing after the command items in the shared flat index.

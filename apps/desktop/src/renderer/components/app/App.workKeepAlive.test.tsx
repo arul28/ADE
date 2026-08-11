@@ -81,6 +81,20 @@ vi.mock("../../state/appStore", async () => {
   });
   return {
     useAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector(appStoreState)),
+    // The plugin registry lives on the ROOT store, and anything that gates a
+    // plugin-owned surface reads it from anywhere in the tree — the deeplink
+    // modal App renders does. This machine has no plugins, which is the
+    // shipped default and keeps those surfaces out of these route assertions.
+    useRootAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector({
+      ...appStoreState,
+      installedPlugins: [],
+      pluginsLoaded: false,
+    } as typeof appStoreState)),
+    rootAppStoreApi: {
+      getState: () => ({ ...appStoreState, refreshInstalledPlugins: vi.fn(async () => undefined) }),
+      setState: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    },
     createProjectAppStore: vi.fn((project, projectBinding) => {
       let state = {
         ...createScopedState(project),

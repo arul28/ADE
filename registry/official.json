@@ -8,6 +8,10 @@
     "claim and takes the flag from this file. Being official is a statement ADE makes",
     "about a plugin, not one the plugin makes about itself.",
     "",
+    "Every official repository is `github.com/arul28/<pluginId>` — the id and the",
+    "repository name are deliberately the same word, so the binding below reads as one",
+    "fact rather than two that can drift apart.",
+    "",
     "`checksums` maps a released version to the sha256 of that version's source tree",
     "(see README, 'Official signing'). The installer refuses a version whose bytes",
     "disagree with a published digest; a version with no digest installs as unverified.",
@@ -15,10 +19,15 @@
     "the tag, and never edited afterwards."
   ],
   "plugins": {
-    "ade-graph": { "repo": "https://github.com/ade-plugins/ade-graph", "checksums": {} },
-    "ade-log-viewer": { "repo": "https://github.com/ade-plugins/ade-log-viewer", "checksums": {} },
-    "ade-theme-paper": { "repo": "https://github.com/ade-plugins/ade-theme-paper", "checksums": {} },
-    "ade-theme-ink": { "repo": "https://github.com/ade-plugins/ade-theme-ink", "checksums": {} },
-    "ade-theme-contrast": { "repo": "https://github.com/ade-plugins/ade-theme-contrast", "checksums": {} }
+    "ade-graph": { "repo": "https://github.com/arul28/ade-graph", "checksums": {} },
+    "ade-review": { "repo": "https://github.com/arul28/ade-review", "checksums": {} },
+    "ade-history": { "repo": "https://github.com/arul28/ade-history", "checksums": {} },
+    "ade-linear": { "repo": "https://github.com/arul28/ade-linear", "checksums": {} },
+    "ade-ios-sim": { "repo": "https://github.com/arul28/ade-ios-sim", "checksums": {} },
+    "ade-app-control": { "repo": "https://github.com/arul28/ade-app-control", "checksums": {} },
+    "ade-log-viewer": { "repo": "https://github.com/arul28/ade-log-viewer", "checksums": {} },
+    "ade-theme-paper": { "repo": "https://github.com/arul28/ade-theme-paper", "checksums": {} },
+    "ade-theme-ink": { "repo": "https://github.com/arul28/ade-theme-ink", "checksums": {} },
+    "ade-theme-contrast": { "repo": "https://github.com/arul28/ade-theme-contrast", "checksums": {} }
   }
 }

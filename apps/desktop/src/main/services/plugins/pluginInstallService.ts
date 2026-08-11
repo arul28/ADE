@@ -111,14 +111,7 @@ export type PluginInstallService = {
   skillRoots(): string[];
 };
 
-/**
- * The registry file's shape, read and written here.
- *
- * `removedBuiltins` is the tombstone list: seeding is idempotent by checking
- * "is there a record", so without it an uninstalled builtin would reappear on
- * the next read — the user would delete it, and ADE would put it straight back.
- * An id stays there forever; that is the point.
- */
+/** The registry file's shape, read and written here. */
 type PluginRegistryFile = PluginRegistryFileContents;
 
 /** `<machine adeDir>/plugins` — installs are machine-scoped, never per project. */
@@ -274,13 +267,10 @@ function removeQuietly(target: string): void {
  * see `apps/desktop/package.json`); a source checkout has them at the repo's
  * `plugins/`.
  *
- * The two are found by DIFFERENT rules, and deliberately so. Seeding installs
- * and enables whatever it finds, which makes "any ancestor directory that
- * happens to contain a `plugins/` folder" an auto-run of code nobody chose:
- * launch ADE from `~/work` while `~/work/plugins/` holds an unrelated checkout
- * and it becomes an enabled ADE plugin. So the packaged path is anchored to
- * `resourcesPath`, and the source path is only accepted at a directory that
- * proves it is THIS repository — see {@link isAdePluginsSourceRoot}.
+ * These packages are discoverable for an explicit bare-id install; resolving
+ * the directory never installs, copies, enables, or runs one. The packaged path
+ * is anchored to `resourcesPath`, and the source path is accepted only at a
+ * directory that proves it is THIS repository.
  */
 export function resolveBuiltinPluginsRoot(
   env: NodeJS.ProcessEnv = process.env,
@@ -289,10 +279,8 @@ export function resolveBuiltinPluginsRoot(
 ): string | null {
   const configured = env.ADE_BUILTIN_PLUGINS_DIR?.trim();
   if (configured) return dirExists(configured) ? configured : null;
-  // Under test the walk would find the repo's own `plugins/` and seed real
-  // packages into whatever temp install root a test just created — every test
-  // that builds an install service would silently gain two plugins it never
-  // installed. Tests opt in by passing `builtinPluginsRoot` explicitly.
+  // Tests opt in by passing `builtinPluginsRoot` explicitly so a bare-id test
+  // cannot accidentally resolve packages from the checkout running Vitest.
   if (env.VITEST || env.VITEST_WORKER_ID || env.NODE_ENV === "test") return null;
   const resourcesPath = from.resourcesPath
     ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
@@ -329,8 +317,8 @@ const ADE_REPO_PACKAGE_NAME = "ade";
  * Is this directory the ADE checkout itself?
  *
  * The marker is the workspace `package.json` name, which no unrelated parent
- * directory carries. Without it the walk would accept any ancestor holding a
- * `plugins/` directory and seed its contents as installed, enabled plugins.
+ * directory carries. Without it the walk could accept an unrelated ancestor's
+ * `plugins/` directory as ADE's explicit-install catalogue.
  */
 function isAdePluginsSourceRoot(directory: string): boolean {
   try {
@@ -346,17 +334,11 @@ export type BuiltinPluginPackage = { pluginId: string; source: string; manifest:
 /**
  * Bundled package directories that carry a readable, valid manifest.
  *
- * `maxDepth` is the difference between the two things this answers, and they
- * are not the same question:
- *
- * - **0 — what gets seeded.** Direct children only. The starter themes ship at
- *   `plugins/themes/<id>`, and that nesting IS their opt-in: a palette nobody
- *   chose must not arrive installed on every machine.
- * - **1 — what can be installed by id.** An explicit install IS the opt-in, so
- *   it looks inside a category directory. Only a directory with no manifest of
- *   its own is descended into, so a category can never shadow a package.
+ * Explicit install looks one category deep so the bundled starter themes can
+ * be addressed by id. A directory with a manifest is a package and is never
+ * descended into, so a category cannot shadow a package.
  */
-function listBuiltinPackages(builtinRoot: string, maxDepth = 0): BuiltinPluginPackage[] {
+function listBuiltinPackages(builtinRoot: string, maxDepth = 1): BuiltinPluginPackage[] {
   const packages: BuiltinPluginPackage[] = [];
   const visit = (directory: string, depth: number): void => {
     let entries: fs.Dirent[];
@@ -376,7 +358,7 @@ function listBuiltinPackages(builtinRoot: string, maxDepth = 0): BuiltinPluginPa
         continue;
       }
       // A bundled package that does not parse is a build problem, not a user
-      // problem; seeding it would surface as a broken plugin nobody installed.
+      // problem; omit it from the explicit-install catalogue.
       if (!isValidPluginId(entry.name) || parsed.manifest.name !== entry.name) continue;
       packages.push({ pluginId: entry.name, source, manifest: parsed.manifest });
     }
@@ -403,7 +385,7 @@ export function createPluginInstallService(deps: {
    * fail an install is worse than telemetry that is occasionally missing.
    */
   reportInstall?: (install: { pluginId: string; version: string }) => void | Promise<void>;
-  /** Bundled plugin packages to seed. Defaults to {@link resolveBuiltinPluginsRoot}. */
+  /** Bundled plugin packages available for explicit install by id. */
   builtinPluginsRoot?: string | null;
   /**
    * Runs after the manifest is parsed (so the id being replaced is known) and
@@ -425,89 +407,14 @@ export function createPluginInstallService(deps: {
   const builtinRoot = deps.builtinPluginsRoot === undefined
     ? resolveBuiltinPluginsRoot()
     : deps.builtinPluginsRoot;
-  let builtinsSeeded = false;
-
-  /**
-   * Copy each bundled package that this machine has not seen into the install
-   * root, once. Copying rather than referencing the bundle keeps every other
-   * invariant intact — `describe`, `skillRoots` and `uninstall` all assume a
-   * plugin lives at `<root>/<id>`, and the skills-root guard actively refuses a
-   * path outside it — and it means an app update ships a new version by simply
-   * bumping the manifest, which the version check below picks up.
-   */
-  const seedBuiltins = (registry: PluginRegistryFile): boolean => {
-    if (!builtinRoot) return false;
-    let changed = false;
-    for (const bundled of listBuiltinPackages(builtinRoot)) {
-      if (registry.removedBuiltins.includes(bundled.pluginId)) continue;
-      const existing = registry.plugins[bundled.pluginId];
-      // A user-installed plugin of the same id wins: they chose that copy, and
-      // silently replacing it with ours would discard their install.
-      if (existing && existing.source.kind !== "builtin") continue;
-      if (existing && existing.version === bundled.manifest.version) continue;
-      const target = pluginRootWithin(root, bundled.pluginId);
-      try {
-        if (dirExists(target)) fs.rmSync(target, { recursive: true, force: true });
-        copyPluginTree(bundled.source, target);
-      } catch (error) {
-        deps.logger.warn("plugin.builtin_seed_failed", {
-          pluginId: bundled.pluginId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        continue;
-      }
-      const now = nowIso();
-      registry.plugins[bundled.pluginId] = {
-        pluginId: bundled.pluginId,
-        version: bundled.manifest.version,
-        // Enablement survives an update: a user who disabled a builtin keeps it
-        // disabled when the next release ships a newer copy.
-        enabled: existing?.enabled ?? true,
-        source: { kind: "builtin" },
-        installedAt: existing?.installedAt ?? now,
-        updatedAt: now,
-        // Per-contribution switches are the user's, not the package's: an
-        // update that silently switched a badge they turned off back on would
-        // be indistinguishable from ADE ignoring the setting.
-        ...(existing?.disabledContributions?.length
-          ? { disabledContributions: [...existing.disabledContributions] }
-          : {}),
-      };
-      changed = true;
-      deps.logger.info("plugin.builtin_seeded", {
-        pluginId: bundled.pluginId,
-        version: bundled.manifest.version,
-        replaced: Boolean(existing),
-      });
-    }
-    return changed;
-  };
 
   /** The bundled package for an id, when this build ships one. */
   const findBuiltinPackage = (pluginId: string): BuiltinPluginPackage | null => {
     if (!builtinRoot || !isValidPluginId(pluginId)) return null;
-    return listBuiltinPackages(builtinRoot, 1).find((entry) => entry.pluginId === pluginId) ?? null;
+    return listBuiltinPackages(builtinRoot).find((entry) => entry.pluginId === pluginId) ?? null;
   };
 
-  const readRegistry = (): PluginRegistryFile => {
-    const registry = readPluginRegistryContents(root);
-    // Seeding lives in the read path so a bundled plugin is present the first
-    // time anything asks, without a caller having to remember to seed. The flag
-    // keeps it to once per service: the copy is filesystem work, not something
-    // every `list()` should redo.
-    if (builtinsSeeded) return registry;
-    builtinsSeeded = true;
-    if (seedBuiltins(registry)) {
-      try {
-        writeRegistry(registry);
-      } catch {
-        // The seeded records are already in the returned registry, so this read
-        // is correct either way; the next read retries the write.
-        builtinsSeeded = false;
-      }
-    }
-    return registry;
-  };
+  const readRegistry = (): PluginRegistryFile => readPluginRegistryContents(root);
 
   const writeRegistry = (registry: PluginRegistryFile): void => {
     try {
@@ -754,8 +661,8 @@ export function createPluginInstallService(deps: {
       version: manifest.version,
       enabled: args.enable === undefined ? existing?.enabled !== false : args.enable,
       source: bundled
-        // Recorded as builtin, not as the path it happened to be copied from:
-        // that is what lets the next app update seed a newer copy over it.
+        // Recorded as builtin because the source was this build's catalogue;
+        // future updates remain explicit and never overwrite it automatically.
         ? { kind: "builtin" }
         : isLocalDirectory
           ? { kind: "local", path: path.resolve(source) }
@@ -770,12 +677,6 @@ export function createPluginInstallService(deps: {
         : {}),
     };
     registry.plugins[pluginId] = record;
-    // Installing a builtin again revokes the tombstone that says the user
-    // removed it — otherwise the record is there but every later app update
-    // skips it, and the plugin quietly stops being upgraded.
-    if (bundled) {
-      registry.removedBuiltins = registry.removedBuiltins.filter((id) => id !== pluginId);
-    }
     writeRegistry(registry);
     deps.logger.info("plugin.installed", {
       pluginId,
@@ -818,11 +719,6 @@ export function createPluginInstallService(deps: {
     }
     if (dirExists(target)) removeQuietly(target);
     if (known) {
-      // Removing a builtin has to be remembered, or the next read seeds it
-      // straight back and the uninstall looks like it silently failed.
-      if (existing?.source.kind === "builtin" && !registry.removedBuiltins.includes(pluginId)) {
-        registry.removedBuiltins.push(pluginId);
-      }
       delete registry.plugins[pluginId];
       writeRegistry(registry);
     }

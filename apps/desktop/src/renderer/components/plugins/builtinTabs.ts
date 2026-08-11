@@ -1,65 +1,62 @@
 /**
- * Built-in tabs that a plugin owns.
+ * Compiled surfaces owned by official plugins.
  *
- * Most extracted surfaces become a plugin outright: the plugin ships a panel
- * schema and the renderer draws it. The Graph cannot go that way — it is an
- * interactive xyflow canvas, and the vocabulary is deliberately data-only — so
- * it stays compiled into the app and the plugin *gates* it instead. The
- * manifest says so with `surfaces[].builtin` (see `PLUGIN_BUILTIN_SURFACE_IDS`),
- * and everything that decides what the rail shows is here, as pure functions,
- * with the storage seam kept separate so the rules are testable.
+ * A manifest `builtin` contribution does not render a vocabulary panel. It
+ * names a surface that is compiled into ADE — the Graph canvas, the Review and
+ * History pages, the Linear, iOS Simulator and App Control panes — and says
+ * "installing me is what puts this in the product".
  *
- * ## What "gated" means, exactly
+ * ## Hidden is the default, and it is a default, not a fallback
  *
- * - The **rail item and the palette command** follow install state.
- * - The **route does not**. `/graph` keeps working when the tab is hidden, so a
- *   deeplink minted last month still opens, and the tab is one install away.
- * - The gating plugin gets **no rail item of its own**. It has no panel to show;
- *   a second "Graph" entry that opened an empty plugin page would be a bug
- *   wearing the feature's name.
+ * Every answer here starts at "not visible" and is moved only by a positive
+ * fact: this host publishes plugins, its registry has resolved, and the
+ * registered owner is in it and enabled. Before the registry loads, on a host
+ * with no plugin support, after an uninstall, and while the owner is disabled,
+ * the surface is absent — and those cases are indistinguishable on purpose, so
+ * there is no state in which a surface appears because ADE was unsure.
  *
- * ## Why absence is not enough to hide a tab
+ * That is the reverse of how this file read in round 1, when the surfaces were
+ * seeded onto every machine and hiding one had to be earned. Nothing is seeded
+ * now, so there is no existing install to protect and no reason to remember
+ * what was once seen: a machine with no plugins has no Graph tab, and that is
+ * the correct product, not a degraded one.
  *
- * Two machines can both report "ade-graph is not installed" for opposite
- * reasons: one has never heard of plugins and has always had a Graph tab, the
- * other removed it on purpose. Hiding on absence alone would silently delete a
- * tab from every existing install on upgrade day, which is the one outcome the
- * extraction must not have.
+ * ## Visibility is not the whole gate
  *
- * So a gate hides only once this machine has SEEN its owner installed.
- *
- * On the desktop that is usually immediate: `pluginInstallService` seeds the
- * bundled official packages into the machine install registry on first read and
- * records a tombstone when one is removed, so the owner is present from the
- * start and its later absence is a deliberate uninstall. The two rules agree by
- * construction — a seeded install is an observed install — and this one also
- * covers the hosts that seeding cannot reach: an older desktop, and the web
- * client, which reads a registry it does not populate.
+ * A rail item is a signpost, not access control. Routes, deeplinks, restored
+ * routes and programmatic reveals reach these surfaces without passing a rail,
+ * so each of those checks the same predicate rather than trusting that the way
+ * in was hidden. `isBuiltinSurfaceVisible` is that one predicate.
  */
 
 import {
   PLUGIN_BUILTIN_SURFACE_IDS,
-  isPluginBuiltinSurfaceId,
   type PluginBuiltinSurfaceId,
 } from "../../../shared/plugins/manifest";
 import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
-/** One compiled-in tab, the route it occupies, and the plugin that owns it. */
 export type BuiltinTabGate = {
   builtinId: PluginBuiltinSurfaceId;
-  /** The rail path this gate governs. Must match the entry in `TabNav`. */
-  route: string;
+  /** Null for compiled panes that live inside Work rather than at a route. */
+  route: string | null;
   /**
-   * The official plugin that owns it. Held here rather than discovered from
-   * whichever installed plugin happens to declare `builtin`, so a plugin cannot
-   * take over a core tab by naming it: the manifest field says "I gate the tab I
-   * am registered for", and this table is the registration.
+   * The official plugin that owns it. Held in this table rather than discovered
+   * from whichever installed plugin happens to declare `builtin`, so a plugin
+   * cannot take over a core surface by naming it: the manifest field says "I
+   * gate the surface I am registered for", and this table is the registration.
    */
   ownerPluginId: string;
+  /** What to call it when ADE has to explain that it is not here. */
+  title: string;
 };
 
 export const BUILTIN_TAB_GATES: readonly BuiltinTabGate[] = [
-  { builtinId: "graph", route: "/graph", ownerPluginId: "ade-graph" },
+  { builtinId: "graph", route: "/graph", ownerPluginId: "ade-graph", title: "Graph" },
+  { builtinId: "review", route: "/review", ownerPluginId: "ade-review", title: "Review" },
+  { builtinId: "history", route: "/history", ownerPluginId: "ade-history", title: "History" },
+  { builtinId: "linear", route: null, ownerPluginId: "ade-linear", title: "Linear" },
+  { builtinId: "ios", route: null, ownerPluginId: "ade-ios-sim", title: "iOS Simulator" },
+  { builtinId: "app-control", route: null, ownerPluginId: "ade-app-control", title: "App Control" },
 ];
 
 export function builtinGateForRoute(route: string): BuiltinTabGate | null {
@@ -70,6 +67,12 @@ export function builtinGateForPlugin(pluginId: string): BuiltinTabGate | null {
   return BUILTIN_TAB_GATES.find((gate) => gate.ownerPluginId === pluginId) ?? null;
 }
 
+export function builtinGateForSurface(builtinId: PluginBuiltinSurfaceId): BuiltinTabGate {
+  const gate = BUILTIN_TAB_GATES.find((candidate) => candidate.builtinId === builtinId);
+  if (!gate) throw new Error(`No owner registered for builtin surface ${builtinId}`);
+  return gate;
+}
+
 /** The gate a plugin actually claims: registered owner AND a matching surface. */
 export function claimedBuiltinGate(plugin: InstalledPlugin): BuiltinTabGate | null {
   const gate = builtinGateForPlugin(plugin.pluginId);
@@ -78,7 +81,9 @@ export function claimedBuiltinGate(plugin: InstalledPlugin): BuiltinTabGate | nu
   // A host that predates the `builtin` field reports the surface without it.
   // The registered owner is trusted in that case: the alternative is a duplicate
   // rail item on exactly the hosts that cannot tell us otherwise.
-  const hostReportsBuiltin = plugin.tabs.some((tab) => typeof tab.builtin === "string" && tab.builtin.length > 0);
+  const hostReportsBuiltin = plugin.tabs.some(
+    (tab) => typeof tab.builtin === "string" && tab.builtin.length > 0,
+  );
   return claims || !hostReportsBuiltin ? gate : null;
 }
 
@@ -89,118 +94,56 @@ export type BuiltinGateInput = {
   /** False until the registry has resolved once. */
   pluginsLoaded: boolean;
   plugins: readonly InstalledPlugin[];
-  /** Gate ids this machine has previously observed as installed. */
-  seen: ReadonlySet<string>;
 };
 
 /**
- * Whether a core rail entry should be drawn.
+ * The one predicate. Every rail item, command, pane, route and deeplink that
+ * leads to a compiled surface asks this and nothing else.
  *
- * Every uncertainty resolves to "show it". A hidden tab is only ever the result
- * of a positive fact — this machine knows about plugins, has loaded its
- * registry, has met the owner before, and does not have it now.
+ * All three conditions are positive facts, so "we do not know yet" and "it is
+ * not installed" both answer false. That is the whole hide-everything rule.
  */
-export function isBuiltinTabVisible(route: string, input: BuiltinGateInput): boolean {
-  const gate = builtinGateForRoute(route);
-  if (!gate) return true;
-  if (!input.pluginSupport || !input.pluginsLoaded) return true;
-  const owner = input.plugins.find((plugin) => plugin.pluginId === gate.ownerPluginId);
-  if (owner) return owner.enabled;
-  return !input.seen.has(gate.builtinId);
+export function isBuiltinSurfaceVisible(
+  builtinId: PluginBuiltinSurfaceId,
+  input: BuiltinGateInput,
+): boolean {
+  if (!input.pluginSupport || !input.pluginsLoaded) return false;
+  const ownerId = builtinGateForSurface(builtinId).ownerPluginId;
+  return input.plugins.some((plugin) => plugin.pluginId === ownerId && plugin.enabled);
 }
 
 /**
- * Plugins that should NOT get a rail item of their own, because they gate a
- * built-in tab that is already in the rail.
+ * The same question asked by route.
+ *
+ * A route with no gate is one of ADE's own pages and is always allowed — this
+ * function is a filter over a mixed list, not a routing allowlist.
+ */
+export function isBuiltinTabVisible(route: string, input: BuiltinGateInput): boolean {
+  const gate = builtinGateForRoute(route);
+  return gate ? isBuiltinSurfaceVisible(gate.builtinId, input) : true;
+}
+
+/**
+ * Plugins that should NOT get a rail item of their own, because the surface
+ * they gate is already drawn by ADE.
  */
 export function pluginOwnsBuiltinTab(plugin: InstalledPlugin): boolean {
   return claimedBuiltinGate(plugin) !== null;
 }
 
 /**
- * Where `/plugin/<id>` should send someone when that plugin gates a built-in
- * tab. Null when it does not, which is every ordinary plugin.
+ * Where `/plugin/<id>` should send someone when that plugin gates a compiled
+ * surface. Null when it does not, which is every ordinary plugin — and also
+ * every pane owner, whose surface lives inside Work and has no route to send
+ * them to.
  */
 export function builtinRouteForPluginRoute(
   pluginId: string,
   plugins: readonly InstalledPlugin[],
 ): string | null {
   const plugin = plugins.find((entry) => entry.pluginId === pluginId);
-  if (!plugin) return null;
-  const gate = claimedBuiltinGate(plugin);
-  return gate ? gate.route : null;
+  if (!plugin?.enabled) return null;
+  return claimedBuiltinGate(plugin)?.route ?? null;
 }
 
-/* ── Observed-owner memory ──────────────────────────────────────────────── */
-
-/**
- * Its own key, holding its own array.
- *
- * Deliberately not a field in a shared preferences blob: surfaces that share one
- * stored map overwrite each other's slices, which is a bug this codebase has
- * already paid for once.
- */
-export const BUILTIN_TAB_SEEN_STORAGE_KEY = "ade.plugins.builtinTabsSeen";
-
-function storage(): Storage | null {
-  try {
-    return typeof window !== "undefined" ? window.localStorage : null;
-  } catch {
-    // Access itself throws in a locked-down embedding. A machine that cannot
-    // remember simply keeps every built-in tab, which is the safe direction.
-    return null;
-  }
-}
-
-export function readSeenBuiltinGates(): Set<string> {
-  const store = storage();
-  if (!store) return new Set();
-  try {
-    const raw = store.getItem(BUILTIN_TAB_SEEN_STORAGE_KEY);
-    if (!raw) return new Set();
-    const decoded: unknown = JSON.parse(raw);
-    if (!Array.isArray(decoded)) return new Set();
-    return new Set(decoded.filter(isPluginBuiltinSurfaceId));
-  } catch {
-    return new Set();
-  }
-}
-
-/**
- * Record every gate whose owner is installed right now, and answer with the set
- * as it now stands.
- *
- * Called on registry refresh. Writes only when the set actually grew — this runs
- * on every plugin change event, and a needless `setItem` on each one is churn on
- * the main thread for no gain.
- */
-export function rememberSeenBuiltinGates(plugins: readonly InstalledPlugin[]): Set<string> {
-  const seen = readSeenBuiltinGates();
-  let grew = false;
-  for (const plugin of plugins) {
-    const gate = builtinGateForPlugin(plugin.pluginId);
-    if (!gate || seen.has(gate.builtinId)) continue;
-    seen.add(gate.builtinId);
-    grew = true;
-  }
-  if (!grew) return seen;
-  const store = storage();
-  try {
-    store?.setItem(BUILTIN_TAB_SEEN_STORAGE_KEY, JSON.stringify([...seen]));
-  } catch {
-    // Quota or a private-mode store. The rail stays as it is for this session.
-  }
-  return seen;
-}
-
-/** Test seam. */
-export function forgetSeenBuiltinGates(): void {
-  try {
-    storage()?.removeItem(BUILTIN_TAB_SEEN_STORAGE_KEY);
-  } catch {
-    // Nothing to clear.
-  }
-}
-
-/** Every gate id, for callers that need the closed list without the table. */
 export const BUILTIN_TAB_IDS: readonly PluginBuiltinSurfaceId[] = PLUGIN_BUILTIN_SURFACE_IDS;

@@ -267,8 +267,40 @@ const PLUGIN_MACHINE_RPC_METHODS: readonly SyncRemoteCommandAction[] = [
   "plugins.disable",
 ];
 
-function isPluginMachineRpcMethod(method: string): method is SyncRemoteCommandAction {
-  return (PLUGIN_MACHINE_RPC_METHODS as readonly string[]).includes(method);
+/**
+ * Usage commands one machine sends to another over the runtime tunnel.
+ *
+ * Its own const rather than an extra line in the plugin list above: that
+ * allowlist says what it is for, and a rollup is not a plugin command. Widening
+ * it to hold anything that happens to need bridging is how an allowlist stops
+ * being one.
+ *
+ * `usage.getUsageRollup` has always been registered in
+ * `syncRemoteCommandService` and has never been dispatchable here, and the two
+ * tables not knowing about each other is silent: the call fell through to the
+ * project router and came back as `invalidParams: requires params.projectId`,
+ * so account usage fanned out to every reachable machine and got an error from
+ * all of them (`accountUsageLiveRefresh.ts`, which records each one as a
+ * failure). Usage is read from a machine's own ledger of what its agents spent
+ * — it is per COMPUTER, not per repository — so there is no projectId to carry
+ * and nothing for the project router to route on.
+ */
+const USAGE_MACHINE_RPC_METHODS: readonly SyncRemoteCommandAction[] = [
+  "usage.getUsageRollup",
+];
+
+/**
+ * The machine-scoped bridges as one predicate.
+ *
+ * The dispatch is identical for both lists — same policy gate, same
+ * `executeRemoteCommand`, same pass-through of whatever the handler returned —
+ * and two branches that must stay identical eventually will not be. The lists
+ * stay separate because each one documents a different reason for existing;
+ * only the plumbing is shared.
+ */
+function isMachineScopedRpcMethod(method: string): method is SyncRemoteCommandAction {
+  return (PLUGIN_MACHINE_RPC_METHODS as readonly string[]).includes(method)
+    || (USAGE_MACHINE_RPC_METHODS as readonly string[]).includes(method);
 }
 
 const RUNTIME_METHODS = new Set([
@@ -333,6 +365,10 @@ const RUNTIME_METHODS = new Set([
   // machine, and the presence fan-out that keeps the matrix current) fail on
   // every desktop-to-desktop call.
   ...PLUGIN_MACHINE_RPC_METHODS,
+  // Same shape of bug, different feature: a usage rollup is read from the
+  // machine's own ledger and carries no projectId either, so account usage
+  // fan-out collected an `invalidParams` from every remote machine it asked.
+  ...USAGE_MACHINE_RPC_METHODS,
 ]);
 
 
@@ -2095,13 +2131,21 @@ export function createMultiProjectRpcRequestHandler(
       return null;
     }
 
-    if (isPluginMachineRpcMethod(method)) {
+    if (isMachineScopedRpcMethod(method)) {
       // Bridged to the remote-command registry rather than reimplemented, so
       // one machine calling another lands on exactly the handler a phone
-      // reaches. The allowlist above keeps this to six always-viewerAllowed
-      // actions today, but `executeRemoteCommand` itself enforces nothing, so
-      // the gate is run here explicitly rather than trusted to stay true by
-      // construction as the allowlist grows.
+      // reaches. The allowlists above hold only always-viewerAllowed actions
+      // today, but `executeRemoteCommand` itself enforces nothing — it runs a
+      // registered handler unconditionally and never reads its own descriptor's
+      // policy — so the gate is run here explicitly rather than trusted to stay
+      // true by construction as those lists grow.
+      //
+      // The reply is returned exactly as the handler produced it, `null`
+      // included. For `usage.getUsageRollup` that is a value with a meaning:
+      // "this machine has not finished its first ledger scan", which the caller
+      // records as a retryable failure. Coercing it to `{}` here would look
+      // like an authoritative empty history and its reconcile pass would read
+      // that as everything this machine ever spent having been removed.
       const syncService = await getSyncService();
       requireRemoteCommandPolicyAllowed(syncService, method);
       return await syncService.executeRemoteCommand({

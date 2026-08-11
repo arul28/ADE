@@ -1,0 +1,27 @@
+{
+  "name": "ade-linear",
+  "version": "1.0.0",
+  "displayName": "Linear",
+  "description": "Open and browse Linear issues without leaving ADE.",
+  "icon": "list-checks",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "surfaces": [
+    {
+      "kind": "pane",
+      "id": "linear",
+      "title": "Linear",
+      "icon": "list-checks",
+      "panelId": "main",
+      "builtin": "linear"
+    }
+  ],
+  "panels": [
+    {
+      "id": "main",
+      "schemaFile": "panels/main.json",
+      "title": "Linear"
+    }
+  ],
+  "official": true
+}

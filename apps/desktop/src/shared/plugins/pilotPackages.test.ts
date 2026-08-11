@@ -30,6 +30,11 @@ const pluginsRoot = path.join(repoRoot, "plugins");
 
 const PACKAGE_DIRS = [
   "ade-graph",
+  "ade-review",
+  "ade-history",
+  "ade-linear",
+  "ade-ios-sim",
+  "ade-app-control",
   "ade-log-viewer",
   "themes/ade-theme-paper",
   "themes/ade-theme-ink",
@@ -304,17 +309,19 @@ describe("installing a package the way `ade plugin install <path>` does", () => 
   });
 
   /**
-   * Seeding, pointed at the REAL bundle rather than a synthetic one.
+   * Nothing installs itself, pointed at the REAL bundle rather than a synthetic
+   * one.
    *
-   * `pluginFixture.test.ts` proves the seeding mechanism with a fabricated
-   * builtin root, which is the right test for the mechanism and cannot catch the
-   * thing that actually breaks here: this directory's own layout. A package
-   * whose folder name stops matching its manifest id, or a theme that drifts to
-   * the top level and starts installing itself on every machine, both pass every
-   * other test in the suite.
+   * ADE used to seed two of these packages onto every machine on first read.
+   * That is gone: a fresh machine starts with zero plugins, and the bundled
+   * packages are a catalogue you can install from offline, not a set of
+   * defaults. The bundle is still walked to find them by id, and the risk that
+   * walk carries is why this is checked against the real directory — a package
+   * whose folder name stops matching its manifest id, or one that starts
+   * arriving installed again, passes every other test in the suite.
    */
-  describe("seeding from the real bundle", () => {
-    it("seeds exactly the two default plugins, installed and enabled", () => {
+  describe("the real bundle installs nothing on its own", () => {
+    it("starts a fresh machine with no plugins at all", () => {
       const root = pluginsRootScratch();
       const install = createPluginInstallService({
         logger: logger(),
@@ -322,48 +329,52 @@ describe("installing a package the way `ade plugin install <path>` does", () => 
         builtinPluginsRoot: pluginsRoot,
       });
 
-      const seeded = install.list();
-      expect(seeded.map((entry) => entry.record.pluginId).sort()).toEqual(["ade-graph", "ade-log-viewer"]);
-      for (const entry of seeded) {
-        expect(entry.record.enabled, entry.record.pluginId).toBe(true);
-        expect(entry.errors, entry.record.pluginId).toEqual([]);
-      }
+      expect(install.list()).toEqual([]);
+      // Not even a state file. Reading the registry must stay a pure read: the
+      // seeding path wrote one on first read, and a write there is what turned
+      // "ADE ships these packages" into "your machine has these installed".
+      expect(fs.existsSync(root) ? fs.readdirSync(root) : []).toEqual([]);
     });
 
-    it("leaves the themes opt-in", () => {
-      // Themes live under `plugins/themes/`, one level below the seeder's walk.
-      // That nesting IS the opt-in: a palette nobody chose should not arrive
-      // installed, and the Marketplace is where someone picks one.
+    it.each(PACKAGE_DIRS)("still installs %s by bare id when asked", async (dir) => {
       const root = pluginsRootScratch();
       const install = createPluginInstallService({
         logger: logger(),
         pluginsRoot: root,
         builtinPluginsRoot: pluginsRoot,
       });
-      const ids = install.list().map((entry) => entry.record.pluginId);
-      expect(ids).not.toContain("ade-theme-paper");
-      expect(ids).not.toContain("themes");
+      const pluginId = manifests.get(dir)!.name;
+
+      // The themes sit one level down, under `plugins/themes/`. An explicit
+      // install is the opt-in, so it looks inside a category directory — which
+      // is the whole reason the bundle is still walked now that nothing seeds.
+      const installed = await install.install({ source: pluginId });
+      expect(installed.errors, pluginId).toEqual([]);
+      expect(installed.record.pluginId, pluginId).toBe(pluginId);
+      expect(installed.record.source.kind, pluginId).toBe("builtin");
+      expect(install.list().map((entry) => entry.record.pluginId)).toEqual([pluginId]);
     });
 
-    it("does not put a seeded plugin back after the user removes it", () => {
+    it("leaves an uninstalled package uninstalled, with no tombstone to remember it by", () => {
       const root = pluginsRootScratch();
       const first = createPluginInstallService({
         logger: logger(),
         pluginsRoot: root,
         builtinPluginsRoot: pluginsRoot,
       });
-      expect(first.list().map((entry) => entry.record.pluginId)).toContain("ade-graph");
-      first.uninstall("ade-graph");
+      return first.install({ source: "ade-graph" }).then(() => {
+        first.uninstall("ade-graph");
 
-      // A fresh service re-runs the seed. Without the tombstone the uninstall
-      // would look like it silently failed, which is the one outcome that would
-      // make the slimmed rail impossible to reach.
-      const second = createPluginInstallService({
-        logger: logger(),
-        pluginsRoot: root,
-        builtinPluginsRoot: pluginsRoot,
+        // The tombstone list existed only to stop seeding reviving a removal.
+        // With no seeding there is nothing to defend against, and a fresh
+        // service simply reads an empty registry.
+        const second = createPluginInstallService({
+          logger: logger(),
+          pluginsRoot: root,
+          builtinPluginsRoot: pluginsRoot,
+        });
+        expect(second.list()).toEqual([]);
       });
-      expect(second.list().map((entry) => entry.record.pluginId)).toEqual(["ade-log-viewer"]);
     });
   });
 });

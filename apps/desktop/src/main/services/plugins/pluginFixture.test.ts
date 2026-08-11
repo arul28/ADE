@@ -353,7 +353,17 @@ describe("hello-plugin fixture", () => {
   });
 });
 
-describe("builtin plugin seeding", () => {
+/**
+ * The bundled packages, which ADE ships and never installs.
+ *
+ * This block used to prove a seeder: bundled packages arrived installed and
+ * enabled on first read, an uninstall had to leave a tombstone so the next read
+ * would not revive it, and an app update quietly replaced the copy on disk.
+ * All three are gone. The bundle is now a catalogue — it exists so an install
+ * by bare id works with no network — and every assertion here is the reverse of
+ * what it once was, deliberately.
+ */
+describe("bundled plugin packages", () => {
   /** A bundled-resources directory holding one copy of the fixture package. */
   function builtinRootWith(pluginId: string, version = "1.0.0"): string {
     const builtinRoot = path.join(scratchPluginsRoot(), "builtin");
@@ -398,53 +408,48 @@ describe("builtin plugin seeding", () => {
     expect(fs.existsSync(path.join(pluginsRoot, "ade-theme-ink", "plugin.json"))).toBe(true);
   });
 
-  it("revokes the tombstone when a removed builtin is installed again", async () => {
-    const pluginsRoot = scratchPluginsRoot();
-    const builtinRoot = builtinRootWith("hello-plugin");
-    const install = service(pluginsRoot, builtinRoot);
-    expect(install.uninstall("hello-plugin")).toEqual({ removed: true });
-    expect(install.list()).toEqual([]);
-
-    const reinstalled = await install.install({ source: "hello-plugin" });
-
-    expect(reinstalled.record.source).toEqual({ kind: "builtin" });
-    expect(service(pluginsRoot, builtinRoot).list().map((entry) => entry.record.pluginId))
-      .toEqual(["hello-plugin"]);
-    // The tombstone is gone, not just outvoted: while it stands, every later
-    // app update skips this package and it silently stops being upgraded.
-    const state = JSON.parse(fs.readFileSync(path.join(pluginsRoot, "state.json"), "utf8")) as {
-      removedBuiltins: string[];
-    };
-    expect(state.removedBuiltins).toEqual([]);
-  });
-
-  it("seeds a bundled plugin into a fresh machine, installed and enabled", () => {
+  it("lists nothing on a fresh machine, however many packages are bundled", () => {
     const pluginsRoot = scratchPluginsRoot();
     const install = service(pluginsRoot, builtinRootWith("hello-plugin"));
 
-    const listed = install.list();
+    // The bundle is present and readable; that is not an install. A machine
+    // that has installed nothing has nothing, and shows none of the surfaces
+    // these packages gate.
+    expect(install.list()).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin"))).toBe(false);
+    expect(install.skillRoots()).toEqual([]);
+  });
 
-    expect(listed).toHaveLength(1);
-    expect(listed[0]!.record).toMatchObject({
+  it("installs a bundled package by bare id, recorded as builtin", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = service(pluginsRoot, builtinRootWith("hello-plugin"));
+
+    const installed = await install.install({ source: "hello-plugin" });
+
+    expect(installed.record).toMatchObject({
       pluginId: "hello-plugin",
       enabled: true,
       source: { kind: "builtin" },
     });
-    // Copied into the install root, so every other path assumption still holds.
+    // Copied into the install root, so every other path assumption still holds:
+    // describe, skillRoots and uninstall all read `<root>/<id>`.
     expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin", "index.js"))).toBe(true);
     expect(install.skillRoots()).toHaveLength(1);
   });
 
-  // The failure this prevents: the user deletes a bundled plugin, and ADE
-  // silently puts it back on the next read.
-  it("never re-seeds a builtin the user uninstalled", () => {
+  it("keeps an uninstalled package uninstalled without needing a tombstone", async () => {
     const pluginsRoot = scratchPluginsRoot();
     const builtinRoot = builtinRootWith("hello-plugin");
-    service(pluginsRoot, builtinRoot).list();
+    const install = service(pluginsRoot, builtinRoot);
+    await install.install({ source: "hello-plugin" });
 
-    const remover = service(pluginsRoot, builtinRoot);
-    expect(remover.uninstall("hello-plugin")).toEqual({ removed: true });
+    expect(install.uninstall("hello-plugin")).toEqual({ removed: true });
 
+    // The tombstone list existed only because seeding ran on every read and
+    // would otherwise put the package straight back. Nothing reads the bundle
+    // unasked now, so a fresh service simply finds an empty registry.
+    const state = JSON.parse(fs.readFileSync(path.join(pluginsRoot, "state.json"), "utf8")) as Record<string, unknown>;
+    expect(state).not.toHaveProperty("removedBuiltins");
     expect(service(pluginsRoot, builtinRoot).list()).toEqual([]);
     expect(fs.existsSync(path.join(pluginsRoot, "hello-plugin"))).toBe(false);
   });
@@ -454,23 +459,41 @@ describe("builtin plugin seeding", () => {
     const userInstalled = service(pluginsRoot, null);
     await userInstalled.install({ source: fixtureRoot });
 
-    const seeded = service(pluginsRoot, builtinRootWith("hello-plugin", "9.9.9")).list();
+    const listed = service(pluginsRoot, builtinRootWith("hello-plugin", "9.9.9")).list();
 
-    expect(seeded).toHaveLength(1);
-    // Still the record the user created — not replaced by the bundled copy.
-    expect(seeded[0]!.record.source.kind).toBe("local");
-    expect(seeded[0]!.record.version).toBe("0.1.0");
+    expect(listed).toHaveLength(1);
+    // Still the record the user created. They chose that copy, and a bundled
+    // package of the same name must not quietly take its place.
+    expect(listed[0]!.record.source.kind).toBe("local");
+    expect(listed[0]!.record.version).toBe("0.1.0");
   });
 
-  it("ships a newer bundled version on update while keeping the user's enablement", () => {
+  it("does not change an installed record when the app ships a newer bundle", async () => {
     const pluginsRoot = scratchPluginsRoot();
-    service(pluginsRoot, builtinRootWith("hello-plugin", "1.0.0")).list();
+    await service(pluginsRoot, builtinRootWith("hello-plugin", "1.0.0")).install({ source: "hello-plugin" });
     service(pluginsRoot, null).setEnabled("hello-plugin", false);
 
-    const updated = service(pluginsRoot, builtinRootWith("hello-plugin", "2.0.0")).list();
+    const afterUpdate = service(pluginsRoot, builtinRootWith("hello-plugin", "2.0.0")).list();
 
-    expect(updated[0]!.record.version).toBe("2.0.0");
-    expect(updated[0]!.record.enabled).toBe(false);
+    // Updating ADE is not a plugin update. The version on disk is the one the
+    // user installed until they ask for another — the alternative is an app
+    // update silently replacing code they chose.
+    expect(afterUpdate[0]!.record.version).toBe("1.0.0");
+    expect(afterUpdate[0]!.record.enabled).toBe(false);
+  });
+
+  it("keeps the user's enablement when they install the newer bundled copy themselves", async () => {
+    const pluginsRoot = scratchPluginsRoot();
+    await service(pluginsRoot, builtinRootWith("hello-plugin", "1.0.0")).install({ source: "hello-plugin" });
+    service(pluginsRoot, null).setEnabled("hello-plugin", false);
+
+    const install = service(pluginsRoot, builtinRootWith("hello-plugin", "2.0.0"));
+    const updated = await install.install({ source: "hello-plugin" });
+
+    expect(updated.record.version).toBe("2.0.0");
+    // Disabled is a setting, not a property of the version: an update that
+    // switched a plugin back on would be indistinguishable from ADE ignoring it.
+    expect(updated.record.enabled).toBe(false);
   });
 
   it("does nothing when there are no bundled packages", () => {

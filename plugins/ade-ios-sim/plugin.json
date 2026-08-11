@@ -1,0 +1,27 @@
+{
+  "name": "ade-ios-sim",
+  "version": "1.0.0",
+  "displayName": "iOS Simulator",
+  "description": "Drive an iOS Simulator from the Work tools, on a Mac.",
+  "icon": "device-mobile",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "surfaces": [
+    {
+      "kind": "pane",
+      "id": "ios-sim",
+      "title": "iOS Simulator",
+      "icon": "device-mobile",
+      "panelId": "main",
+      "builtin": "ios"
+    }
+  ],
+  "panels": [
+    {
+      "id": "main",
+      "schemaFile": "panels/main.json",
+      "title": "iOS Simulator"
+    }
+  ],
+  "official": true
+}

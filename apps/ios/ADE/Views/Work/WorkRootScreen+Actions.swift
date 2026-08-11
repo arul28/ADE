@@ -785,7 +785,11 @@ extension WorkRootScreen {
     )
   }
 
+  /// Re-checks the plugin the menu row was already gated on. A context menu is
+  /// built once and can stay on screen across an uninstall, so the action
+  /// verifies rather than trusting that the row it came from could not exist.
   func copyLaneLinearLink(_ lane: LaneSummary) {
+    guard pluginGate.owns(.linear) else { return }
     guard let url = primaryLaneLinearIssue(for: lane)?.url, !url.isEmpty else { return }
     UIPasteboard.general.string = url
   }

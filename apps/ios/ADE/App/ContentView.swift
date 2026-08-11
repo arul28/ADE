@@ -46,6 +46,10 @@ private enum RootTab: String, Hashable, CaseIterable, Identifiable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var accountService: AccountService
+  /// Decides whether plugin-owned surfaces exist on this machine at all. Held
+  /// here rather than only inside the entry points because the root also hosts
+  /// the sheet and the deep link that can reach a surface without passing one.
+  @EnvironmentObject private var pluginGate: PluginPresenceGate
   @State private var selectedTab: RootTab = {
     let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
@@ -62,11 +66,29 @@ struct ContentView: View {
   // chain exceeds the Swift type-checker's budget; each stage stays bounded.
   var body: some View {
     rootWithChrome
-      .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
+      // Keeps the machine's plugin answer fresh for every gated surface at
+      // once: the Linear button, this root's Linear sheet, the deep link below
+      // and the lane menu's Linear row all read the same gate.
+      .task(id: syncService.pluginPresenceTrigger) {
+        await pluginGate.refresh()
+      }
+      .task(id: syncService.requestedLinearIssueNavigation?.id) {
+        guard syncService.requestedLinearIssueNavigation != nil else { return }
         // A linear-issue deep link opens the global pane (it consumes the
         // request once presented). Only reached when a project is active — the
         // router bounces the link to the computer otherwise.
+        //
+        // `await` rather than a plain read: a link tapped at cold launch can
+        // land before the first plugin answer does, and deciding on the
+        // pre-answer default would make the same URL open or not depending on
+        // how fast the socket came up. When the machine really has no Linear
+        // plugin the request is dropped — there is no pane to open, and no
+        // other machine to hand it to, since the link already resolved to this
+        // one.
+        guard await pluginGate.awaitOwner(of: .linear) else {
+          syncService.requestedLinearIssueNavigation = nil
+          return
+        }
         syncService.closeProjectHub()
         syncService.linearPanePresented = true
       }
@@ -115,7 +137,11 @@ struct ContentView: View {
           .environmentObject(syncService)
           .environmentObject(syncService.attentionDrawer)
       }
-      .sheet(isPresented: $syncService.linearPanePresented) {
+      // Gated at the host, not only at the button: the flag is public state that
+      // a deep link, a queued navigation or a future caller can set, and a
+      // hidden button is not access control. The setter passes straight through
+      // so anything inside the pane that closes it still works.
+      .sheet(isPresented: linearPanePresentation) {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
@@ -231,6 +257,16 @@ struct ContentView: View {
 
   private var hasMobileAccess: Bool {
     mobileLaunchAccess.hasAccess
+  }
+
+  /// `linearPanePresented`, filtered through the plugin gate. Reads false while
+  /// the machine has no Linear plugin, so the pane cannot be presented by a
+  /// stray flag; writes are unfiltered so dismissal always lands.
+  private var linearPanePresentation: Binding<Bool> {
+    Binding(
+      get: { syncService.linearPanePresented && pluginGate.owns(.linear) },
+      set: { syncService.linearPanePresented = $0 }
+    )
   }
 
   private func captureCurrentRootScreen() {

@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "App Control",
+  "fallback": {
+    "title": "App Control",
+    "text": "App Control is drawn by ADE on the attached computer."
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "App Control lives on the desktop",
+      "description": "Install this plugin on the attached computer to drive and inspect apps from ADE.",
+      "icon": "desktop"
+    }
+  ]
+}

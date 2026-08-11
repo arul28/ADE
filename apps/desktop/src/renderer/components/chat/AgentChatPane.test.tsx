@@ -30,6 +30,10 @@ import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
 import {
+  resetBuiltinSurfacePlugins,
+  seedBuiltinSurfacePlugins,
+} from "../../../test/builtinSurfaces";
+import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
 } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -628,6 +632,10 @@ function installAdeMocks(options?: {
     app: {
       writeClipboardText,
     },
+    // Marks the host as plugin-aware. A host that publishes no plugin
+    // namespace cannot report an install, so every plugin-owned drawer stays
+    // hidden however the registry is seeded.
+    plugins: {},
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
     },
@@ -998,10 +1006,15 @@ beforeEach(() => {
     })),
   });
   resetChatTestStore();
+  // The simulator and App Control drawers are plugin-owned: without their
+  // plugins there is no toolbar button, no drawer and no `ade ios-sim`
+  // reveal. These tests describe a machine that has both.
+  seedBuiltinSurfacePlugins(["ios", "app-control"]);
 });
 
 afterEach(() => {
   cleanup();
+  resetBuiltinSurfacePlugins();
   releaseAllRetainedChatSessions();
   invalidateAgentChatSessionListCache();
   invalidateAgentChatSlashCommandsCache();
@@ -1548,6 +1561,34 @@ describe("AgentChatPane companion drawers", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("app-control-panel")).toBeNull();
     });
+  });
+
+  it("refuses the agent's simulator reveal and hides both drawers without their plugins", async () => {
+    // `ade ios-sim` force-opens the drawer over IPC, which is the one way in
+    // that never passes a button. A surface an agent can still reveal is not
+    // hidden, so the pane does not even subscribe while the plugin is gone.
+    resetBuiltinSurfacePlugins();
+    renderDrawerPane();
+
+    expect(await screen.findByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
+    expect(iosEventListener).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open App Control drawer" })).toBeNull();
+    expect(screen.queryByTestId("ios-panel")).toBeNull();
+    expect(screen.queryByTestId("app-control-panel")).toBeNull();
+  });
+
+  it("leaves a stored open drawer stored, and hidden, while its plugin is gone", async () => {
+    // The drawer is remembered per chat in localStorage. Uninstalling must not
+    // rewrite that choice — it comes back as the user left it on reinstall —
+    // so the gate is applied at the point the stored value is read.
+    resetBuiltinSurfacePlugins();
+    patchChatCompanionUiState("session-1", { iosSimulatorOpen: true });
+    renderDrawerPane();
+
+    expect(await screen.findByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
+    expect(screen.queryByTestId("ios-panel")).toBeNull();
+    expect(readChatCompanionUiState("session-1").iosSimulatorOpen).toBe(true);
   });
 
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {

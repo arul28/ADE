@@ -1,0 +1,27 @@
+{
+  "name": "ade-history",
+  "version": "1.0.0",
+  "displayName": "History",
+  "description": "Commits, lane operations and captured artifacts \u2014 as an optional tab.",
+  "icon": "clock-counter-clockwise",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "history",
+      "title": "History",
+      "icon": "clock-counter-clockwise",
+      "panelId": "main",
+      "builtin": "history"
+    }
+  ],
+  "panels": [
+    {
+      "id": "main",
+      "schemaFile": "panels/main.json",
+      "title": "History"
+    }
+  ],
+  "official": true
+}

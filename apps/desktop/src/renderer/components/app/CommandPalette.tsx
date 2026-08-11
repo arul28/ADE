@@ -33,7 +33,7 @@ import type {
   TerminalSessionSummary,
   WorktreeParentRef,
 } from "../../../shared/types";
-import type { SearchResultItem } from "../../../shared/types/search";
+import type { SearchDocKind, SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
@@ -57,7 +57,7 @@ import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
-import { useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
+import { useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -301,6 +301,17 @@ export function CommandPalette({
   // navigated to a tab the rail has hidden would be the palette disagreeing with
   // the nav, which is the failure the generated entries below already avoid.
   const builtinTabVisible = useVisibleBuiltinRoutes();
+  // Search rows have the same obligation as commands, and less room to explain
+  // themselves: an artifact row opens History and a Linear row opens the Linear
+  // pane, so when either is missing the rows must not be offered at all.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  const historyVisible = builtinTabVisible("/history");
+  const hiddenSearchKinds = useMemo(() => {
+    const hidden = new Set<SearchDocKind>();
+    if (!linearSurfaceVisible) hidden.add("linear");
+    if (!historyVisible) hidden.add("artifact");
+    return hidden;
+  }, [historyVisible, linearSurfaceVisible]);
   // The palette lists settings, so it has to agree with the settings page about
   // which ones exist. On web that depends on whether a project tab is bound —
   // the manifest reads it back through this resolver.
@@ -694,13 +705,15 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs"),
       },
-      {
-        id: "go-history",
-        title: "Go to History",
-        shortcut: "G H",
-        group: "Navigation",
-        run: () => navigate("/history"),
-      },
+      ...(builtinTabVisible("/history")
+        ? [{
+          id: "go-history",
+          title: "Go to History",
+          shortcut: "G H",
+          group: "Navigation",
+          run: () => navigate("/history"),
+        }]
+        : []),
       // Automations is the one tab the web client hides outright: the host
       // registers no `automations.*` action, so its page is a coming-soon
       // screen there. Offering a command that leads to it would be the palette
@@ -951,6 +964,7 @@ export function CommandPalette({
     toggleExpandKind,
   } = useUniversalSearch(trimmedQuery, canEntitySearch, {
     excludeSessionIds: visibleThreadIds,
+    hiddenKinds: hiddenSearchKinds,
   });
 
   // Flat keyboard index layout: threads, then commands, then entity results.

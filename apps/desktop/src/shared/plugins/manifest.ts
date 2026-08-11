@@ -98,14 +98,21 @@ export type PluginSurfaceKind = "tab" | "pane";
  * in the rail. A surface with `builtin` set does not draw anything: it says
  * "this plugin owns the existing tab named here", and the client renders its
  * own compiled page in place of a plugin panel. Uninstalling the plugin takes
- * the tab out of the rail; the route itself stays reachable so old deeplinks
- * keep working.
+ * every entry point for that compiled surface out of the product. Routes and
+ * deeplinks must fail closed too; a hidden rail item is not an access control.
  *
  * The list is CLOSED and lives here rather than in the renderer because every
  * client validates against it: a name outside it is a manifest typo, and
  * honouring it would produce a rail item that navigates nowhere.
  */
-export const PLUGIN_BUILTIN_SURFACE_IDS = ["graph"] as const;
+export const PLUGIN_BUILTIN_SURFACE_IDS = [
+  "graph",
+  "review",
+  "history",
+  "linear",
+  "ios",
+  "app-control",
+] as const;
 
 export type PluginBuiltinSurfaceId = (typeof PLUGIN_BUILTIN_SURFACE_IDS)[number];
 

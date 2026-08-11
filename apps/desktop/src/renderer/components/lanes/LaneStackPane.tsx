@@ -9,6 +9,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { LaneAccentDot } from "./LaneAccentDot";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 import { LaneAgentList } from "./LaneAgentList";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import type { LaneAgent } from "./laneAgents";
 
 const TREE_ROW_H = 34;
@@ -390,6 +391,7 @@ export function LaneStackPane({
   onOpenAgent?: (agent: LaneAgent) => void;
 }) {
   const navigate = useNavigate();
+  const graphSurfaceVisible = useBuiltinSurfaceVisible("graph");
   React.useEffect(() => {
     logRendererDebugEvent("renderer.lanes.stack_pane_mount", {
       laneCount: lanes.length,
@@ -418,16 +420,20 @@ export function LaneStackPane({
         style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}
       >
         <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>STACK GRAPH</span>
-        <SmartTooltip content={{ label: "Open Canvas", description: "Open the full workspace canvas view showing all lanes and their relationships." }}>
-          <button
-            type="button"
-            style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
-            onClick={() => navigate("/graph")}
-          >
-            <ArrowSquareOut size={12} />
-            CANVAS
-          </button>
-        </SmartTooltip>
+        {/* This pane is ADE's own; only the jump to the canvas belongs to the
+            Graph plugin, so the button leaves and the stack view stays. */}
+        {graphSurfaceVisible ? (
+          <SmartTooltip content={{ label: "Open Canvas", description: "Open the full workspace canvas view showing all lanes and their relationships." }}>
+            <button
+              type="button"
+              style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
+              onClick={() => navigate("/graph")}
+            >
+              <ArrowSquareOut size={12} />
+              CANVAS
+            </button>
+          </SmartTooltip>
+        ) : null}
       </div>
       {selectedIntegrationSources.length > 0 ? (
         <div

@@ -17,6 +17,7 @@ import type {
 import type { DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 export type InboundBranchDeeplink = {
   repoOwner: string;
@@ -127,6 +128,9 @@ export function InboundDeeplinkModal({
   const [loading, setLoading] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // A deeplink is the classic way past a hidden button: the issue action is
+  // offered only when the pane it opens exists on this machine.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const branchTarget = currentTarget.kind === "branch" ? currentTarget : null;
   const isBranchOnly = branchTarget ? !branchTarget.prNumber : false;
   const laneImportAvailable = typeof window.ade?.lanes?.importBranch === "function";
@@ -341,7 +345,7 @@ export function InboundDeeplinkModal({
         </button>,
       );
     }
-    if (envelope?.linearIssue) {
+    if (envelope?.linearIssue && linearSurfaceVisible) {
       actions.push(
         <button
           key="linear"

@@ -5,6 +5,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateLaneDialog } from "./CreateLaneDialog";
 import { THIS_MACHINE_ID, type LaneMachineOption } from "./laneMachines";
+import {
+  resetBuiltinSurfacePlugins,
+  seedBuiltinSurfacePlugins,
+} from "../../../test/builtinSurfaces";
 
 vi.mock("@tanstack/react-virtual", () => {
   return {
@@ -40,7 +44,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetBuiltinSurfacePlugins();
+});
 
 type DialogProps = Parameters<typeof CreateLaneDialog>[0];
 
@@ -143,8 +150,12 @@ describe("CreateLaneDialog", () => {
             pageInfo: { hasNextPage: false, endCursor: null },
           })),
         },
+        plugins: {},
       },
     });
+    // Connecting an issue is Linear browsing, and browsing ships as a plugin —
+    // without it the dialog has no issue row to click.
+    seedBuiltinSurfacePlugins(["linear"]);
 
     render(<CreateLaneDialog {...makeProps()} />);
 

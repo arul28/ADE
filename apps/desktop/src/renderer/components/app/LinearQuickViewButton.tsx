@@ -46,6 +46,7 @@ import {
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
@@ -116,6 +117,11 @@ export function LinearQuickViewButton({
   const selectLane = useAppStore((s) => s.selectLane);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+  // Two independent questions, and both have to be yes. The connection says
+  // "this project can talk to Linear" and is what the headless `ade linear`
+  // CLI uses; the plugin says "browsing Linear is part of this product". A
+  // connected project with no plugin gets the CLI and no UI.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
@@ -154,7 +160,10 @@ export function LinearQuickViewButton({
   // when bound to a remote runtime, so a remote machine's Linear connection is
   // surfaced just like a local one. Remote uses a longer retry interval
   // (visibilityRetryIntervalMs) to avoid hammering the remote daemon.
-  const shouldAutoCheckVisibility = Boolean(activeProjectRoot);
+  // Gated also means "stop asking": with no Linear UI in the product there is
+  // nothing for a connection answer to reveal, and the retry timer would poll
+  // a remote daemon forever for a button that can never appear.
+  const shouldAutoCheckVisibility = Boolean(activeProjectRoot) && linearSurfaceVisible;
   const visibilityRetryIntervalMs =
     projectBinding?.kind === "remote"
       ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS
@@ -194,12 +203,15 @@ export function LinearQuickViewButton({
       });
   }, [loadVisibility]);
 
+  // A queued or broadcast quick-view request is a way into the issue pane that
+  // never passes the header button, so the subscription itself is gated rather
+  // than the pane it would open.
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (variant !== "icon" || !linearSurfaceVisible) return;
     const pending = consumePendingLinearIssueQuickViewRequest();
     if (pending) handleQuickViewRequest(pending);
     return subscribeLinearIssueQuickViewRequests(handleQuickViewRequest);
-  }, [handleQuickViewRequest, variant]);
+  }, [handleQuickViewRequest, linearSurfaceVisible, variant]);
 
   useEffect(() => {
     if (!occludesNativeBrowser || typeof window === "undefined") return undefined;
@@ -623,6 +635,11 @@ export function LinearQuickViewButton({
     </div>,
     document.body,
   ) : null;
+
+  // Nothing here survives the gate — not the trigger, not an issue pane a
+  // request opened a moment before the plugin was removed, and not the connect
+  // prompt, which is as much Linear UI as the browser it leads to.
+  if (!linearSurfaceVisible) return null;
 
   if (!visible) return <>{connectionPromptModal}</>;
 

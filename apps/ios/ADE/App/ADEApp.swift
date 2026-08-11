@@ -30,6 +30,11 @@ struct ADEApp: App {
         .environmentObject(syncService)
         .environmentObject(dictationController)
         .environmentObject(accountService)
+        // Injected at the root, above every sheet, because the surfaces it
+        // hides are spread across the app: a top-bar button, a sheet host, a
+        // deep link, a copy-a-link row. One shared gate means one round trip
+        // per machine and one answer they all agree on.
+        .environmentObject(syncService.pluginPresenceGate)
         .task {
           // Configure ClerkKit and restore any cached session as early as
           // possible so the account surface has determinate state. No-op when

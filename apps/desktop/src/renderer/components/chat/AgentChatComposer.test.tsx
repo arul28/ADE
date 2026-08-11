@@ -11,6 +11,10 @@ import type {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
+import {
+  resetBuiltinSurfacePlugins,
+  seedBuiltinSurfacePlugins,
+} from "../../../test/builtinSurfaces";
 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
@@ -69,10 +73,14 @@ vi.mock("@lobehub/icons", () => {
 
 beforeEach(() => {
   installMatchMediaMock();
+  // Issue context attaches Linear tickets and nothing else, so the whole entry
+  // is a Linear plugin surface. These tests describe a machine that has it.
+  seedBuiltinSurfacePlugins(["linear"]);
 });
 
 afterEach(() => {
   cleanup();
+  resetBuiltinSurfacePlugins();
   useAppStore.setState({ promptStashButtonEnabled: true });
   delete (window as any).ade;
 });
@@ -2399,6 +2407,7 @@ describe("AgentChatComposer", () => {
           }),
           searchLinearIssues: vi.fn().mockRejectedValue(new Error("Linear token missing. Set it in Settings > Linear.")),
         },
+        plugins: {},
       },
     });
 
@@ -2436,6 +2445,7 @@ describe("AgentChatComposer", () => {
           }),
           searchLinearIssues,
         },
+        plugins: {},
       },
     });
 
@@ -2502,6 +2512,7 @@ describe("AgentChatComposer", () => {
           }),
           searchLinearIssues,
         },
+        plugins: {},
       },
     });
 

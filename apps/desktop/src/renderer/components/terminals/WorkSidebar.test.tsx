@@ -14,7 +14,11 @@ import type {
 } from "../../../shared/types";
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
-import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import {
+  resetBuiltinSurfacePlugins,
+  seedBuiltinSurfacePlugins,
+} from "../../../test/builtinSurfaces";
+import { WorkSidebar, isAvailableWorkSidebarTab, type WorkSidebarContextTarget } from "./WorkSidebar";
 
 const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
 
@@ -324,6 +328,9 @@ function installAdeMock(options: {
         getStatus: vi.fn().mockResolvedValue({ activeSession: options.iosSession ?? null }),
         onEvent: vi.fn(() => () => {}),
       },
+      // Present so the host counts as plugin-aware; the iOS Sim and App
+      // Control tabs are hidden outright on a host that cannot report installs.
+      plugins: {},
       terminal: {
         write: terminalWrite,
       },
@@ -365,10 +372,12 @@ describe("WorkSidebar context targets", () => {
       value: "MacIntel",
     });
     installAdeMock();
+    seedBuiltinSurfacePlugins(["ios", "app-control"]);
   });
 
   afterEach(() => {
     cleanup();
+    resetBuiltinSurfacePlugins();
     useAppStore.setState({ project: null, projectBinding: null } as any);
     delete (window as unknown as { ade?: unknown }).ade;
     if (originalNavigatorPlatform) {
@@ -683,5 +692,69 @@ describe("WorkSidebar context targets", () => {
     expect(screen.queryByTestId("ios-panel")).toBeNull();
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("drops the plugin-owned panes and leaves the active one when the plugins go", async () => {
+    resetBuiltinSurfacePlugins();
+    const onTabChange = vi.fn();
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
+    expect(screen.queryByTestId("ios-panel")).toBeNull();
+    expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+  });
+});
+
+describe("isAvailableWorkSidebarTab", () => {
+  const allInstalled = () => true;
+  const noneInstalled = () => false;
+
+  function options(overrides: Partial<Parameters<typeof isAvailableWorkSidebarTab>[1]> = {}) {
+    return {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: allInstalled,
+      ...overrides,
+    };
+  }
+
+  it("keeps ADE's own panes available no matter which plugins are installed", () => {
+    for (const tab of ["terminal", "git", "files", "browser"] as const) {
+      expect(isAvailableWorkSidebarTab(tab, options({ builtinSurfaceVisible: noneInstalled }))).toBe(true);
+    }
+  });
+
+  it("shows the plugin-owned panes only while their owner is installed", () => {
+    expect(isAvailableWorkSidebarTab("ios", options())).toBe(true);
+    expect(isAvailableWorkSidebarTab("app-control", options())).toBe(true);
+
+    expect(isAvailableWorkSidebarTab("ios", options({ builtinSurfaceVisible: noneInstalled }))).toBe(false);
+    expect(isAvailableWorkSidebarTab("app-control", options({ builtinSurfaceVisible: noneInstalled }))).toBe(false);
+  });
+
+  it("gates each pane on its own owner", () => {
+    const onlyIos = (id: string) => id === "ios";
+    expect(isAvailableWorkSidebarTab("ios", options({ builtinSurfaceVisible: onlyIos }))).toBe(true);
+    expect(isAvailableWorkSidebarTab("app-control", options({ builtinSurfaceVisible: onlyIos }))).toBe(false);
+  });
+
+  it("still requires a Mac for the iOS pane once its plugin is installed", () => {
+    expect(isAvailableWorkSidebarTab("ios", options({ supportsIosSimulator: false }))).toBe(false);
+  });
+
+  it("keeps remote projects to the three panes that work remotely", () => {
+    expect(isAvailableWorkSidebarTab("git", options({ isRemoteProject: true }))).toBe(true);
+    expect(isAvailableWorkSidebarTab("browser", options({ isRemoteProject: true }))).toBe(false);
+    expect(isAvailableWorkSidebarTab("app-control", options({ isRemoteProject: true }))).toBe(false);
   });
 });

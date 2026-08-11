@@ -599,16 +599,37 @@ final class DeepLinkRouter {
   /// A `linear-issue` link resolves in-app when a project is open on the phone
   /// (the global Linear pane searches Linear by identifier); otherwise it bounces
   /// to the paired Mac, which owns the workspace's lane↔issue mapping.
+  ///
+  /// The pane belongs to the Linear plugin, so the link fails closed when the
+  /// attached machine does not have it: a URL is not an access path a hidden
+  /// button can be trusted to guard. Nothing is shown when that happens — the
+  /// send-to-Mac card would be a lie (the link already resolved to *this*
+  /// machine, which is the one without the plugin), and the app has no other
+  /// "could not open this link" affordance to borrow. The drop is recorded as a
+  /// failed deep link so it is at least countable.
   private func routeLinearIssue(identifier: String, url: URL) {
-    if SyncService.shared?.activeProjectId != nil {
+    guard let sync = SyncService.shared, sync.activeProjectId != nil else {
+      postSendToMac(url: url, analyticsSource: .linearIssueLink)
+      return
+    }
+    // Awaited rather than read: a link tapped at cold launch arrives before the
+    // machine has answered what it has installed, and answering from the
+    // pre-answer default would make the same URL work or not by timing.
+    Task { @MainActor in
+      guard await sync.pluginPresenceGate.awaitOwner(of: .linear) else {
+        ProductAnalytics.shared.captureFeature(
+          .deepLink,
+          outcome: .failed,
+          source: .linearIssueLink
+        )
+        return
+      }
       ProductAnalytics.shared.captureFeature(
         .deepLink,
         outcome: .opened,
         source: .linearIssueLink
       )
-      SyncService.shared?.requestedLinearIssueNavigation = LinearIssueNavigationRequest(identifier: identifier)
-    } else {
-      postSendToMac(url: url, analyticsSource: .linearIssueLink)
+      sync.requestedLinearIssueNavigation = LinearIssueNavigationRequest(identifier: identifier)
     }
   }
 

@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "iOS Simulator",
+  "fallback": {
+    "title": "iOS Simulator",
+    "text": "Simulator control is drawn by ADE on the attached Mac."
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "The simulator needs a Mac",
+      "description": "Install this plugin on the attached Mac to drive a simulator from ADE.",
+      "icon": "device-mobile"
+    }
+  ]
+}

@@ -66,6 +66,7 @@ import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel } from "./LaneNamingLabel";
 import { PluginRowBadges, pluginSessionContext } from "../plugins/sockets";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -222,9 +223,14 @@ function LinkifiedPreviewLine({
   text: string;
   onOpenPr: (prNumber: number) => void;
 }) {
+  // Linkifying an `ABC-123` is itself the entry point: a link that looks live
+  // and leads nowhere is worse than the plain text it was made from, so when
+  // Linear is not in this product the token is left as characters. PR numbers
+  // are ADE's own and keep their link.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   return text.split(PREVIEW_LINK_TOKEN).map((part, index) => {
     const prMatch = PR_TOKEN.exec(part);
-    const linearIssue = LINEAR_TOKEN.test(part) ? part : null;
+    const linearIssue = linearSurfaceVisible && LINEAR_TOKEN.test(part) ? part : null;
     if (!prMatch && !linearIssue) return part;
     const activate = () => {
       if (prMatch) {

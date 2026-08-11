@@ -1,0 +1,27 @@
+{
+  "name": "ade-app-control",
+  "version": "1.0.0",
+  "displayName": "App Control",
+  "description": "Drive and inspect desktop apps from the Work tools.",
+  "icon": "desktop",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "surfaces": [
+    {
+      "kind": "pane",
+      "id": "app-control",
+      "title": "App Control",
+      "icon": "desktop",
+      "panelId": "main",
+      "builtin": "app-control"
+    }
+  ],
+  "panels": [
+    {
+      "id": "main",
+      "schemaFile": "panels/main.json",
+      "title": "App Control"
+    }
+  ],
+  "official": true
+}

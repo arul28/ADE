@@ -20,6 +20,7 @@ import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/line
 import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { listNewLaneBaseOptions } from "./newLaneBaseSource";
 import { LaneMachineSelector } from "./LaneMachineSelector";
 import type { LaneMachineOption } from "./laneMachines";
@@ -218,6 +219,14 @@ export function CreateLaneDialog({
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
+  // Connecting an issue is a Linear browsing action — the picker it opens is
+  // the same browser as the quick view — so it leaves with the plugin. A lane
+  // already carrying an issue keeps it; only the way to pick one goes away.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  // One value for both the picker and the shell that hides behind it: if these
+  // disagreed, losing the plugin with the picker open would leave the dialog
+  // hidden behind a modal that no longer renders.
+  const issuePickerVisible = issuePickerOpen && linearSurfaceVisible;
   const importBranchAutoNameRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
@@ -313,7 +322,7 @@ export function CreateLaneDialog({
   return (
     <>
     <LaneDialogShell
-      open={open && !issuePickerOpen}
+      open={open && !issuePickerVisible}
       onOpenChange={onOpenChange}
       title={pickerOpen ? "Pick branch" : "Create lane"}
       description={pickerOpen
@@ -660,6 +669,7 @@ export function CreateLaneDialog({
             ) : null}
           </summary>
           <div className="space-y-3 px-4 pb-4 pt-1">
+            {linearSurfaceVisible ? (
             <div>
               <span className={LABEL_CLASS_NAME}>Linear issue</span>
               {selectedLinearIssue ? (
@@ -714,6 +724,7 @@ export function CreateLaneDialog({
                 </button>
               )}
             </div>
+            ) : null}
             <div>
               <span className={LABEL_CLASS_NAME}>Template</span>
               {templates.length > 0 ? (
@@ -784,7 +795,7 @@ export function CreateLaneDialog({
       )}
     </LaneDialogShell>
     <LinearIssueSelectModal
-      open={issuePickerOpen}
+      open={issuePickerVisible}
       ariaLabel="Connect Linear issue"
       projectRoot={projectRoot}
       selectedIssue={selectedLinearIssue}

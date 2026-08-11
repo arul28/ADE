@@ -24,10 +24,8 @@ import type { PluginInstallRecord, PluginInstallSource } from "../../../shared/p
 export const PLUGIN_STATE_FILE = "state.json";
 
 export type PluginRegistryFileContents = {
-  version: 1;
+  version: 2;
   plugins: Record<string, PluginInstallRecord>;
-  /** Builtin ids the user removed on purpose; seeding must not revive them. */
-  removedBuiltins: string[];
 };
 
 /**
@@ -48,15 +46,14 @@ export function pluginRegistryFilePath(pluginsRoot: string): string {
 }
 
 export function emptyPluginRegistryContents(): PluginRegistryFileContents {
-  return { version: 1, plugins: {}, removedBuiltins: [] };
+  return { version: 2, plugins: {} };
 }
 
 /**
  * An install's origin.
  *
- * Anything this build does not recognize reads as `builtin`, which is the
- * conservative answer: a builtin is re-seeded from the bundle rather than
- * re-cloned from a path or URL that the record failed to describe.
+ * Anything this build does not recognize reads as `builtin`, the conservative
+ * answer because it never causes an untrusted path or URL to be followed.
  */
 export function parsePluginInstallSource(raw: unknown): PluginInstallSource {
   if (isRecord(raw)) {
@@ -89,19 +86,21 @@ export function parsePluginInstallRecord(pluginId: string, raw: unknown): Plugin
 
 export function parsePluginRegistryContents(decoded: unknown): PluginRegistryFileContents {
   if (!isRecord(decoded) || !isRecord(decoded.plugins)) return emptyPluginRegistryContents();
+  const legacyRegistry = decoded.version !== 2;
   const plugins: Record<string, PluginInstallRecord> = {};
   for (const [pluginId, raw] of Object.entries(decoded.plugins)) {
     // The registry is the source of truth for what is installed, so a key that
     // could not be a directory name is dropped here rather than defended
     // against at every path join downstream.
     if (!isValidPluginId(pluginId)) continue;
+    // Version 1 automatically seeded bundled packages. Round 2 removes that
+    // behavior for existing machines as well as fresh ones, so legacy builtin
+    // records disappear silently. Local and git installs survive the upgrade.
+    if (legacyRegistry && isRecord(raw) && isRecord(raw.source) && raw.source.kind === "builtin") continue;
     const record = parsePluginInstallRecord(pluginId, raw);
     if (record) plugins[pluginId] = record;
   }
-  const removedBuiltins = Array.isArray(decoded.removedBuiltins)
-    ? [...new Set(decoded.removedBuiltins.filter(isValidPluginId))]
-    : [];
-  return { version: 1, plugins, removedBuiltins };
+  return { version: 2, plugins };
 }
 
 /** The tri-state read. Use this when "absent" and "unreadable" differ to you. */

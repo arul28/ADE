@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Linear",
+  "fallback": {
+    "title": "Linear",
+    "text": "Linear is drawn by ADE on the computer attached to this project."
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Linear lives on the attached computer",
+      "description": "Install this plugin there to open Linear issues inside ADE.",
+      "icon": "list-checks"
+    }
+  ]
+}
