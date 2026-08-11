@@ -375,14 +375,15 @@ import {
   loadActivitySnapshot,
 } from "./activityPane";
 import {
+  bindingKey,
   buildPluginPaneModel,
   cyclePluginFieldValue,
+  distinctBindings,
   movePluginPaneSelection,
-  pluginBindingKey,
   pluginFieldRawValue,
   pluginFieldUsesComposer,
   pluginFormValueKey,
-  pluginPaneBindings,
+  pluginInteractiveKey,
   PLUGIN_PANE_TOO_NARROW,
   type PluginPaneCollectionMap,
   type PluginPaneInput,
@@ -3294,9 +3295,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
   // Armed confirm for a plugin action that declared `confirm`. Holds the
-  // interactive index the user has pressed Enter on once, so the second press
-  // runs it — the same two-step the form-discard Esc uses.
-  const pluginConfirmArmedRef = useRef<number | null>(null);
+  // *identity* of the interactive the user has pressed Enter on once, so the
+  // second press runs it — the same two-step the form-discard Esc uses. Not the
+  // selection index: the pane repolls every ten seconds, and an index armed
+  // against "Delete lane" would fire whatever the refresh moved into that slot.
+  const pluginConfirmArmedRef = useRef<string | null>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -9722,9 +9725,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Sequential on purpose: a panel binds a handful of collections at most
       // and they share one socket, so a burst of parallel reads buys nothing
       // and makes a slow plugin harder to read in the logs.
-      for (const binding of pluginPaneBindings(fetched.record.schema)) {
+      for (const binding of distinctBindings(fetched.record.schema)) {
         collections.set(
-          pluginBindingKey(binding),
+          bindingKey(binding),
           await readPluginCollection(conn, target.pluginId, binding),
         );
       }
@@ -9768,6 +9771,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     timer.unref?.();
     return () => clearInterval(timer);
   }, [connection, refreshPluginPane, rightOpen, rightPane.kind]);
+
+  // A refresh that dropped the armed action disarms it: the sentence the user
+  // was asked to confirm described a row that is no longer in the panel. An
+  // action that merely moved keeps its arm, because it is still the same action.
+  useEffect(() => {
+    if (pluginConfirmArmedRef.current === null) return;
+    const stillThere = rightPane.kind === "plugin-panel"
+      && rightPane.model.interactives.some(
+        (entry) => pluginInteractiveKey(entry) === pluginConfirmArmedRef.current,
+      );
+    if (!stillThere) pluginConfirmArmedRef.current = null;
+  }, [rightPane]);
 
   /**
    * Open a plugin by the name the user typed, or list the installed plugins
@@ -9863,8 +9878,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     const action = interactive.action;
-    if (action.confirm && pluginConfirmArmedRef.current !== index) {
-      pluginConfirmArmedRef.current = index;
+    const armKey = pluginInteractiveKey(interactive);
+    if (action.confirm && pluginConfirmArmedRef.current !== armKey) {
+      pluginConfirmArmedRef.current = armKey;
       addNotice(`${action.confirm} Press enter again to confirm.`, "info");
       return;
     }
@@ -15025,7 +15041,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         pluginConfirmArmedRef.current = null;
-        void openPluginPane("");
+        void openPluginPane("").catch((err) =>
+          addNotice(err instanceof Error ? err.message : String(err), "error"),
+        );
         return;
       }
       if (pane === "details" && rightOpen) {

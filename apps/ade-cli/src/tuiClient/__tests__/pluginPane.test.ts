@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bindingKey,
   buildPluginPaneModel,
   cyclePluginFieldValue,
   movePluginPaneSelection,
-  pluginBindingKey,
   pluginFieldRawValue,
   pluginFieldUsesComposer,
   pluginFormValueKey,
-  pluginPaneBindings,
+  pluginInteractiveKey,
   pluginPaneWindow,
   pluginTableWidths,
   type PluginPaneCollectionMap,
@@ -117,7 +117,7 @@ describe("plugin pane model", () => {
   it("reads bound rows out of the collections the panel declared", () => {
     const collections: PluginPaneCollectionMap = new Map([
       [
-        pluginBindingKey({ collection: "issues" }),
+        bindingKey({ collection: "issues" }),
         [
           { key: "1", value: { title: "Fix login", subtitle: "ADE-1" } },
           { key: "2", value: { title: "Ship plugins" } },
@@ -141,25 +141,22 @@ describe("plugin pane model", () => {
     ]);
   });
 
-  it("collects each binding once, so one fetch serves every node that reads it", () => {
-    const schema = {
-      v: 1,
-      fallback: FALLBACK,
-      body: [
-        { component: "list", bind: { collection: "issues", keyPrefix: "open:" } },
-        { component: "keyValue", bind: { collection: "issues", keyPrefix: "open:" } },
-        { component: "keyValue", bind: { collection: "issues" } },
+  it("draws a bound cell the way the app does, not as a blank", () => {
+    // The two surfaces used to disagree: a numeric `42` rendered as 42 in the
+    // app and as an empty value here, from two coercers that each claimed to
+    // mirror the other. Both now read the vocabulary's own.
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "stats" }),
+        [
+          { key: "1", value: { key: "Open", value: 42 } },
+          { key: "2", value: { key: "Passing", value: true } },
+        ],
       ],
-    };
-    expect(pluginPaneBindings(schema)).toEqual([
-      { collection: "issues", keyPrefix: "open:" },
-      { collection: "issues" },
     ]);
-  });
-
-  it("keys bindings so a collection and a prefix cannot collide", () => {
-    expect(pluginBindingKey({ collection: "a", keyPrefix: "b:c" }))
-      .not.toBe(pluginBindingKey({ collection: "a:b", keyPrefix: "c" }));
+    const model = build(panel([{ component: "keyValue", bind: { collection: "stats" } }]), { collections });
+    const values = model.rows.flatMap((row) => (row.kind === "keyValue" ? [`${row.label}=${row.value}`] : []));
+    expect(values).toEqual(["Open=42", "Passing=Yes"]);
   });
 
   it("names a component it cannot draw instead of leaving a gap", () => {
@@ -334,6 +331,27 @@ describe("plugin pane selection and layout", () => {
     expect(movePluginPaneSelection(model, 0, 1)).toBe(1);
     expect(movePluginPaneSelection(model, 2, 1)).toBe(0);
     expect(movePluginPaneSelection(model, 0, -1)).toBe(2);
+  });
+
+  it("identifies an interactive by what it does, not by where it sits", () => {
+    // What the armed confirm remembers between the two Enter presses. A poll can
+    // land in that gap and rebuild the panel, so remembering the index would
+    // point the confirmation at whatever moved into that slot.
+    const remove = {
+      component: "button",
+      label: "Delete lane",
+      onPress: { action: "deleteLane", args: { id: "a" }, confirm: "This deletes lane a." },
+    };
+    const armed = build(panel([remove]));
+    const refreshed = build(panel([{ component: "button", label: "Rebuild", onPress: { action: "rebuild" } }, remove]));
+
+    const key = pluginInteractiveKey(armed.interactives[0]!);
+    expect(pluginInteractiveKey(refreshed.interactives[1]!)).toBe(key);
+    expect(pluginInteractiveKey(refreshed.interactives[0]!)).not.toBe(key);
+
+    // Same action, different target: not the thing the user confirmed.
+    const other = build(panel([{ ...remove, onPress: { ...remove.onPress, args: { id: "b" } } }]));
+    expect(pluginInteractiveKey(other.interactives[0]!)).not.toBe(key);
   });
 
   it("clamps a stale index instead of jumping to nothing", () => {

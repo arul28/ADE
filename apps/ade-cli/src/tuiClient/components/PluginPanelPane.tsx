@@ -35,6 +35,15 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
+/**
+ * How much a wrapping row may occupy before it is cut, in lines.
+ *
+ * Ink wraps rather than clips, so a plugin that ships one long paragraph would
+ * otherwise push every row below it — and the pane's own footer — out of the
+ * window. Three lines is what the sibling panes allow.
+ */
+const WRAPPED_ROW_LINES = 3;
+
 function pad(value: string, width: number, align: "left" | "right"): string {
   const clipped = endTruncate(value, width);
   return align === "right" ? clipped.padStart(width) : clipped.padEnd(width);
@@ -68,7 +77,7 @@ function PluginRow({
           : TONE_COLOR[row.tone];
       return (
         <Text color={color} bold={bold} dimColor={row.variant === "caption"} wrap="wrap">
-          {`${lead}${row.text}`}
+          {`${lead}${endTruncate(row.text, inner * WRAPPED_ROW_LINES)}`}
         </Text>
       );
     }
@@ -198,7 +207,9 @@ function PluginRow({
     }
     case "note": {
       return (
-        <Text color={theme.color.t4} dimColor wrap="wrap">{`${lead}${row.text}`}</Text>
+        <Text color={theme.color.t4} dimColor wrap="wrap">
+          {`${lead}${endTruncate(row.text, inner * WRAPPED_ROW_LINES)}`}
+        </Text>
       );
     }
     case "placeholder": {
@@ -235,6 +246,7 @@ export function PluginPanelPane({
   editingValue?: string | null;
 }) {
   const { model } = content;
+  const inner = Math.max(8, width - 4);
   const window = pluginPaneWindow(model, selectedIndex, PLUGIN_PANE_ROW_CAPACITY);
   const hasFields = model.interactives.some((entry) => entry.kind === "field");
 
@@ -267,7 +279,7 @@ export function PluginPanelPane({
               model.warnings.length === 1
                 ? model.warnings[0] ?? ""
                 : `${model.warnings.length} parts of this panel could not be drawn`,
-              Math.max(8, width - 4),
+              inner,
             )}
           </Text>
         </Box>
@@ -275,7 +287,9 @@ export function PluginPanelPane({
 
       {content.error ? (
         <Box marginTop={1}>
-          <Text color={theme.color.error} wrap="wrap">{content.error}</Text>
+          <Text color={theme.color.error} wrap="wrap">
+            {endTruncate(content.error, inner * WRAPPED_ROW_LINES)}
+          </Text>
         </Box>
       ) : null}
 

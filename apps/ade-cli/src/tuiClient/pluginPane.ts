@@ -22,8 +22,12 @@
 
 import {
   VOCAB_LIMITS,
-  collectVocabBindings,
-  normalizeVocabTone,
+  bindingKey,
+  boundRowValues,
+  coerceBoundKeyValueRow,
+  coerceBoundListItem,
+  coerceBoundTableRow,
+  distinctBindings,
   parsePluginPanel,
   type VocabAction,
   type VocabBinding,
@@ -51,21 +55,15 @@ import type {
  */
 export type PluginPaneCollectionRow = Pick<PluginCollectionRow, "key" | "value">;
 
-/** Rows already fetched for every binding in the panel, keyed by {@link pluginBindingKey}. */
+/** Rows already fetched for every binding in the panel, keyed by {@link bindingKey}. */
 export type PluginPaneCollectionMap = Map<string, PluginPaneCollectionRow[]>;
 
 /**
- * Stable key for a binding, so one fetch serves every node that reads it.
- *
- * Deliberately identical to `bindingKey` in the desktop renderer's
- * `vocabularyComponents.tsx` — same NUL separator, same reason: with a printable
- * separator `{collection:"a", keyPrefix:"b:c"}` and `{collection:"a:b",
- * keyPrefix:"c"}` would collide and silently share one fetch. It is duplicated
- * rather than imported because that module is React.
+ * The binding contract belongs to the vocabulary, not to this pane: the same key
+ * function and the same dedup the desktop renderer uses, re-exported because
+ * `app.tsx` reaches for the pane rather than into the desktop tree.
  */
-export function pluginBindingKey(binding: { collection: string; keyPrefix?: string }): string {
-  return `${binding.collection}\u0000${binding.keyPrefix ?? ""}`;
-}
+export { bindingKey, distinctBindings };
 
 /* ── What the host gave us ──────────────────────────────────────────────── */
 
@@ -147,6 +145,32 @@ export type PluginPaneInteractive =
   | { kind: "field"; formKey: string; field: VocabField }
   | { kind: "submit"; formKey: string; label: string; action: VocabAction; fields: VocabField[] };
 
+/**
+ * What an interactive *is*, independent of where it currently sits.
+ *
+ * The selection index is a position in a list the 10s poll rebuilds from
+ * scratch, so it is the wrong thing to remember across a refresh: an armed
+ * confirm keyed by index re-points at whatever moved into that slot, and the
+ * next Enter runs an action the user never confirmed. Two interactives with the
+ * same identity here are the same operation with the same arguments, so
+ * confirming one legitimately confirms the other.
+ */
+export function pluginInteractiveKey(interactive: PluginPaneInteractive): string {
+  // JSON rather than a joined string: an action id, a label and an argument
+  // value are all free text, and a hand-rolled separator between them is a
+  // collision waiting to happen.
+  if (interactive.kind === "field") {
+    return JSON.stringify(["field", interactive.formKey, interactive.field.id]);
+  }
+  const { action, args } = interactive.action;
+  const argIdentity = Object.keys(args ?? {})
+    .sort()
+    .map((name) => [name, args?.[name]]);
+  return interactive.kind === "submit"
+    ? JSON.stringify(["submit", interactive.formKey, action, argIdentity])
+    : JSON.stringify(["action", action, argIdentity, interactive.label]);
+}
+
 export type PluginPaneModel = {
   pluginId: string;
   panelId: string;
@@ -166,65 +190,20 @@ export function pluginFormValueKey(formKey: string, fieldId: string): string {
   return `${formKey}::${fieldId}`;
 }
 
-/* ── Coercion of bound rows ─────────────────────────────────────────────── */
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function text(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
+/* ── Bound rows ─────────────────────────────────────────────────────────── */
 
 /**
  * Bound rows must already be in render shape (vocabulary rule 3: the plugin
- * materializes on its machine, the client draws). These mirror the desktop
- * renderer's `coerceListItem`/`coerceKeyValueRow` so one collection produces the
- * same rows on both surfaces.
+ * materializes on its machine, the client draws). The coercion itself lives in
+ * the vocabulary module, so a numeric cell reads the same here as it does in the
+ * app instead of each surface inventing its own answer.
  */
-function coerceListItem(value: unknown): VocabListItem | null {
-  if (!isRecord(value)) return null;
-  const title = text(value.title);
-  if (!title) return null;
-  const subtitle = text(value.subtitle);
-  const meta = text(value.meta);
-  return {
-    title,
-    ...(subtitle ? { subtitle } : {}),
-    ...(meta ? { meta } : {}),
-    ...(value.tone !== undefined ? { tone: normalizeVocabTone(value.tone) } : {}),
-  };
-}
-
-function coerceKeyValueRow(value: unknown): VocabKeyValueRow | null {
-  if (!isRecord(value)) return null;
-  const key = text(value.key);
-  if (!key) return null;
-  return {
-    key,
-    value: text(value.value) ?? "",
-    ...(value.tone !== undefined ? { tone: normalizeVocabTone(value.tone) } : {}),
-  };
-}
-
-function coerceTableCell(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  return "";
-}
-
 function boundValues(
   bind: VocabBinding | undefined,
   collections: PluginPaneCollectionMap,
 ): unknown[] | null {
   if (!bind) return null;
-  const rows = collections.get(pluginBindingKey(bind));
-  if (!rows) return null;
-  const values = rows.map((row) => row.value);
-  return bind.limit && bind.limit > 0 ? values.slice(0, bind.limit) : values;
+  return boundRowValues(bind, collections.get(bindingKey(bind)));
 }
 
 /* ── Field display ──────────────────────────────────────────────────────── */
@@ -415,7 +394,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
     case "list": {
       const bound = boundValues(node.bind, ctx.collections);
       const items = bound
-        ? bound.map(coerceListItem).filter((item): item is VocabListItem => item !== null)
+        ? bound.map(coerceBoundListItem).filter((item): item is VocabListItem => item !== null)
         : (node.items ?? []);
       if (items.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing here yet." });
@@ -442,9 +421,10 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       const bound = boundValues(node.bind, ctx.collections);
       const source = bound ?? node.rows ?? [];
       const cells = source
-        .filter(isRecord)
+        .map((row) => coerceBoundTableRow(row, node.columns))
+        .filter((row): row is Record<string, string> => row !== null)
         .slice(0, VOCAB_LIMITS.maxTableRows)
-        .map((row) => node.columns.map((column) => coerceTableCell(row[column.key])));
+        .map((row) => node.columns.map((column) => row[column.key] ?? ""));
       if (cells.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "No rows yet." });
         return;
@@ -467,7 +447,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
     case "keyValue": {
       const bound = boundValues(node.bind, ctx.collections);
       const rows = bound
-        ? bound.map(coerceKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
+        ? bound.map(coerceBoundKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
         : (node.rows ?? []);
       if (rows.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing to show." });
@@ -752,17 +732,6 @@ export function movePluginPaneSelection(model: PluginPaneModel, current: number,
   if (count === 0) return 0;
   const safe = Number.isFinite(current) ? Math.max(0, Math.min(Math.floor(current), count - 1)) : 0;
   return (safe + delta + count) % count;
-}
-
-/** Bindings the panel reads, deduplicated, so the caller fetches each once. */
-export function pluginPaneBindings(raw: unknown): VocabBinding[] {
-  const parsed = parsePluginPanel(raw);
-  if (!parsed.ok) return [];
-  const seen = new Map<string, VocabBinding>();
-  for (const binding of collectVocabBindings(parsed.panel.body)) {
-    seen.set(pluginBindingKey(binding), binding);
-  }
-  return [...seen.values()];
 }
 
 /** The one line a pane too narrow to open prints into the chat instead. */

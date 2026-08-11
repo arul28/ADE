@@ -115,6 +115,20 @@ describe("PluginPanelPane", () => {
     expect(frame(pane, 0, "new-lane")).toContain("typing below");
   });
 
+  it("cuts a long paragraph instead of letting it push the panel out of the window", () => {
+    // The vocabulary allows 4,000 characters of text, which wraps to a hundred
+    // lines in a 44-column pane and would carry the rows below it — and the
+    // pane's own footer — off screen.
+    const output = frame(content([
+      { component: "text", text: "lorem ipsum ".repeat(300) },
+      { component: "button", label: "Rebuild", onPress: { action: "rebuild" } },
+    ]));
+
+    expect(output.split("\n").length).toBeLessThan(24);
+    expect(output).toContain("[ Rebuild ]");
+    expect(plain(output)).toContain("r refresh");
+  });
+
   it("names a component it cannot draw rather than leaving the pane blank", () => {
     const output = frame(content([{ component: "video", src: "file:///clip.mp4", title: "Demo" }]));
     expect(output).toContain("Video · Demo");
