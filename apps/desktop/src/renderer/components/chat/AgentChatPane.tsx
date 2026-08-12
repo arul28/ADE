@@ -56,6 +56,7 @@ import {
 } from "../../../shared/types";
 import {
   isUnsupportedAgentChatRecoveryActionError,
+  providerForkIsContextSeeded,
   providerSupportsHandoffFork,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -5597,6 +5598,9 @@ export function AgentChatPane({
   // model may still change within it — so the fork model picker is constrained
   // to same-provider models below.
   const handoffForkSupported = providerSupportsHandoffFork(selectedSession?.provider);
+  // Cursor's fork reseeds context rather than copying a provider thread, so the
+  // panel must not promise the whole conversation comes along verbatim.
+  const handoffForkIsContextSeeded = providerForkIsContextSeeded(selectedSession?.provider);
   const handoffForkModelFilter = useCallback((descriptor: ModelDescriptor) => {
     const sourceProvider = selectedSession?.provider;
     return Boolean(sourceProvider && resolveProviderGroupForModel(descriptor) === sourceProvider);
@@ -11117,6 +11121,19 @@ export function AgentChatPane({
   );
   const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
   const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
+  const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
+    ? {
+        subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
+        body: <>Forks into a new chat — Cursor threads can&rsquo;t be resumed twice, so ADE seeds the new chat with this conversation&rsquo;s context{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>The transcript is copied into the new chat; any {handoffSourceProviderLabel} model is fine.</>,
+      }
+    : {
+        subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
+        body: <>Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.</>,
+      }
+  ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+
   const handoffLaneSourceLanes = availableLanes ?? lanes;
   const handoffLaneOptions = handoffLaneSourceLanes.length
     ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]
@@ -11302,7 +11319,7 @@ export function AgentChatPane({
         </button>
         <div className="min-w-0">
           <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
-          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">Fork copies the whole conversation. Brief summarizes it and starts fresh.</div>
+          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">{handoffForkCopy.subtitle}</div>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -11340,9 +11357,7 @@ export function AgentChatPane({
 
         {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
           <div className="mt-3 space-y-3">
-            <div className="text-[11px] leading-5 text-fg/54">
-              Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.
-            </div>
+            <div className="text-[11px] leading-5 text-fg/54">{handoffForkCopy.body}</div>
             <div className="inline-flex items-center gap-1.5">
               <ModelPicker
                 value={handoffModelId}
@@ -11358,9 +11373,7 @@ export function AgentChatPane({
                 onChange={setHandoffReasoningEffort}
               />
             </div>
-            <div className="text-[10px] leading-4 text-fg/40">
-              Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.
-            </div>
+            <div className="text-[10px] leading-4 text-fg/40">{handoffForkCopy.footnote}</div>
             {handoffPermissionControls}
             {handoffNoteField("Optional. Sent to the new chat so it knows what to do next.")}
             <div className="flex items-center justify-end">

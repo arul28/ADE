@@ -463,7 +463,7 @@ async function sendPrompt(payload: {
   images?: Array<{ data: string; mimeType: string }>;
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
-  force?: boolean;
+  forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
 }): Promise<unknown> {
@@ -477,7 +477,11 @@ async function sendPrompt(payload: {
     model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
     mode,
     ...(idempotencyKey ? { idempotencyKey } : {}),
-    local: { force: payload.force === true },
+    // `local.force` expires a stuck active persisted run before starting this
+    // message as a new follow-up. Only ADE's recovery re-send sets it, after a
+    // run went silent or died on the wire. A normal send must never expire an
+    // active run — that would discard a turn that is genuinely still working.
+    local: { force: payload.forceExpireActiveRun === true },
   };
   currentRun = await agent.send(message, sendOptions);
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);

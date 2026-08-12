@@ -396,6 +396,38 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(derivePendingSteers(events)).toEqual([]);
   });
 
+  it("clears a staged steer on the host's real cancellation copy", () => {
+    const cancelMessages = [
+      "Queued message cancelled.",
+      "Queued message cancelled (empty edit).",
+      "Queued message cancelled because the current turn was interrupted.",
+      "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+      "Delivering your queued message...",
+    ];
+
+    for (const message of cancelMessages) {
+      const events = [
+        env("2026-01-01T12:00:00.000Z", { type: "user_message", text: "queued", steerId: "steer-1", deliveryState: "queued" }),
+        env("2026-01-01T12:00:01.000Z", { type: "system_notice", noticeKind: "info", steerId: "steer-1", message } as never),
+      ];
+      expect(derivePendingSteers(events), message).toEqual([]);
+    }
+  });
+
+  it("keeps a steer staged while it is only announced as queued", () => {
+    const events = [
+      env("2026-01-01T12:00:00.000Z", { type: "user_message", text: "queued", steerId: "steer-1", deliveryState: "queued" }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId: "steer-1",
+        message: "Message queued — will be sent when the current turn completes.",
+      } as never),
+    ];
+
+    expect(derivePendingSteers(events)).toEqual([{ steerId: "steer-1", text: "queued" }]);
+  });
+
   it("treats a stateless context_compact as a completed (done) block", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", turnId: "turn-1" }),

@@ -17,18 +17,28 @@ describe("Cursor SDK policy", () => {
     expect(resolveCursorSdkPolicy({ cursorModeId: "ask" })).toMatchObject({
       chatMode: "ask",
       approvalPolicy: "read-only",
-      force: false,
+      fullAuto: false,
     });
     expect(resolveCursorSdkPolicy({ cursorModeId: "plan" })).toMatchObject({
       chatMode: "plan",
       approvalPolicy: "read-only",
-      force: false,
+      fullAuto: false,
     });
     expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" })).toMatchObject({
       chatMode: "agent",
       approvalPolicy: "never",
-      force: true,
+      fullAuto: true,
     });
+  });
+
+  it("keeps the full-auto permission mode off the SDK's run-expiry option", () => {
+    // `fullAuto` is a permission level. The Cursor SDK's `local.force` expires
+    // an active run, which is a recovery action — mapping one onto the other
+    // made every full-auto send silently kill a turn that was still working.
+    for (const modeId of ["ask", "plan", "agent", "full-auto"]) {
+      expect(resolveCursorSdkPolicy({ cursorModeId: modeId })).not.toHaveProperty("force");
+    }
+    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).fullAuto).toBe(true);
   });
 
   it("denies Cursor's own edit/shell/subagent tools for an orchestrator lead", () => {

@@ -9,12 +9,23 @@ import {
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
   isCursorSdkPooledAlive,
+  poisonCursorSdkConnection,
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
 } from "./cursorSdkPool";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 
 const forkMock = vi.hoisted(() => vi.fn());
+
+/** The guarded agent-mode policy every pool test acquires with. */
+const TEST_POLICY = {
+  chatMode: "agent",
+  approvalPolicy: "on-request",
+  sandbox: "ade",
+  fullAuto: false,
+  hardGuards: true,
+  orchestrationLead: false,
+} as const;
 const tempDirs: string[] = [];
 
 vi.mock("node:child_process", () => ({
@@ -389,14 +400,7 @@ describe("Cursor SDK pool paths", () => {
       workspacePath: path.join(os.tmpdir(), "ade-workspace"),
       modelSdkId: "cursor-model",
       sessionId: "session-1",
-      policy: {
-        chatMode: "agent" as const,
-        approvalPolicy: "on-request" as const,
-        sandbox: "ade" as const,
-        force: false,
-        hardGuards: true,
-        orchestrationLead: false,
-      },
+      policy: { ...TEST_POLICY },
     };
 
     const [first, second] = await Promise.all([
@@ -415,6 +419,40 @@ describe("Cursor SDK pool paths", () => {
     expect(child.disposeCount).toBe(1);
   });
 
+  it("evicts a poisoned worker even while another lease is still held", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const [first, second] = await Promise.all([
+      acquireCursorSdkConnection(args),
+      acquireCursorSdkConnection(args),
+    ]);
+    expect(second.pooled).toBe(first.pooled);
+
+    // A transport-poisoned worker is still process-alive, so refcounting alone
+    // would keep it in rotation for the sibling lease.
+    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+    expect(child.disposeCount).toBe(1);
+    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(false);
+
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValue(nextChild);
+    const third = await acquireCursorSdkConnection(args);
+    expect(third.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+
+    releaseCursorSdkConnection(poolKey, third.generation);
+  });
+
   it("preserves structured Cursor SDK worker error metadata on rejected requests", async () => {
     const child = new FailingSendChild();
     forkMock.mockReturnValue(child);
@@ -425,14 +463,7 @@ describe("Cursor SDK pool paths", () => {
       workspacePath: path.join(os.tmpdir(), "ade-workspace"),
       modelSdkId: "cursor-model",
       sessionId: "session-1",
-      policy: {
-        chatMode: "agent" as const,
-        approvalPolicy: "on-request" as const,
-        sandbox: "ade" as const,
-        force: false,
-        hardGuards: true,
-        orchestrationLead: false,
-      },
+      policy: { ...TEST_POLICY },
     });
 
     await expect(acquired.pooled.sendPrompt({ promptText: "hi" })).rejects.toMatchObject({
@@ -464,14 +495,7 @@ describe("Cursor SDK pool paths", () => {
       workspacePath: path.join(os.tmpdir(), "ade-workspace"),
       modelSdkId: "cursor-model",
       sessionId: "session-1",
-      policy: {
-        chatMode: "agent" as const,
-        approvalPolicy: "on-request" as const,
-        sandbox: "ade" as const,
-        force: false,
-        hardGuards: true,
-        orchestrationLead: false,
-      },
+      policy: { ...TEST_POLICY },
     };
 
     const first = await acquireCursorSdkConnection(args);
@@ -498,14 +522,7 @@ describe("Cursor SDK pool paths", () => {
       workspacePath: path.join(os.tmpdir(), "ade-workspace"),
       modelSdkId: "cursor-model",
       sessionId: "session-1",
-      policy: {
-        chatMode: "agent" as const,
-        approvalPolicy: "on-request" as const,
-        sandbox: "ade" as const,
-        force: false,
-        hardGuards: true,
-        orchestrationLead: false,
-      },
+      policy: { ...TEST_POLICY },
     })).rejects.toThrow("Cursor SDK worker exited (1).");
   });
 
@@ -519,14 +536,7 @@ describe("Cursor SDK pool paths", () => {
       workspacePath: path.join(os.tmpdir(), "ade-workspace"),
       modelSdkId: "cursor-model",
       sessionId: "session-1",
-      policy: {
-        chatMode: "agent" as const,
-        approvalPolicy: "on-request" as const,
-        sandbox: "ade" as const,
-        force: false,
-        hardGuards: true,
-        orchestrationLead: false,
-      },
+      policy: { ...TEST_POLICY },
     })).rejects.toThrow(/NGHTTP2_ENHANCE_YOUR_CALM/);
   });
 });

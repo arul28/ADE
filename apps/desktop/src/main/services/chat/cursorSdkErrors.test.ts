@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { cursorSdkResultWithStreamFailure } from "./cursorSdkErrors";
+import { classifyCursorSdkErrorText, isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
+
+describe("classifyCursorSdkErrorText", () => {
+  it("classifies write ECANCELED as a transport failure", () => {
+    // The 2026-08-11 incident: this killed a run and poisoned the agent thread.
+    expect(isCursorSdkTransportErrorText("[internal] write ECANCELED")).toBe(true);
+    expect(classifyCursorSdkErrorText("[internal] write ECANCELED")).toBe("network");
+  });
+
+  it("classifies the other socket teardown errors as transport failures", () => {
+    for (const text of ["write EPIPE", "Error [ERR_STREAM_WRITE_AFTER_END]: write after end"]) {
+      expect(classifyCursorSdkErrorText(text)).toBe("network");
+    }
+  });
+
+  it("still prefers backoff classification over transport for rate-limited stream closures", () => {
+    expect(classifyCursorSdkErrorText(
+      "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+    )).toBe("rate_limit");
+  });
+});
 
 describe("cursorSdkResultWithStreamFailure", () => {
   it("marks successful wait results as errors after a stream failure", () => {

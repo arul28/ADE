@@ -1914,7 +1914,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
     $ ade chat fork <session> --model openai/gpt-5.6-sol
-                                                    Fork full provider history into a new chat
+                                                    Carry this conversation into a new chat (same provider)
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
@@ -1975,6 +1975,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     config-toml is only meaningful for Codex/OpenCode provider-native config.
     Use ade actions run chat.modelCatalog --json to inspect model-specific
     reasoning tiers and fast-mode support.
+
+  Handoff notes:
+    fork stays on the source provider and in the source lane; brief summarizes
+    the chat, can switch provider, and accepts --target-lane.
+    Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
+    Cursor has no fork surface, so ADE forks it by seeding a fresh Cursor agent
+    with this conversation's context instead of copying a provider thread.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same

@@ -78,7 +78,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: true,
       orchestrationLead,
     };
@@ -90,7 +90,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       chatMode,
       approvalPolicy: "read-only",
       sandbox: "ade",
-      force: false,
+      fullAuto: false,
       hardGuards: true,
       orchestrationLead,
     };
@@ -100,7 +100,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     chatMode: "agent",
     approvalPolicy: "on-request",
     sandbox: "ade",
-    force: false,
+    fullAuto: false,
     hardGuards: true,
     orchestrationLead,
   };

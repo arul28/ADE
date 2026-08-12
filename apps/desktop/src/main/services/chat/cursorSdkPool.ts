@@ -80,7 +80,7 @@ export type CursorSdkPooled = {
 };
 
 let cursorSdkGenCounter = 0;
-const pools = new Map<string, {
+type CursorSdkPoolEntry = {
   ref: number;
   generation: number;
   pooled: CursorSdkPooled;
@@ -88,7 +88,9 @@ const pools = new Map<string, {
   stateRoot: string;
   socketPath: string;
   cleanupStateRoot: boolean;
-}>();
+};
+
+const pools = new Map<string, CursorSdkPoolEntry>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
 /**
@@ -449,11 +451,7 @@ export async function acquireCursorSdkConnection(args: {
       existing.ref += 1;
       return { pooled: existing.pooled, generation: existing.generation };
     }
-    if (existing) {
-      pools.delete(args.poolKey);
-      existing.pooled.dispose();
-      cleanupCursorSdkRuntimePaths(existing);
-    }
+    if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
 
     let initOwner = false;
     let init = pendingInits.get(args.poolKey);
@@ -883,17 +881,49 @@ export function cleanupCursorSdkRuntimePaths(entry: {
   }
 }
 
-export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
+/** Look up a pool entry, honouring an optional generation guard. */
+function findCursorSdkPoolEntry(poolKey: string, generation?: number): CursorSdkPoolEntry | null {
   const entry = pools.get(poolKey);
+  if (!entry) return null;
+  if (generation !== undefined && entry.generation !== generation) return null;
+  return entry;
+}
+
+/** Evict an entry from the map and tear its worker + runtime paths down. */
+function disposeCursorSdkPoolEntry(poolKey: string, entry: CursorSdkPoolEntry): void {
+  pools.delete(poolKey);
+  entry.pooled.dispose();
+  cleanupCursorSdkRuntimePaths(entry);
+}
+
+/**
+ * Force-dispose a pooled worker regardless of its refcount, so the next
+ * `acquireCursorSdkConnection` for this key forks a brand-new one.
+ *
+ * `isCursorSdkPooledAlive` only checks process liveness, which is not the same
+ * as connection health: a run that dies with a transport error (NGHTTP2 reset,
+ * `[internal] write ECANCELED`) leaves the worker process happily alive while
+ * the server-side Cursor agent thread is wedged — every subsequent send then
+ * hangs forever with zero stream events. Reference counting cannot express
+ * that. Pool keys embed the session id, so the outstanding lease that a
+ * refcount decrement would preserve belongs to the *same* session acquiring
+ * twice, not to another chat. Callers therefore evict the entry outright.
+ *
+ * Returns true when an entry was actually disposed.
+ */
+export function poisonCursorSdkConnection(poolKey: string, generation?: number): boolean {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
+  if (!entry) return false;
+  disposeCursorSdkPoolEntry(poolKey, entry);
+  return true;
+}
+
+export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
   if (!entry) return;
-  if (generation !== undefined && entry.generation !== generation) return;
   entry.ref -= 1;
   if (entry.ref < 0) entry.ref = 0;
-  if (entry.ref <= 0) {
-    entry.pooled.dispose();
-    pools.delete(poolKey);
-    cleanupCursorSdkRuntimePaths(entry);
-  }
+  if (entry.ref <= 0) disposeCursorSdkPoolEntry(poolKey, entry);
 }
 
 export async function runCursorSdkCatalogRequest<T = unknown>(
@@ -918,7 +948,7 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
     },
@@ -969,7 +999,7 @@ export async function runCursorSdkCloudRequest<T = unknown>(
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
     },

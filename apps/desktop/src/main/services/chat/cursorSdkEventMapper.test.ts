@@ -306,7 +306,7 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
-  it("classifies Cursor HTTP/2 backoff as a rate limit", () => {
+  it("classifies Cursor HTTP/2 backoff as a rate limit and keeps the raw code", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",
       status: "ERROR",
@@ -314,6 +314,7 @@ describe("Cursor SDK event mapper", () => {
     }, mapperMeta())).toEqual([{
       type: "error",
       message: "Cursor rate limited this request.",
+      detail: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
       turnId: "turn-1",
       errorInfo: { category: "rate_limit" },
     }]);
@@ -329,7 +330,7 @@ describe("Cursor SDK event mapper", () => {
       },
     }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor SDK stream failed.",
+      message: "Cursor's connection dropped mid-run.",
       detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
       turnId: "turn-1",
       errorInfo: { category: "network" },
@@ -343,7 +344,26 @@ describe("Cursor SDK event mapper", () => {
       adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
     }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor SDK stream failed.",
+      message: "Cursor's connection dropped mid-run.",
+      detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      turnId: "turn-1",
+      errorInfo: { category: "network" },
+    }]);
+  });
+
+  it("gives write ECANCELED the friendly transport message and keeps the raw detail", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "[internal] write ECANCELED",
+      adeErrorDetail: {
+        message: "[internal] write ECANCELED",
+        requestId: "req-cursor-ecanceled",
+      },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor's connection dropped mid-run.",
+      detail: "[internal] write ECANCELED\nCursor request ID: req-cursor-ecanceled",
       turnId: "turn-1",
       errorInfo: { category: "network" },
     }]);

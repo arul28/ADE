@@ -204,9 +204,9 @@ export async function readCursorSdkRunFailureDetail(args: {
       : undefined;
   const merged = mergeErrorDetail(resultDetail, runErrorDetail, storeDetail, extraDetail, requestDetail);
   let code = merged?.code?.trim();
-  const classification = classifyCursorSdkErrorText(...detailTexts(merged));
-  if (!code && classification.kind !== "unknown") {
-    code = classification.kind === "rate_limit" ? "rate_limited" : classification.kind;
+  const kind = classifyCursorSdkErrorText(...detailTexts(merged));
+  if (!code && kind !== "unknown") {
+    code = kind === "rate_limit" ? "rate_limited" : kind;
   }
   if (!code && storeDetail?.message) code = storeDetail.message;
   return {

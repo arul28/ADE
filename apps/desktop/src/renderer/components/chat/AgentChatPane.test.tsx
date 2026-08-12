@@ -4788,7 +4788,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("disables the fork tab and defaults to brief for a Cursor source", async () => {
+  it("offers fork for a Cursor source with honest context-seeding copy", async () => {
     const { bothId } = seedCursorRuntimeModelCatalog();
     const session = buildSession("session-1", {
       provider: "cursor",
@@ -4805,12 +4805,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
     const forkTab = await screen.findByRole("button", { name: /^Fork$/ });
-    const briefTab = await screen.findByRole("button", { name: /^Brief$/ });
-    expect((forkTab as HTMLButtonElement).disabled).toBe(true);
-    expect(briefTab.getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByText(/Cursor can.t fork chat history/i)).toBeTruthy();
-    // The brief-only lane selector is present.
-    expect(screen.getByRole("button", { name: "Destination lane for handoff" })).toBeTruthy();
+    expect((forkTab as HTMLButtonElement).disabled).toBe(false);
+    expect(forkTab.getAttribute("aria-pressed")).toBe("true");
+    // Cursor's fork is ADE-side context seeding, and the copy says so.
+    expect(screen.getByText(/Cursor threads can.t be resumed twice/i)).toBeTruthy();
+    expect(screen.queryByText(/can.t fork chat history/i)).toBeNull();
   });
 
   it("constrains the fork model picker to the source provider", async () => {
