@@ -60,6 +60,7 @@ import {
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
+import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
@@ -4989,6 +4990,12 @@ export function AgentChatPane({
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+  const subagentModelChipForView = subagentView
+    ? formatSubagentModelChip(subagentModelAttribution({
+      snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
+      sessionModelLabel: selectedModelDesc?.displayName ?? selectedSession?.model ?? null,
+    }))
+    : null;
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
@@ -11174,6 +11181,7 @@ export function AgentChatPane({
       resolveSpawnedChatTitle={resolveSpawnedChatTitle}
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
+      sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
       goalPending={selectedCodexGoalPending}
@@ -12100,7 +12108,7 @@ export function AgentChatPane({
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
-            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
+            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             hideModelControls={hideModelControls}
@@ -12111,7 +12119,7 @@ export function AgentChatPane({
               ?? subagentView.agentType
               ?? subagentViewSnapshot?.description
               ?? subagentView.agentId
-              ?? subagentView.taskId}`
+              ?? subagentView.taskId}${subagentModelChipForView ? ` · ${subagentModelChipForView}` : ""}`
               : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}

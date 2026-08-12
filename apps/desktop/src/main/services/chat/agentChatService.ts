@@ -1412,6 +1412,8 @@ type ClaudeActiveSubagent = {
    * so must never appear as a row in the Subagents roster.
    */
   nonAgentTaskRun?: boolean;
+  /** Child model from Task/Agent input or SDK messages — never the parent session model. */
+  model?: string;
 };
 
 type ClaudeContextGuardrailState = {
@@ -1476,6 +1478,7 @@ type ClaudeRuntime = {
     name?: string;
     description?: string;
     isBackground?: boolean;
+    model?: string;
   }>;
   /**
    * Per-workflow-task emit state for the SDK's undocumented
@@ -3473,6 +3476,32 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+function optionalSubagentModelFields(model?: string | null, reasoningEffort?: string | null): {
+  model?: string;
+  reasoningEffort?: string;
+} {
+  const modelId = stringOrNull(model) ?? undefined;
+  const effort = stringOrNull(reasoningEffort) ?? undefined;
+  return {
+    ...(modelId ? { model: modelId } : {}),
+    ...(effort ? { reasoningEffort: effort } : {}),
+  };
+}
+
+function openCodeChildSessionModel(info: unknown): string | null {
+  const record = asRecord(info);
+  if (!record) return null;
+  if (typeof record.model === "string") return stringOrNull(record.model);
+  const nested = asRecord(record.model);
+  if (nested) {
+    const providerID = stringOrNull(nested.providerID) ?? stringOrNull(nested.providerId);
+    const modelID = stringOrNull(nested.modelID) ?? stringOrNull(nested.modelId) ?? stringOrNull(nested.id);
+    if (providerID && modelID) return `opencode/${providerID}/${modelID}`;
+    return modelID;
+  }
+  return stringOrNull(record.modelID) ?? stringOrNull(record.modelId);
+}
+
 export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion | null {
   if (typeof userAgent !== "string") return null;
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
@@ -4392,6 +4421,7 @@ function extractTaskToolInput(input: unknown): {
   name?: string;
   description?: string;
   isBackground?: boolean;
+  model?: string;
 } | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -4404,13 +4434,20 @@ function extractTaskToolInput(input: unknown): {
   const description = typeof record.description === "string" && record.description.trim().length
     ? record.description.trim()
     : undefined;
+  const model = typeof record.model === "string" && record.model.trim().length
+    ? record.model.trim()
+    : undefined;
   const isBackground = isBackgroundTask(record);
+  // Model rides along on an already-identified Task/Agent input. It must not
+  // create a stash by itself — `isNonAgentTaskRun` treats any stash as agent
+  // metadata, which would pull a plain task_type "other" run into the roster.
   if (!subagentType && !name && !description && !isBackground) return null;
   return {
     ...(subagentType ? { subagentType } : {}),
     ...(name ? { name } : {}),
     ...(description ? { description } : {}),
     ...(isBackground ? { isBackground } : {}),
+    ...(model ? { model } : {}),
   };
 }
 
@@ -14526,6 +14563,7 @@ export function createAgentChatService(args: {
             background: true,
             ...(existing.taskType ? { taskType: existing.taskType } : {}),
             ...(existing.workflowName ? { workflowName: existing.workflowName } : {}),
+            ...optionalSubagentModelFields(existing.model),
             ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
             ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
           });
@@ -18133,6 +18171,8 @@ export function createAgentChatService(args: {
     const agentType = compactString(msg.subagent_type) ?? existing?.agentType;
     const command = compactString(msg.command) ?? existing?.command;
     const description = compactString(msg.description) ?? existing?.description ?? "Background task";
+    const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+    const model = compactString(msg.model) ?? existing?.model ?? stashed?.model;
     const backgroundShell = classification.backgroundShell;
     const nativeCronScheduleId = taskType === "cron"
       ? resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg)
@@ -18266,6 +18306,7 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(model ? { model } : {}),
       });
       if (taskType === "cron") {
         const scheduledWorkId = nativeCronScheduleId;
@@ -18294,6 +18335,7 @@ export function createAgentChatService(args: {
         background,
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...optionalSubagentModelFields(model),
         turnId,
       });
       return true;
@@ -20454,6 +20496,8 @@ export function createAgentChatService(args: {
             ? taskMsg.agent_id.trim()
             : undefined;
           const parentAgentId = compactString(taskMsg.parent_agent_id);
+          const existingStarted = resolveClaudeActiveSubagent(runtime, taskId, agentId);
+          const model = compactString(taskMsg.model) ?? stashed?.model ?? existingStarted?.model;
           const classification = classifyClaudeTaskMessage(
             runtime,
             taskMsg as Record<string, unknown>,
@@ -20540,6 +20584,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(model ? { model } : {}),
             });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
             claudeTaskTodoMap(managed, runtime),
@@ -20567,6 +20612,7 @@ export function createAgentChatService(args: {
             background,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...optionalSubagentModelFields(model),
             turnId,
           });
           continue;
@@ -22476,6 +22522,7 @@ export function createAgentChatService(args: {
             const childDescription = (childInfo.title && childInfo.title.length)
               ? childInfo.title
               : "subagent";
+            const childModel = openCodeChildSessionModel(childInfo);
             const formatSummary = (): string => {
               const summary = childInfo.summary;
               return summary
@@ -22498,6 +22545,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 description: childDescription,
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             };
 
@@ -22519,6 +22567,7 @@ export function createAgentChatService(args: {
                 summary: formatSummary(),
                 ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             } else {
               // Deletion is distinct from normal completion (`session.idle`).
@@ -24437,12 +24486,18 @@ export function createAgentChatService(args: {
         if (!latest) return;
         const metadata = normalizeCodexSubagentThreadMetadata(response, latest);
         const previousLabel = latest.label;
+        const previousModel = latest.model;
+        const previousEffort = latest.reasoningEffort;
         latest.metadata = metadata;
         latest.label = metadata.label ?? latest.label;
         latest.parentThreadId = metadata.parentThreadId ?? latest.parentThreadId;
         latest.model = metadata.model ?? latest.model;
         latest.reasoningEffort = metadata.reasoningEffort ?? latest.reasoningEffort;
-        if (latest.label !== previousLabel) {
+        if (
+          latest.label !== previousLabel
+          || latest.model !== previousModel
+          || latest.reasoningEffort !== previousEffort
+        ) {
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: threadId,
@@ -24452,6 +24507,7 @@ export function createAgentChatService(args: {
             description: latest.prompt ?? latest.label,
             summary: metadata.preview ?? metadata.prompt ?? latest.label,
             turnId: latest.parentTurnId ?? undefined,
+            ...optionalSubagentModelFields(latest.model, latest.reasoningEffort),
           });
         }
         logger.debug("agent_chat.codex_subagent_metadata_loaded", {
@@ -25317,6 +25373,10 @@ export function createAgentChatService(args: {
           description: String(item.description ?? item.title ?? "Delegated task"),
           background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
+          ...optionalSubagentModelFields(
+            stringOrNull(item.model),
+            stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
+          ),
         });
       }
       if (eventKind === "completed") {
@@ -25346,6 +25406,8 @@ export function createAgentChatService(args: {
         background: existing?.background ?? false,
         label,
         status: kind === "interrupted" ? "stopped" : "running",
+        model: stringOrNull(item.model),
+        reasoningEffort: stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
       });
       refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
       if (kind === "started") {
@@ -25371,6 +25433,7 @@ export function createAgentChatService(args: {
           description: existing?.description ?? label,
           background: existing?.background ?? false,
           turnId,
+          ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
         });
         return;
       }
@@ -25400,6 +25463,7 @@ export function createAgentChatService(args: {
         description: existing?.description ?? label,
         summary: kind === "interacted" ? "Agent received input" : "Agent active",
         turnId,
+        ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
       });
       return;
     }
@@ -27837,12 +27901,14 @@ export function createAgentChatService(args: {
           async (input: HookInput) => {
             if (input.hook_event_name === "SubagentStart") {
               const taskId = input.agent_id;
+              const model = stringOrNull((input as unknown as Record<string, unknown>).model);
               runtime.activeSubagents.set(taskId, {
                 taskId,
                 description: input.agent_type,
                 parentToolUseId: null,
                 agentId: input.agent_id,
                 agentType: input.agent_type,
+                ...(model ? { model } : {}),
               });
             }
             return { continue: true };
@@ -29602,6 +29668,7 @@ export function createAgentChatService(args: {
       background: false,
       taskType: "subagent",
       spawnKind,
+      ...optionalSubagentModelFields(child.session.model),
     });
   };
 

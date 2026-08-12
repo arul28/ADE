@@ -350,12 +350,14 @@ export function mapDroidSdkMessageToChatEvents(
       // AGI orchestrator spawned a worker sub-session — surface it as a subagent.
       const workerSessionId = readString(record.workerSessionId);
       if (!workerSessionId) return [];
+      const model = readString(record.model) ?? readString(record.modelId);
       return [{
         type: "subagent_started",
         taskId: workerSessionId,
         parentToolUseId: null,
         description: `Worker ${workerSessionId.slice(-6)}`,
         turnId,
+        ...(model ? { model } : {}),
       }];
     }
     case "mission_worker_completed": {

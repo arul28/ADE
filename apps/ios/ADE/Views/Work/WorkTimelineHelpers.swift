@@ -3523,6 +3523,30 @@ private func workTurnModelMetadata(
   )
 }
 
+/// Display-only subagent model chip. A reported snapshot model is ground truth;
+/// missing model falls back to the parent session and is marked inherited.
+struct WorkSubagentModelAttribution: Equatable {
+  let label: String
+  let inherited: Bool
+}
+
+func workSubagentModelAttribution(snapshotModel: String?, sessionModel: String?) -> WorkSubagentModelAttribution? {
+  if let model = snapshotModel?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+    return WorkSubagentModelAttribution(label: prettyWorkChatModelName(model), inherited: false)
+  }
+  if let session = sessionModel?.trimmingCharacters(in: .whitespacesAndNewlines), !session.isEmpty {
+    return WorkSubagentModelAttribution(label: prettyWorkChatModelName(session), inherited: true)
+  }
+  return nil
+}
+
+func workSubagentModelChip(snapshotModel: String?, sessionModel: String?) -> String? {
+  guard let attribution = workSubagentModelAttribution(snapshotModel: snapshotModel, sessionModel: sessionModel) else {
+    return nil
+  }
+  return attribution.inherited ? "\(attribution.label) · inherited" : attribution.label
+}
+
 /// Beautify a host-supplied model id into the label used on chips and turn
 /// separators. Mirrors the desktop composer's display: "Claude Sonnet 5",
 /// "GPT-5.4", etc., so iOS and desktop read the same.

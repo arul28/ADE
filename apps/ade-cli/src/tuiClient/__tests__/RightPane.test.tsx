@@ -190,6 +190,83 @@ describe("RightPane chat info", () => {
     expect(stripAnsi(result.lastFrame() ?? "")).toContain("tag:review-ready");
   });
 
+  it("switches the Chat Info header to the inspected subagent model", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            provider: "claude",
+            modelLabel: "Fable 5",
+            inspectedSubagentId: "x1",
+            snapshots: [
+              {
+                id: "x1",
+                name: "Explore the repo",
+                kind: "subagent",
+                status: "running",
+                summary: "scanning",
+                model: "opus",
+              },
+            ],
+          }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame.toLowerCase()).toContain("opus");
+    expect(frame).not.toContain("Fable 5 · inherited");
+  });
+
+  it("marks the parent model inherited in the header when the inspected subagent has none", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            provider: "claude",
+            modelLabel: "Fable 5",
+            inspectedSubagentId: "x1",
+            snapshots: [
+              { id: "x1", name: "Explore the repo", kind: "subagent", status: "running", summary: "scanning" },
+            ],
+          }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("Fable 5");
+    expect(frame).toContain("inherited");
+  });
+
+  it("keeps inherited visible on a roster row when the parent model label is long", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            provider: "claude",
+            modelLabel: "Claude Sonnet 5",
+            snapshots: [
+              { id: "x1", name: "Explore the repo", kind: "subagent", status: "running", summary: "scanning" },
+            ],
+          }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("inherited");
+  });
+
   it("shows the main row + a 'no subagents yet' hint when the roster is empty", () => {
     const result = render(
       <RightPane

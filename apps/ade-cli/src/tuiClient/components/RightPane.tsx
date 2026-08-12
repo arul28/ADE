@@ -33,6 +33,9 @@ import {
   SCHEDULE_ACTIVE_CAP,
   capPaneSectionItems,
   groupPaneSectionItems,
+  chatInfoHeaderModelAttribution,
+  SUBAGENT_MODEL_INHERITED_SUFFIX,
+  subagentModelAttribution,
 } from "../../../../desktop/src/shared/chatSubagents";
 import {
   buildSubagentPaneRows,
@@ -761,11 +764,22 @@ function ChatInfoSectionHead({
 function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number }) {
   const brand = theme.provider(info.provider);
   const inner = Math.max(10, width - 4);
+  const inspecting = Boolean(info.inspectedSubagentId);
+  const inspected = inspecting
+    ? info.snapshots.find((snapshot) => snapshot.id === info.inspectedSubagentId)
+    : undefined;
+  const attribution = chatInfoHeaderModelAttribution({
+    inspectedSnapshotModel: inspected?.model,
+    sessionModelLabel: info.modelLabel,
+    inspecting,
+  });
+  const inheritedSuffix = attribution.inherited ? " · inherited" : "";
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
         <Text color={brand.color} bold>{brand.glyph}</Text>
-        <Text color={theme.color.t1}>{` ${endTruncate(info.modelLabel, inner - 2)}`}</Text>
+        <Text color={theme.color.t1}>{` ${endTruncate(attribution.label, Math.max(6, inner - 2 - inheritedSuffix.length))}`}</Text>
+        {attribution.inherited ? <Text color={theme.color.t4} dimColor>{inheritedSuffix}</Text> : null}
       </Box>
       {info.laneLabel || info.claudeTag ? (
         <Box flexDirection="row">
@@ -977,6 +991,23 @@ function ChatInfoRoster({
               ? theme.color.tool
               : theme.agentStatusColor(kind);
             const inspected = info.inspectedSubagentId === row.snapshot.id;
+            const modelAttribution = subagentModelAttribution({
+              snapshotModel: row.snapshot.model,
+              sessionModelLabel: info.modelLabel,
+            });
+            const inheritedSuffix = modelAttribution?.inherited
+              ? ` · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
+              : "";
+            // Reserve the inherited suffix so a long pretty name cannot clip it
+            // off — that would make a missing child model look reported.
+            const modelLabelBudget = Math.max(6, 22 - inheritedSuffix.length);
+            const modelLabelWidth = modelAttribution
+              ? Math.min(modelAttribution.label.length, modelLabelBudget)
+              : 0;
+            const nameWidth = Math.max(
+              6,
+              inner - 18 - (modelAttribution ? modelLabelWidth + inheritedSuffix.length + 1 : 0),
+            );
             // Only the selected row shows the (single) detail line, now enriched
             // with the runtime's capability stat chips. Keeping it to one line
             // preserves the click line-math.
@@ -987,8 +1018,16 @@ function ChatInfoRoster({
                   <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
                   <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
                   <Text color={isSelected ? theme.color.violet : inspected ? theme.color.t1 : theme.color.t2} bold={isSelected || inspected}>
-                    {` ${endTruncate(row.snapshot.name, Math.max(6, inner - 18))}`}
+                    {` ${endTruncate(row.snapshot.name, nameWidth)}`}
                   </Text>
+                  {modelAttribution ? (
+                    <>
+                      <Text color={theme.color.t4} dimColor>
+                        {` ${endTruncate(modelAttribution.label, modelLabelBudget)}`}
+                      </Text>
+                      {inheritedSuffix ? <Text color={theme.color.t4} dimColor>{inheritedSuffix}</Text> : null}
+                    </>
+                  ) : null}
                   <Text color={theme.color.t4} dimColor>{`  ${formatElapsed(row.snapshot.durationMs ?? null)}`}</Text>
                 </Box>
                 {detail ? (

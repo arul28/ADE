@@ -426,6 +426,32 @@ struct WorkChatSessionView: View {
     WorkChatSummaryTimelineKey(chatSummaryContext)
   }
 
+  private var selectedSubagentSnapshot: WorkSubagentSnapshot? {
+    guard let selectedId = selectedSubagentTaskId else { return nil }
+    return subagentSnapshots.first { snapshot in
+      snapshot.taskId == selectedId || snapshot.agentId == selectedId
+    }
+  }
+
+  private var transcriptModelId: String {
+    if let model = selectedSubagentSnapshot?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !model.isEmpty {
+      return model
+    }
+    return chatSummaryContext.currentModelId
+  }
+
+  private var transcriptModelLabel: String {
+    if let snapshot = selectedSubagentSnapshot,
+       let chip = workSubagentModelChip(
+        snapshotModel: snapshot.model,
+        sessionModel: chatSummaryContext.model
+       ) {
+      return chip
+    }
+    return chatSummaryContext.modelLabel
+  }
+
   /// Terminal transcript signal from the local event window. When present, it
   /// beats stale session rows / subscribe hints that can lag a just-finished
   /// turn by a few seconds.
@@ -1170,6 +1196,7 @@ struct WorkChatSessionView: View {
           }
         },
         onOpenModelPicker: !chatSummaryContext.isAvailable
+          || selectedSubagentTaskId != nil
           || (isPersonalChat && (
             !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
           ))
@@ -1227,8 +1254,8 @@ struct WorkChatSessionView: View {
           .modifier(
             WorkChatTranscriptEnvironmentModifier(
               provider: chatSummaryContext.provider,
-              modelId: chatSummaryContext.currentModelId,
-              modelLabel: chatSummaryContext.modelLabel,
+              modelId: transcriptModelId,
+              modelLabel: transcriptModelLabel,
               laneId: session.laneId,
               requestedCwd: chatSummaryContext.requestedCwd,
               isPersonalChat: isPersonalChat
