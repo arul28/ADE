@@ -14857,6 +14857,7 @@ final class ADETests: XCTestCase {
             "agentType": "Kuhn",
             "parentToolUseId": "call_spawn_agent",
             "description": "Inspect provider parity",
+            "model": "opus",
             "turnId": "turn-1"
           }
         },
@@ -14914,6 +14915,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(subagents.count, 2)
     let completed = subagents.first { $0.taskId == "agent-1" }
     XCTAssertEqual(completed?.agentType, "Kuhn")
+    XCTAssertEqual(completed?.model, "opus")
     XCTAssertEqual(completed?.parentToolUseId, "call_spawn_agent")
     XCTAssertEqual(completed?.status, WorkSubagentSnapshot.Status.succeeded)
     // The result event carries no real summary (only the injected "Completed"
@@ -19844,6 +19846,16 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workModelIdsEquivalent("openai/gpt-5.5", "gpt-5.5"))
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.5"), "GPT-5.5")
     XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
+  }
+
+  func testWorkSubagentModelAttributionReportsChildThenInheritsSession() {
+    let reported = workSubagentModelAttribution(snapshotModel: "opus", sessionModel: "claude-fable-5")
+    XCTAssertEqual(reported?.inherited, false)
+    XCTAssertTrue(reported?.label.lowercased().contains("opus") == true)
+    XCTAssertEqual(
+      workSubagentModelChip(snapshotModel: nil, sessionModel: "claude-fable-5"),
+      "\(prettyWorkChatModelName("claude-fable-5")) · inherited"
+    )
   }
 
   func testPiModelDisplayIncludesProfileAndUpstreamProvider() {

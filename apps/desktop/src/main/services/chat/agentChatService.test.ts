@@ -10369,7 +10369,7 @@ describe("createAgentChatService", () => {
       const child = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
-        model: "sonnet",
+        model: "opus",
         title: "Fix flaky tests",
         orchestrationParentSessionId: parent.id,
         spawnKind: "subagent",
@@ -10391,6 +10391,8 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).agentId).toBe(child.id);
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
+      expect((row!.event as any).model).toBe(child.model);
+      expect(child.model).toBe("claude-opus-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
       expect(child.spawnKind).toBe("subagent");
@@ -10959,6 +10961,106 @@ describe("createAgentChatService", () => {
       expect((progressEnvelope?.event as any)?.agentType).toBe("code-reviewer");
       expect((resultEnvelope?.event as any)?.agentType).toBe("code-reviewer");
       expect((startEnvelope?.event as any)?.parentToolUseId).toBe("toolu_task_1");
+      expect((startEnvelope?.event as any)?.model).toBeUndefined();
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("attaches the Task tool model override to subagent_started, not the parent session model", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-model-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_task_model_1",
+                name: "Task",
+                input: {
+                  subagent_type: "Explore",
+                  description: "Scan the repo",
+                  prompt: "Find the auth module.",
+                  model: "opus",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-model-1",
+          parent_tool_use_id: "toolu_task_model_1",
+          description: "Scan the repo",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-model-1",
+          parent_tool_use_id: "toolu_task_model_1",
+          status: "completed",
+          summary: "Found auth.ts",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-model-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn an Explore subagent on opus.",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-model-1",
+      );
+
+      const startEnvelope = events.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-model-1",
+      );
+      expect((startEnvelope?.event as any)?.agentType).toBe("Explore");
+      expect((startEnvelope?.event as any)?.model).toBe("opus");
+      expect((startEnvelope?.event as any)?.model).not.toBe("sonnet");
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -11057,6 +11159,7 @@ describe("createAgentChatService", () => {
       // No agentType is fine — the renderer falls back to description.
       expect((startEnvelope?.event as any)?.agentType).toBeUndefined();
       expect((startEnvelope?.event as any)?.description).toBe("Audit something");
+      expect((startEnvelope?.event as any)?.model).toBeUndefined();
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -34110,6 +34213,7 @@ describe("createAgentChatService", () => {
             id: "opencode-child-1",
             parentID: "opencode-session-1",
             title: "Repository explorer",
+            model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
           },
         },
       },
@@ -34124,6 +34228,10 @@ describe("createAgentChatService", () => {
       (event): event is AgentChatEventEnvelope =>
         event.event.type === "subagent_started" && event.event.taskId === "opencode-child-1",
     );
+    const startedEnvelope = events.find(
+      (event) => event.event.type === "subagent_started" && event.event.taskId === "opencode-child-1",
+    );
+    expect((startedEnvelope?.event as { model?: string }).model).toBe("opencode/anthropic/claude-sonnet-5");
     expect(events.some((event) =>
       event.event.type === "done" && event.event.turnId === started.event.turnId
     )).toBe(false);

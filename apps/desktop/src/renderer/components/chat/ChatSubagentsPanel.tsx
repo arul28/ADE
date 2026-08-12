@@ -28,6 +28,7 @@ import {
   groupPaneSectionItems,
   isBackgroundShellCommand,
   isEarlierSubagentSnapshot,
+  subagentModelAttribution,
 } from "../../../shared/chatSubagents";
 import {
   backgroundCommandCwd,
@@ -782,6 +783,7 @@ function SubagentRow({
   onClick,
   depth = 0,
   spawnedChatTitle = null,
+  sessionModelLabel = null,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
@@ -797,6 +799,8 @@ function SubagentRow({
   /** Live title of the spawned child chat this row navigates to, when resolved.
    * Non-null marks this as a spawned-chat row (navigates on click). */
   spawnedChatTitle?: string | null;
+  /** Parent session model label used only when the envelope has no model. */
+  sessionModelLabel?: string | null;
   onClick: () => void;
 }) {
   const isSpawnedChat = snapshot.childSessionId != null;
@@ -809,6 +813,10 @@ function SubagentRow({
   // Spawned-chat rows surface the runtime as the uppercase chip (reusing the
   // kindBadge chip idiom); other rows keep their taskType kind chip.
   const kindLabel = isSpawnedChat ? (snapshot.agentType?.trim() || null) : kindBadge(snapshot);
+  const modelAttribution = subagentModelAttribution({
+    snapshotModel: snapshot.model,
+    sessionModelLabel,
+  });
   const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
   const isCompleted = snapshot.status === "completed";
@@ -880,6 +888,14 @@ function SubagentRow({
           ) : kindLabel ? (
             <span className="ml-1.5 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
               {kindLabel}
+            </span>
+          ) : null}
+          {modelAttribution ? (
+            <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-fg/45">
+              {modelAttribution.label}
+              {modelAttribution.inherited ? (
+                <span className="text-fg/28"> · inherited</span>
+              ) : null}
             </span>
           ) : null}
         </span>
@@ -995,6 +1011,7 @@ export function ChatSubagentsPanel({
   schedulesPaused = false,
   onToggleSchedulesPaused,
   onCancelScheduledWork,
+  sessionModelLabel = null,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -1035,6 +1052,8 @@ export function ChatSubagentsPanel({
   onToggleSchedulesPaused?: () => void;
   /** Cancel one durable schedule. Claude cron jobs are deleted through CronDelete. */
   onCancelScheduledWork?: (snapshot: ChatScheduledWorkSnapshot) => void;
+  /** Parent session model label for inherited roster chips when a child did not report one. */
+  sessionModelLabel?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1356,6 +1375,7 @@ export function ChatSubagentsPanel({
           ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
           : null
       }
+      sessionModelLabel={sessionModelLabel}
       onClick={() => handleRowClick(snap)}
     />
   );

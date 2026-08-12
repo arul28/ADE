@@ -4,6 +4,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatSubagentTranscriptMessage,
 } from "./types/chat";
+import { resolveModelDescriptor } from "./modelRegistry";
 
 export type SubagentSnapshot = {
   id: string;
@@ -151,6 +152,56 @@ export type SubagentPaneContent = {
 
 function textField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export const SUBAGENT_MODEL_INHERITED_SUFFIX = "inherited";
+
+export type SubagentModelAttribution = {
+  label: string;
+  inherited: boolean;
+};
+
+/** Pretty-print a reported subagent model id. Does not invent a parent fallback. */
+export function formatSubagentModelLabel(model: string | null | undefined): string | null {
+  const raw = textField(model);
+  if (!raw) return null;
+  return resolveModelDescriptor(raw)?.displayName ?? raw;
+}
+
+/**
+ * Display-only attribution for Chat Info header/roster chips.
+ * A reported snapshot model is ground truth. Missing model falls back to the
+ * parent session label and is marked inherited — never written onto the envelope.
+ */
+export function subagentModelAttribution(args: {
+  snapshotModel?: string | null;
+  sessionModelLabel?: string | null;
+}): SubagentModelAttribution | null {
+  const reported = formatSubagentModelLabel(args.snapshotModel);
+  if (reported) return { label: reported, inherited: false };
+  const session = formatSubagentModelLabel(args.sessionModelLabel);
+  if (!session) return null;
+  return { label: session, inherited: true };
+}
+
+export function formatSubagentModelChip(attribution: SubagentModelAttribution | null): string | null {
+  if (!attribution) return null;
+  return attribution.inherited
+    ? `${attribution.label} · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
+    : attribution.label;
+}
+
+export function chatInfoHeaderModelAttribution(args: {
+  inspectedSnapshotModel?: string | null;
+  sessionModelLabel: string;
+  inspecting: boolean;
+}): SubagentModelAttribution {
+  const session = textField(args.sessionModelLabel) ?? args.sessionModelLabel;
+  if (!args.inspecting) return { label: session, inherited: false };
+  return subagentModelAttribution({
+    snapshotModel: args.inspectedSnapshotModel,
+    sessionModelLabel: session,
+  }) ?? { label: session, inherited: true };
 }
 
 export function subagentAgentKey(event: { agentId?: string | null; taskId?: string | null }): string | null {

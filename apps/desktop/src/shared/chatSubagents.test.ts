@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
 import {
   buildSubagentPaneRows,
+  chatInfoHeaderModelAttribution,
+  formatSubagentModelChip,
   groupPaneSectionItems,
   isEarlierSubagentSnapshot,
   deriveSubagentTimelineRows,
@@ -12,6 +14,7 @@ import {
   subagentActivitySummaryFromEvents,
   subagentAgentKey,
   subagentIndexForPaneLine,
+  subagentModelAttribution,
   subagentSnapshotsFromEvents,
   type SubagentSnapshot,
 } from "./chatSubagents";
@@ -484,5 +487,75 @@ describe("chatSubagents timeline helpers", () => {
     expect(rows.map((row) => row.kind)).toEqual(["spawn", "result"]);
     expect(rows[0]).toEqual(expect.objectContaining({ background: true, status: "completed" }));
     expect(rows[1]).toEqual(expect.objectContaining({ summary: "Research complete." }));
+  });
+});
+
+describe("subagent model attribution", () => {
+  it("treats a reported snapshot model as ground truth, not the parent session", () => {
+    const attribution = subagentModelAttribution({
+      snapshotModel: "opus",
+      sessionModelLabel: "Fable 5",
+    });
+    expect(attribution?.inherited).toBe(false);
+    expect(attribution?.label.toLowerCase()).toContain("opus");
+    expect(formatSubagentModelChip(attribution)).not.toContain("inherited");
+  });
+
+  it("marks the parent session label inherited when the envelope has no model", () => {
+    expect(subagentModelAttribution({
+      snapshotModel: null,
+      sessionModelLabel: "Fable 5",
+    })).toEqual({ label: "Fable 5", inherited: true });
+    expect(formatSubagentModelChip(subagentModelAttribution({
+      snapshotModel: "  ",
+      sessionModelLabel: "Fable 5",
+    }))).toBe("Fable 5 · inherited");
+    const fromRawId = subagentModelAttribution({
+      snapshotModel: null,
+      sessionModelLabel: "sonnet",
+    });
+    expect(fromRawId?.inherited).toBe(true);
+    expect(fromRawId?.label.toLowerCase()).toContain("sonnet");
+    expect(fromRawId?.label).not.toBe("sonnet");
+  });
+
+  it("keeps the session model unlabeled when Chat Info is not inspecting a subagent", () => {
+    expect(chatInfoHeaderModelAttribution({
+      inspectedSnapshotModel: "opus",
+      sessionModelLabel: "Fable 5",
+      inspecting: false,
+    })).toEqual({ label: "Fable 5", inherited: false });
+    expect(chatInfoHeaderModelAttribution({
+      inspectedSnapshotModel: null,
+      sessionModelLabel: "Fable 5",
+      inspecting: true,
+    })).toEqual({ label: "Fable 5", inherited: true });
+  });
+
+  it("folds event.model onto snapshots without inventing a parent fallback", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-08-12T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "child-1",
+          description: "Explore the repo",
+          model: "opus",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-08-12T12:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "child-2",
+          description: "Review the diff",
+        },
+      },
+    ];
+    const snapshots = subagentSnapshotsFromEvents(events);
+    expect(snapshots.find((snapshot) => snapshot.id === "child-1")?.model).toBe("opus");
+    expect(snapshots.find((snapshot) => snapshot.id === "child-2")?.model ?? null).toBeNull();
   });
 });

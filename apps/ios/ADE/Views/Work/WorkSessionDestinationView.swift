@@ -1112,6 +1112,7 @@ struct WorkSessionDestinationView: View {
           selectedTaskId: subagentView?.taskId,
           probingTaskId: probingSubagentTaskId,
           expandedTaskIds: $expandedSubagentDetailIds,
+          sessionModel: composerChatSummary?.model,
           onSelect: handleSubagentSelection,
           onCancelScheduledWork: scheduledWorkCancelAction,
           onSetScheduledWorkPaused: scheduledWorkPauseAction

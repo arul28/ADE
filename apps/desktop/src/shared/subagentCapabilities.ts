@@ -90,7 +90,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   claude: {
     canList: true,
     canViewFullTranscript: true,
-    statsFields: ["tokens", "toolUses", "durationMs"],
+    statsFields: ["tokens", "toolUses", "durationMs", "model"],
     kinds: ["subagent", "background", "local_workflow", "cron", "other"],
     hasRichMetadata: false,
   },
@@ -99,7 +99,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   opencode: {
     canList: true,
     canViewFullTranscript: true,
-    statsFields: ["diffSummary", "tokens", "cost", "durationMs"],
+    statsFields: ["diffSummary", "tokens", "cost", "durationMs", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
@@ -109,7 +109,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   cursor: {
     canList: true,
     canViewFullTranscript: false,
-    statsFields: ["durationMs"],
+    statsFields: ["durationMs", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
@@ -120,7 +120,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   droid: {
     canList: true,
     canViewFullTranscript: false,
-    statsFields: ["durationMs", "exitCode"],
+    statsFields: ["durationMs", "exitCode", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
