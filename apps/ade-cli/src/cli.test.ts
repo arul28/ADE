@@ -14,6 +14,7 @@ import {
   buildCliPlan,
   checkLinearReadiness,
   detectAccountLoginMode,
+  describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatOutput,
@@ -11169,5 +11170,30 @@ describe("ADE CLI", () => {
     expect((summarized as any).visual).toContain(
       "\\- child (id: child) [feature]",
     );
+  });
+});
+
+describe("describeLastFailureForStartupLog", () => {
+  it("names the real cause instead of the 'unknown' bucket", () => {
+    // The credential-store decrypt failure that took a user's machine down for
+    // an evening classified as `unknown`, so the only line launchd printed was
+    // "after repeated failures: unknown".
+    expect(describeLastFailureForStartupLog({
+      code: "unknown",
+      detail: "Error: Unsupported state or unable to authenticate data\n    at Decipheriv.final",
+    })).toBe("unknown · Error: Unsupported state or unable to authenticate data");
+  });
+
+  it("falls back to the code alone when nothing was recorded", () => {
+    expect(describeLastFailureForStartupLog({ code: "disk_full" })).toBe("disk_full");
+  });
+
+  it("bounds a long detail so one startup line cannot flood the log", () => {
+    const described = describeLastFailureForStartupLog(
+      { code: "db_integrity", detail: "x".repeat(500) },
+      40,
+    );
+    expect(described.length).toBeLessThanOrEqual("db_integrity · ".length + 40);
+    expect(described.endsWith("…")).toBe(true);
   });
 });

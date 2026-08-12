@@ -273,6 +273,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -8797,6 +8798,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
     repairMachinePairing: (): Promise<AdeAccountMachinePairingRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairMachinePairing),
+    repairSession: (): Promise<AdeAccountSessionRepairResult> =>
+      ipcRenderer.invoke(IPC.accountRepairSession),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

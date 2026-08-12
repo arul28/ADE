@@ -142,7 +142,10 @@ import {
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
 import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
-import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import {
+  EncryptedFileCredentialStore,
+  inspectCredentialStoreHealth,
+} from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import {
   ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
@@ -16229,8 +16232,35 @@ async function runBrainCommand(
     }
   }
 
+  // Deliberately local and brain-free: the state this repairs is precisely the
+  // one that keeps the brain from starting, so routing it through the brain
+  // would make it unavailable exactly when it is needed. The desktop's Repair
+  // control runs the same `repairSync()` through `account.repairSession`.
+  if (sub === "repair-credentials") {
+    const { secretsDir } = resolveMachineAdeLayout();
+    const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
+    const readable = report.state !== "unreadable";
+    return {
+      ok: readable,
+      action: "repair-credentials",
+      state: report.state,
+      reason: report.reason,
+      recoveredKeys: report.recoveredKeys,
+      quarantined: report.quarantine
+        ? { at: report.quarantine.at, recoverable: report.quarantine.recoverable }
+        : null,
+      message: !readable
+        ? "ADE could not read the stored credentials on this computer. Sign in again in the ADE app."
+        : report.recoveredKeys > 0
+          ? `Restored ${report.recoveredKeys} stored credential${report.recoveredKeys === 1 ? "" : "s"}. Run \`ade brain restart\` so the brain picks them up.`
+          : report.quarantine?.recoverable === false
+            ? "An unreadable credential file was set aside earlier. Sign in again in the ADE app."
+            : "Stored credentials are readable; nothing needed repairing.",
+    };
+  }
+
   throw new CliUsageError(
-    "brain supports status, show, start, stop, restart, update, or pin.",
+    "brain supports status, show, start, stop, restart, update, repair-credentials, or pin.",
   );
 }
 
@@ -16455,6 +16485,64 @@ export function includeHostProjectInCatalog<T extends { projectId: string }>(
   return [...recentProjects, hostProject];
 }
 
+/**
+ * One line of honest cause for the crash-loop backoff notice.
+ *
+ * `code` is a coarse bucket and is `unknown` whenever the classifier has no
+ * pattern for the error — the credential-store decrypt failure that took a
+ * user's machine down for an evening logged exactly that. The recorded detail
+ * is the error's own message, so prefer it and keep the bucket alongside.
+ */
+export function describeLastFailureForStartupLog(
+  report: { code: string; detail?: string; message?: string },
+  maxLength = 200,
+): string {
+  const detail = (report.detail ?? report.message ?? "").split("\n")[0]?.trim() ?? "";
+  const bounded = detail.length > maxLength ? `${detail.slice(0, maxLength - 1)}…` : detail;
+  return bounded ? `${report.code} · ${bounded}` : report.code;
+}
+
+/**
+ * Says, once per brain start, whether this process can read the shared
+ * credential store — and if not, why, in `launchd.err.log` where the person
+ * debugging a dead brain is already looking.
+ *
+ * Purely diagnostic: the store itself no longer fails a startup over an
+ * unreadable file, so this must not either.
+ */
+function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): void {
+  try {
+    const health = inspectCredentialStoreHealth({
+      credentialsPath: path.join(secretsDir, "credentials.json.enc"),
+      machineKeyPath: path.join(secretsDir, ".machine-key"),
+      // No key-material read at all on the startup path. Even the read-only
+      // accessor is a `security` call on macOS and a synchronous PowerShell
+      // unprotect budgeted at 30 s on Windows, and delaying every brain start
+      // to decorate a log line is not a trade worth making. The brain is the
+      // process without OS material by definition, so what it reports here is
+      // what its own credential reads will find anyway.
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
+    });
+    if (health.state !== "unreadable" && !health.quarantine) return;
+    const summary = health.state === "unreadable"
+      ? `ADE brain cannot read the stored account credentials (${health.reason}).`
+      : "ADE brain set aside an unreadable credential file earlier.";
+    const nextStep = health.quarantine?.recoverable === true
+      ? " Opening the ADE app on this computer restores it; no sign-in needed."
+      : " Sign in again in the ADE app.";
+    process.stderr.write(`${summary}${nextStep}\n`);
+    logger.warn("brain.credential_store_unreadable", {
+      state: health.state,
+      reason: health.reason,
+      declaredBinding: health.declaredBinding,
+      quarantined: health.quarantine?.file ?? null,
+      quarantineRecoverable: health.quarantine?.recoverable ?? null,
+    });
+  } catch {
+    // A diagnostic must never be the thing that stops the brain starting.
+  }
+}
+
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -16478,8 +16566,12 @@ async function runServe(
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
   if (startupBackoffMs > 0 && previousFailure) {
+    // The bare `code` alone printed "unknown" for every failure the classifier
+    // had no pattern for — which is exactly the class you need the reason for.
+    // Lead with the recorded detail so the log says what actually broke.
+    const reason = describeLastFailureForStartupLog(previousFailure);
     process.stderr.write(
-      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${previousFailure.code}\n`,
+      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${reason}\n`,
     );
     await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
   }
@@ -16527,6 +16619,7 @@ async function runServe(
   const headlessProjectLogger: Logger = createBrainLogger(
     path.join(layout.runtimeDir, "brain.jsonl"),
   );
+  reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
   const {
     createProductAnalyticsService,
     defaultProductAnalyticsStateFile,

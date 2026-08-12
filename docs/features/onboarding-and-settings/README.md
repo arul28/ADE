@@ -1235,7 +1235,18 @@ not-signed-in states distinctly; the branch logic lives once in
 `accountSessionState` / `accountSessionNotice`
 (`apps/desktop/src/renderer/lib/account.ts`), and the `unreadable` copy leads
 with the shared `BrainRepairButton` (or a plain retry where there is no brain to
-restart) with sign-in demoted to "Sign in anyway". The CLI's `account-auth` text
+restart) with sign-in demoted to "Sign in anyway".
+
+Repair has to actually repair. Restarting the background service — all this
+control used to do — cannot fix any credential-store condition, which is the
+only condition this surface appears for: the replacement process reads the same
+unreadable file. `account.repairSession` therefore repairs the shared credential
+store first (converge its key binding, merge back anything a peer process had to
+set aside) and restarts the brain after, then reports which of three things
+happened: the store is readable again, the store is readable but nothing on this
+computer can open what was set aside so a fresh sign-in is required, or the
+repair itself failed. The store mechanics are in
+[ARCHITECTURE](../../ARCHITECTURE.md) under the machine credential stores. The CLI's `account-auth` text
 formatter makes the same three distinctions rather than printing one
 "Not signed in — local use does not require an account." for all of them.
 

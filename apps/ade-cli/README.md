@@ -201,10 +201,17 @@ Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain r
 ```bash
 ade brain status --text            # endpoint state, service state, sync state
 ade brain restart                  # refresh the login service after an update
+ade brain repair-credentials       # fix a credential store the brain cannot read
 ade brain pin generate             # generate a phone pairing PIN
 ade brain pin set 123456
 ade brain pin clear
 ```
+
+`ade brain repair-credentials` runs entirely locally and never contacts the
+brain — the state it repairs is the one that keeps the brain from starting, so a
+repair that needed a running brain would be unavailable exactly when it matters.
+`ade doctor` reports the same credential-store state from disk for the same
+reason.
 
 Older `ade runtime ...` and `ade sync pin ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
 
@@ -738,10 +745,13 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 - **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated.
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.
 - **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
+- **Credentials** — whether the shared credential store (`$ADE_HOME/secrets/credentials.json.enc`) can be read, and whether an unreadable one was set aside earlier. `fail` when it cannot be read, naming the next step: a store sealed with a key this process cannot obtain is unlocked by opening the ADE app on this computer, while anything else needs a fresh sign-in. `warn` when a quarantined file is still waiting to be restored. Unlike every other row, this one is read **straight from disk** rather than through the brain — the failure it exists for is a brain that cannot start, so a check that needed a running brain would be silent exactly when it matters. It is non-creating: it never mints a machine key or OS key material, so running the diagnostic cannot change the state it reports. `ade brain repair-credentials` acts on the same reading.
 
-Default doctor does not call provider, GitHub, or Linear networks — it talks only
-to the local brain over its socket, and never prints secret values. The one
-optional network touch is the `--online` desktop-release lookup above.
+Default doctor does not call provider, GitHub, or Linear networks. Every row but
+**Credentials** comes from the local brain over its socket; **Credentials** is a
+read-only inspection of the machine's own secrets directory. It never prints
+secret values. The one optional network touch is the `--online` desktop-release
+lookup above.
 
 Agents starting an unfamiliar ADE session should begin with:
 

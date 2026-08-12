@@ -127,6 +127,10 @@ describe("ipcInvokeTimeoutMs", () => {
     // if either grows, this expectation is the thing that should be revisited.
     const WORST_CASE_MS = 60_000 + 60_000 + 20_000 + 20_000;
     expect(ipcInvokeTimeoutMs(IPC.appRestartBackgroundService)).toBeGreaterThanOrEqual(WORST_CASE_MS);
+    // Repairing the stored sign-in finishes with that same restart, so it needs
+    // the same budget — on the default the renderer reports "Repair failed" for
+    // a repair that is still running.
+    expect(ipcInvokeTimeoutMs(IPC.accountRepairSession)).toBeGreaterThanOrEqual(WORST_CASE_MS);
   });
 
   it("gives retryable remote runtime actions enough time to reconnect", () => {

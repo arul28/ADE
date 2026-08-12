@@ -33,6 +33,16 @@ export function BrainRepairButton({
         >
           Repair failed — quit and reopen ADE.
         </span>
+      ) : repair.notice ? (
+        <span
+          style={{
+            color: repair.notice.tone === "ok" ? COLORS.textSecondary : COLORS.warning,
+            fontFamily: SANS_FONT,
+            fontSize: 11,
+          }}
+        >
+          {repair.notice.text}
+        </span>
       ) : null}
     </>
   );
