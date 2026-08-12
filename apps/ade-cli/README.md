@@ -201,10 +201,17 @@ Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain r
 ```bash
 ade brain status --text            # endpoint state, service state, sync state
 ade brain restart                  # refresh the login service after an update
+ade brain repair-credentials       # fix a credential store the brain cannot read
 ade brain pin generate             # generate a phone pairing PIN
 ade brain pin set 123456
 ade brain pin clear
 ```
+
+`ade brain repair-credentials` runs entirely locally and never contacts the
+brain — the state it repairs is the one that keeps the brain from starting, so a
+repair that needed a running brain would be unavailable exactly when it matters.
+`ade doctor` reports the same credential-store state from disk for the same
+reason.
 
 Older `ade runtime ...` and `ade sync pin ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
 

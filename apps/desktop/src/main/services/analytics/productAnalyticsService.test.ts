@@ -189,6 +189,21 @@ describe("productAnalyticsService", () => {
       dedupeKey: "brain_repair:failed",
       minimumIntervalMs: 60 * 60 * 1_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
+    // The credential-store repair's third outcome. It has to survive the
+    // sanitizer as itself: silently normalizing "we could not open your
+    // session" into `completed` is the one answer this event must not give.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "brain_repair", outcome: "sign_in_required" },
+      dedupeKey: "brain_repair:sign_in_required",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages.at(-1)?.properties).toMatchObject({
+      feature: "connections",
+      action: "brain_repair",
+      outcome: "sign_in_required",
+    });
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 

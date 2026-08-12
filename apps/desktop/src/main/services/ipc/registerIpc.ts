@@ -9621,7 +9621,29 @@ export function registerIpc({
   ipcMain.handle(
     IPC.accountRepairSession,
     async (): Promise<AdeAccountSessionRepairResult> => {
-      const repair = accountBridge.repairCredentialStore();
+      // Same product fact as the restart-only handler above, so it keeps the
+      // existing `brain_repair` action and dedupe key rather than forking the
+      // funnel — this control replaced that one, it did not join it. The
+      // outcome is the only thing that got finer: whether the click recovered a
+      // session or only confirmed one is unrecoverable is the question the old
+      // completed/failed pair could not answer.
+      const captureRepairOutcome = (outcome: "completed" | "sign_in_required" | "failed") => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "connections", action: "brain_repair", outcome },
+          projectId: null,
+          dedupeKey: `brain_repair:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      };
+      let repair: Omit<AdeAccountSessionRepairResult, "brainRestarted">;
+      try {
+        repair = accountBridge.repairCredentialStore();
+      } catch (error) {
+        captureRepairOutcome("failed");
+        throw error;
+      }
       let brainRestarted: boolean | null = null;
       if (projectRecoveryService) {
         try {
@@ -9633,18 +9655,9 @@ export function registerIpc({
           brainRestarted = false;
         }
       }
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: {
-          feature: "connections",
-          action: "session_repair",
-          outcome: repair.outcome,
-        },
-        projectId: null,
-        dedupeKey: `session_repair:${repair.outcome}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
+      captureRepairOutcome(
+        repair.outcome === "sign_in_required" ? "sign_in_required" : "completed",
+      );
       return { ...repair, brainRestarted };
     },
   );

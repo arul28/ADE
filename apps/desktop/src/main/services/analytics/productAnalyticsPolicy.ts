@@ -194,6 +194,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // deliberately absent: the app half is already reported by
     // `ade_update_install_did_not_land`, so only the brain half is new signal.
     "service", "restart", "health",
+    // Repair ran and the credential store is readable, but nothing on this
+    // computer can open what was set aside — the user has to sign in again.
+    // Distinct from `failed`, which means the repair itself did not run: the
+    // product question is whether Repair recovers a session or only confirms it
+    // is gone, and collapsing the two into `completed` answers neither.
+    "sign_in_required",
     // Which usage scope an installation actually looked at. Reuses `outcome`
     // rather than adding a parallel `scope` key, the same way the update
     // transaction reuses it for its failed step. These are the three values of

@@ -13,7 +13,9 @@ import {
   createDefaultCredentialStore,
   inspectCredentialStoreHealth,
   isFileBackedCredentialKey,
+  readCredentialStoreQuarantine,
 } from "./credentialStore";
+import { quarantineCredentialFile } from "./credentialStoreQuarantine";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
   ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
@@ -685,6 +687,37 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(marker.recoverable).toBe(false);
     // The ciphertext itself is kept for diagnostics rather than deleted.
     expect(fs.existsSync(path.join(tempDir, marker.file))).toBe(true);
+  });
+
+  it("quarantines by copying, leaving the original for the caller's atomic write", () => {
+    // Windows cannot rename or delete a file while any handle to it is open, so
+    // a peer process mid-read turns a rename into EPERM/EACCES/EBUSY — and this
+    // path throwing is the crash loop quarantine exists to prevent. Copying
+    // leaves the original for the ordinary atomic write to replace, which is an
+    // operation every credential write already performs.
+    const credentialsPath = path.join(tempDir, "credentials.json.enc");
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(credentialsPath, "ciphertext-that-cannot-be-read", "utf8");
+
+    const record = quarantineCredentialFile({
+      credentialsPath,
+      reason: "no_os_key_material",
+      recoverable: true,
+    });
+
+    expect(record?.recoverable).toBe(true);
+    expect(fs.readFileSync(credentialsPath, "utf8")).toBe("ciphertext-that-cannot-be-read");
+    expect(fs.readFileSync(path.join(tempDir, record!.file), "utf8"))
+      .toBe("ciphertext-that-cannot-be-read");
+    expect(readCredentialStoreQuarantine(credentialsPath)).toEqual(record);
+    // Nothing to set aside is not a failure: a peer may have replaced the file
+    // between the failed read and this call.
+    fs.unlinkSync(credentialsPath);
+    expect(quarantineCredentialFile({
+      credentialsPath,
+      reason: "decrypt_failure",
+      recoverable: false,
+    })).toBeNull();
   });
 
   it("quarantines an unreadable store exactly once, however the write ends", () => {

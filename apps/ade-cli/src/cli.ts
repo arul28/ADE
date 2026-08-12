@@ -16232,8 +16232,35 @@ async function runBrainCommand(
     }
   }
 
+  // Deliberately local and brain-free: the state this repairs is precisely the
+  // one that keeps the brain from starting, so routing it through the brain
+  // would make it unavailable exactly when it is needed. The desktop's Repair
+  // control runs the same `repairSync()` through `account.repairSession`.
+  if (sub === "repair-credentials") {
+    const { secretsDir } = resolveMachineAdeLayout();
+    const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
+    const readable = report.state !== "unreadable";
+    return {
+      ok: readable,
+      action: "repair-credentials",
+      state: report.state,
+      reason: report.reason,
+      recoveredKeys: report.recoveredKeys,
+      quarantined: report.quarantine
+        ? { at: report.quarantine.at, recoverable: report.quarantine.recoverable }
+        : null,
+      message: !readable
+        ? "ADE could not read the stored credentials on this computer. Sign in again in the ADE app."
+        : report.recoveredKeys > 0
+          ? `Restored ${report.recoveredKeys} stored credential${report.recoveredKeys === 1 ? "" : "s"}. Run \`ade brain restart\` so the brain picks them up.`
+          : report.quarantine?.recoverable === false
+            ? "An unreadable credential file was set aside earlier. Sign in again in the ADE app."
+            : "Stored credentials are readable; nothing needed repairing.",
+    };
+  }
+
   throw new CliUsageError(
-    "brain supports status, show, start, stop, restart, update, or pin.",
+    "brain supports status, show, start, stop, restart, update, repair-credentials, or pin.",
   );
 }
 
