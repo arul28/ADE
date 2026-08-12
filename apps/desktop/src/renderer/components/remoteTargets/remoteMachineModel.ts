@@ -316,11 +316,16 @@ export function isSshOnlyDiscovered(
 }
 
 export function formatRemoteTargetError(error: unknown): string {
-  const message = extractError(error)
+  // Keep the raw IPC wrapper text for SSH detection. Stripping
+  // `ade.remoteRuntime.getSshHostKeyTrust` first would leave a bare
+  // `ECONNRESET` and incorrectly blame a paired ADE port.
+  const raw = extractError(error).trim();
+  const message = raw
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
     .replace(/^Error:\s*/i, "")
     .trim();
-  const sshHint = /\b(?:ssh|sshd|remote login)\b/i.test(message);
+  // No word-boundary: camelCase IPC names embed `Ssh` without `\b` edges.
+  const sshHint = /ssh|sshd|remote login/i.test(raw);
 
   if (/ECONNRESET/i.test(message)) {
     return sshHint

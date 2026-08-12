@@ -458,6 +458,20 @@ describe("AccountPage signed-in", () => {
     ).toBeTruthy();
   });
 
+  it("shows recovery controls when the local machine is the only missing row and the directory is empty", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [],
+    });
+    renderPage();
+
+    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.getByText("No computers connected yet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+  });
+
   it("repairs the background service from a missing directory row", async () => {
     machinesWithoutThisComputer();
     renderPage();

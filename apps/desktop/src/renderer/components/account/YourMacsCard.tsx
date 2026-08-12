@@ -431,7 +431,6 @@ export function YourMacsCard() {
     !webMode
     && result?.state === "ok"
     && Boolean(localIdentity?.machineKey)
-    && machines.length > 0
     && !machines.some((candidate) => isThisMac(candidate));
 
   const canReconnect = !webMode && typeof accountBridge()?.repairMachinePairing === "function";

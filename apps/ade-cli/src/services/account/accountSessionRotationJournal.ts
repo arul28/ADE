@@ -32,6 +32,14 @@ import type {
  */
 export const ACCOUNT_SESSION_ROTATION_JOURNAL_KEY = "account.session.rotation.v1";
 
+/**
+ * A live foreign pid alone is not enough: OS pid reuse or a wedged owner can
+ * leave a journal that blocks every peer forever. Entries older than this are
+ * treated as interruptable takeovers instead of peer_in_flight. Sized above the
+ * credential-store lock + rotation wait window so a healthy peer still wins.
+ */
+export const ROTATION_JOURNAL_PEER_MAX_AGE_MS = 120_000;
+
 export type RotationJournalEntry = {
   oldRefreshTokenHash: string;
   startedAt: string;
@@ -174,7 +182,11 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
     if (existing.pid === args.pid && existing.oldRefreshTokenHash === entry.oldRefreshTokenHash) {
       return { kind: "already_ours" };
     }
-    if (existing.pid !== args.pid && pidAlive(existing.pid)) {
+    const peerAgeMs = args.now() - Date.parse(existing.startedAt);
+    const peerFresh = Number.isFinite(peerAgeMs)
+      && peerAgeMs >= 0
+      && peerAgeMs < ROTATION_JOURNAL_PEER_MAX_AGE_MS;
+    if (existing.pid !== args.pid && pidAlive(existing.pid) && peerFresh) {
       return { kind: "peer_in_flight", entry: existing };
     }
     return {

@@ -12,7 +12,9 @@ export type SyncListenerPortDiagnosis = {
 };
 
 // Bounded so a hung lsof/ps cannot stall the preferred-port reclaim loop.
-const PORT_INSPECT_TIMEOUT_MS = 200;
+// 200ms was short enough that a loaded machine timed out into "no holders"
+// and skipped same-channel reclaim; 1.5s still keeps bind retries responsive.
+const PORT_INSPECT_TIMEOUT_MS = 1_500;
 // PowerShell cold-starts on Windows. Keep this longer than the POSIX probe so
 // doctor / reclaim still see holders instead of timing out into "nothing".
 const WINDOWS_PORT_INSPECT_TIMEOUT_MS = 5_000;

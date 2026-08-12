@@ -642,12 +642,7 @@ function syncPortRow(input: DoctorInput): DoctorRow {
         : " · no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
           + " and `netstat -an -p tcp`)"
-    }${
-      // Sticky lastPort used to keep a replacement brain on 8788 forever.
-      // Bind order now retries 8787 first, and a live listener migrates back
-      // when 8787 frees. `ade brain restart` is still the explicit hammer.
-      holders.length ? "" : " · ADE retries 8787 first and migrates back when it is free; `ade brain restart` also returns it to 8787"
-    }`,
+    } · ADE retries 8787 first and migrates back when it is free; `ade brain restart` also returns it to 8787`,
   };
 }
 

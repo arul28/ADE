@@ -381,4 +381,12 @@ describe("formatRemoteTargetError", () => {
     expect(formatRemoteTargetError("SSH ECONNREFUSED")).toMatch(/Remote Login\/sshd/);
     expect(formatRemoteTargetError("sshd ECONNRESET")).toMatch(/Remote Login\/sshd/);
   });
+
+  it("keeps SSH recovery copy when only the IPC method name embeds Ssh", () => {
+    expect(
+      formatRemoteTargetError(
+        "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
+      ),
+    ).toMatch(/SSH server closed the connection before ADE could finish the SSH handshake/);
+  });
 });

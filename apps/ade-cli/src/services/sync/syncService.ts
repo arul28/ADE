@@ -784,6 +784,8 @@ export function createSyncService(args: SyncServiceArgs) {
     if (currentPort == null || currentPort === DEFAULT_SYNC_HOST_PORT) return;
     try {
       const migrated = await listener.tryMigrateToPort(DEFAULT_SYNC_HOST_PORT);
+      // Migration awaits a bind + close; dispose can land during that window.
+      if (disposed) return;
       if (migrated !== DEFAULT_SYNC_HOST_PORT) {
         scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
         return;
