@@ -793,8 +793,10 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
       label,
       status: "fail",
       detail: health.reason === "no_os_key_material"
-        ? "sealed to this Mac's keychain, which this process cannot read"
-          + " · open the ADE app on this Mac to unlock it"
+        // Platform-neutral on purpose: the same state is a macOS keychain item
+        // the brain cannot reach and a Windows DPAPI blob it cannot unprotect.
+        ? "sealed with a key this process cannot read"
+          + " · open the ADE app on this computer to unlock it"
         : `cannot be read (${health.reason}) · sign in again in the ADE app`,
     };
   }
@@ -805,7 +807,7 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
       label,
       status: "warn",
       detail: health.quarantine.recoverable
-        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this Mac to restore it`
+        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this computer to restore it`
         : `an unreadable credential file was set aside ${setAside} · sign in again in the ADE app`,
     };
   }

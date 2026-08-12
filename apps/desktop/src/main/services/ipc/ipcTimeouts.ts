@@ -132,6 +132,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // not give up before the main process knows the outcome, or the Repair
     // button reports a failure for a restart that actually succeeded.
     case IPC.appRestartBackgroundService:
+    // Repairing the stored sign-in ends in that same brain restart, so it
+    // inherits the same budget. On the 30s default the renderer would report a
+    // failure for a repair that is still running — the exact mis-report the
+    // restart case above exists to prevent.
+    case IPC.accountRepairSession:
       return 4 * 60_000;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked

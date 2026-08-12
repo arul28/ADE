@@ -687,6 +687,23 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(fs.existsSync(path.join(tempDir, marker.file))).toBe(true);
   });
 
+  it("quarantines an unreadable store exactly once, however the write ends", () => {
+    const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    store.setSync("agent.token", "secret");
+    fs.writeFileSync(path.join(tempDir, ".machine-key"), `${Buffer.alloc(32, 3).toString("base64")}\n`);
+
+    // Neither of these reaches a write: delete finds no key, and the updater
+    // declines. Both still have to leave the store in a readable state, or the
+    // next call quarantines the same file again — one copy per attempt.
+    store.deleteSync("agent.token");
+    store.updateSync(() => false);
+    store.setSync("agent.token", "after");
+
+    const quarantined = fs.readdirSync(tempDir).filter((entry) => entry.includes(".quarantined-"));
+    expect(quarantined).toHaveLength(1);
+    expect(store.getSync("agent.token")).toBe("after");
+  });
+
   it("survives a key-material read that throws, on both the sync and async paths", async () => {
     // Windows: every DPAPI failure — including a transient PowerShell cold-start
     // timeout — throws out of the material read. That exception used to travel

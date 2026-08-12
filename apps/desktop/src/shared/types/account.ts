@@ -206,7 +206,7 @@ export type AdeAccountMachinePairingRepairResult = {
  * real endings happened rather than "we restarted something".
  */
 export type AdeAccountSessionRepairResult = {
-  /** `repaired` — readable again. `sign_in_required` — nothing on this Mac can open it. */
+  /** `repaired` — readable again. `sign_in_required` — nothing on this computer can open it. */
   outcome: "repaired" | "sign_in_required" | "no_problem_found";
   /** Did the credential file end up readable? */
   readable: boolean;

@@ -16494,7 +16494,7 @@ function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): v
       ? `ADE brain cannot read the stored account credentials (${health.reason}).`
       : "ADE brain set aside an unreadable credential file earlier.";
     const nextStep = health.quarantine?.recoverable === true
-      ? " Opening the ADE app on this Mac restores it; no sign-in needed."
+      ? " Opening the ADE app on this computer restores it; no sign-in needed."
       : " Sign in again in the ADE app.";
     process.stderr.write(`${summary}${nextStep}\n`);
     logger.warn("brain.credential_store_unreadable", {

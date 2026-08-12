@@ -18,7 +18,7 @@ export type BrainRepair = {
 };
 
 /**
- * Repairs this Mac's stored sign-in, then restarts the brain — the background
+ * Repairs this computer's stored sign-in, then restarts the brain — the background
  * `com.ade.runtime` service — and calls `onSettled` once it resolves, so the
  * caller can re-read whatever health source it renders.
  *
@@ -44,7 +44,7 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
       if (result.outcome === "sign_in_required") {
         return {
           tone: "warn",
-          text: "Your sign-in can't be read on this Mac. Sign in again.",
+          text: "Your sign-in can't be read on this computer. Sign in again.",
         };
       }
       if (result.outcome === "repaired") {

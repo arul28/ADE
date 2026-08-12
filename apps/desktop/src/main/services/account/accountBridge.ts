@@ -720,7 +720,10 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
      */
     repairCredentialStore: (): Omit<AdeAccountSessionRepairResult, "brainRestarted"> => {
       const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
-      options.logger?.info("account.credential_store_repair", {
+      // Machine sink, same as the other machine-level credential mutations in
+      // this file: on a remote-bound project the project logger ships records to
+      // the OTHER machine, and a credential repair is a fact about this one.
+      getMachineLogger()?.info("account.credential_store_repair", {
         state: report.state,
         reason: report.reason,
         recoveredKeys: report.recoveredKeys,
