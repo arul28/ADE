@@ -47,6 +47,17 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
           text: "Your sign-in can't be read on this computer. Sign in again.",
         };
       }
+      // The store repair and the restart are separate halves and the handler
+      // reports them separately. Calling a repair "fixed" while the background
+      // service is still down describes half the outcome.
+      if (result.brainRestarted === false) {
+        return {
+          tone: "warn",
+          text: result.outcome === "repaired"
+            ? "Your sign-in is back, but the ADE background service didn't restart. Try again."
+            : "The ADE background service didn't restart. Try again.",
+        };
+      }
       if (result.outcome === "repaired") {
         return { tone: "ok", text: "Fixed — your sign-in is back." };
       }

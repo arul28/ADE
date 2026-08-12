@@ -231,9 +231,13 @@ function removeStaleLock(lockPath: string): void {
   }
 }
 
-export function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
+export function withCredentialFileLock<T>(
+  lockPath: string,
+  fn: () => T,
+  options: { timeoutMs?: number } = {},
+): T {
   ensureDirMode700(path.dirname(lockPath));
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + (options.timeoutMs ?? LOCK_TIMEOUT_MS);
   let fd: number | null = null;
 
   while (fd === null) {

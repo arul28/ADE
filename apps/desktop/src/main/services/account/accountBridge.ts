@@ -730,17 +730,16 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         quarantineRecoverable: report.quarantine?.recoverable ?? null,
       });
       const readable = report.state !== "unreadable";
-      // "Fixed it" is only honest when something was actually wrong AND is now
-      // right: a recovered credential, or a store that had been set aside and no
-      // longer is. Everything else is either "nothing was broken here" or "this
-      // Mac cannot open it — sign in again".
+      // Only an unreadable LIVE store means the user has to sign in again. An
+      // unrecoverable quarantine marker is a fact about a file that was set
+      // aside earlier, and it is never cleared while the ciphertext is kept for
+      // diagnostics — so treating it as "sign in again" would make every future
+      // Repair demand a sign-in on a machine that is signed in and fine.
       const outcome: AdeAccountSessionRepairResult["outcome"] = !readable
         ? "sign_in_required"
         : report.recoveredKeys > 0
           ? "repaired"
-          : report.quarantine?.recoverable === false
-            ? "sign_in_required"
-            : "no_problem_found";
+          : "no_problem_found";
       return { outcome, readable, recoveredKeys: report.recoveredKeys };
     },
 

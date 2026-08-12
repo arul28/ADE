@@ -16515,6 +16515,13 @@ function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): v
     const health = inspectCredentialStoreHealth({
       credentialsPath: path.join(secretsDir, "credentials.json.enc"),
       machineKeyPath: path.join(secretsDir, ".machine-key"),
+      // No key-material read at all on the startup path. Even the read-only
+      // accessor is a `security` call on macOS and a synchronous PowerShell
+      // unprotect budgeted at 30 s on Windows, and delaying every brain start
+      // to decorate a log line is not a trade worth making. The brain is the
+      // process without OS material by definition, so what it reports here is
+      // what its own credential reads will find anyway.
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     });
     if (health.state !== "unreadable" && !health.quarantine) return;
     const summary = health.state === "unreadable"

@@ -31,6 +31,7 @@ import {
 import {
   invalidateDefaultOsBoundKeyMaterialCache,
   platformSupportsOsBoundKeyMaterial,
+  readExistingOsBoundKeyMaterial,
   readDefaultOsBoundKeyMaterial,
   readDefaultOsBoundKeyMaterialAsync,
 } from "./osBoundKeyMaterial";
@@ -100,6 +101,17 @@ export {
 
 /** Bounds how often a store re-stats the quarantine marker on a clean read. */
 const QUARANTINE_PROBE_INTERVAL_MS = 5_000;
+/**
+ * Lock budget for the deferred, best-effort rebind off the asynchronous read.
+ *
+ * The lock is acquired with a synchronous `Atomics.wait` spin, so whatever this
+ * value is, the event loop stops for it — and the process that reaches this
+ * path is the desktop main process, where that means IPC stops. The full 15 s
+ * peer timeout is the wrong budget for work nobody is waiting on: if a peer
+ * holds the lock right now, skipping costs nothing, because the next read
+ * converges the store anyway.
+ */
+const REBIND_LOCK_TIMEOUT_MS = 250;
 
 export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
@@ -417,6 +429,17 @@ function isSameKeyMaterial(left: Buffer | null, right: Buffer | null): boolean {
  */
 export type CredentialKeyMaterialSource = {
   read(keyBindingDir: string): Buffer | null;
+  /**
+   * Could SOME process on this machine hold OS material for this store, even if
+   * this one cannot? It decides whether ciphertext this process cannot open is
+   * classified as recoverable-by-a-peer or as corruption.
+   *
+   * A property of the material source, not of the store — and injected rather
+   * than read from `process.platform` at the point of use, because otherwise the
+   * classification depends on the host the code happens to run on and cannot be
+   * exercised on any other. Defaults to `platformSupportsOsBoundKeyMaterial()`.
+   */
+  peerMayHoldMaterial?: boolean;
   /** Defaults to an asynchronous wrapper around `read()`. */
   readAsync?(keyBindingDir: string): Promise<Buffer | null>;
   /**
@@ -430,6 +453,17 @@ const DEFAULT_KEY_MATERIAL_SOURCE: Required<CredentialKeyMaterialSource> = {
   read: readDefaultOsBoundKeyMaterial,
   readAsync: readDefaultOsBoundKeyMaterialAsync,
   invalidate: invalidateDefaultOsBoundKeyMaterialCache,
+  peerMayHoldMaterial: platformSupportsOsBoundKeyMaterial(),
+};
+
+/**
+ * The source a health check uses: read-only, so inspecting a store can never
+ * mint a keychain item or a DPAPI key file, and never spends the platform's
+ * create budget doing it.
+ */
+const INSPECTION_KEY_MATERIAL_SOURCE: CredentialKeyMaterialSource = {
+  read: readExistingOsBoundKeyMaterial,
+  peerMayHoldMaterial: platformSupportsOsBoundKeyMaterial(),
 };
 
 type CredentialDecodeAttempt =
@@ -467,6 +501,7 @@ function decodeCredentialStore(
   raw: Record<string, unknown> | null,
   machineKey: Buffer,
   material: Buffer | null,
+  peerMayHoldMaterial: boolean,
 ): CredentialDecodeAttempt {
   if (raw == null || Object.keys(raw).length === 0) {
     return { ok: true, values: {}, sealedBinding: "machine" };
@@ -511,9 +546,7 @@ function decodeCredentialStore(
   // for — every store sealed before the field existed — so it has to guess. It
   // guesses "a peer may hold the key", because being wrong that way costs a
   // marker nobody acts on, while the other way costs the user their session.
-  const mayBeOsSealed = !hasOsKey
-    && declared !== "machine"
-    && platformSupportsOsBoundKeyMaterial();
+  const mayBeOsSealed = !hasOsKey && declared !== "machine" && peerMayHoldMaterial;
   return {
     ok: false,
     error: lastError,
@@ -534,9 +567,15 @@ function retryDecodeWithRefreshedKeyMaterial(args: {
   machineKey: Buffer;
   previous: Buffer | null;
   refreshed: Buffer | null;
+  peerMayHoldMaterial: boolean;
 }): CredentialDecodeAttempt | null {
   if (isSameKeyMaterial(args.refreshed, args.previous)) return null;
-  const retried = decodeCredentialStore(args.raw, args.machineKey, args.refreshed);
+  const retried = decodeCredentialStore(
+    args.raw,
+    args.machineKey,
+    args.refreshed,
+    args.peerMayHoldMaterial,
+  );
   return retried.ok ? retried : null;
 }
 
@@ -597,7 +636,7 @@ export function inspectCredentialStoreHealth(args: {
       sealedBinding: null,
     };
   }
-  const keyMaterial = args.keyMaterial ?? DEFAULT_KEY_MATERIAL_SOURCE;
+  const keyMaterial = args.keyMaterial ?? INSPECTION_KEY_MATERIAL_SOURCE;
   let material: Buffer | null;
   try {
     material = keyMaterial.read(path.dirname(args.machineKeyPath));
@@ -606,7 +645,12 @@ export function inspectCredentialStoreHealth(args: {
     // and a diagnostic that throws tells the user nothing.
     material = null;
   }
-  const attempt = decodeCredentialStore(raw, machineKey, material);
+  const attempt = decodeCredentialStore(
+    raw,
+    machineKey,
+    material,
+    keyMaterial.peerMayHoldMaterial ?? platformSupportsOsBoundKeyMaterial(),
+  );
   return attempt.ok
     ? {
       ...base,
@@ -635,10 +679,13 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialChangePollIntervalMs: number | null;
   private readonly credentialFileWatchers = new Set<CredentialFileStatWatcher>();
   private readonly invalidateKeyMaterial: (() => void) | null;
+  private readonly peerMayHoldOsMaterial: boolean;
   private lastReadState: CredentialStoreReadState = "missing";
   private lastReadFailureReason: CredentialStoreReadFailureReason | null = null;
   private lastKeyMaterialSelfHealAt = 0;
   private lastQuarantineProbeAt = 0;
+  private pendingRebind: NodeJS.Timeout | null = null;
+  private lastAsyncKeyMaterial: Buffer | null = null;
 
   constructor(args: {
     secretsDir?: string;
@@ -688,6 +735,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.invalidateKeyMaterial = keyMaterial.invalidate
       ? () => keyMaterial.invalidate?.(keyBindingDir)
       : null;
+    this.peerMayHoldOsMaterial = keyMaterial.peerMayHoldMaterial
+      ?? platformSupportsOsBoundKeyMaterial();
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
       : args.credentialChangePollIntervalMs;
@@ -876,7 +925,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     }
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const material = this.readKeyMaterial();
-    let attempt = decodeCredentialStore(raw, machineKey, material);
+    let attempt = decodeCredentialStore(raw, machineKey, material, this.peerMayHoldOsMaterial);
     if (
       !attempt.ok
       && attempt.reason !== "store_format"
@@ -904,6 +953,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         machineKey,
         previous: material,
         refreshed: this.readKeyMaterial(),
+        peerMayHoldMaterial: this.peerMayHoldOsMaterial,
       });
       if (retried) attempt = retried;
     }
@@ -1005,6 +1055,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         readQuarantinedStoreFile(this.credentialsPath, record),
         machineKey,
         material,
+        this.peerMayHoldOsMaterial,
       );
     } catch {
       return null;
@@ -1087,7 +1138,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
     const material = await this.readKeyMaterialAsync();
-    let attempt = decodeCredentialStore(raw, machineKey, material);
+    let attempt = decodeCredentialStore(raw, machineKey, material, this.peerMayHoldOsMaterial);
     if (
       !attempt.ok
       && attempt.reason !== "store_format"
@@ -1098,6 +1149,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         machineKey,
         previous: material,
         refreshed: await this.readKeyMaterialAsync(),
+        peerMayHoldMaterial: this.peerMayHoldOsMaterial,
       });
       if (retried) attempt = retried;
     }
@@ -1111,7 +1163,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     }
     this.lastReadState = "available";
     this.lastReadFailureReason = null;
-    if (attempt.sealedBinding !== "machine") this.rebindToMachineKeyUnderLock(material);
+    if (attempt.sealedBinding !== "machine") this.scheduleRebindToMachineKey(material);
     return attempt.values;
   }
 
@@ -1126,6 +1178,38 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.credentialsPath,
       `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
     );
+  }
+
+  /**
+   * Runs the rebind after the awaited read has returned.
+   *
+   * `rebindToMachineKeyUnderLock` acquires the file lock with a synchronous
+   * spin, so calling it inline from the asynchronous path made the read block
+   * the event loop until the lock was free. Nobody is waiting on this work — the
+   * caller already has its plaintext values — so it goes off the awaited path
+   * and takes a short lock budget instead of the peer timeout.
+   */
+  private scheduleRebindToMachineKey(material: Buffer | null): void {
+    if (this.pendingRebind) clearTimeout(this.pendingRebind);
+    this.lastAsyncKeyMaterial = material;
+    const timer = setTimeout(() => {
+      this.pendingRebind = null;
+      this.rebindToMachineKeyUnderLock(material);
+    }, 0);
+    timer.unref?.();
+    this.pendingRebind = timer;
+  }
+
+  /**
+   * Runs a scheduled rebind now instead of on the next tick, the same way
+   * `checkForChangesNow()` runs the production poller's comparison without
+   * waiting for its interval.
+   */
+  flushPendingRebindNow(): void {
+    if (!this.pendingRebind) return;
+    clearTimeout(this.pendingRebind);
+    this.pendingRebind = null;
+    this.rebindToMachineKeyUnderLock(this.lastAsyncKeyMaterial);
   }
 
   /**
@@ -1147,17 +1231,23 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.withLock(() => {
         const machineKey = readOrCreateMachineKey(this.machineKeyPath);
         const raw = readJsonObject(this.credentialsPath);
-        const attempt = decodeCredentialStore(raw, machineKey, material);
+        const attempt = decodeCredentialStore(
+          raw,
+          machineKey,
+          material,
+          this.peerMayHoldOsMaterial,
+        );
         if (!attempt.ok || attempt.sealedBinding === "machine") return;
         this.writeAll(attempt.values);
-      });
+      }, { timeoutMs: REBIND_LOCK_TIMEOUT_MS });
     } catch {
-      // Preserve read compatibility if the rebind cannot happen right now.
+      // A peer holds the lock, or the rebind failed: the ciphertext still reads
+      // as it is, and the next read converges it.
     }
   }
 
-  private withLock<T>(fn: () => T): T {
-    return withCredentialFileLock(this.lockPath, fn);
+  private withLock<T>(fn: () => T, options: { timeoutMs?: number } = {}): T {
+    return withCredentialFileLock(this.lockPath, fn, options);
   }
 }
 

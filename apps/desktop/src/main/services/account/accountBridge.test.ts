@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
   createAccountBridge,
   createBrainAccountActionCaller,
@@ -392,5 +393,66 @@ describe("describeMachinePairingRepairFailure", () => {
       .toMatch(/Sign in to ADE again/);
     expect(describeMachinePairingRepairFailure(new Error("boom")).message)
       .toBe("ADE couldn't reconnect this computer to your account. Try again in a moment.");
+  });
+});
+
+describe("accountBridge.repairCredentialStore", () => {
+  const bridgeFor = (report: {
+    state: "available" | "missing" | "unreadable";
+    reason: string | null;
+    recoveredKeys: number;
+    quarantine: { recoverable: boolean } | null;
+  }) => {
+    const repairSync = vi.fn(() => report);
+    vi.spyOn(
+      EncryptedFileCredentialStore.prototype,
+      "repairSync",
+    ).mockImplementation(repairSync as never);
+    return createAccountBridge({ getProjectRoot: () => "/tmp/project" });
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports a restored credential as repaired", () => {
+    expect(bridgeFor({
+      state: "available",
+      reason: null,
+      recoveredKeys: 1,
+      quarantine: null,
+    }).repairCredentialStore()).toEqual({
+      outcome: "repaired",
+      readable: true,
+      recoveredKeys: 1,
+    });
+  });
+
+  it("requires a sign-in only when the LIVE store cannot be read", () => {
+    // An unrecoverable quarantine marker is a fact about a file set aside
+    // earlier, and it is deliberately never cleared while the ciphertext is kept
+    // for diagnostics. Treating it as "sign in again" made every later Repair
+    // demand a sign-in on a machine that is signed in and perfectly fine.
+    expect(bridgeFor({
+      state: "available",
+      reason: null,
+      recoveredKeys: 0,
+      quarantine: { recoverable: false },
+    }).repairCredentialStore()).toEqual({
+      outcome: "no_problem_found",
+      readable: true,
+      recoveredKeys: 0,
+    });
+
+    expect(bridgeFor({
+      state: "unreadable",
+      reason: "decrypt_failure",
+      recoveredKeys: 0,
+      quarantine: null,
+    }).repairCredentialStore()).toEqual({
+      outcome: "sign_in_required",
+      readable: false,
+      recoveredKeys: 0,
+    });
   });
 });

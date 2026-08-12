@@ -391,7 +391,9 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
 
     const brain = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      // Declared, not inherited from the test host: this is a machine where a
+      // PEER process holds keychain material, which is the whole scenario.
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     });
     expect(brain.getSync("account.session.v1")).toBeNull();
     expect(brain.getLastReadFailureReason()).toBe("no_os_key_material");
@@ -428,6 +430,11 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     });
     await expect(converging.get("account.session.v1")).resolves.toBe("legacy-async-windows-session");
     expect(syncProvider).not.toHaveBeenCalled();
+    // The rebind is deferred off the awaited read on purpose — it takes the file
+    // lock with a synchronous spin, and blocking the event loop for that is not
+    // something the caller asked for.
+    expect(fs.readFileSync(credentialsPath, "utf8")).toBe(legacyCiphertext);
+    converging.flushPendingRebindNow();
     expect(fs.readFileSync(credentialsPath, "utf8")).not.toBe(legacyCiphertext);
 
     expect(new EncryptedFileCredentialStore({
@@ -627,7 +634,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
 
     const brain = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     });
     brain.setSync("sync.bootstrapToken.v1", "fresh-token");
     expect(brain.getSync("account.session.v1")).toBeNull();
@@ -655,7 +662,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
 
     const brain = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     });
     brain.setSync("account.session.v1", "session-signed-in-again");
 
@@ -673,7 +680,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, Buffer.from("gone"));
     new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     }).setSync("sync.bootstrapToken.v1", "fresh-token");
     expect(readQuarantineMarker(tempDir).recoverable).toBe(true);
 
@@ -737,6 +744,51 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(store.getSync("agent.token")).toBe("after");
   });
 
+  it("classifies peer-recoverability from the injected source, not the host OS", () => {
+    // CI runs on Linux, where no process can hold OS material — so reading this
+    // predicate from `process.platform` at the point of use made the store's
+    // classification depend on the machine the code happened to run on, and made
+    // the recoverable path untestable anywhere but macOS/Windows.
+    sealLegacyOsBoundStore(tempDir, { "agent.token": "secret" }, Buffer.from("peer-material"));
+    const credentialsPath = path.join(tempDir, "credentials.json.enc");
+    const machineKeyPath = path.join(tempDir, ".machine-key");
+
+    expect(inspectCredentialStoreHealth({
+      credentialsPath,
+      machineKeyPath,
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
+    }).reason).toBe("no_os_key_material");
+
+    // Same bytes, same absent material — a platform where nothing can hold it.
+    expect(inspectCredentialStoreHealth({
+      credentialsPath,
+      machineKeyPath,
+      keyMaterial: { read: () => null, peerMayHoldMaterial: false },
+    }).reason).toBe("decrypt_failure");
+  });
+
+  it("does not create key material while inspecting a store", () => {
+    // The default reader MINTS on both platforms — a macOS keychain item, or a
+    // DPAPI key file behind a 30s synchronous PowerShell protect. A diagnostic
+    // that used it would create the state it was asked to report on.
+    const reads: string[] = [];
+    const health = inspectCredentialStoreHealth({
+      credentialsPath: path.join(tempDir, "credentials.json.enc"),
+      machineKeyPath: path.join(tempDir, ".machine-key"),
+      keyMaterial: {
+        read: (dir) => {
+          reads.push(dir);
+          return null;
+        },
+      },
+    });
+
+    expect(health.state).toBe("missing");
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+    // A missing store never even asks for key material.
+    expect(reads).toEqual([]);
+  });
+
   it("survives a key-material read that throws, on both the sync and async paths", async () => {
     // Windows: every DPAPI failure — including a transient PowerShell cold-start
     // timeout — throws out of the material read. That exception used to travel
@@ -762,7 +814,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, osMaterial);
     new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     }).setSync("sync.bootstrapToken.v1", "fresh-token");
 
     const desktop = new EncryptedFileCredentialStore({
@@ -815,7 +867,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     const health = inspectCredentialStoreHealth({
       credentialsPath,
       machineKeyPath: path.join(tempDir, ".machine-key"),
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
     });
 
     expect(health.state).toBe("unreadable");

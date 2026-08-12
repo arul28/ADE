@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import {
   invalidateWindowsDpapiMaterial,
+  readExistingWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterialAsync,
 } from "./windowsDpapiMaterial";
@@ -221,6 +222,17 @@ export function resolveMacKeychainMaterialOutcome(
   return { material: null, reason: "unavailable" };
 }
 
+/** Find-only: reports what the keychain already holds and never adds an item. */
+function readMacKeychainMaterialSync(): OsBoundKeyMaterialResolution {
+  if (process.platform !== "darwin") return { material: null, reason: "unavailable" };
+  const existing = defaultMacKeychainCommands().find();
+  if (existing.kind === "found") return { material: decodeMacKeychainSecret(existing.value) };
+  return {
+    material: null,
+    reason: existing.kind === "not_found" ? "not_found" : "unavailable",
+  };
+}
+
 function readOrCreateMacKeychainMaterial(): OsBoundKeyMaterialResolution {
   if (process.platform !== "darwin") return { material: null, reason: "unavailable" };
   return resolveMacKeychainMaterialOutcome(defaultMacKeychainCommands());
@@ -274,6 +286,11 @@ export type OsBoundKeyMaterialResolver = {
   read(): Buffer | null;
   /** Read-only resolution: never creates the item. */
   readAsync(): Promise<Buffer | null>;
+  /**
+   * Synchronous read-only resolution, for diagnostics that must not create the
+   * item or wait on an asynchronous read.
+   */
+  readExisting(): Buffer | null;
   /** Drops the cache so the next resolution re-asks the OS. */
   invalidate(): void;
 };
@@ -292,6 +309,8 @@ export type OsBoundKeyMaterialResolver = {
 export function createMacKeychainMaterialResolver(args: {
   read: () => OsBoundKeyMaterialResolution;
   readAsync: () => Promise<OsBoundKeyMaterialResolution>;
+  /** Defaults to a find-only `security` call that never adds the item. */
+  readExisting?: () => OsBoundKeyMaterialResolution;
   now?: () => number;
   negativeCacheMs?: number;
 }): OsBoundKeyMaterialResolver {
@@ -331,6 +350,14 @@ export function createMacKeychainMaterialResolver(args: {
       const readEpoch = epoch;
       return record(readEpoch, args.read());
     },
+    readExisting(): Buffer | null {
+      if (cached) return cached;
+      if (withinBackoff()) return null;
+      const readExisting = args.readExisting;
+      if (!readExisting) return null;
+      const readEpoch = epoch;
+      return record(readEpoch, readExisting());
+    },
     async readAsync(): Promise<Buffer | null> {
       if (cached) return cached;
       if (withinBackoff()) return null;
@@ -357,6 +384,7 @@ export function createMacKeychainMaterialResolver(args: {
 const defaultMacKeychainMaterialResolver = createMacKeychainMaterialResolver({
   read: readOrCreateMacKeychainMaterial,
   readAsync: readMacKeychainMaterialAsync,
+  readExisting: readMacKeychainMaterialSync,
 });
 
 /**
@@ -418,6 +446,29 @@ export async function readDefaultOsBoundKeyMaterialAsync(
       return await readOrCreateWindowsDpapiMaterialAsync(keyBindingDir);
     case "macos_keychain":
       return await defaultMacKeychainMaterialResolver.readAsync();
+    default:
+      return null;
+  }
+}
+
+/**
+ * Read-only resolution for diagnostics: existing material or null, never a
+ * create.
+ *
+ * `readDefaultOsBoundKeyMaterial` is a CREATING resolver on both platforms — it
+ * mints and stores a macOS keychain item, or mints, DPAPI-protects and writes a
+ * Windows key file. A health check that used it would create the very state it
+ * was asked to report on, and would block for the platform's create budget
+ * (up to 30 s of PowerShell cold start on Windows) to do it.
+ */
+export function readExistingOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "env_passphrase":
+      return readCredentialPassphraseFromEnv();
+    case "windows_dpapi":
+      return readExistingWindowsDpapiMaterial(keyBindingDir);
+    case "macos_keychain":
+      return defaultMacKeychainMaterialResolver.readExisting();
     default:
       return null;
   }
