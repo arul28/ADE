@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
   KeytarCredentialStore,
   CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
   createDefaultCredentialStore,
+  inspectCredentialStoreHealth,
   isFileBackedCredentialKey,
 } from "./credentialStore";
 import {
@@ -31,6 +33,69 @@ import {
 } from "./windowsDpapiMaterial";
 
 let tempDir = "";
+
+/**
+ * Writes the shape an ADE build BEFORE this fix left on disk: a credential
+ * envelope sealed with the OS-bound key and no `binding` field.
+ *
+ * The store deliberately has no writer for that shape any more — sealing the
+ * shared file `os` is the trapdoor these tests exist to keep shut — so the
+ * legacy format is pinned here instead. The HKDF parameters are copied from
+ * `deriveOsBoundCredentialKey`; that duplication IS the compatibility contract.
+ */
+function sealLegacyOsBoundStore(
+  secretsDir: string,
+  values: Record<string, string>,
+  material: Buffer,
+  options: { declareBinding?: boolean } = {},
+): void {
+  fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+  const machineKeyPath = path.join(secretsDir, ".machine-key");
+  let machineKey: Buffer;
+  if (fs.existsSync(machineKeyPath)) {
+    machineKey = Buffer.from(fs.readFileSync(machineKeyPath, "utf8").trim(), "base64");
+  } else {
+    machineKey = crypto.randomBytes(32);
+    fs.writeFileSync(machineKeyPath, `${machineKey.toString("base64")}\n`, { mode: 0o600 });
+  }
+  const key = Buffer.from(crypto.hkdfSync(
+    "sha256",
+    material,
+    machineKey,
+    Buffer.from("ade.credentials.file-store.v2"),
+    32,
+  ));
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from("ade.credentials.v1"));
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(values), "utf8"),
+    cipher.final(),
+  ]);
+  fs.writeFileSync(
+    path.join(secretsDir, "credentials.json.enc"),
+    `${JSON.stringify({
+      version: 1,
+      alg: "aes-256-gcm",
+      ...(options.declareBinding ? { binding: "os" } : {}),
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      ciphertext: ciphertext.toString("base64"),
+    }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+}
+
+function readQuarantineMarker(secretsDir: string): {
+  file: string;
+  reason: string;
+  recoverable: boolean;
+} {
+  return JSON.parse(fs.readFileSync(
+    path.join(secretsDir, "credentials.json.enc.quarantine.json"),
+    "utf8",
+  )) as { file: string; reason: string; recoverable: boolean };
+}
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-credentials-"));
@@ -199,7 +264,7 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.statSync(path.join(secretsDir, "credentials.json.enc")).mode & 0o777).toBe(0o600);
   });
 
-  it("fails closed and preserves ciphertext after the machine key is replaced", () => {
+  it("quarantines rather than overwrites ciphertext after the machine key is replaced", () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 
     store.setSync("agent.token", "secret");
@@ -209,8 +274,15 @@ describe("EncryptedFileCredentialStore", () => {
 
     expect(store.getSync("agent.token")).toBeNull();
     expect(store.getLastReadState()).toBe("unreadable");
-    expect(() => store.setSync("agent.other", "next-secret")).toThrow();
-    expect(fs.readFileSync(credentialPath, "utf8")).toBe(ciphertext);
+
+    // The write must still not destroy credentials it could not read — but it
+    // must also not throw, because throwing here is what crash-looped a brain
+    // whose first startup act is minting the sync bootstrap token.
+    expect(() => store.setSync("agent.other", "next-secret")).not.toThrow();
+    expect(store.getSync("agent.other")).toBe("next-secret");
+
+    const marker = readQuarantineMarker(tempDir);
+    expect(fs.readFileSync(path.join(tempDir, marker.file), "utf8")).toBe(ciphertext);
   });
 
   it("preserves concurrent writes from separate processes on first run", async () => {
@@ -279,53 +351,87 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     }
   }, 10000);
 
-  it("derives file encryption from OS-bound key material when available", async () => {
+  it("seals the shared store so a co-owner without OS key material can read it", () => {
+    // THE trapdoor. The desktop app has keychain material; the launchd brain
+    // does not. Whatever the app writes, the brain must be able to open — and
+    // the app must not "upgrade" what the brain wrote into something it cannot.
     const osMaterial = Buffer.from("test-os-material");
-    const store = new EncryptedFileCredentialStore({
+    const withMaterial = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => osMaterial },
     });
-
-    store.setSync("linear.token.v1", "lin_secret");
-
-    const reloaded = new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => osMaterial },
-    });
-    expect(reloaded.getSync("linear.token.v1")).toBe("lin_secret");
-
-    const unbound = new EncryptedFileCredentialStore({
+    const withoutMaterial = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => null },
     });
-    expect(unbound.getSync("linear.token.v1")).toBeNull();
+
+    withMaterial.setSync("linear.token.v1", "lin_secret");
+    expect(withoutMaterial.getSync("linear.token.v1")).toBe("lin_secret");
+
+    // ...and the reverse direction, including the read that used to re-seal.
+    withoutMaterial.setSync("account.session.v1", "session-json");
+    expect(withMaterial.getSync("account.session.v1")).toBe("session-json");
+    expect(withoutMaterial.getSync("account.session.v1")).toBe("session-json");
+    expect(withoutMaterial.getLastReadState()).toBe("available");
+
+    const envelope = JSON.parse(
+      fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8"),
+    ) as { binding?: string; version: number };
+    expect(envelope.binding).toBe("machine");
+    // Still version 1: a build that predates the binding field has to keep
+    // reading this file, or a downgrade repeats the incident.
+    expect(envelope.version).toBe(1);
   });
 
-  it("atomically binds legacy Windows ciphertext on the first asynchronous credential read", async () => {
-    const legacyStore = new EncryptedFileCredentialStore({
+  it("converges an os-sealed store from an older build to the machine key", () => {
+    const osMaterial = Buffer.from("legacy-os-material");
+    sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, osMaterial);
+
+    const brain = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => null },
     });
-    legacyStore.setSync("account.session.v1", "legacy-async-windows-session");
+    expect(brain.getSync("account.session.v1")).toBeNull();
+    expect(brain.getLastReadFailureReason()).toBe("no_os_key_material");
+
+    // The desktop app, which CAN open it, re-seals it to the shared binding on
+    // a plain read. No user action, no sign-in.
+    const desktop = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => osMaterial },
+    });
+    expect(desktop.getSync("account.session.v1")).toBe("session-json");
+
+    expect(brain.getSync("account.session.v1")).toBe("session-json");
+    expect(brain.getLastReadState()).toBe("available");
+  });
+
+  it("converges an os-sealed store to the machine key on the asynchronous read path", async () => {
+    const osMaterial = Buffer.from("windows-async-account-bound-material");
+    sealLegacyOsBoundStore(
+      tempDir,
+      { "account.session.v1": "legacy-async-windows-session" },
+      osMaterial,
+      { declareBinding: true },
+    );
     const credentialsPath = path.join(tempDir, "credentials.json.enc");
     const legacyCiphertext = fs.readFileSync(credentialsPath, "utf8");
-    const osMaterial = Buffer.from("windows-async-account-bound-material");
 
-    const upgraded = new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: {
-        read: () => {
-          throw new Error("async migration must not use synchronous key access");
-        },
-        readAsync: async () => osMaterial,
-      },
+    const syncProvider = vi.fn((): Buffer | null => {
+      throw new Error("async convergence must not use synchronous key access");
     });
-    await expect(upgraded.get("account.session.v1")).resolves.toBe("legacy-async-windows-session");
+    const converging = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: syncProvider, readAsync: async () => osMaterial },
+    });
+    await expect(converging.get("account.session.v1")).resolves.toBe("legacy-async-windows-session");
+    expect(syncProvider).not.toHaveBeenCalled();
     expect(fs.readFileSync(credentialsPath, "utf8")).not.toBe(legacyCiphertext);
+
     expect(new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => null },
-    }).getSync("account.session.v1")).toBeNull();
+    }).getSync("account.session.v1")).toBe("legacy-async-windows-session");
   });
 
   it("uses the asynchronous key-material path for asynchronous reads", async () => {
@@ -366,46 +472,71 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
   });
 
-  it.each(["{}", "null"])("fails closed on an existing invalid async credential store: %s", async (raw) => {
-    const credentialPath = path.join(tempDir, "credentials.json.enc");
-    fs.writeFileSync(credentialPath, raw, "utf8");
-    const asyncProvider = vi.fn(async () => Buffer.from("unused"));
-    const reader = new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => null, readAsync: asyncProvider },
-    });
+  it.each(["{}", "null"])(
+    "reports an existing invalid async credential store as unreadable rather than throwing: %s",
+    async (raw) => {
+      const credentialPath = path.join(tempDir, "credentials.json.enc");
+      fs.writeFileSync(credentialPath, raw, "utf8");
+      const asyncProvider = vi.fn(async () => Buffer.from("unused"));
+      const reader = new EncryptedFileCredentialStore({
+        secretsDir: tempDir,
+        keyMaterial: { read: () => null, readAsync: asyncProvider },
+      });
 
-    await expect(reader.get("github.token.v1")).rejects.toThrow(
-      "Unsupported ADE credential store format.",
-    );
-    expect(reader.getLastReadState()).toBe("unreadable");
-    expect(asyncProvider).not.toHaveBeenCalled();
-  });
+      // A read reports; it does not throw. The brain's startup path reads before
+      // it writes, and a throw here is an exit code under launchd.
+      await expect(reader.get("github.token.v1")).resolves.toBeNull();
+      expect(reader.getLastReadState()).toBe("unreadable");
+      expect(reader.getLastReadFailureReason()).toBe("store_format");
+      expect(asyncProvider).not.toHaveBeenCalled();
+    },
+  );
 
-  it("atomically binds legacy Windows ciphertext on the first synchronous credential read", () => {
-    const legacy = new EncryptedFileCredentialStore({
+  it.each(["{}", "null"])(
+    "quarantines rather than silently replacing an invalid credential file on write: %s",
+    (raw) => {
+      const credentialPath = path.join(tempDir, "credentials.json.enc");
+      fs.writeFileSync(credentialPath, raw, "utf8");
+      const store = new EncryptedFileCredentialStore({
+        secretsDir: tempDir,
+        keyMaterial: { read: () => null },
+      });
+
+      expect(store.getSync("github.token.v1")).toBeNull();
+      expect(store.getLastReadFailureReason()).toBe("store_format");
+      store.setSync("github.token.v1", "ghp_next");
+
+      const marker = readQuarantineMarker(tempDir);
+      expect(marker.reason).toBe("store_format");
+      expect(marker.recoverable).toBe(false);
+      expect(fs.readFileSync(path.join(tempDir, marker.file), "utf8")).toBe(raw);
+      expect(store.getSync("github.token.v1")).toBe("ghp_next");
+    },
+  );
+
+  it("leaves an already machine-sealed store byte-identical on read", () => {
+    const store = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => null },
     });
-    legacy.setSync("agent.token", "legacy_secret");
+    store.setSync("agent.token", "legacy_secret");
     const credentialPath = path.join(tempDir, "credentials.json.enc");
-    const legacyCiphertext = fs.readFileSync(credentialPath, "utf8");
+    const ciphertext = fs.readFileSync(credentialPath, "utf8");
 
-    const upgraded = new EncryptedFileCredentialStore({
+    // The process WITH key material used to rewrite this file into a binding the
+    // writer above could never open again. It must now leave it alone.
+    const withMaterial = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => Buffer.from("test-os-material") },
     });
-    expect(upgraded.getSync("agent.token")).toBe("legacy_secret");
-    expect(fs.readFileSync(credentialPath, "utf8")).not.toBe(legacyCiphertext);
-    expect(legacy.getSync("agent.token")).toBeNull();
+    expect(withMaterial.getSync("agent.token")).toBe("legacy_secret");
+    expect(fs.readFileSync(credentialPath, "utf8")).toBe(ciphertext);
+    expect(store.getSync("agent.token")).toBe("legacy_secret");
   });
 
   it("re-reads key material once and self-heals a decrypt failure caused by stale cached material", () => {
     const winner = Buffer.from("os-material-winner");
-    new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => winner },
-    }).setSync("account.session.v1", "session-json");
+    sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, winner);
 
     // This store cached the secret it minted before the peer's item won the
     // keychain race, so its first decrypt attempt fails.
@@ -427,10 +558,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
   });
 
   it("does not re-ask for key material on every read while it keeps failing", () => {
-    new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => Buffer.from("os-material-A") },
-    }).setSync("agent.token", "secret");
+    sealLegacyOsBoundStore(tempDir, { "agent.token": "secret" }, Buffer.from("os-material-A"));
 
     let material = Buffer.from("os-material-B");
     const invalidateKeyMaterial = vi.fn(() => {
@@ -443,9 +571,9 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
       keyMaterial: { read: () => material, invalidate: invalidateKeyMaterial },
     });
 
-    expect(() => store.getSync("agent.token")).toThrow();
-    expect(() => store.getSync("agent.token")).toThrow();
-    expect(() => store.getSync("agent.token")).toThrow();
+    expect(store.getSync("agent.token")).toBeNull();
+    expect(store.getSync("agent.token")).toBeNull();
+    expect(store.getSync("agent.token")).toBeNull();
     expect(invalidateKeyMaterial).toHaveBeenCalledTimes(1);
     expect(store.getLastReadState()).toBe("unreadable");
     expect(store.getLastReadFailureReason()).toBe("decrypt_failure");
@@ -464,33 +592,185 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(store.getLastReadFailureReason()).toBe("store_format");
   });
 
-  it("fails safe instead of wiping ciphertext when OS-bound key material rotates", () => {
-    const written = new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => Buffer.from("os-material-A") },
-    });
-    written.setSync("agent.token", "secret");
-
+  it("preserves ciphertext when OS-bound key material rotates under an older store", () => {
+    sealLegacyOsBoundStore(tempDir, { "agent.token": "secret" }, Buffer.from("os-material-A"));
     const cipherPath = path.join(tempDir, "credentials.json.enc");
     const before = fs.readFileSync(cipherPath, "utf8");
 
-    // Rotated OS material: neither the newly-derived key nor the bare machine key
-    // can decrypt ciphertext that was sealed with material A. The store must throw
-    // (preserving the ciphertext) instead of silently rewriting an empty store.
+    // Rotated OS material: neither the newly-derived key nor the bare machine
+    // key decrypts ciphertext sealed with material A. The store must preserve
+    // that ciphertext rather than write an empty store over it — but it must
+    // keep serving its caller, not throw.
     const rotated = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterial: { read: () => Buffer.from("os-material-B") },
     });
-    expect(() => rotated.getSync("agent.token")).toThrow();
-    expect(() => rotated.setSync("agent.token", "wiped")).toThrow();
+    expect(rotated.getSync("agent.token")).toBeNull();
+    rotated.setSync("agent.token", "written-after-quarantine");
 
-    // Ciphertext file untouched: the original credential is recoverable with material A.
-    expect(fs.readFileSync(cipherPath, "utf8")).toBe(before);
-    const recovered = new EncryptedFileCredentialStore({
+    const marker = readQuarantineMarker(tempDir);
+    expect(fs.readFileSync(path.join(tempDir, marker.file), "utf8")).toBe(before);
+  });
+
+  it("merges a quarantined store back in once a peer process can decrypt it", () => {
+    // The full self-heal for a machine already in the broken state: the brain
+    // (no OS material) quarantines the os-sealed store and boots signed out, and
+    // the desktop app puts the session back without anyone signing in again.
+    const osMaterial = Buffer.from("desktop-only-material");
+    sealLegacyOsBoundStore(
+      tempDir,
+      { "account.session.v1": "session-json", "linear.token.v1": "lin_secret" },
+      osMaterial,
+    );
+
+    const brain = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => Buffer.from("os-material-A") },
+      keyMaterial: { read: () => null },
     });
-    expect(recovered.getSync("agent.token")).toBe("secret");
+    brain.setSync("sync.bootstrapToken.v1", "fresh-token");
+    expect(brain.getSync("account.session.v1")).toBeNull();
+    expect(readQuarantineMarker(tempDir).recoverable).toBe(true);
+
+    const desktop = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => osMaterial },
+    });
+    expect(desktop.getSync("account.session.v1")).toBe("session-json");
+
+    // Recovered into the live store, so the brain sees it too...
+    expect(brain.getSync("account.session.v1")).toBe("session-json");
+    expect(brain.getSync("linear.token.v1")).toBe("lin_secret");
+    // ...without losing what the brain wrote after the quarantine...
+    expect(brain.getSync("sync.bootstrapToken.v1")).toBe("fresh-token");
+    // ...and the recovered copy is not left decryptable on disk.
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc.quarantine.json"))).toBe(false);
+    expect(fs.readdirSync(tempDir).filter((entry) => entry.includes(".quarantined-"))).toEqual([]);
+  });
+
+  it("never resurrects a quarantined value the live store has already replaced", () => {
+    const osMaterial = Buffer.from("desktop-only-material");
+    sealLegacyOsBoundStore(tempDir, { "account.session.v1": "old-session" }, osMaterial);
+
+    const brain = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null },
+    });
+    brain.setSync("account.session.v1", "session-signed-in-again");
+
+    const desktop = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => osMaterial },
+    });
+    expect(desktop.getSync("account.session.v1")).toBe("session-signed-in-again");
+  });
+
+  it("stops promising a repair once the process holding the key has tried and failed", () => {
+    // The destroyed-keychain-item case: the store is os-sealed, the item is
+    // gone, so NOTHING on this Mac opens it. Telling the user to open the app
+    // is only right until the app has tried.
+    sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, Buffer.from("gone"));
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null },
+    }).setSync("sync.bootstrapToken.v1", "fresh-token");
+    expect(readQuarantineMarker(tempDir).recoverable).toBe(true);
+
+    const desktop = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => Buffer.from("a-different-item") },
+    });
+    expect(desktop.getSync("account.session.v1")).toBeNull();
+
+    const marker = readQuarantineMarker(tempDir);
+    expect(marker.recoverable).toBe(false);
+    // The ciphertext itself is kept for diagnostics rather than deleted.
+    expect(fs.existsSync(path.join(tempDir, marker.file))).toBe(true);
+  });
+
+  it("survives a key-material read that throws, on both the sync and async paths", async () => {
+    // Windows: every DPAPI failure — including a transient PowerShell cold-start
+    // timeout — throws out of the material read. That exception used to travel
+    // straight out of getSync, and on the brain's startup path an exception is a
+    // process exit and a launchd/Task Scheduler restart loop.
+    const failing = {
+      read: (): Buffer | null => {
+        throw new Error("Windows DPAPI credential protection timed out.");
+      },
+      readAsync: async (): Promise<Buffer | null> => {
+        throw new Error("Windows DPAPI credential protection timed out.");
+      },
+    };
+    const store = new EncryptedFileCredentialStore({ secretsDir: tempDir, keyMaterial: failing });
+
+    expect(() => store.setSync("sync.bootstrapToken.v1", "token")).not.toThrow();
+    expect(store.getSync("sync.bootstrapToken.v1")).toBe("token");
+    await expect(store.get("sync.bootstrapToken.v1")).resolves.toBe("token");
+  });
+
+  it("repairSync converges and recovers on demand, and reports what it found", () => {
+    const osMaterial = Buffer.from("desktop-only-material");
+    sealLegacyOsBoundStore(tempDir, { "account.session.v1": "session-json" }, osMaterial);
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null },
+    }).setSync("sync.bootstrapToken.v1", "fresh-token");
+
+    const desktop = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => osMaterial },
+    });
+    const repair = desktop.repairSync();
+
+    expect(repair.state).toBe("available");
+    expect(repair.reason).toBeNull();
+    expect(repair.recoveredKeys).toBe(1);
+    expect(repair.quarantine).toBeNull();
+    expect(desktop.getSync("account.session.v1")).toBe("session-json");
+  });
+
+  it("keeps an unrecoverable quarantine for diagnostics and reports it", () => {
+    const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    store.setSync("agent.token", "secret");
+    fs.writeFileSync(path.join(tempDir, ".machine-key"), `${Buffer.alloc(32, 7).toString("base64")}\n`);
+    store.setSync("agent.token", "after");
+
+    const health = inspectCredentialStoreHealth({
+      credentialsPath: path.join(tempDir, "credentials.json.enc"),
+      machineKeyPath: path.join(tempDir, ".machine-key"),
+      keyMaterial: { read: () => null },
+    });
+    expect(health.state).toBe("available");
+    expect(health.sealedBinding).toBe("machine");
+    expect(health.quarantine?.recoverable).toBe(false);
+    expect(fs.existsSync(path.join(tempDir, health.quarantine!.file))).toBe(true);
+  });
+
+  it("inspects a store without creating a machine key", () => {
+    const health = inspectCredentialStoreHealth({
+      credentialsPath: path.join(tempDir, "credentials.json.enc"),
+      machineKeyPath: path.join(tempDir, ".machine-key"),
+      keyMaterial: { read: () => null },
+    });
+
+    expect(health.state).toBe("missing");
+    expect(health.reason).toBeNull();
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+  });
+
+  it("reports an os-sealed store this process cannot open, without touching it", () => {
+    sealLegacyOsBoundStore(tempDir, { "agent.token": "secret" }, Buffer.from("peer-material"));
+    const credentialsPath = path.join(tempDir, "credentials.json.enc");
+    const before = fs.readFileSync(credentialsPath, "utf8");
+
+    const health = inspectCredentialStoreHealth({
+      credentialsPath,
+      machineKeyPath: path.join(tempDir, ".machine-key"),
+      keyMaterial: { read: () => null },
+    });
+
+    expect(health.state).toBe("unreadable");
+    expect(health.reason).toBe("no_os_key_material");
+    expect(fs.readFileSync(credentialsPath, "utf8")).toBe(before);
   });
 });
 
@@ -590,10 +870,7 @@ describe("ElectronSafeStorageCredentialStore", () => {
     const legacyPath = path.join(tempDir, "credentials.json.enc");
     const machineKeyPath = path.join(tempDir, ".machine-key");
     const safePath = path.join(tempDir, "credentials.safe.enc");
-    new EncryptedFileCredentialStore({
-      secretsDir: tempDir,
-      keyMaterial: { read: () => Buffer.from("os-material-A") },
-    }).setSync("linear.token.v1", "lin_secret");
+    sealLegacyOsBoundStore(tempDir, { "linear.token.v1": "lin_secret" }, Buffer.from("os-material-A"));
     const ciphertextBefore = fs.readFileSync(legacyPath, "utf8");
     const machineKeyBefore = fs.readFileSync(machineKeyPath, "utf8");
 

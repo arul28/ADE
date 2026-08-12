@@ -124,7 +124,7 @@ describe("AccountPage signed-out card", () => {
 
     expect(
       screen.getByText(
-        "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+        "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Sign in or create account" })).toBeNull();

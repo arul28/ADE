@@ -343,6 +343,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -2434,6 +2435,12 @@ declare global {
         removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
         /** Re-pairs THIS machine after an account-side removal. */
         repairMachinePairing: () => Promise<AdeAccountMachinePairingRepairResult>;
+        /**
+         * Repairs the stored sign-in on THIS Mac: converge the credential
+         * file's key binding, restore anything set aside, then restart the
+         * background service. Optional because older preloads lack it.
+         */
+        repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

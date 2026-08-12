@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import {
-  expectsOsBoundKeyMaterial,
   invalidateDefaultOsBoundKeyMaterialCache,
+  platformSupportsOsBoundKeyMaterial,
   readDefaultOsBoundKeyMaterial,
   readDefaultOsBoundKeyMaterialAsync,
 } from "./osBoundKeyMaterial";
@@ -18,6 +18,36 @@ export interface CredentialStore {
 export type CredentialStoreReadState = "available" | "missing" | "unreadable";
 
 /**
+ * Which key sealed a stored envelope.
+ *
+ * `machine` is the bare `.machine-key` file next to the ciphertext. `os` is that
+ * key stretched with OS-held material (macOS keychain item / Windows DPAPI blob).
+ *
+ * ADE only ever WRITES `machine` for this store, and the reason is the whole
+ * point of this module: `credentials.json.enc` is co-owned by processes that do
+ * not have equal access to OS-held material. The ADE brain runs as a launchd
+ * agent (or a Windows scheduled task) with no UI, so a keychain item whose ACL
+ * belongs to the desktop app cannot be read by it — `security` fails closed and
+ * the brain derives the bare machine key. The desktop app, meanwhile, reads that
+ * item fine. A store sealed by either process under ITS binding is unreadable by
+ * the other, and for the brain that used to mean a decrypt throw on every
+ * startup, forever.
+ *
+ * `os` therefore survives only as a READ capability, so stores sealed by older
+ * builds still open and can be converged back to `machine`. There is no writer.
+ *
+ * What that costs: an attacker who copies `~/.ade/secrets` off the machine gets
+ * the ciphertext AND the key beside it. That was already true of every other
+ * secret in that directory (`machine-identity-signing.json`,
+ * `sync-cloud-relay.json` are plain JSON), and OS binding never protected
+ * against the realistic attacker — anyone running as this user can ask the
+ * keychain or DPAPI for the material directly. Single-writer secrets that want
+ * real OS protection have a home already: the Electron-only safeStorage store
+ * below.
+ */
+export type CredentialStoreBinding = "machine" | "os";
+
+/**
  * Why the last synchronous read could not produce values. Coarse by design: it
  * is surfaced to product analytics so field incidence of the "brain cannot read
  * the credential file the app just wrote" class becomes measurable.
@@ -26,14 +56,32 @@ export type CredentialStoreReadFailureReason =
   /** The ciphertext exists but no available key decrypts it. */
   | "decrypt_failure"
   /**
-   * OS-held key material was expected but the key was derived without it. On
-   * darwin that is an unreadable keychain item; on win32 a DPAPI failure throws
-   * out of the read instead of returning null, so it never lands here. The name
-   * stays platform-neutral because the condition it describes is.
+   * The envelope was sealed with OS-held key material this process cannot
+   * obtain — an older build's `os` binding, read by a process (typically the
+   * brain) that the keychain will not answer for. A PEER process may still be
+   * able to open it, which is why this reason never counts as corruption.
    */
   | "no_os_key_material"
   /** The file exists but is not a recognised credential envelope. */
   | "store_format";
+
+/**
+ * A credential file that could not be read and was moved aside so the process
+ * that hit it could keep running.
+ *
+ * `recoverable` means a peer process may still hold the key (an `os`-sealed
+ * store quarantined by the brain, which the desktop app can open). Those are
+ * merged back automatically by the first store instance that can decrypt them —
+ * see `recoverQuarantinedStore`. Anything else is kept purely for diagnostics.
+ */
+export type CredentialStoreQuarantineRecord = {
+  version: 1;
+  at: string;
+  /** Basename of the quarantined ciphertext, in the same directory. */
+  file: string;
+  reason: CredentialStoreReadFailureReason;
+  recoverable: boolean;
+};
 
 export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
@@ -52,6 +100,18 @@ export type SyncCredentialStore = CredentialStore & {
 type StoredCredentialEnvelope = {
   version: 1;
   alg: "aes-256-gcm";
+  /**
+   * Which key sealed this file. Absent on envelopes written before ADE recorded
+   * it, which is why every reader still has to be able to try both keys.
+   *
+   * Deliberately OUTSIDE the AAD and on `version: 1`: a build that predates this
+   * field must keep decrypting files this one writes, or a downgrade turns into
+   * the same dead-brain incident this field exists to end. That makes it an
+   * unauthenticated hint, and it is safe as one — AES-GCM decides whether a key
+   * is right, so a tampered hint can only cost a wasted decrypt attempt, never
+   * accept the wrong key.
+   */
+  binding?: CredentialStoreBinding;
   iv: string;
   tag: string;
   ciphertext: string;
@@ -142,6 +202,15 @@ const LOCK_RETRY_MS = 25;
 const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 /** Bounds OS key-material re-reads when a store keeps failing to decrypt. */
 const KEY_MATERIAL_SELF_HEAL_INTERVAL_MS = 30_000;
+/**
+ * How long a recoverable quarantine keeps being retried before ADE stops
+ * expecting a peer to turn up with the key. Generous on purpose: the peer here
+ * is usually "the user opens the desktop app", which can be a fortnight away on
+ * a machine that only runs the brain.
+ */
+const QUARANTINE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Bounds how often a store re-stats the quarantine marker on a clean read. */
+const QUARANTINE_PROBE_INTERVAL_MS = 5_000;
 
 type CredentialLockMetadata = {
   pid?: number;
@@ -469,6 +538,17 @@ function isStoredCredentialEnvelope(value: unknown): value is StoredCredentialEn
     && typeof candidate.ciphertext === "string";
 }
 
+/**
+ * The declared binding, or null when the envelope predates the field.
+ *
+ * An unrecognised value is read as "not declared" rather than rejected: the hint
+ * is advisory, and a future binding name must not make an otherwise valid file
+ * unreadable to this build.
+ */
+function readDeclaredBinding(raw: StoredCredentialEnvelope): CredentialStoreBinding | null {
+  return raw.binding === "machine" || raw.binding === "os" ? raw.binding : null;
+}
+
 function isStoredCredentialEnvelopeBuffer(value: Buffer): boolean {
   try {
     return isStoredCredentialEnvelope(JSON.parse(value.toString("utf8")) as unknown);
@@ -500,7 +580,11 @@ export function isElectronSafeStorageCredentialFile(credentialsPath: string): bo
   }
 }
 
-function serializeStore(values: Record<string, string>, machineKey: Buffer): StoredCredentialEnvelope {
+function serializeStore(
+  values: Record<string, string>,
+  machineKey: Buffer,
+  binding: CredentialStoreBinding,
+): StoredCredentialEnvelope {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", machineKey, iv);
   cipher.setAAD(STORE_AAD);
@@ -511,6 +595,7 @@ function serializeStore(values: Record<string, string>, machineKey: Buffer): Sto
   return {
     version: 1,
     alg: "aes-256-gcm",
+    binding,
     iv: iv.toString("base64"),
     tag: cipher.getAuthTag().toString("base64"),
     ciphertext: ciphertext.toString("base64"),
@@ -649,52 +734,90 @@ type CredentialDecodeAttempt =
   | {
     ok: true;
     values: Record<string, string>;
-    /** The key the store SHOULD be sealed with, whichever one actually read it. */
-    key: Buffer;
-    rewriteWithCurrentKey: boolean;
+    /** Which key actually opened it, so the caller knows whether to re-seal. */
+    sealedBinding: CredentialStoreBinding;
   }
-  | { ok: false; error: unknown; osBound: boolean; reason: CredentialStoreReadFailureReason };
+  | {
+    ok: false;
+    error: unknown;
+    reason: CredentialStoreReadFailureReason;
+    /**
+     * True when a PEER process on this machine plausibly holds the key: the
+     * envelope is (or may be) `os`-sealed and this process has no OS material.
+     * Callers must never treat these as corruption — the desktop app opening
+     * them is exactly how an already-broken machine heals itself.
+     */
+    recoverableByPeer: boolean;
+  };
 
 /**
- * One decrypt attempt for a given piece of OS key material.
+ * One decrypt attempt against the keys this process can actually derive.
  *
- * The os-bound key is tried first; a failure there falls back to the bare
- * machine key so genuine legacy ciphertext can be rewritten. If that fallback
- * also fails the ciphertext is left untouched — a rotated/foreign key must
- * never cause an empty store to be written over real credentials.
+ * Both keys are tried whenever both exist, ordered by the envelope's declared
+ * binding, because the previous version's fixed "os key, then machine key"
+ * order was the trapdoor: a process WITH keychain material could open a
+ * machine-sealed store through the fallback and then re-seal it `os`, while a
+ * process WITHOUT material had no fallback at all and was locked out for good.
+ * Reading is symmetric now, and the only re-seal direction is toward `machine`
+ * — the binding every co-owner of this file can derive.
  */
 function decodeCredentialStore(
   raw: Record<string, unknown> | null,
   machineKey: Buffer,
   material: Buffer | null,
 ): CredentialDecodeAttempt {
-  const formatIsUnsupported = raw != null
-    && Object.keys(raw).length > 0
-    && !isStoredCredentialEnvelope(raw);
-  const key = deriveOsBoundCredentialKey(machineKey, material);
-  const osBound = !key.equals(machineKey);
-  // The os-bound key first, then the bare machine key. Anything decrypted by a
-  // later candidate is genuine legacy ciphertext and may be rewritten.
-  const candidates = osBound ? [key, machineKey] : [machineKey];
+  if (raw == null || Object.keys(raw).length === 0) {
+    return { ok: true, values: {}, sealedBinding: "machine" };
+  }
+  if (!isStoredCredentialEnvelope(raw)) {
+    return {
+      ok: false,
+      error: new Error("Unsupported ADE credential store format."),
+      reason: "store_format",
+      recoverableByPeer: false,
+    };
+  }
+  const declared = readDeclaredBinding(raw);
+  const osKey = deriveOsBoundCredentialKey(machineKey, material);
+  const hasOsKey = !osKey.equals(machineKey);
+  const osCandidate: Array<{ key: Buffer; binding: CredentialStoreBinding }> = hasOsKey
+    ? [{ key: osKey, binding: "os" }]
+    : [];
+  const machineCandidate = { key: machineKey, binding: "machine" as const };
+  // Declared binding only picks the order. A wrong hint costs one extra
+  // decrypt, never a false "unreadable".
+  const candidates = declared === "machine"
+    ? [machineCandidate, ...osCandidate]
+    : [...osCandidate, machineCandidate];
   let lastError: unknown;
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     try {
       return {
         ok: true,
-        values: deserializeStore(raw, candidate, { emptyOnDecryptFailure: false }),
-        key,
-        rewriteWithCurrentKey: index > 0,
+        values: deserializeStore(raw, candidate.key, { emptyOnDecryptFailure: false }),
+        sealedBinding: candidate.binding,
       };
     } catch (error) {
       lastError = error;
     }
   }
-  const reason: CredentialStoreReadFailureReason = formatIsUnsupported
-    ? "store_format"
-    : !osBound && expectsOsBoundKeyMaterial()
-      ? "no_os_key_material"
-      : "decrypt_failure";
-  return { ok: false, error: lastError, osBound, reason };
+  // No OS material here plus an envelope that is not declared machine-sealed is
+  // the launchd-brain case, not a broken file: say so, and let the caller keep
+  // the ciphertext for the peer that can open it.
+  //
+  // An undeclared binding is the common shape on the machines this fix exists
+  // for — every store sealed before the field existed — so it has to guess. It
+  // guesses "a peer may hold the key", because being wrong that way costs a
+  // marker nobody acts on, while the other way costs the user their session.
+  const mayBeOsSealed = !hasOsKey
+    && declared !== "machine"
+    && platformSupportsOsBoundKeyMaterial();
+  return {
+    ok: false,
+    error: lastError,
+    reason: mayBeOsSealed ? "no_os_key_material" : "decrypt_failure",
+    recoverableByPeer: mayBeOsSealed,
+  };
 }
 
 /**
@@ -715,6 +838,129 @@ function retryDecodeWithRefreshedKeyMaterial(args: {
   return retried.ok ? retried : null;
 }
 
+function quarantineMarkerPath(credentialsPath: string): string {
+  return `${credentialsPath}.quarantine.json`;
+}
+
+function isQuarantineRecord(value: unknown): value is CredentialStoreQuarantineRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<CredentialStoreQuarantineRecord>;
+  return record.version === 1
+    && typeof record.at === "string"
+    && Number.isFinite(Date.parse(record.at))
+    && typeof record.file === "string"
+    // A marker names a sibling file, never a path: it is read by processes that
+    // may be less trusted than whatever wrote it, and following `../` out of the
+    // secrets directory is not a thing this format needs to support.
+    && record.file.length > 0
+    && !record.file.includes("/")
+    && !record.file.includes("\\")
+    && record.file !== "."
+    && record.file !== ".."
+    && (record.reason === "decrypt_failure"
+      || record.reason === "no_os_key_material"
+      || record.reason === "store_format")
+    && typeof record.recoverable === "boolean";
+}
+
+export function readCredentialStoreQuarantine(
+  credentialsPath: string,
+): CredentialStoreQuarantineRecord | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(quarantineMarkerPath(credentialsPath), "utf8"),
+    ) as unknown;
+    return isQuarantineRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Health of a credential file, read without touching it.
+ *
+ * Deliberately non-creating: `ade doctor` runs this on machines whose brain is
+ * already down, and a diagnostic that mints a machine key (or a keychain item)
+ * changes the very state it was asked to describe.
+ */
+export type CredentialStoreHealth = {
+  path: string;
+  exists: boolean;
+  state: CredentialStoreReadState;
+  reason: CredentialStoreReadFailureReason | null;
+  sealedBinding: CredentialStoreBinding | null;
+  /** The declared binding, even when the file could not be opened. */
+  declaredBinding: CredentialStoreBinding | null;
+  quarantine: CredentialStoreQuarantineRecord | null;
+};
+
+export function inspectCredentialStoreHealth(args: {
+  credentialsPath: string;
+  machineKeyPath: string;
+  keyMaterial?: CredentialKeyMaterialSource;
+}): CredentialStoreHealth {
+  const quarantine = readCredentialStoreQuarantine(args.credentialsPath);
+  const base = {
+    path: args.credentialsPath,
+    declaredBinding: null as CredentialStoreBinding | null,
+    quarantine,
+  };
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = readJsonObject(args.credentialsPath);
+  } catch {
+    return { ...base, exists: true, state: "unreadable", reason: "store_format", sealedBinding: null };
+  }
+  if (!fs.existsSync(args.credentialsPath)) {
+    return { ...base, exists: false, state: "missing", reason: null, sealedBinding: null };
+  }
+  if (raw == null) {
+    // Valid JSON that is not an object (`readJsonObject` reports that as null).
+    return { ...base, exists: true, state: "unreadable", reason: "store_format", sealedBinding: null };
+  }
+  const declaredBinding = isStoredCredentialEnvelope(raw) ? readDeclaredBinding(raw) : null;
+  const machineKey = readMachineKeyIfExists(args.machineKeyPath);
+  if (!machineKey) {
+    // No key file at all next to real ciphertext: nothing on this machine can
+    // open it, and creating one here would only hide that.
+    return {
+      ...base,
+      declaredBinding,
+      exists: true,
+      state: "unreadable",
+      reason: "decrypt_failure",
+      sealedBinding: null,
+    };
+  }
+  const keyMaterial = args.keyMaterial ?? DEFAULT_KEY_MATERIAL_SOURCE;
+  let material: Buffer | null;
+  try {
+    material = keyMaterial.read(path.dirname(args.machineKeyPath));
+  } catch {
+    // Same reasoning as the store's own reader: a Windows DPAPI failure throws,
+    // and a diagnostic that throws tells the user nothing.
+    material = null;
+  }
+  const attempt = decodeCredentialStore(raw, machineKey, material);
+  return attempt.ok
+    ? {
+      ...base,
+      declaredBinding,
+      exists: true,
+      state: "available",
+      reason: null,
+      sealedBinding: attempt.sealedBinding,
+    }
+    : {
+      ...base,
+      declaredBinding,
+      exists: true,
+      state: "unreadable",
+      reason: attempt.reason,
+      sealedBinding: null,
+    };
+}
+
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
   private readonly machineKeyPath: string;
@@ -727,6 +973,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadState: CredentialStoreReadState = "missing";
   private lastReadFailureReason: CredentialStoreReadFailureReason | null = null;
   private lastKeyMaterialSelfHealAt = 0;
+  private lastQuarantineProbeAt = 0;
 
   constructor(args: {
     secretsDir?: string;
@@ -744,10 +991,33 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const keyBindingDir = path.dirname(this.machineKeyPath);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
     const keyMaterial = args.keyMaterial ?? DEFAULT_KEY_MATERIAL_SOURCE;
-    this.readKeyMaterial = () => keyMaterial.read(keyBindingDir);
-    this.readKeyMaterialAsync = async () => (
-      keyMaterial.readAsync ? keyMaterial.readAsync(keyBindingDir) : keyMaterial.read(keyBindingDir)
-    );
+    // A key-material read that THROWS must not escape a credential read. On
+    // Windows `readOrCreateWindowsDpapiMaterial` throws for every DPAPI failure
+    // — including a transient PowerShell cold-start timeout — and that
+    // exception used to travel straight out of `getSync`, which on the brain's
+    // startup path is a process exit and a launchd restart loop.
+    //
+    // Degrading to null is safe now in a way it was not before: no writer seals
+    // with OS material any more, so "no material" cannot silently re-seal a
+    // bound store unbound. It reads as `no_os_key_material`, which is the
+    // recoverable classification, and the next read that does get material
+    // merges anything that was set aside back in.
+    this.readKeyMaterial = () => {
+      try {
+        return keyMaterial.read(keyBindingDir);
+      } catch {
+        return null;
+      }
+    };
+    this.readKeyMaterialAsync = async () => {
+      try {
+        return keyMaterial.readAsync
+          ? await keyMaterial.readAsync(keyBindingDir)
+          : keyMaterial.read(keyBindingDir);
+      } catch {
+        return null;
+      }
+    };
     // An injected source owns its own cache lifetime, so self-heal is available
     // only when that source supplies the matching invalidation hook.
     this.invalidateKeyMaterial = keyMaterial.invalidate
@@ -779,10 +1049,11 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    // Locked because the read may bind legacy ciphertext to the OS-bound key,
-    // and that rewrite has to exclude concurrent writers.
+    // Locked because the read may re-seal an `os`-bound store to the machine
+    // key (and merge a recovered quarantine back in), and those writes have to
+    // exclude concurrent writers.
     return this.withLock(
-      () => this.readAll({ allowRewrite: false, migrateLegacy: true })[normalized] ?? null,
+      () => this.readAll({ forWrite: false, rebind: true })[normalized] ?? null,
     );
   }
 
@@ -803,7 +1074,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       return;
     }
     this.withLock(() => {
-      const values = this.readAll({ allowRewrite: true });
+      const values = this.readAll({ forWrite: true });
       values[normalized] = nextValue;
       this.writeAll(values);
     });
@@ -812,7 +1083,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   deleteSync(key: string): void {
     const normalized = normalizeKey(key);
     this.withLock(() => {
-      const values = this.readAll({ allowRewrite: true });
+      const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
       delete values[normalized];
       this.writeAll(values);
@@ -843,7 +1114,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
     this.withLock(() => {
-      const values = this.readAll({ allowRewrite: true });
+      const values = this.readAll({ forWrite: true });
       const shouldWrite = updater(values);
       if (shouldWrite !== false) {
         this.writeAll(values);
@@ -851,8 +1122,41 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     });
   }
 
+  /**
+   * What the "Can't read your sign-in" surface actually runs.
+   *
+   * Forces the two self-healing steps a read only performs opportunistically —
+   * converge an `os`-bound store to the machine key, and merge back anything a
+   * peer process quarantined — and reports what state that left the store in, so
+   * the caller can say "fixed" or "sign in again" instead of restarting a
+   * service and hoping.
+   */
+  repairSync(): {
+    state: CredentialStoreReadState;
+    reason: CredentialStoreReadFailureReason | null;
+    recoveredKeys: number;
+    quarantine: CredentialStoreQuarantineRecord | null;
+  } {
+    return this.withLock(() => {
+      // The probe throttle exists to keep ordinary reads cheap; an explicit
+      // repair is the one caller that must never be throttled out.
+      this.lastQuarantineProbeAt = 0;
+      const before = Object.keys(this.readAll({ forWrite: false, rebind: false })).length;
+      this.lastQuarantineProbeAt = 0;
+      const after = Object.keys(this.readAll({ forWrite: false, rebind: true })).length;
+      return {
+        state: this.lastReadState,
+        reason: this.lastReadFailureReason,
+        recoveredKeys: Math.max(0, after - before),
+        quarantine: readCredentialStoreQuarantine(this.credentialsPath),
+      };
+    });
+  }
+
   readAllForMigration(): Record<string, string> {
-    return this.readAll({ allowRewrite: false });
+    // No rebind: the migration may be about to delete this file entirely, and
+    // re-sealing it first would only be write amplification.
+    return this.readAll({ forWrite: false, rebind: false });
   }
 
   /**
@@ -866,15 +1170,45 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   /**
-   * `migrateLegacy` binds pre-OS-bound ciphertext to the current key on a plain
-   * READ, not just on a write. Only callers that already hold this store's lock
-   * may pass it — the rewrite it performs is not itself locked.
+   * The one synchronous read. EVERY caller already holds this store's lock,
+   * because a read can write: it re-seals an `os`-bound store to the machine
+   * key, merges a recovered quarantine back in, and — in `forWrite` mode —
+   * quarantines ciphertext it cannot open.
+   *
+   * `forWrite` says a write follows. It never changes how the file is decoded,
+   * only what happens when decoding fails: a read can honestly report nothing,
+   * but a write about to persist `{}` over real credentials cannot, so it moves
+   * the unreadable file aside first. `rebind` opts out of the re-seal for a
+   * caller that is about to delete the file anyway.
    */
   private readAll(
-    args: { allowRewrite: boolean; migrateLegacy?: boolean },
+    args: { forWrite: boolean; rebind?: boolean },
   ): Record<string, string> {
     const credentialsExist = fs.existsSync(this.credentialsPath);
-    const raw = readJsonObject(this.credentialsPath);
+    let raw: Record<string, unknown> | null;
+    try {
+      raw = readJsonObject(this.credentialsPath);
+    } catch (error) {
+      return this.onUnreadable({
+        error,
+        reason: "store_format",
+        recoverableByPeer: false,
+        forWrite: args.forWrite,
+      });
+    }
+    if (credentialsExist && (raw == null || Object.keys(raw).length === 0)) {
+      // A file that exists but holds `{}`, `null`, or any non-object JSON.
+      // `readJsonObject` reports both as "no keys", which decodes as an empty
+      // store — and an empty store is writable, so a truncated or half-written
+      // file would be silently replaced. The asynchronous path has always
+      // rejected this shape; the synchronous one has to agree.
+      return this.onUnreadable({
+        error: new Error("Unsupported ADE credential store format."),
+        reason: "store_format",
+        recoverableByPeer: false,
+        forWrite: args.forWrite,
+      });
+    }
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const material = this.readKeyMaterial();
     let attempt = decodeCredentialStore(raw, machineKey, material);
@@ -909,26 +1243,223 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       if (retried) attempt = retried;
     }
     if (!attempt.ok) {
-      // Preserve the historical fail-closed empty read while exposing why the
-      // account record could not be obtained to publisher health.
-      this.lastReadState = "unreadable";
-      this.lastReadFailureReason = attempt.reason;
-      if (attempt.osBound || args.allowRewrite) throw attempt.error;
-      return {};
+      return this.onUnreadable({
+        error: attempt.error,
+        reason: attempt.reason,
+        recoverableByPeer: attempt.recoverableByPeer,
+        forWrite: args.forWrite,
+      });
     }
     this.lastReadState = credentialsExist ? "available" : "missing";
     this.lastReadFailureReason = null;
-    if (attempt.rewriteWithCurrentKey && (args.allowRewrite || args.migrateLegacy)) {
+    let values = attempt.values;
+    if (args.rebind !== false) {
+      // A store this process could open under the `os` binding is exactly the
+      // one a launchd brain cannot: converge it to the binding every co-owner
+      // derives. Only ever in this direction.
+      if (attempt.sealedBinding !== "machine") {
+        try {
+          this.writeAll(values);
+        } catch {
+          // Best effort — the ciphertext still reads as it is.
+        }
+      }
+      const recovered = this.recoverQuarantinedStore(values, machineKey, material);
+      if (recovered) values = recovered;
+    }
+    return values;
+  }
+
+  /**
+   * The single place an unopenable credential file is turned into a decision.
+   *
+   * A plain read reports nothing and says why. A read that a write depends on
+   * cannot do that — persisting `{}` would replace real credentials with an
+   * empty store — so it moves the ciphertext aside instead, records a marker,
+   * and lets the caller proceed on an empty base. Nothing is ever deleted: the
+   * "never write empty over real credentials" invariant is kept by preserving
+   * the bytes, not by refusing to run. Refusing is what crash-looped the brain.
+   */
+  private onUnreadable(args: {
+    error: unknown;
+    reason: CredentialStoreReadFailureReason;
+    recoverableByPeer: boolean;
+    forWrite: boolean;
+  }): Record<string, string> {
+    this.lastReadState = "unreadable";
+    this.lastReadFailureReason = args.reason;
+    if (!args.forWrite) return {};
+    // A failed quarantine is the one case that still has to fail closed: if the
+    // ciphertext could not be moved, writing would destroy it.
+    this.quarantineUnreadableStore(args.reason, args.recoverableByPeer, args.error);
+    return {};
+  }
+
+  /**
+   * Moves the unreadable ciphertext to a timestamped sibling and records a
+   * marker beside it. Caller holds the lock.
+   */
+  private quarantineUnreadableStore(
+    reason: CredentialStoreReadFailureReason,
+    recoverable: boolean,
+    cause: unknown,
+  ): void {
+    const at = new Date();
+    const stamp = at.toISOString().replace(/[:.]/g, "-");
+    const file = `${path.basename(this.credentialsPath)}.quarantined-${stamp}`;
+    const target = path.join(path.dirname(this.credentialsPath), file);
+    try {
+      fs.renameSync(this.credentialsPath, target);
+      ensureMode600(target);
+    } catch (error: unknown) {
+      if (isEnoent(error)) return; // A peer already moved or removed it.
+      throw new Error(
+        "ADE could not set aside the unreadable credential store, so it was left untouched.",
+        { cause: cause ?? error },
+      );
+    }
+    const record: CredentialStoreQuarantineRecord = {
+      version: 1,
+      at: at.toISOString(),
+      file,
+      reason,
+      recoverable,
+    };
+    try {
+      writeFileAtomic(
+        quarantineMarkerPath(this.credentialsPath),
+        `${JSON.stringify(record, null, 2)}\n`,
+      );
+    } catch {
+      // The marker only drives recovery and reporting; losing it must not fail
+      // the write that the quarantine just unblocked.
+    }
+    this.pruneExpiredQuarantineFiles();
+  }
+
+  /**
+   * Merges a previously quarantined store back in once some process on this
+   * machine can decrypt it.
+   *
+   * This is the automatic half of the fix for machines already in the broken
+   * state: the brain quarantines an `os`-sealed store it cannot read and boots
+   * clean, then the desktop app — which CAN read it — puts the account session
+   * back without anyone signing in again.
+   *
+   * Only keys the live store lacks are restored. The live values were written
+   * after the quarantine, so they win; a token the user has since replaced must
+   * not be resurrected. Returns the merged values, or null when nothing changed.
+   */
+  private recoverQuarantinedStore(
+    values: Record<string, string>,
+    machineKey: Buffer,
+    material: Buffer | null,
+  ): Record<string, string> | null {
+    const record = this.readQuarantineRecordThrottled();
+    if (!record) return null;
+    const markerPath = quarantineMarkerPath(this.credentialsPath);
+    const quarantinedPath = path.join(path.dirname(this.credentialsPath), record.file);
+    const expired = Date.now() - Date.parse(record.at) > QUARANTINE_RETENTION_MS;
+    if (!record.recoverable || expired) {
+      // Nothing here will ever be recovered: stop advertising a pending repair,
+      // but keep the ciphertext itself for diagnostics.
+      if (expired) this.clearQuarantineMarker(markerPath);
+      return null;
+    }
+    let attempt: CredentialDecodeAttempt;
+    try {
+      attempt = decodeCredentialStore(readJsonObject(quarantinedPath), machineKey, material);
+    } catch {
+      return null;
+    }
+    if (!attempt.ok) {
+      // This process HAS the OS material the quarantine was waiting for and
+      // still cannot open the file — so no peer will. Say so, or every surface
+      // keeps telling the user to open an app that has already tried.
+      if (material) this.demoteQuarantineToUnrecoverable(record, markerPath);
+      return null;
+    }
+    const merged = { ...values };
+    let changed = false;
+    for (const [key, value] of Object.entries(attempt.values)) {
+      if (key in merged) continue;
+      merged[key] = value;
+      changed = true;
+    }
+    try {
+      if (changed) this.writeAll(merged);
+      // The quarantined copy is live credential ciphertext that this process can
+      // decrypt. Once its contents are back in the store, keeping it is only
+      // extra secret material at rest.
+      unlinkIfExists(quarantinedPath);
+      this.clearQuarantineMarker(markerPath);
+    } catch {
+      return changed ? merged : null;
+    }
+    return changed ? merged : null;
+  }
+
+  private demoteQuarantineToUnrecoverable(
+    record: CredentialStoreQuarantineRecord,
+    markerPath: string,
+  ): void {
+    try {
+      writeFileAtomic(
+        markerPath,
+        `${JSON.stringify({ ...record, recoverable: false }, null, 2)}\n`,
+      );
+    } catch {
+      // Reporting-only state.
+    }
+  }
+
+  private readQuarantineRecordThrottled(): CredentialStoreQuarantineRecord | null {
+    const now = Date.now();
+    if (
+      this.lastQuarantineProbeAt > 0
+      && now - this.lastQuarantineProbeAt < QUARANTINE_PROBE_INTERVAL_MS
+    ) {
+      return null;
+    }
+    this.lastQuarantineProbeAt = now;
+    return readCredentialStoreQuarantine(this.credentialsPath);
+  }
+
+  private clearQuarantineMarker(markerPath: string): void {
+    try {
+      unlinkIfExists(markerPath);
+    } catch {
+      // Reporting-only state; a stale marker is not worth failing a read for.
+    }
+    this.lastQuarantineProbeAt = 0;
+  }
+
+  /**
+   * Drops quarantined ciphertext nobody came back for. Diagnostics are worth a
+   * month, not forever — these files are undecryptable-by-anyone in the corrupt
+   * case and decryptable-by-a-peer in the recoverable one, and neither should
+   * accumulate one copy per failed startup.
+   */
+  private pruneExpiredQuarantineFiles(): void {
+    const dir = path.dirname(this.credentialsPath);
+    const prefix = `${path.basename(this.credentialsPath)}.quarantined-`;
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    const active = readCredentialStoreQuarantine(this.credentialsPath)?.file ?? null;
+    for (const entry of entries) {
+      if (!entry.startsWith(prefix) || entry === active) continue;
       try {
-        // Seal with the key the attempt already derived, not a fresh material
-        // read: after a self-heal the freshly-read material is what decrypted
-        // this store, and re-asking the OS could disagree with it.
-        this.writeAllWithKey(attempt.values, attempt.key);
+        const stat = fs.statSync(path.join(dir, entry));
+        if (Date.now() - stat.mtimeMs <= QUARANTINE_RETENTION_MS) continue;
+        fs.unlinkSync(path.join(dir, entry));
       } catch {
-        // Preserve read compatibility if migration cannot rewrite right now.
+        // Best effort housekeeping.
       }
     }
-    return attempt.values;
   }
 
   /**
@@ -959,7 +1490,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     if (!raw || Object.keys(raw).length === 0) {
       this.lastReadState = "unreadable";
       this.lastReadFailureReason = "store_format";
-      throw new Error("Unsupported ADE credential store format.");
+      return {};
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
     const material = await this.readKeyMaterialAsync();
@@ -978,58 +1509,57 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       if (retried) attempt = retried;
     }
     if (!attempt.ok) {
+      // Never throws, and never quarantines: a read has nothing to protect by
+      // failing, and the asynchronous path holds no lock to quarantine under.
+      // The reason is what the caller needs, and it gets it.
       this.lastReadState = "unreadable";
       this.lastReadFailureReason = attempt.reason;
-      if (attempt.osBound) throw attempt.error;
       return {};
     }
     this.lastReadState = "available";
     this.lastReadFailureReason = null;
-    // The asynchronous path binds legacy ciphertext too. It is the brain's read
-    // path, and on a machine whose only reader is the brain the store would
-    // otherwise stay machine-key-sealed forever.
-    if (attempt.rewriteWithCurrentKey) this.bindLegacyCiphertextUnderLock(attempt.key);
+    if (attempt.sealedBinding !== "machine") this.rebindToMachineKeyUnderLock(material);
     return attempt.values;
   }
 
+  /**
+   * The only seal this store performs. Always the machine key, always declared:
+   * this file is co-owned by the desktop app, the brain and the CLI, and the
+   * machine key is the one key all three can derive. See `CredentialStoreBinding`.
+   */
   private writeAll(values: Record<string, string>): void {
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, this.readKeyMaterial());
-    this.writeAllWithKey(values, key);
-  }
-
-  private writeAllWithKey(values: Record<string, string>, key: Buffer): void {
-    writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
+    writeFileAtomic(
+      this.credentialsPath,
+      `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
+    );
   }
 
   /**
-   * Re-seals machine-key ciphertext with the OS-bound key, under this store's
-   * lock, for a caller that does NOT already hold it.
+   * Re-seals an `os`-bound store to the machine key under this store's lock, for
+   * an asynchronous caller that does NOT already hold it.
    *
-   * The re-read inside the lock is the point: a peer may have bound the file
-   * while this reader waited, and re-deriving from the stale `raw` would undo
-   * whatever the peer wrote. `key` is passed in rather than re-derived so the
-   * asynchronous caller never touches the synchronous key-material reader.
+   * The re-read inside the lock is the point: a peer may have converged the file
+   * while this reader waited, and rewriting from the stale `raw` would undo it.
    *
-   * Best effort: a failure here only leaves the ciphertext legacy, which still
-   * reads, so it must never fail the read that triggered it.
+   * `material` is handed in rather than re-read so the asynchronous caller never
+   * touches the synchronous key-material reader — on Windows that is a blocking
+   * PowerShell spawn, and the async path exists precisely to avoid it.
+   *
+   * Best effort: failing here only leaves the ciphertext bound as it was, which
+   * this process can still read, so it must never fail the read that triggered it.
    */
-  private bindLegacyCiphertextUnderLock(key: Buffer): void {
+  private rebindToMachineKeyUnderLock(material: Buffer | null): void {
     try {
       this.withLock(() => {
-        const raw = readJsonObject(this.credentialsPath);
         const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-        try {
-          deserializeStore(raw, key, { emptyOnDecryptFailure: false });
-          return;
-        } catch {
-          // Still legacy: fall through and bind it.
-        }
-        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-        this.writeAllWithKey(values, key);
+        const raw = readJsonObject(this.credentialsPath);
+        const attempt = decodeCredentialStore(raw, machineKey, material);
+        if (!attempt.ok || attempt.sealedBinding === "machine") return;
+        this.writeAll(attempt.values);
       });
     } catch {
-      // Preserve read compatibility if the binding cannot happen right now.
+      // Preserve read compatibility if the rebind cannot happen right now.
     }
   }
 

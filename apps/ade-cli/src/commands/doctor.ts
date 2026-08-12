@@ -16,6 +16,10 @@ import type {
 } from "../services/runtime/brainLoopWatchdog";
 import { readBrainLoopWatchdogLastWedge } from "../services/runtime/brainLoopWatchdog";
 import { BRAIN_WATCHDOG_KILL_COMMAND } from "../services/runtime/brainWatchdogCheck";
+import {
+  inspectCredentialStoreHealth,
+  type CredentialStoreHealth,
+} from "../services/credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
@@ -32,7 +36,8 @@ export type DoctorRow = {
     | "sync_port"
     | "publish"
     | "relay"
-    | "account";
+    | "account"
+    | "credentials";
   label: string;
   status: DoctorRowStatus;
   detail: string;
@@ -75,6 +80,12 @@ export type DoctorInput = {
     source: string | null;
     error: string | null;
   };
+  /**
+   * Read straight off disk rather than through the brain. The failure this row
+   * exists for is a brain that cannot start, so a credential check that needs a
+   * running brain to answer would be silent in exactly the case it is for.
+   */
+  credentials: CredentialStoreHealth | null;
 };
 
 export type DoctorCommandOptions = {
@@ -135,6 +146,7 @@ export type DoctorCommandResult = {
   publishHealth: DoctorInput["publishHealth"];
   relayHealth: DoctorInput["relayHealth"];
   account: DoctorInput["account"];
+  credentials: DoctorInput["credentials"];
 };
 
 type DoctorBrainProbe = {
@@ -752,6 +764,62 @@ function accountRow(account: DoctorInput["account"]): DoctorRow {
   };
 }
 
+/**
+ * The credential file the desktop app, the brain and the CLI all share.
+ *
+ * Its two bad states have different next steps, and saying the wrong one costs
+ * the user their session: a store a peer process can still open is repaired by
+ * opening the app, while one nothing can open needs a fresh sign-in.
+ */
+function readCredentialStoreHealthForDoctor(secretsDir: string): CredentialStoreHealth | null {
+  try {
+    return inspectCredentialStoreHealth({
+      credentialsPath: path.join(secretsDir, "credentials.json.enc"),
+      machineKeyPath: path.join(secretsDir, ".machine-key"),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
+  const label = "Credentials";
+  if (!health) {
+    return { key: "credentials", label, status: "warn", detail: "credential store not checked" };
+  }
+  if (health.state === "unreadable") {
+    return {
+      key: "credentials",
+      label,
+      status: "fail",
+      detail: health.reason === "no_os_key_material"
+        ? "sealed to this Mac's keychain, which this process cannot read"
+          + " · open the ADE app on this Mac to unlock it"
+        : `cannot be read (${health.reason}) · sign in again in the ADE app`,
+    };
+  }
+  if (health.quarantine) {
+    const setAside = health.quarantine.at;
+    return {
+      key: "credentials",
+      label,
+      status: "warn",
+      detail: health.quarantine.recoverable
+        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this Mac to restore it`
+        : `an unreadable credential file was set aside ${setAside} · sign in again in the ADE app`,
+    };
+  }
+  if (health.state === "missing") {
+    return { key: "credentials", label, status: "ok", detail: "no stored credentials" };
+  }
+  return {
+    key: "credentials",
+    label,
+    status: "ok",
+    detail: `readable · ${health.sealedBinding === "os" ? "keychain-sealed (converging)" : "machine-sealed"}`,
+  };
+}
+
 export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
@@ -761,6 +829,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     publishRow(input.publishHealth, input.nowMs),
     relayRow(input.relayHealth),
     accountRow(input.account),
+    credentialsRow(input.credentials),
   ];
 }
 
@@ -823,6 +892,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     publishHealth,
     relayHealth,
     account: brainProbe.account,
+    credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -838,5 +908,6 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     publishHealth,
     relayHealth,
     account: input.account,
+    credentials: input.credentials,
   };
 }

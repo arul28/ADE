@@ -128,7 +128,7 @@ const ACCOUNT_SESSION_LABELS: Record<
   },
   unreadable: {
     notice:
-      "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+      "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
     title: "Can't read your sign-in",
     shortLabel: "Sign-in unavailable",
     connectionsSubtitle: "Your session is still there — open your account to fix it",

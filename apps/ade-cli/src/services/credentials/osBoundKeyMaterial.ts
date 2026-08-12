@@ -99,12 +99,10 @@ export type OsBoundKeyMaterialBinding =
 /**
  * The single decision every entry point below dispatches on.
  *
- * Read, read-async, invalidate and "is material expected?" MUST agree: an
- * invalidation that dropped the macOS resolver's cache on Windows would leave
- * the credential store's self-heal retrying against the same stale DPAPI
- * material, and an `expectsOsBoundKeyMaterial()` that still said "darwin only"
- * would misreport a Windows key failure as an ordinary decrypt failure.
- * Deriving all four from one pure function is what keeps them in step.
+ * Read, read-async and invalidate MUST agree: an invalidation that dropped the
+ * macOS resolver's cache on Windows would leave the credential store's
+ * self-heal retrying against the same stale DPAPI material. Deriving every
+ * entry point from one pure function is what keeps them in step.
  *
  * The env-gate applies on BOTH platforms: a test process, or an explicit
  * opt-out, must never reach `security` or `powershell.exe`.
@@ -120,10 +118,21 @@ export function resolveOsBoundKeyMaterialBinding(
   return "none";
 }
 
-/** Is OS-held material expected to back this process's credential key? */
-export function expectsOsBoundKeyMaterial(): boolean {
-  const binding = resolveOsBoundKeyMaterialBinding();
-  return binding === "windows_dpapi" || binding === "macos_keychain";
+/**
+ * Could SOME process on this platform hold OS material for a credential store —
+ * regardless of whether THIS one can?
+ *
+ * Deliberately platform-only, with no env gate. The credential store uses it to
+ * decide whether ciphertext it cannot open might still be openable by a peer,
+ * and the answer must not depend on this process's own opt-out: a desktop app
+ * launched with `ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING=1` is exactly the
+ * process that would otherwise write off a store the un-opted-out brain — or a
+ * later launch of itself — can still read.
+ */
+export function platformSupportsOsBoundKeyMaterial(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "darwin" || platform === "win32";
 }
 
 function decodeMacKeychainSecret(raw: string): Buffer {
@@ -377,10 +386,12 @@ export function invalidateDefaultOsBoundKeyMaterialCache(keyBindingDir: string):
 /**
  * Creating resolution for the platform's OS binding.
  *
- * DPAPI failures propagate rather than degrading to `null`. `null` means "no OS
- * binding", which derives the bare machine key — so swallowing a transient
- * PowerShell timeout would read a DPAPI-bound store as empty and, on the write
- * path, silently re-seal it unbound.
+ * DPAPI failures propagate rather than degrading to `null` here, so the caller
+ * can tell "this platform has no OS binding" from "asking the OS failed". The
+ * credential store catches them and classifies the read as `no_os_key_material`
+ * — which is recoverable — rather than treating a transient PowerShell timeout
+ * as corruption. It can no longer re-seal anything unbound: the shared store is
+ * always sealed with the machine key.
  */
 export function readDefaultOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
   switch (resolveOsBoundKeyMaterialBinding()) {

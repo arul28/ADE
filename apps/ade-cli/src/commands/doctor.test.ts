@@ -57,6 +57,15 @@ function healthyInput(): DoctorInput {
       source: "loopback",
       error: null,
     },
+    credentials: {
+      path: "/Users/tester/.ade/secrets/credentials.json.enc",
+      exists: true,
+      state: "available",
+      reason: null,
+      sealedBinding: "machine",
+      declaredBinding: "machine",
+      quarantine: null,
+    },
   };
 }
 
@@ -179,7 +188,48 @@ describe("doctor row evaluation", () => {
       ["publish", "ok"],
       ["relay", "ok"],
       ["account", "ok"],
+      ["credentials", "ok"],
     ]);
+  });
+
+  it("names the credential store's two bad states with the right next step", () => {
+    const lockedOut = healthyInput();
+    lockedOut.credentials = {
+      ...lockedOut.credentials!,
+      state: "unreadable",
+      reason: "no_os_key_material",
+      sealedBinding: null,
+      declaredBinding: "os",
+    };
+    const lockedRow = evaluateDoctorRows(lockedOut).find((row) => row.key === "credentials");
+    expect(lockedRow?.status).toBe("fail");
+    expect(lockedRow?.detail).toContain("open the ADE app");
+
+    const corrupt = healthyInput();
+    corrupt.credentials = {
+      ...corrupt.credentials!,
+      state: "unreadable",
+      reason: "decrypt_failure",
+      sealedBinding: null,
+    };
+    const corruptRow = evaluateDoctorRows(corrupt).find((row) => row.key === "credentials");
+    expect(corruptRow?.status).toBe("fail");
+    expect(corruptRow?.detail).toContain("sign in again");
+
+    const quarantined = healthyInput();
+    quarantined.credentials = {
+      ...quarantined.credentials!,
+      quarantine: {
+        version: 1,
+        at: "2026-07-23T11:00:00.000Z",
+        file: "credentials.json.enc.quarantined-2026-07-23T11-00-00-000Z",
+        reason: "no_os_key_material",
+        recoverable: true,
+      },
+    };
+    const quarantinedRow = evaluateDoctorRows(quarantined).find((row) => row.key === "credentials");
+    expect(quarantinedRow?.status).toBe("warn");
+    expect(quarantinedRow?.detail).toContain("open the ADE app");
   });
 
   it("warns for a recent wedge and alternate port with diagnosed holders", () => {

@@ -262,6 +262,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -9609,6 +9610,42 @@ export function registerIpc({
       arg: { machineKey?: string },
     ): Promise<AdeAccountMachineRemovalResult> => {
       return await accountBridge.removeMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  // What the "Can't read your sign-in" Repair control runs. Order matters: the
+  // credential file is repaired FIRST, then the brain restarts, so the
+  // replacement process reads an already-converged store. A restart alone —
+  // which is all this surface used to do — could not fix any credential-store
+  // condition, which is the only condition that surface appears for.
+  ipcMain.handle(
+    IPC.accountRepairSession,
+    async (): Promise<AdeAccountSessionRepairResult> => {
+      const repair = accountBridge.repairCredentialStore();
+      let brainRestarted: boolean | null = null;
+      if (projectRecoveryService) {
+        try {
+          await projectRecoveryService.restartBrain();
+          brainRestarted = true;
+        } catch {
+          // The store repair is the load-bearing half and it already happened.
+          // Report the restart honestly instead of discarding the repair.
+          brainRestarted = false;
+        }
+      }
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: {
+          feature: "connections",
+          action: "session_repair",
+          outcome: repair.outcome,
+        },
+        projectId: null,
+        dedupeKey: `session_repair:${repair.outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+      return { ...repair, brainRestarted };
     },
   );
 

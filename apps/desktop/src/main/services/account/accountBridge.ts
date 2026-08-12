@@ -15,6 +15,7 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
+import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createFileLogger, type Logger } from "../logging/logger";
@@ -35,6 +36,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
+  AdeAccountSessionRepairResult,
   AdeAccountSessionReadState,
   AdeAccountSessionState,
   AdeAccountStatus,
@@ -402,6 +404,13 @@ export type AccountBridge = {
   ): () => void;
   removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
   repairMachinePairing(): Promise<AdeAccountMachinePairingRepairResult>;
+  /**
+   * Repairs the credential FILE, not the account: converge its key binding and
+   * merge back anything a peer process had to set aside. Synchronous work on a
+   * locked file, so it is deliberately not routed through the brain — the brain
+   * is usually the process that could not read it.
+   */
+  repairCredentialStore(): Omit<AdeAccountSessionRepairResult, "brainRestarted">;
 };
 
 export type AccountBridgePairMachineOptions = {
@@ -709,6 +718,29 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
      * leaves both latches set, because heartbeats always publish
      * `pairing: false` and sign-in reuses the same stable device id.
      */
+    repairCredentialStore: (): Omit<AdeAccountSessionRepairResult, "brainRestarted"> => {
+      const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
+      options.logger?.info("account.credential_store_repair", {
+        state: report.state,
+        reason: report.reason,
+        recoveredKeys: report.recoveredKeys,
+        quarantineRecoverable: report.quarantine?.recoverable ?? null,
+      });
+      const readable = report.state !== "unreadable";
+      // "Fixed it" is only honest when something was actually wrong AND is now
+      // right: a recovered credential, or a store that had been set aside and no
+      // longer is. Everything else is either "nothing was broken here" or "this
+      // Mac cannot open it — sign in again".
+      const outcome: AdeAccountSessionRepairResult["outcome"] = !readable
+        ? "sign_in_required"
+        : report.recoveredKeys > 0
+          ? "repaired"
+          : report.quarantine?.recoverable === false
+            ? "sign_in_required"
+            : "no_problem_found";
+      return { outcome, readable, recoveredKeys: report.recoveredKeys };
+    },
+
     repairMachinePairing: async (): Promise<AdeAccountMachinePairingRepairResult> => {
       if (!options.callBrainAccountAction) {
         throw new Error(

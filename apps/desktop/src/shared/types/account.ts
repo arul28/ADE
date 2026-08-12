@@ -195,6 +195,27 @@ export type AdeAccountMachinePairingRepairResult = {
   reasonCode?: string | null;
 };
 
+/**
+ * What the "Can't read your sign-in" Repair control actually did.
+ *
+ * The control used to restart the background service and nothing else, which
+ * could not fix any credential-store condition — the one class of failure the
+ * surface offering it exists for. Now it runs the store's own repair first
+ * (converge the file's key binding, merge back anything a peer process set
+ * aside) and restarts the brain after, so `outcome` can say which of the three
+ * real endings happened rather than "we restarted something".
+ */
+export type AdeAccountSessionRepairResult = {
+  /** `repaired` — readable again. `sign_in_required` — nothing on this Mac can open it. */
+  outcome: "repaired" | "sign_in_required" | "no_problem_found";
+  /** Did the credential file end up readable? */
+  readable: boolean;
+  /** Credentials put back from a file a peer process had set aside. */
+  recoveredKeys: number;
+  /** Did the brain restart succeed? Null when this window cannot restart it. */
+  brainRestarted: boolean | null;
+};
+
 /** Token-free result of adopting an account-directory machine for paired use. */
 export type AdeAccountMachinePairResult = {
   targetId: string;
