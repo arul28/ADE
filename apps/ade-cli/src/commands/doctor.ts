@@ -643,11 +643,10 @@ function syncPortRow(input: DoctorInput): DoctorRow {
           + " tailscaled is invisible here — check `tailscale serve status`"
           + " and `netstat -an -p tcp`)"
     }${
-      // The usual cause is ADE's own stranded `tailscale serve` entries from
-      // earlier runs. The host now reclaims those on its next publish, so the
-      // fix is a brain restart, not 60-odd manual `serve --tcp=N off` calls.
-      holders.length ? "" : " · ADE reclaims its own stale serve entries on the"
-        + " next publish; `ade brain restart` should return it to 8787"
+      // Sticky lastPort used to keep a replacement brain on 8788 forever.
+      // Bind order now retries 8787 first, and a live listener migrates back
+      // when 8787 frees. `ade brain restart` is still the explicit hammer.
+      holders.length ? "" : " · ADE retries 8787 first and migrates back when it is free; `ade brain restart` also returns it to 8787"
     }`,
   };
 }

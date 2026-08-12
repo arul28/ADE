@@ -2069,6 +2069,7 @@ describe("AccountAuthService refresh and sign-out", () => {
       fetchImpl,
       refreshRotationWaitMs: 0,
       now: () => nowMs,
+      pidAlive: () => false,
     });
     activeServices.push(service);
 
@@ -2091,6 +2092,101 @@ describe("AccountAuthService refresh and sign-out", () => {
     expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
       needsReauth: true,
       rejectedReason: "invalid_grant",
+    });
+  });
+
+  it("does not call Clerk or mark the session dead when a live peer already journals this generation", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    store.setSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY, JSON.stringify({
+      version: 1,
+      oldRefreshTokenHash: accountTokenGeneration("refresh-old"),
+      startedAt: "2026-07-14T11:59:59.000Z",
+      pid: 4242,
+      source: "desktop",
+      userId: "user_old",
+    }));
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("Clerk must not be called while a live peer owns the refresh");
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      refreshRotationWaitMs: 0,
+      now: () => nowMs,
+      pid: 778,
+      sessionMutationSource: "brain",
+      pidAlive: (pid) => pid === 4242,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow(/another process/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "refresh-old",
+    });
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!).needsReauth).toBeUndefined();
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "user_old",
+      sessionState: "active",
+    });
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)!)).toMatchObject({
+      pid: 4242,
+      source: "desktop",
+    });
+  });
+
+  it("uses a live peer's replacement without starting a second Clerk refresh", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const peerAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    store.setSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY, JSON.stringify({
+      version: 1,
+      oldRefreshTokenHash: accountTokenGeneration("refresh-old"),
+      startedAt: "2026-07-14T11:59:59.000Z",
+      pid: 4242,
+      source: "desktop",
+      userId: "user_old",
+    }));
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("Clerk must not be called while a live peer owns the refresh");
+    });
+    setTimeout(() => {
+      store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+        accessToken: peerAccessToken,
+        refreshToken: "refresh-peer",
+      })));
+    }, 10);
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      refreshRotationWaitMs: 100,
+      refreshRotationPollMs: 5,
+      now: () => nowMs,
+      pid: 778,
+      sessionMutationSource: "brain",
+      pidAlive: (pid) => pid === 4242,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(peerAccessToken);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "user_old",
+      sessionState: "active",
     });
   });
 
@@ -2687,16 +2783,16 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
   });
 
-  it("re-reads a refresh token rotated by another process and retries once", async () => {
+  it("serves a peer's still-fresh rotated pair instead of burning it at Clerk", async () => {
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
       accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
       expiresAt: "2026-07-15T12:00:00.000Z",
     })));
-    const refreshedAccessToken = jwt({
+    const peerAccessToken = jwt({
       sub: "user_old",
-      exp: Math.floor((nowMs + 3_600_000) / 1000),
+      exp: Math.floor((nowMs + 1_800_000) / 1000),
     });
     const refreshTokens: string[] = [];
     const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
@@ -2705,17 +2801,13 @@ describe("AccountAuthService refresh and sign-out", () => {
       refreshTokens.push(refreshToken);
       if (refreshToken === "refresh-old") {
         store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
-          accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs + 1_800_000) / 1000) }),
+          accessToken: peerAccessToken,
           refreshToken: "refresh-rotated-by-desktop",
           expiresAt: "2026-07-15T12:00:00.000Z",
         })));
         return jsonResponse({ error: "invalid_grant" }, 400);
       }
-      return jsonResponse({
-        access_token: refreshedAccessToken,
-        refresh_token: "refresh-final",
-        expires_in: 86_400,
-      });
+      throw new Error("Clerk must not consume a peer's still-fresh rotating grant");
     });
     const service = createAccountAuthService({
       credentialStore: store,
@@ -2725,12 +2817,11 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
     activeServices.push(service);
 
-    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
-    expect(refreshTokens).toEqual(["refresh-old", "refresh-rotated-by-desktop"]);
+    await expect(service.getAccessToken()).resolves.toBe(peerAccessToken);
+    expect(refreshTokens).toEqual(["refresh-old"]);
     expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
-      accessToken: refreshedAccessToken,
-      refreshToken: "refresh-final",
-      expiresAt: "2026-07-14T13:00:00.000Z",
+      accessToken: peerAccessToken,
+      refreshToken: "refresh-rotated-by-desktop",
     });
   });
 
@@ -2766,6 +2857,9 @@ describe("AccountAuthService refresh and sign-out", () => {
     expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
       refreshToken: "refresh-rotated-by-desktop",
     });
+    // A live-pid journal left behind after a non-invalid_grant failure would
+    // make every peer wait on a refresh nobody is running.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
   });
 
   it("preserves a newer session written by another process while refresh succeeds", async () => {
