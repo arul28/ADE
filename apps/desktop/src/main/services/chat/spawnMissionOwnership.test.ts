@@ -5,7 +5,6 @@ import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
   isHumanChildMessage,
-  isMissionDirective,
   stripHostAuthoredMessageProvenance,
 } from "./spawnMissionOwnership";
 
@@ -33,46 +32,6 @@ const humanMessage = (turnId: string) => userMessage({ turnId });
 const scheduledWake = (turnId: string) => userMessage({
   turnId,
   metadata: { scheduledWake: { scheduleId: "wake-1", kind: "wakeup", firedAt: "2026-08-11T00:10:00.000Z" } },
-});
-
-describe("isMissionDirective", () => {
-  it("does not count a plain human message as a directive — messaging a subagent does not steal the report channel", () => {
-    expect(isMissionDirective({ type: "user_message", text: "do it" })).toBe(false);
-  });
-
-  it("counts a parent dispatch as a directive", () => {
-    expect(isMissionDirective({
-      type: "user_message",
-      text: "Ship the fix.",
-      metadata: { spawnDispatch: { parentSessionId: PARENT, dispatchedAt: "x" } },
-    })).toBe(true);
-  });
-
-  it.each([
-    ["a scheduler delivery", { scheduledWake: { scheduleId: "s", kind: "wakeup" as const, firedAt: "x" } }],
-    ["a grandchild completion", { spawnCompletion: { childSessionId: "g", childTitle: "g", spawnKind: "subagent" as const, status: "completed" as const } }],
-    ["another agent relaying", { agentRelay: { fromSessionId: "grandchild" } }],
-    ["a host continuation", { hostContinuation: { reason: "interrupted_turn_recovery" as const } }],
-    ["a legacy continuity recovery", { kind: "continuity_recovery" }],
-    ["an orchestration worker status ping", { orchestrationOrigin: { runId: "r", fromSessionId: "worker", kind: "queue", intent: "status" } }],
-    ["an orchestration question", { orchestrationOrigin: { runId: "r", fromSessionId: "worker", kind: "queue", intent: "question" } }],
-    ["a handoff prompt", { kind: "handoff" }],
-    ["a cross-machine handoff prompt", { kind: "cross_machine_handoff" }],
-  ])("does not count %s as a directive", (_label, metadata) => {
-    expect(isMissionDirective({ type: "user_message", text: "…", metadata })).toBe(false);
-  });
-
-  it("counts an explicit orchestration directive as a directive", () => {
-    expect(isMissionDirective({
-      type: "user_message",
-      text: "…",
-      metadata: { orchestrationOrigin: { runId: "r", fromSessionId: "lead", kind: "queue", intent: "directive" } },
-    })).toBe(true);
-  });
-
-  it("does not count a queued message, whose delivered twin carries the real metadata", () => {
-    expect(isMissionDirective({ type: "user_message", text: "…", deliveryState: "queued" })).toBe(false);
-  });
 });
 
 describe("isHumanChildMessage", () => {

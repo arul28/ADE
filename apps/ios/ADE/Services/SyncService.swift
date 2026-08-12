@@ -9397,6 +9397,14 @@ final class SyncService: ObservableObject {
     supportsRemoteAction("session.snoozeSession")
   }
 
+  /// Whether this host can demote, promote, or dismiss the subagent takeover
+  /// banner. Older brains advertise `chat.updateSession` but ignore or reject
+  /// `spawnKind`; `chat.setSpawnKind` is the advertise check so the phone hides
+  /// the controls instead of offering a write that cannot apply.
+  var supportsSpawnKindUpdate: Bool {
+    supportsRemoteAction("chat.setSpawnKind")
+  }
+
   private func sessionLifecycleUnsupportedError(_ action: String) -> NSError {
     NSError(domain: "ADE", code: 27, userInfo: [
       NSLocalizedDescriptionKey:

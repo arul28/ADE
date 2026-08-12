@@ -7788,6 +7788,52 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSpawnKindUpdateRequiresAdvertisedSetSpawnKindAction() throws {
+    let legacyDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { legacyDatabase.close() }
+    let legacyService = SyncService(database: legacyDatabase)
+    try legacyService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-legacy",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.updateSession",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+    XCTAssertTrue(legacyService.supportsRemoteAction("chat.updateSession"))
+    XCTAssertFalse(legacyService.supportsSpawnKindUpdate)
+
+    let supportedDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { supportedDatabase.close() }
+    let supportedService = SyncService(database: supportedDatabase)
+    try supportedService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-current",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.setSpawnKind",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+    XCTAssertTrue(supportedService.supportsSpawnKindUpdate)
+  }
+
+  @MainActor
   func testPersonalChatsStayLocallyActionGatedOnPartialHost() throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
@@ -24349,6 +24395,76 @@ final class ADETests: XCTestCase {
     XCTAssertNil(session.orchestrationParentSessionId)
     XCTAssertNil(session.orchestrationStepId)
     XCTAssertNil(session.orchestrationBundlePath)
+  }
+
+  func testRoleTransitionActionsAreHiddenWhenSpawnKindUpdateIsUnsupported() {
+    XCTAssertFalse(
+      workCanDemoteChatToPeer(
+        isChat: true,
+        spawnKind: .subagent,
+        parentSessionId: "parent-1",
+        hostSupportsSpawnKindUpdate: false
+      )
+    )
+    XCTAssertFalse(
+      workCanPromoteChatToSubagent(
+        isChat: true,
+        spawnKind: .peer,
+        parentSessionId: "parent-1",
+        hostSupportsSpawnKindUpdate: false
+      )
+    )
+    XCTAssertTrue(
+      workCanDemoteChatToPeer(
+        isChat: true,
+        spawnKind: .subagent,
+        parentSessionId: "parent-1",
+        hostSupportsSpawnKindUpdate: true
+      )
+    )
+    XCTAssertTrue(
+      workCanPromoteChatToSubagent(
+        isChat: true,
+        spawnKind: .peer,
+        parentSessionId: "parent-1",
+        hostSupportsSpawnKindUpdate: true
+      )
+    )
+  }
+
+  func testTakeoverAndKeepReportingUpdateFallbackSummaryWhenChatSummaryIsNil() throws {
+    let fallback = try JSONDecoder().decode(AgentChatSessionSummary.self, from: Data("""
+    {
+      "sessionId": "child-1",
+      "laneId": "lane-1",
+      "provider": "claude",
+      "model": "sonnet",
+      "status": "idle",
+      "startedAt": "2026-08-12T00:00:00.000Z",
+      "lastActivityAt": "2026-08-12T00:00:00.000Z",
+      "orchestrationParentSessionId": "parent-1",
+      "spawnKind": "subagent"
+    }
+    """.utf8))
+
+    let takenOver = workApplyingSpawnKindUpdate(
+      current: nil,
+      fallback: fallback,
+      spawnKind: .peer,
+      subagentTakeoverPromptShownAt: "2026-08-12T00:01:00.000Z",
+      shownAtFallback: "2026-08-12T00:02:00.000Z"
+    )
+    XCTAssertEqual(takenOver?.spawnKind, .peer)
+    XCTAssertEqual(takenOver?.subagentTakeoverPromptShownAt, "2026-08-12T00:01:00.000Z")
+
+    let keptReporting = workApplyingSpawnKindUpdate(
+      current: nil,
+      fallback: fallback,
+      subagentTakeoverPromptShownAt: nil,
+      shownAtFallback: "2026-08-12T00:03:00.000Z"
+    )
+    XCTAssertEqual(keptReporting?.spawnKind, .subagent)
+    XCTAssertEqual(keptReporting?.subagentTakeoverPromptShownAt, "2026-08-12T00:03:00.000Z")
   }
 }
 

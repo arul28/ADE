@@ -1808,6 +1808,8 @@ export type SyncRemoteCommandAction =
   | "chat.respondToInput"
   | "chat.restart"
   | "chat.updateSession"
+  | "chat.setSpawnKind"
+  | "chat.dismissSubagentTakeoverPrompt"
   | "chat.getCodexGoal"
   | "chat.setCodexGoal"
   | "chat.setCodexGoalStatus"

@@ -878,6 +878,48 @@ struct WorkSubagentSelection: Identifiable, Equatable {
   var id: String { taskId }
 }
 
+/// Demote/promote and the composer takeover banner write `spawnKind`. Older
+/// hosts advertise `chat.updateSession` but do not apply that field, so the
+/// dedicated `chat.setSpawnKind` advertise check is the gate.
+func workCanDemoteChatToPeer(
+  isChat: Bool,
+  spawnKind: AgentChatSpawnKind?,
+  parentSessionId: String?,
+  hostSupportsSpawnKindUpdate: Bool
+) -> Bool {
+  guard hostSupportsSpawnKindUpdate, isChat, spawnKind == .subagent else { return false }
+  let parent = parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return !parent.isEmpty
+}
+
+func workCanPromoteChatToSubagent(
+  isChat: Bool,
+  spawnKind: AgentChatSpawnKind?,
+  parentSessionId: String?,
+  hostSupportsSpawnKindUpdate: Bool
+) -> Bool {
+  guard hostSupportsSpawnKindUpdate, isChat, spawnKind == .peer else { return false }
+  let parent = parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return !parent.isEmpty
+}
+
+/// Apply a successful spawn-kind or takeover-banner write onto the live
+/// summary, falling back to the composer latch when `chatSummary` is nil.
+func workApplyingSpawnKindUpdate(
+  current: AgentChatSessionSummary?,
+  fallback: AgentChatSessionSummary?,
+  spawnKind: AgentChatSpawnKind? = nil,
+  subagentTakeoverPromptShownAt: String?,
+  shownAtFallback: String
+) -> AgentChatSessionSummary? {
+  guard var summary = current ?? fallback else { return nil }
+  if let spawnKind {
+    summary.spawnKind = spawnKind
+  }
+  summary.subagentTakeoverPromptShownAt = subagentTakeoverPromptShownAt ?? shownAtFallback
+  return summary
+}
+
 struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
   let id: String
   let kind: String

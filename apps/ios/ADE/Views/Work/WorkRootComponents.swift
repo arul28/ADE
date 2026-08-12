@@ -571,6 +571,9 @@ struct WorkSessionListRow: View {
   var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
   /// Promote a peer chat back to a subagent so it reports to its parent again.
   var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `chat.setSpawnKind`. Older hosts have
+  /// `chat.updateSession` but cannot apply spawn-kind writes.
+  var spawnKindUpdateAvailable: Bool = false
   /// The host advertises `work.deleteSession` — the stop-then-delete path for a
   /// non-chat row. Older hosts never had it, so a phone talking to one hides the
   /// two destructive items rather than offering a control that always fails.
@@ -676,15 +679,21 @@ struct WorkSessionListRow: View {
   }
 
   private var canDemoteToPeer: Bool {
-    isChat
-      && chatSummary?.spawnKind == .subagent
-      && !(chatSummary?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    workCanDemoteChatToPeer(
+      isChat: isChat,
+      spawnKind: chatSummary?.spawnKind,
+      parentSessionId: chatSummary?.orchestrationParentSessionId,
+      hostSupportsSpawnKindUpdate: spawnKindUpdateAvailable
+    )
   }
 
   private var canPromoteToSubagent: Bool {
-    isChat
-      && chatSummary?.spawnKind == .peer
-      && !(chatSummary?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    workCanPromoteChatToSubagent(
+      isChat: isChat,
+      spawnKind: chatSummary?.spawnKind,
+      parentSessionId: chatSummary?.orchestrationParentSessionId,
+      hostSupportsSpawnKindUpdate: spawnKindUpdateAvailable
+    )
   }
 
   private var snoozeOptions: [WorkSnoozeOption] {

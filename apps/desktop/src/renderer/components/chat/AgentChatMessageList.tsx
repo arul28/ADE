@@ -3382,7 +3382,7 @@ function renderEvent(
     }
     if (event.noticeKind === "info" && event.status === "spawn_takeover") {
       const takeover = event.detail && typeof event.detail === "object" ? event.detail.spawnTakeover : undefined;
-      const childTitle = takeover?.childTitle?.trim() || event.message.replace(/^The user took over "?|"? — reports stop here\.$/g, "").trim() || "chat";
+      const childTitle = takeover?.childTitle?.trim() || "chat";
       const childSessionId = typeof takeover?.childSessionId === "string" && takeover.childSessionId.length
         ? takeover.childSessionId
         : null;

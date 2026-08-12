@@ -1207,6 +1207,7 @@ struct WorkRootScreen: View {
       onWake: wakeSession,
       onDemoteToPeer: demoteSessionToPeer,
       onPromoteToSubagent: promoteSessionToSubagent,
+      spawnKindUpdateAvailable: syncService.supportsSpawnKindUpdate,
       deleteSessionAvailable: syncService.supportsWorkSessionDeletion,
       onDeleteSession: deleteWorkSession,
       onOpenInWeb: openSessionInWeb,

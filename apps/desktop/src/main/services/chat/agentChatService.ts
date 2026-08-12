@@ -29808,13 +29808,15 @@ export function createAgentChatService(args: {
     // Subagent completions always wake the parent. Human messages no longer
     // steal that channel — only an explicit demote to peer does. Peers skip
     // the transcript read because they never wake.
-    const childHistory = mergeEnvelopeStreams(
-      readTranscriptEnvelopes(child),
-      eventHistoryBySession.get(childSessionId) ?? [],
-    );
     const parentShouldWake = spawnKind === "subagent";
     const humanMessageCount = parentShouldWake
-      ? countHumanChildMessagesForTurn(childHistory, resolvedTurnId)
+      ? countHumanChildMessagesForTurn(
+          mergeEnvelopeStreams(
+            readTranscriptEnvelopes(child),
+            eventHistoryBySession.get(childSessionId) ?? [],
+          ),
+          resolvedTurnId,
+        )
       : 0;
     const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
