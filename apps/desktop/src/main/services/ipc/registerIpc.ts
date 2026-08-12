@@ -745,6 +745,7 @@ import type { createAutomationIngressService } from "../automations/automationIn
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
+import { resolveDisabledActionDomains } from "../plugins/gatedActionDomains";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
 
@@ -5711,9 +5712,12 @@ export function registerIpc({
     const ctx = getCtx();
     const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);
     const entries: AdeActionRegistryEntry[] = [];
+    // A domain whose plugin is not installed is not in this ADE, so it is not
+    // in the picker either — the same rule the rail follows for the pane.
+    const disabledDomains = resolveDisabledActionDomains();
     for (const domain of Object.keys(ADE_ACTION_ALLOWLIST) as Array<keyof typeof ADE_ACTION_ALLOWLIST>) {
       const service = services[domain];
-      if (!service) continue;
+      if (!service || disabledDomains.has(domain)) continue;
       const actionNames = listAllowedAdeActionNames(domain, service as Record<string, unknown>);
       if (actionNames.length === 0) continue;
       entries.push({

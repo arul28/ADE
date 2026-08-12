@@ -328,6 +328,80 @@ underneath is untouched: uninstalling `ade-linear` hides the badge, it does not
 unlink the issue, and reinstalling brings the badge back with the issue still
 attached.
 
+### Agent skills
+
+A plugin owns its agent skills the same way it owns its UI. `skills` in the
+manifest lists directories **containing** skill directories — `"skills": ["skills"]`
+resolves to `<plugin>/skills/<skill-name>/SKILL.md` — and
+`listPluginAgentSkillRoots()` answers with the roots of installed, enabled
+plugins only. Those roots are appended to `ADE_AGENT_SKILLS_DIRS` for every
+runtime, passed to Codex as `skills/extraRoots`, handed to Claude as
+`--plugin-dir` (which is why a plugin skills root ships a `.claude-plugin/plugin.json`
+marker, since Claude reads plugin roots and never the env var), and listed by
+`ade skill list`. So the install gate is the only mechanism: `ade-linear`,
+`ade-ios-simulator` and `ade-app-control` live in
+`plugins/<id>/skills/` rather than in ADE's shared bundled root, and a machine
+without the plugin never loads them. The capability underneath is not fenced
+off — `xcrun simctl`, the Linear API and AppleScript are still there; what the
+plugin carries is ADE's premium layer over them.
+
+### Agent tooling
+
+A plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS` in
+`shared/plugins/builtinSurfaces.ts` carries an `actionDomains` list per surface
+— `ade-linear` owns `linear_credentials`, `linear_oauth` and
+`linear_issue_tracker`; `ade-ios-sim` owns `ios_simulator`; `ade-app-control`
+owns `app_control` — and `resolveDisabledActionDomains()` turns that plus the
+install registry into the set to refuse. Graph, Review and History list nothing:
+they are views over state other domains already own, so there is nothing of
+theirs to refuse.
+
+The refusal is **policy, never a missing method**. A client that reads
+`methodNotFound` concludes the host is too old and silently takes a legacy path,
+which is how a scope denial once turned into a wrong fallback here. A gated
+domain exists and is spelled correctly, so it answers `policyDenied` with
+`data.kind = "plugin_not_installed"`. Every dispatch path asks: `run_ade_action`
+and `list_ade_actions` in `adeRpcServer.ts`, the plugin-to-plugin action bridge
+and the automations registry in `bootstrap.ts` and `main.ts`, the Settings
+action picker over IPC, and the nine `cto.*Linear*` sync commands phones and the
+web client call (via `requiresBuiltinSurface` on the sync registrar). The set is
+memoized and dropped on `plugin_changed`, so an install takes effect without a
+daemon restart.
+
+**The copy comes from the catalog, not from a table of plugin names.** The
+shared table supplies only the join key — which plugin id owns the domain — and
+the display name is read from the bundled package manifests, then the cached
+registry index: *"This machine doesn't have Linear. It's provided by the
+ade-linear plugin — available in the Marketplace."* When neither catalog knows
+the plugin there is **no invented hint**: the caller keeps its ordinary
+unavailable-domain error, because telling a user to install something ADE cannot
+name is worse than a plain failure. Automations record the sentence verbatim on
+the run row, so a rule that breaks on an uninstall says why.
+
+None of this fences off the underlying capability. An agent still has `xcrun
+simctl`, the Linear REST API and AppleScript; what a plugin carries is ADE's
+premium layer over them — typed actions, proof capture, lane and chat context.
+
+### Connections leave with the plugin
+
+Uninstalling deletes the account link the plugin existed to hold.
+`cleanupUninstalledPluginData` already freed the plugin's project rows and its
+SDK secrets; it now also calls `disconnectAccountsForPlugin`, supplied late
+through `PluginMachineContext` because the credential services are built long
+after the host. The daemon wires it to `linearCredentialService.clearToken()`
+for `ade-linear` — keyed off the shared owner table, not a literal id — so the
+stored token, refresh token and expiry go with the package. The uninstall dialog
+says "This disconnects Linear." before the user commits, and a reinstall starts
+disconnected. The disconnect runs last and its failure is logged rather than
+thrown, so it can never strand the data and secret cleanup ahead of it.
+
+Two scope caveats worth knowing. The credential service reachable from the
+daemon is bound to one project's `.ade/secrets`, so a machine-scoped uninstall
+clears the Linear credentials of the project scopes currently running rather
+than every scope on disk. And `clearOAuthClientCredentials()` is deliberately
+NOT called: a custom OAuth app is the user's own configuration, not the
+connection this plugin owned.
+
 ### Themes
 
 Theme plugins omit `entry` entirely and run no code. The engine injects a single

@@ -210,6 +210,8 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import { readInstalledBuiltinSurfaces } from "../../../../desktop/src/main/services/plugins/builtinSurfaceInstalls";
+import { buildMissingSurfaceDenial } from "../../../../desktop/src/main/services/plugins/gatedActionDomains";
+import type { PluginBuiltinSurfaceId } from "../../../../desktop/src/shared/plugins/manifest";
 import {
   PERSONAL_CHAT_ACTIONS,
   isPersonalChatActionQueueable,
@@ -3856,6 +3858,15 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
 
 type RemoteCommandRegistrationPolicy = SyncRemoteCommandPolicy & {
   observesAbort?: boolean;
+  /**
+   * A compiled surface whose plugin must be installed on THIS machine for the
+   * command to run. Phones and the web client reach a plugin's capability
+   * through named commands rather than through an action domain, so the gate
+   * has to be expressible here too — otherwise uninstalling Linear on the
+   * desktop would leave the phone still reading and writing Linear issues
+   * through the same host.
+   */
+  requiresBuiltinSurface?: PluginBuiltinSurfaceId;
 };
 
 type RemoteCommandRegistrar = (
@@ -5068,9 +5079,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     // { memory, threadState, dailyLog, dailyLogDate, updatedAt }.
     return ctoMemoryService.getSnapshot();
   });
-  register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () =>
+  register("cto.getLinearConnectionStatus", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async () =>
     buildLinearConnectionStatus(args));
-  register("cto.startLinearMobileOAuth", { viewerAllowed: true }, async () => {
+  register("cto.startLinearMobileOAuth", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async () => {
     const linearOAuthService = requireService(
       args.linearOAuthService,
       "Linear OAuth service not available.",
@@ -5079,7 +5090,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       redirectUri: LINEAR_MOBILE_OAUTH_REDIRECT_URI,
     });
   });
-  register("cto.completeLinearMobileOAuth", { viewerAllowed: true }, async (payload) => {
+  register("cto.completeLinearMobileOAuth", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async (payload) => {
     const linearOAuthService = requireService(
       args.linearOAuthService,
       "Linear OAuth service not available.",
@@ -5104,7 +5115,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   // Linear against a host-issued session, whereas these two accept an arbitrary
   // secret — or wipe the owner's — from whatever device is on the socket. The
   // registry is the gate here, not the absence of client wiring.
-  register("cto.setLinearToken", { viewerAllowed: false }, async (payload) => {
+  register("cto.setLinearToken", { viewerAllowed: false, requiresBuiltinSurface: "linear" }, async (payload) => {
     const linearCredentialService = requireService(
       args.linearCredentialService,
       "Linear credential service not available.",
@@ -5114,7 +5125,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     );
     return buildLinearConnectionStatus(args);
   });
-  register("cto.clearLinearToken", { viewerAllowed: false }, async () => {
+  register("cto.clearLinearToken", { viewerAllowed: false, requiresBuiltinSurface: "linear" }, async () => {
     const linearCredentialService = requireService(
       args.linearCredentialService,
       "Linear credential service not available.",
@@ -5122,7 +5133,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     linearCredentialService.clearToken();
     return buildDisconnectedLinearConnectionStatus(args, "Linear token not configured.");
   });
-  register("cto.getLinearQuickView", { viewerAllowed: true }, async () => {
+  register("cto.getLinearQuickView", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async () => {
     const credentialStatus = args.linearCredentialService?.getStatus() ?? {
       tokenStored: false,
       authMode: null,
@@ -5163,7 +5174,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     if (!status.connected) return emptyLinearQuickView(connection);
     return linearIssueTracker.getQuickView(connection);
   });
-  register("cto.getLinearIssuePickerData", { viewerAllowed: true }, async () => {
+  register("cto.getLinearIssuePickerData", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async () => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { projects: [], users: [], states: [] };
@@ -5175,7 +5186,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     ]);
     return { projects, users, states };
   });
-  register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
+  register("cto.searchLinearIssues", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
@@ -5204,7 +5215,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     };
     return linearIssueTracker.searchIssues(query);
   });
-  register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
+  register("cto.getLinearIssueComments", { viewerAllowed: true, requiresBuiltinSurface: "linear" }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
     if (!issueId) return [];
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
@@ -5928,11 +5939,23 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     ) => Promise<unknown>,
     scope: SyncRemoteCommandDescriptor["scope"] = "project",
   ) => {
-    const { observesAbort = false, ...descriptorPolicy } = policy;
+    const { observesAbort = false, requiresBuiltinSurface, ...descriptorPolicy } = policy;
+    // Checked per call, not at registration: a plugin can be installed or
+    // removed while the daemon is up, and the registry is built once.
+    const gatedHandler = requiresBuiltinSurface
+      ? async (
+          payload: Record<string, unknown>,
+          context: SyncRemoteCommandExecutionContext,
+        ): Promise<unknown> => {
+          const denial = buildMissingSurfaceDenial(requiresBuiltinSurface);
+          if (denial) throw codedError(denial.message, "plugin_not_installed");
+          return handler(payload, context);
+        }
+      : handler;
     registry.set(action, {
       descriptor: { action, scope, policy: descriptorPolicy },
       observesAbort,
-      handler,
+      handler: gatedHandler,
     });
   };
 

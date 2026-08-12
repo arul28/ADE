@@ -16,6 +16,7 @@ import { ChatMarkdown } from "../chat/chatMarkdown";
 import { useRootAppStore } from "../../state/appStore";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { parsePluginManifest, type PluginManifest } from "../../../shared/plugins/manifest";
+import { builtinSurfaceOwner } from "../../../shared/plugins/builtinSurfaces";
 import {
   installPlugin,
   openPluginLogs,
@@ -85,6 +86,11 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
 
   const [installTarget, setInstallTarget] = React.useState<InstallDialogTarget | null>(null);
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
+  // Uninstalling the Linear package deletes the stored Linear credentials, so
+  // the dialog has to say so before the user commits — it is the one part of a
+  // removal that is not just "this comes back when you reinstall". Keyed off
+  // the shared owner table rather than a literal id.
+  const disconnectsLinear = pluginId === builtinSurfaceOwner("linear").ownerPluginId;
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
@@ -349,6 +355,11 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
           </div>
         }
       >
+        {disconnectsLinear ? (
+          <p style={{ margin: "0 0 8px", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, lineHeight: 1.6 }}>
+            This disconnects Linear. You will sign in again if you reinstall it.
+          </p>
+        ) : null}
         <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
           Other machines keep their own copy. You can install it again at any time.
         </p>

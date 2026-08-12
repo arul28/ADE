@@ -35,15 +35,29 @@ import {
  */
 export const BUNDLED_AGENT_SKILLS = Object.freeze([
   "ade-cli-control-plane",
-  "ade-ios-simulator",
-  "ade-app-control",
   "ade-browser",
   "ade-pr-workflows",
   "ade-lanes-git",
-  "ade-linear",
   "ade-proof-artifacts",
   "ade-deeplinks",
 ]);
+
+/**
+ * Skills that ship inside the plugin package that owns them, keyed by the
+ * packaged `plugins/<pluginId>` directory.
+ *
+ * They are deliberately NOT in the shared root above: a skill in that root
+ * loads on every machine, and these three describe surfaces a machine only has
+ * when the owning plugin is installed. The packaging assertion moves with them
+ * — the shipped bytes must still be there, just one directory deeper — because
+ * "the plugin is installable but its skill is missing" is invisible until an
+ * agent goes looking for a capability the Marketplace just promised.
+ */
+export const PLUGIN_BUNDLED_AGENT_SKILLS = Object.freeze({
+  "ade-linear": Object.freeze(["ade-linear"]),
+  "ade-ios-sim": Object.freeze(["ade-ios-simulator"]),
+  "ade-app-control": Object.freeze(["ade-app-control"]),
+});
 
 /** The JS entry points that must survive the runtime-fetched exclusions. */
 const RUNTIME_TOOL_JS_ENTRY_POINTS = Object.freeze([
@@ -97,6 +111,40 @@ export function createPackagedTreeAssertions({ fail }) {
         path.join(agentSkillsRoot, skillName, "SKILL.md"),
         `bundled ADE agent skill ${skillName}`,
       );
+    }
+    for (const skillNames of Object.values(PLUGIN_BUNDLED_AGENT_SKILLS)) {
+      for (const skillName of skillNames) {
+        // The gate only works if the skill is in ONE place. A stale copy left in
+        // the shared root would load on a machine that never installed the
+        // plugin, which is the whole thing this move exists to stop.
+        await assertPathMissing(
+          path.join(agentSkillsRoot, skillName),
+          `plugin-owned agent skill ${skillName} in the shared bundled root`,
+        );
+      }
+    }
+  }
+
+  /**
+   * The bundled plugin packages carry their own skills; assert each one shipped
+   * with the package, plus the `.claude-plugin` marker that is what lets Claude
+   * load the root at all (it reads `--plugin-dir`, never ADE_AGENT_SKILLS_DIRS).
+   */
+  async function assertPluginBundledAgentSkills(pluginsRoot) {
+    await assertPathExists(pluginsRoot, "bundled plugin packages root");
+    for (const [pluginId, skillNames] of Object.entries(PLUGIN_BUNDLED_AGENT_SKILLS)) {
+      const skillsRoot = path.join(pluginsRoot, pluginId, "skills");
+      await assertPathExists(skillsRoot, `bundled plugin ${pluginId} skills root`);
+      await assertPathExists(
+        path.join(skillsRoot, ".claude-plugin", "plugin.json"),
+        `bundled plugin ${pluginId} Claude plugin marker`,
+      );
+      for (const skillName of skillNames) {
+        await assertPathExists(
+          path.join(skillsRoot, skillName, "SKILL.md"),
+          `bundled plugin ${pluginId} agent skill ${skillName}`,
+        );
+      }
     }
   }
 
@@ -268,6 +316,7 @@ export function createPackagedTreeAssertions({ fail }) {
   return {
     assertAsarEmbedsNoRuntimeFetchedToolPayload,
     assertBundledAgentSkills,
+    assertPluginBundledAgentSkills,
     assertNoRuntimeFetchedToolPackages,
     assertPackagedTreeSizeBudget,
     assertPackagedTuiEsmShims,

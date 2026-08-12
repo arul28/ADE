@@ -22,11 +22,15 @@ export type AdeBundledAgentSkill = (typeof adeBundledAgentSkills)[number];
 /**
  * Skills whose whole subject is a compiled surface an official plugin owns.
  *
- * Every one of these stays LOADABLE regardless — `ade skill show ade-linear`
- * works on any machine, and so does every action behind it. What the install
- * state changes is whether the bootstrap roster tells an agent the skill is
- * there, because pointing an agent at the iOS Simulator on a machine that has
- * no iOS Simulator pane costs it a turn to find out.
+ * These SHIP INSIDE their plugin package (`plugins/<id>/skills/`), not in ADE's
+ * bundled skills root, so the install state decides whether they exist at all:
+ * uninstall the plugin and the root goes with it, for every runtime and for
+ * `ade skill list` alike. Naming them here keeps the bootstrap roster from
+ * advertising a skill this machine cannot load — pointing an agent at the iOS
+ * Simulator on a machine that has no iOS Simulator pane costs it a turn to find
+ * out. The agent is not left without the capability either way: the raw tools
+ * (`xcrun simctl`, the Linear API, AppleScript) are still there; what the plugin
+ * carries is ADE's premium layer over them.
  */
 const SKILL_BUILTIN_SURFACE: Partial<Record<AdeBundledAgentSkill, PluginBuiltinSurfaceId>> = {
   "ade-ios-simulator": "ios",

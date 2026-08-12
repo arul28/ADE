@@ -8,10 +8,16 @@ import { DevToolsRow } from "./DevToolsRow";
 import { AiRuntimesBand } from "./AiRuntimesBand";
 import { GitHubCard } from "./GitHubCard";
 import { LinearCard } from "./LinearCard";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
+  // Gated at the render site rather than inside `LinearCard`: the card sits in
+  // a two-up flex row, and a component that returns null would leave its
+  // column behind as dead space next to GitHub. Dropping the column lets
+  // GitHub take the full width on a machine without `ade-linear`.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [busyAction, setBusyAction] = useState<"finish" | "skip" | null>(null);
   const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -95,7 +101,7 @@ export function ProjectSetupPage() {
             <DevToolsRow onGitStatusChange={setGitInstalled} />
             <div style={connectionsRowStyle}>
               <div style={connectionColStyle}><GitHubCard /></div>
-              <div style={connectionColStyle}><LinearCard /></div>
+              {linearSurfaceVisible ? <div style={connectionColStyle}><LinearCard /></div> : null}
             </div>
           </div>
         </div>

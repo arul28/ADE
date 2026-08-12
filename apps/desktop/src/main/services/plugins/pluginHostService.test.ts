@@ -535,6 +535,38 @@ describe("remote install lifecycle through the sync adapter (R2)", () => {
     expect(store!.readPanel("hello-plugin", "main")).toBeNull();
   });
 
+  it("drops the account connection the plugin owned, so a reinstall has to reconnect", async () => {
+    // Uninstalling a plugin takes its whole vertical: pane, action domains,
+    // skills — and the third-party connection it existed to hold. A Linear
+    // token surviving the removal would be a credential on disk with nothing
+    // left on the machine that could use it.
+    const { host, plugins } = await hostWithFixture();
+    const disconnected: string[] = [];
+    host.setMachineContext({
+      disconnectAccountsForPlugin: (pluginId) => {
+        disconnected.push(pluginId);
+      },
+    });
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(disconnected).toEqual(["hello-plugin"]);
+  });
+
+  it("still frees data and secrets when the account disconnect throws", async () => {
+    const { host, plugins, store } = await hostWithFixture();
+    host.setMachineContext({
+      disconnectAccountsForPlugin: () => {
+        throw new Error("credential store is unreachable");
+      },
+    });
+    store!.updatePanel("hello-plugin", "main", { schema: { v: 1, title: "Live" }, vocabVersion: 1 });
+
+    await expect(plugins.uninstall({ pluginId: "hello-plugin" })).resolves.toBeDefined();
+
+    expect(store!.readPanel("hello-plugin", "main")).toBeNull();
+  });
+
   it("stops a running child on a remote disable and restarts it on a remote enable", async () => {
     const { supervisors } = await hostWithFixture();
     const remote = requirePluginInstallService();

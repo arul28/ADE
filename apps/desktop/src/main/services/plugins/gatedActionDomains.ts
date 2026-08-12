@@ -1,0 +1,207 @@
+/**
+ * Refusing an action domain whose plugin is not on this machine.
+ *
+ * A plugin is a whole vertical: its pane, its agent tooling and its skills
+ * arrive and leave together. Round 2 hid the UI; hiding the UI alone would only
+ * have moved the confusion into the agent, which would keep calling
+ * `linear.comment` against a machine that has no Linear.
+ *
+ * ## The refusal is policy, never a missing method
+ *
+ * `methodNotFound` reads as "this ADE is too old" and sends a client down its
+ * legacy-host fallback — a bug class this repo has already paid for once. A
+ * gated domain exists, is spelled correctly, and is refused, so it answers
+ * `policyDenied` with a message that names the fix.
+ *
+ * ## The copy comes from the catalog, not from here
+ *
+ * This module knows only the JOIN KEY: which plugin id owns which domain, from
+ * the shared surface table. The human name comes from the bundled package
+ * manifests and the cached registry index — the same two sources the
+ * Marketplace renders from. When neither knows the plugin, there is NO invented
+ * hint: the caller falls back to its plain unknown-domain error rather than
+ * telling a user to install something ADE cannot name.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+
+import {
+  BUILTIN_SURFACE_OWNERS,
+  builtinSurfaceInstalled,
+  builtinSurfaceOwnerForActionDomain,
+  gatedBuiltinActionDomains,
+  type BuiltinSurfaceOwner,
+} from "../../../shared/plugins/builtinSurfaces";
+import { isRecord } from "../../../shared/plugins/parse";
+import { parsePluginRegistryIndex } from "../../../shared/plugins/registryIndex";
+import { resolveBuiltinPluginsRoot } from "./pluginInstallService";
+import { readPluginInstallRecords, resolvePluginsRoot } from "./pluginRegistryFile";
+
+export type GatedDomainDenial = {
+  domain: string;
+  pluginId: string;
+  message: string;
+  data: { kind: "plugin_not_installed"; domain: string; pluginId: string };
+};
+
+/** Every domain any plugin gates, whether or not that plugin is installed. */
+export function allGatedActionDomains(): ReadonlySet<string> {
+  return new Set(gatedBuiltinActionDomains());
+}
+
+/**
+ * The domains to refuse right now: owned by a plugin that is not installed and
+ * enabled on this machine.
+ *
+ * Reads the registry leniently, so a `state.json` this build cannot parse gates
+ * everything rather than opening every plugin domain on a corrupt file.
+ */
+export function resolveDisabledActionDomains(
+  pluginsRoot: string = resolvePluginsRoot(),
+): Set<string> {
+  const records = [...readPluginInstallRecords(pluginsRoot).values()];
+  const disabled = new Set<string>();
+  for (const domain of gatedBuiltinActionDomains()) {
+    const owner = builtinSurfaceOwnerForActionDomain(domain);
+    if (!owner) continue;
+    if (!builtinSurfaceInstalled(owner.builtinId, records)) disabled.add(domain);
+  }
+  return disabled;
+}
+
+/** How a plugin id becomes a name a user recognizes. Injectable for tests. */
+export type PluginDisplayNameLookup = (pluginId: string) => string | null;
+
+function bundledPackageDisplayName(pluginId: string, builtinRoot: string | null): string | null {
+  if (!builtinRoot) return null;
+  // Bundled packages sit one category deep at most, same as the install path's
+  // own walk. Reading the manifest directly keeps this a cold-path fs read with
+  // no service to construct.
+  const candidates = [path.join(builtinRoot, pluginId)];
+  try {
+    for (const entry of fs.readdirSync(builtinRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) candidates.push(path.join(builtinRoot, entry.name, pluginId));
+    }
+  } catch {
+    // An unreadable bundled root is one missing source, not a failure.
+  }
+  for (const candidate of candidates) {
+    try {
+      const decoded: unknown = JSON.parse(fs.readFileSync(path.join(candidate, "plugin.json"), "utf8"));
+      if (isRecord(decoded) && typeof decoded.displayName === "string" && decoded.displayName.trim()) {
+        return decoded.displayName.trim();
+      }
+    } catch {
+      // Not this candidate.
+    }
+  }
+  return null;
+}
+
+function cachedRegistryDisplayName(pluginId: string, pluginsRoot: string): string | null {
+  // The registry service owns fetching and TTLs; the denial path only wants
+  // whatever already landed on disk, so it reads the cache file itself rather
+  // than constructing a service (and a logger) to answer one string.
+  try {
+    const decoded: unknown = JSON.parse(
+      fs.readFileSync(path.join(pluginsRoot, ".index-cache.json"), "utf8"),
+    );
+    if (!isRecord(decoded)) return null;
+    const parsed = parsePluginRegistryIndex(decoded.index);
+    const entry = parsed.index?.entries.find((candidate) => candidate.pluginId === pluginId);
+    // `displayName` falls back to the id inside the parser, which is not a name
+    // a user recognizes — treat that as "the catalog does not know it".
+    const name = entry?.displayName?.trim();
+    return name && name !== pluginId ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The default lookup: bundled manifests first, then the cached registry index.
+ *
+ * Bundled first because it ships with the app and answers on a fresh, offline
+ * machine — exactly the machine most likely to be missing a plugin.
+ */
+export function pluginDisplayNameFromCatalog(
+  pluginId: string,
+  options: { builtinPluginsRoot?: string | null; pluginsRoot?: string } = {},
+): string | null {
+  const builtinRoot = options.builtinPluginsRoot !== undefined
+    ? options.builtinPluginsRoot
+    : resolveBuiltinPluginsRoot();
+  return bundledPackageDisplayName(pluginId, builtinRoot)
+    ?? cachedRegistryDisplayName(pluginId, options.pluginsRoot ?? resolvePluginsRoot());
+}
+
+const defaultLookup: PluginDisplayNameLookup = (pluginId) => pluginDisplayNameFromCatalog(pluginId);
+
+/**
+ * The one sentence every refusal uses, or null when no catalog can name the
+ * plugin — in which case the caller keeps its own generic error rather than
+ * telling a user to install something ADE cannot name.
+ */
+export function pluginNotInstalledMessage(
+  pluginId: string,
+  lookupDisplayName: PluginDisplayNameLookup = defaultLookup,
+): string | null {
+  const displayName = lookupDisplayName(pluginId)?.trim();
+  if (!displayName) return null;
+  return `This machine doesn't have ${displayName}. It's provided by the ${pluginId} plugin — available in the Marketplace.`;
+}
+
+/**
+ * The refusal for a gated domain, or null when there is nothing honest to say.
+ *
+ * Null has two causes and the caller treats them the same way — fall through to
+ * the ordinary unknown-domain error: the domain is not gated at all (an ADE
+ * domain, or a typo), or it is gated but no catalog can name its owner.
+ */
+export function buildGatedDomainDenial(
+  domain: string,
+  lookupDisplayName: PluginDisplayNameLookup = defaultLookup,
+): GatedDomainDenial | null {
+  const owner: BuiltinSurfaceOwner | null = builtinSurfaceOwnerForActionDomain(domain);
+  if (!owner) return null;
+  const message = pluginNotInstalledMessage(owner.ownerPluginId, lookupDisplayName);
+  if (!message) return null;
+  return {
+    domain,
+    pluginId: owner.ownerPluginId,
+    message,
+    data: { kind: "plugin_not_installed", domain, pluginId: owner.ownerPluginId },
+  };
+}
+
+/**
+ * The same refusal for a whole compiled surface, for transports that expose a
+ * plugin's capability as named methods rather than as an action domain — the
+ * sync command surface phones and the web client call.
+ *
+ * Null means ONLY "the surface is installed". Unlike the action-domain helper,
+ * a cold catalog must not turn into a pass here: the domain path still refuses
+ * with its own generic error when this returns null, but a sync command has no
+ * such fallback, so failing open would leave every paired phone reading and
+ * writing through a plugin the machine no longer has. The catalog decides how
+ * much ADVICE the message carries, never whether the call is allowed.
+ */
+export function buildMissingSurfaceDenial(
+  builtinId: string,
+  options: { pluginsRoot?: string; lookupDisplayName?: PluginDisplayNameLookup } = {},
+): { pluginId: string; message: string } | null {
+  const owner = BUILTIN_SURFACE_OWNERS.find((candidate) => candidate.builtinId === builtinId);
+  if (!owner) return null;
+  const pluginsRoot = options.pluginsRoot ?? resolvePluginsRoot();
+  const records = [...readPluginInstallRecords(pluginsRoot).values()];
+  if (builtinSurfaceInstalled(owner.builtinId, records)) return null;
+  const message = pluginNotInstalledMessage(owner.ownerPluginId, options.lookupDisplayName ?? defaultLookup);
+  return {
+    pluginId: owner.ownerPluginId,
+    // No catalog reachable: name the plugin id, which is a registered fact, and
+    // stop there. Pointing someone at the Marketplace for a package ADE cannot
+    // describe would be advice invented to fill the gap.
+    message: message ?? `This machine doesn't have the ${owner.ownerPluginId} plugin.`,
+  };
+}

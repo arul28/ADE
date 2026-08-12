@@ -23,6 +23,7 @@ function fail(message) {
 const {
   assertAsarEmbedsNoRuntimeFetchedToolPayload,
   assertBundledAgentSkills,
+  assertPluginBundledAgentSkills,
   assertNoRuntimeFetchedToolPackages,
   assertPackagedTreeSizeBudget,
   assertPackagedTuiEsmShims,
@@ -427,6 +428,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
+  const bundledPluginsRoot = path.join(resourcesPath, "plugins");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
@@ -440,6 +442,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
     await assertPathExists(path.join(resourcesPath, "ade-cli", relativePath), label);
   }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
+  await assertPluginBundledAgentSkills(bundledPluginsRoot);
   await assertExecutable(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");

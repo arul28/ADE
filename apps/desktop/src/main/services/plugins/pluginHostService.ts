@@ -108,6 +108,19 @@ export type PluginMachineContext = {
   localMachineKey?: () => string | null;
   listAccountMachines?: () => Promise<{ machineKey: string; label?: string | null; online?: boolean }[] | null>;
   reportInstall?: (install: { pluginId: string; version: string }) => void | Promise<void>;
+  /**
+   * Drop the third-party account connection a plugin owned, on uninstall.
+   *
+   * A plugin is the whole vertical, and the account link is part of it: with
+   * `ade-linear` gone there is no pane to read the issues, no action domain to
+   * write them and no skill to explain them, so a stored Linear token would be
+   * a credential on disk with nothing left that can use it. The uninstall
+   * dialog says so before the user commits.
+   *
+   * Supplied late, like the rest of this bag, because the credential services
+   * are built well after the host.
+   */
+  disconnectAccountsForPlugin?: (pluginId: string) => void | Promise<void>;
 };
 
 export type PluginHostService = {
@@ -437,6 +450,17 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       await secrets.removeAll(pluginId);
     } catch (error) {
       logger.warn("plugin.secret_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The account link the plugin owned, if it owned one. Deliberately last:
+    // it is the only step a user could be surprised by, and it must not be able
+    // to strand the data and secret cleanup above if it throws.
+    try {
+      await machine.disconnectAccountsForPlugin?.(pluginId);
+    } catch (error) {
+      logger.warn("plugin.account_disconnect_failed", {
         pluginId,
         error: error instanceof Error ? error.message : String(error),
       });

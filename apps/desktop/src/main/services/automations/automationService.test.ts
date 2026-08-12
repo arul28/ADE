@@ -12,6 +12,7 @@ import {
   resolveLaneNameTemplate,
   triggerMatches,
 } from "./automationService";
+import type { AutomationAdeActionRegistry } from "./automationService";
 import { openKvDb } from "../state/kvDb";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
@@ -3265,5 +3266,120 @@ describe("automation ingress storage bounds", () => {
     expect(mapExecRows(raw.exec(
       "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
     ))[0]?.count).toBe(1);
+  });
+});
+
+describe("ade-action failure reporting", () => {
+  /**
+   * Action domains are gated: a domain whose owning plugin is not installed
+   * rejects the call with a policyDenied error whose message is the whole
+   * point ("...provided by the ade-linear plugin — available in the
+   * Marketplace"). A runner that flattened that into "Action failed" would
+   * leave the user staring at a red row with no way to learn the fix, so the
+   * message has to survive all the way to the recorded run and action rows —
+   * which is exactly what the history UI renders (`RunRow`/`RunDetail` read
+   * `errorMessage`).
+   */
+  const POLICY_DENIED_MESSAGE =
+    "This machine doesn't have Linear. It's provided by the ade-linear plugin — available in the Marketplace.";
+
+  const buildAdeActionRule = (id: string, adeAction: Record<string, unknown>) => {
+    const trigger = { type: "manual" as const };
+    return {
+      id,
+      name: id,
+      enabled: true,
+      mode: "review" as const,
+      reviewProfile: "quick" as const,
+      trigger,
+      triggers: [trigger],
+      executor: { mode: "automation-bot" as const },
+      toolPalette: ["repo"] as const,
+      contextSources: [],
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: `auto:${id}`,
+      execution: { kind: "built-in" as const, builtIn: { actions: [{ type: "ade-action", adeAction }] } },
+      actions: [],
+    };
+  };
+
+  const createHarness = (rule: ReturnType<typeof buildAdeActionRule>, registry: AutomationAdeActionRegistry) => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        list: async () => [],
+        getLaneWorktreePath: () => "/tmp",
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: "/tmp" }),
+      } as any,
+      projectConfigService: {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } }),
+      } as any,
+      adeActionRegistry: registry,
+    });
+    return { service, raw };
+  };
+
+  it("carries a rejected action's own message onto the run and action rows", async () => {
+    const rule = buildAdeActionRule("linear-gated", { domain: "linear", action: "comment", args: { issueId: "ADE-1" } });
+    const comment = vi.fn(async () => {
+      throw new Error(POLICY_DENIED_MESSAGE);
+    });
+    const { service, raw } = createHarness(rule, {
+      isAllowed: () => true,
+      getService: () => ({ comment }),
+      listDomains: () => ["linear"],
+      listActions: () => ["comment"],
+    });
+
+    try {
+      const run = await service.triggerManually({ id: rule.id });
+
+      expect(comment).toHaveBeenCalledTimes(1);
+      expect(run.status).toBe("failed");
+      // The exact sentence, not a generic stand-in.
+      expect(run.errorMessage).toBe(POLICY_DENIED_MESSAGE);
+
+      // `getRunDetail` is what the history pane reads; both the run banner and
+      // the per-action row have to name the fix.
+      const detail = await service.getRunDetail({ runId: run.id });
+      expect(detail?.run.errorMessage).toBe(POLICY_DENIED_MESSAGE);
+      expect(detail?.actions).toHaveLength(1);
+      expect(detail?.actions[0]).toMatchObject({
+        actionType: "ade-action",
+        status: "failed",
+        errorMessage: POLICY_DENIED_MESSAGE,
+        output: POLICY_DENIED_MESSAGE,
+      });
+
+      expect(mapExecRows(raw.exec("select status, error_message from automation_action_results"))).toEqual([
+        { status: "failed", error_message: POLICY_DENIED_MESSAGE },
+      ]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("names the domain when the registry refuses the action outright", async () => {
+    const rule = buildAdeActionRule("linear-not-allowed", { domain: "linear", action: "comment" });
+    const { service } = createHarness(rule, {
+      isAllowed: () => false,
+      getService: () => null,
+      listDomains: () => [],
+      listActions: () => [],
+    });
+
+    try {
+      const run = await service.triggerManually({ id: rule.id });
+      expect(run.status).toBe("failed");
+      expect(run.errorMessage).toContain("linear.comment");
+    } finally {
+      service.dispose();
+    }
   });
 });

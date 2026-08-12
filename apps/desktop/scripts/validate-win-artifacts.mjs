@@ -59,6 +59,7 @@ const isLocalWindowsTestBuild =
 const {
   assertAsarEmbedsNoRuntimeFetchedToolPayload,
   assertBundledAgentSkills,
+  assertPluginBundledAgentSkills,
   assertNoRuntimeFetchedToolPackages,
   assertPackagedTreeSizeBudget,
   assertPackagedTuiEsmShims,
@@ -602,6 +603,7 @@ async function validatePackagedRuntime(appDir) {
   const uninstallCleanupPath = path.join(resourcesPath, "ade-cli", "windows-uninstall-cleanup.ps1");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
+  const bundledPluginsRoot = path.join(resourcesPath, "plugins");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
@@ -620,6 +622,7 @@ async function validatePackagedRuntime(appDir) {
     );
   }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
+  await assertPluginBundledAgentSkills(bundledPluginsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");

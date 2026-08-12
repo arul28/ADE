@@ -1452,27 +1452,35 @@ function withBundledClaudePlugin(
   if (!isClaudeTrackedCliToolType(toolType)) {
     return { args, startupCommand };
   }
-  const pluginRoot = claudeAgentSkillPluginRoots(env)[0];
-  if (!pluginRoot) return { args, startupCommand };
+  // More than one root since plugin-owned skills moved into their packages:
+  // ADE's bundled root plus one per installed plugin that contributes skills.
+  // Each needs its own `--plugin-dir`; a session that saw only the first would
+  // silently lose the Linear / iOS Simulator / App Control skills.
+  const pluginRoots = claudeAgentSkillPluginRoots(env);
+  if (!pluginRoots.length) return { args, startupCommand };
 
   let normalizedArgs = args;
-  if (isClaudeBinaryCommand(command)) {
-    if (!hasClaudePluginRoot(args, pluginRoot)) {
-      normalizedArgs = ["--plugin-dir", pluginRoot, ...args];
-    }
-  } else if (command?.trim()) {
-    const commandLineIndex = shellCommandLineArgIndex(args);
-    if (commandLineIndex >= 0) {
-      const rewritten = withClaudePluginInCommandLine(args[commandLineIndex]!, pluginRoot);
-      if (rewritten !== args[commandLineIndex]) {
-        normalizedArgs = args.slice();
-        normalizedArgs[commandLineIndex] = rewritten;
+  let nextStartupCommand = startupCommand;
+  for (const pluginRoot of pluginRoots) {
+    if (isClaudeBinaryCommand(command)) {
+      if (!hasClaudePluginRoot(normalizedArgs, pluginRoot)) {
+        normalizedArgs = ["--plugin-dir", pluginRoot, ...normalizedArgs];
+      }
+    } else if (command?.trim()) {
+      const commandLineIndex = shellCommandLineArgIndex(normalizedArgs);
+      if (commandLineIndex >= 0) {
+        const rewritten = withClaudePluginInCommandLine(normalizedArgs[commandLineIndex]!, pluginRoot);
+        if (rewritten !== normalizedArgs[commandLineIndex]) {
+          normalizedArgs = normalizedArgs.slice();
+          normalizedArgs[commandLineIndex] = rewritten;
+        }
       }
     }
+    nextStartupCommand = withClaudePluginInCommandLine(nextStartupCommand, pluginRoot);
   }
   return {
     args: normalizedArgs,
-    startupCommand: withClaudePluginInCommandLine(startupCommand, pluginRoot),
+    startupCommand: nextStartupCommand,
   };
 }
 

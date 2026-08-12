@@ -17,6 +17,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import { getAdeAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
+import { listPluginAgentSkillRoots } from "../../../desktop/src/main/services/plugins/pluginInstallService";
 
 export class CliSkillUsageError extends Error {}
 
@@ -89,9 +90,26 @@ function parseSkillFile(content: string, fallbackName: string): ParsedSkillFile 
 
 function bundledSkillRoots(): string[] {
   // Prefer roots that actually exist and contain at least one <skill>/SKILL.md.
-  const candidates = getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true });
+  //
+  // Installed plugins contribute skill roots too, and they come LAST so ADE's
+  // own copy of a name always wins the de-dupe below. Listing them here is what
+  // keeps `ade skill list` honest: a plugin-owned skill (ade-linear,
+  // ade-ios-simulator, ade-app-control) is exactly as present to this catalogue
+  // as it is to the runtimes, which read the same roots off
+  // ADE_AGENT_SKILLS_DIRS — present when the owning plugin is installed and
+  // enabled, absent when it is not.
+  const candidates = [
+    ...getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true }),
+    ...listPluginAgentSkillRoots(),
+  ];
   const existing: string[] = [];
+  const seen = new Set<string>();
   for (const root of candidates) {
+    // The host already appends the plugin roots to ADE_AGENT_SKILLS_DIRS, so a
+    // launched session sees each of them twice here; keep the first sighting.
+    const key = path.resolve(root);
+    if (seen.has(key)) continue;
+    seen.add(key);
     try {
       if (!fs.statSync(root).isDirectory()) continue;
     } catch {

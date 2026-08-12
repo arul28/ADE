@@ -101,6 +101,8 @@ import {
   resolvePluginsRoot,
 } from "../../desktop/src/main/services/plugins/pluginInstallService";
 import { readPluginRegistryFile } from "../../desktop/src/main/services/plugins/pluginRegistryFile";
+import { buildGatedDomainDenial } from "../../desktop/src/main/services/plugins/gatedActionDomains";
+import { builtinSurfaceOwner } from "../../desktop/src/shared/plugins/builtinSurfaces";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 import {
@@ -1611,6 +1613,14 @@ export async function createAdeRuntime(args: {
         install,
       );
     },
+    // Removing the plugin removes the connection it was for. The owner id comes
+    // from the shared surface table rather than a literal, so this stays correct
+    // if the Linear package is ever renamed.
+    disconnectAccountsForPlugin: (pluginId) => {
+      if (pluginId !== builtinSurfaceOwner("linear").ownerPluginId) return;
+      headlessLinearServices.linearCredentialService.clearToken();
+      logger.info("plugin.linear_disconnected_on_uninstall", { pluginId });
+    },
   });
   const syncDeviceIdPath = path.join(
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
@@ -2160,6 +2170,13 @@ export async function createAdeRuntime(args: {
             `Action '${domain}.${action}' is not available to plugins.`,
           );
         }
+        // A plugin asking for another plugin's domain gets the same refusal a
+        // user's agent gets. Named, so a plugin author reading its own error log
+        // learns which package it actually depends on.
+        const gated = buildGatedDomainDenial(actionDomain);
+        if (gated) {
+          throw new PluginSdkError("not_permitted", gated.message);
+        }
         const service = getAdeActionDomainServices(runtime)[actionDomain];
         const callable = service?.[action];
         if (typeof callable !== "function") {
@@ -2194,6 +2211,9 @@ export async function createAdeRuntime(args: {
     listActions(domain: string): string[] {
       return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
         .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+    },
+    unavailableReason(domain: string): string | null {
+      return buildGatedDomainDenial(domain)?.message ?? null;
     },
   };
   automationService?.bindAdeActionRegistry(adeActionLookup);

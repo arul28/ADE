@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
+  refreshDisabledAdeActionDomainsForTests,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
@@ -31,6 +32,61 @@ const originalAdeEnv = new Map<string, string | undefined>(
   ADE_ENV_KEYS.map((key) => [key, process.env[key]]),
 );
 
+/**
+ * Point the machine ADE dir at a scratch plugin registry.
+ *
+ * Plugin-owned action domains — Linear's, the iOS Simulator's, App Control's —
+ * are refused on a machine whose plugin is not installed. Without this the
+ * suite would describe whatever plugins the developer running it happens to
+ * have, and `linear_issue_tracker.createComment` would pass or fail by
+ * accident. Most of this file describes a fully equipped machine, so that is
+ * what it installs; the gating block below flips it to a bare one.
+ */
+const pluginScratchDirs: string[] = [];
+const originalAdeHome = process.env.ADE_HOME;
+const originalBuiltinPluginsDir = process.env.ADE_BUILTIN_PLUGINS_DIR;
+/** The repo's real bundled packages — the catalog the refusal copy reads names from. */
+const bundledPackagesRoot = path.resolve(__dirname, "../../../plugins");
+
+function useMachineWithPlugins(
+  pluginIds: readonly string[],
+  options: { catalog?: boolean } = {},
+): void {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rpc-plugins-"));
+  pluginScratchDirs.push(home);
+  fs.mkdirSync(path.join(home, "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "plugins", "state.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: Object.fromEntries(pluginIds.map((pluginId) => [pluginId, {
+        version: "1.0.0",
+        enabled: true,
+        source: { kind: "builtin" },
+        installedAt: "2026-08-01T00:00:00.000Z",
+      }])),
+    }),
+  );
+  process.env.ADE_HOME = home;
+  // Off by default so a bare-id test cannot resolve packages out of the
+  // checkout; the gating block turns it on because naming the plugin is the
+  // point of its assertions.
+  if (options.catalog) process.env.ADE_BUILTIN_PLUGINS_DIR = bundledPackagesRoot;
+  else delete process.env.ADE_BUILTIN_PLUGINS_DIR;
+  refreshDisabledAdeActionDomainsForTests();
+}
+
+function restoreMachinePlugins(): void {
+  if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalAdeHome;
+  if (originalBuiltinPluginsDir === undefined) delete process.env.ADE_BUILTIN_PLUGINS_DIR;
+  else process.env.ADE_BUILTIN_PLUGINS_DIR = originalBuiltinPluginsDir;
+  refreshDisabledAdeActionDomainsForTests();
+  while (pluginScratchDirs.length) {
+    fs.rmSync(pluginScratchDirs.pop()!, { recursive: true, force: true });
+  }
+}
+
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", {
     value,
@@ -40,12 +96,14 @@ function setPlatform(value: NodeJS.Platform): void {
 
 beforeEach(() => {
   resetBuiltInBrowserActorCapabilitiesForTest();
+  useMachineWithPlugins(["ade-linear", "ade-ios-sim", "ade-app-control"]);
   for (const key of ADE_ENV_KEYS) {
     delete process.env[key];
   }
 });
 
 afterEach(() => {
+  restoreMachinePlugins();
   setPlatform(originalPlatform);
   for (const key of ADE_ENV_KEYS) {
     const value = originalAdeEnv.get(key);
@@ -6488,5 +6546,116 @@ describe("run_ade_action plugin domain", () => {
     expect(names).toContain("plugin.usageSummary");
     expect(names).not.toContain("plugin.install");
     expect(names).not.toContain("plugin.uninstall");
+  });
+});
+
+describe("plugin-gated action domains", () => {
+  /**
+   * The refusal has to be POLICY. `methodNotFound` reads as "this host is too
+   * old" and sends a client down a legacy fallback — the exact way a scope
+   * denial once turned into a silent wrong path in this codebase — so the two
+   * assertions that matter most here are the code and the message, not the
+   * mere fact that the call failed.
+   */
+  it("refuses a domain whose plugin is not installed, naming the plugin that provides it", async () => {
+    useMachineWithPlugins([], { catalog: true });
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "linear_issue_tracker",
+      action: "createComment",
+      argsList: ["ENG-431", "All green"],
+    });
+
+    expect(denied?.isError).toBe(true);
+    const text = JSON.stringify(denied);
+    expect(text).toContain("ade-linear plugin");
+    expect(text).toContain("Marketplace");
+    expect(fixture.runtime.linearIssueTracker.createComment).not.toHaveBeenCalled();
+  });
+
+  it("raises policyDenied rather than methodNotFound", async () => {
+    useMachineWithPlugins([], { catalog: true });
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const refused: any = await (handler as any)({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/actions/call",
+      params: {
+        name: "run_ade_action",
+        arguments: { domain: "ios_simulator", action: "listDevices" },
+      },
+    });
+
+    expect(refused.error.code).toBe(JsonRpcErrorCode.policyDenied);
+    expect(refused.error.code).not.toBe(JsonRpcErrorCode.methodNotFound);
+    expect(refused.error.data).toMatchObject({
+      kind: "plugin_not_installed",
+      domain: "ios_simulator",
+      pluginId: "ade-ios-sim",
+    });
+  });
+
+  it("keeps its own generic error when no catalog can name the owner", async () => {
+    // The refusal still happens — what is withheld is the ADVICE. Telling a
+    // user to install something ADE cannot name is worse than a plain error,
+    // so with no catalog reachable the call falls back to the ordinary
+    // unavailable-domain message and invents nothing.
+    useMachineWithPlugins([]);
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const refused: any = await (handler as any)({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/actions/call",
+      params: {
+        name: "run_ade_action",
+        arguments: { domain: "ios_simulator", action: "listDevices" },
+      },
+    });
+
+    expect(refused.error.message).toContain("unavailable in this runtime");
+    expect(refused.error.message).not.toContain("Marketplace");
+    expect(refused.error.message).not.toContain("plugin");
+  });
+
+  it("keeps the domain out of the advertised action list while it is refused", async () => {
+    useMachineWithPlugins([]);
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const listed = await callTool(handler, "list_ade_actions", { domain: "all" });
+    const domains = new Set(
+      (listed.structuredContent.actions as { domain: string }[]).map((entry) => entry.domain),
+    );
+
+    expect(domains.has("linear_issue_tracker")).toBe(false);
+    expect(domains.has("app_control")).toBe(false);
+    // ADE's own domains are untouched by any of this.
+    expect(domains.has("lane")).toBe(true);
+  });
+
+  it("serves the domain again once the plugin is installed", async () => {
+    useMachineWithPlugins(["ade-linear"]);
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const comment = await callTool(handler, "run_ade_action", {
+      domain: "linear_issue_tracker",
+      action: "createComment",
+      argsList: ["ENG-431", "All green"],
+    });
+
+    expect(comment?.isError).toBeUndefined();
+    expect(fixture.runtime.linearIssueTracker.createComment).toHaveBeenCalledWith("ENG-431", "All green");
   });
 });

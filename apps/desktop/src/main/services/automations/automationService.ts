@@ -227,6 +227,16 @@ export type AutomationAdeActionRegistry = {
   getService(domain: string): Record<string, unknown> | null;
   listDomains(): string[];
   listActions(domain: string): string[];
+  /**
+   * Why this domain is refused on this machine right now, or null when it is
+   * not. Optional so a binder that predates plugin gating keeps working.
+   *
+   * Asked BEFORE the allowlist and the service lookup so the run records the
+   * sentence that names the fix ("install the ade-linear plugin") rather than
+   * "service for domain 'linear_issue_tracker' is not available in this
+   * process", which tells a user nothing they can act on.
+   */
+  unavailableReason?(domain: string): string | null;
 };
 
 type TriggerIssueContext = {
@@ -2496,6 +2506,10 @@ export function createAutomationService({
     const actionName = (config.action ?? "").trim();
     if (!domain || !actionName) {
       return { status: "failed", output: "ade-action requires both 'domain' and 'action'." };
+    }
+    const unavailable = adeActionRegistryRef.unavailableReason?.(domain);
+    if (unavailable) {
+      return { status: "failed", output: unavailable };
     }
     if (!adeActionRegistryRef.isAllowed(domain, actionName)) {
       return { status: "failed", output: `Action '${domain}.${actionName}' is not in the ADE action registry.` };

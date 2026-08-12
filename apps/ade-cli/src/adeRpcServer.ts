@@ -54,6 +54,11 @@ import type { LinearConnectionStatus } from "../../desktop/src/shared/types/line
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { readInstalledBuiltinSurfaces } from "../../desktop/src/main/services/plugins/builtinSurfaceInstalls";
 import {
+  buildGatedDomainDenial,
+  resolveDisabledActionDomains,
+} from "../../desktop/src/main/services/plugins/gatedActionDomains";
+import { subscribeToPluginChanges } from "../../desktop/src/main/services/plugins/pluginEvents";
+import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
   isLaunchProfile,
@@ -1358,7 +1363,55 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
 
 const CTO_OPERATOR_TOOL_NAMES = new Set(CTO_OPERATOR_TOOL_SPECS.map((tool) => tool.name));
 const CTO_LINEAR_SYNC_TOOL_NAMES = new Set(CTO_LINEAR_SYNC_TOOL_SPECS.map((tool) => tool.name));
-const DISABLED_ADE_ACTION_DOMAINS = new Set<AdeActionDomain>();
+/**
+ * Action domains refused right now because the plugin that owns them is not
+ * installed and enabled on this machine.
+ *
+ * Live rather than constant: an install or an uninstall must take effect
+ * without a daemon restart, so the set is recomputed from the plugin registry
+ * whenever the machine reports a change. Recomputed rather than mutated in
+ * place by kind, because `plugin_changed` is a cache-invalidation hint that
+ * carries identity and never content — re-reading `state.json` is the only
+ * answer that cannot drift from it.
+ */
+let disabledAdeActionDomains: ReadonlySet<string> | null = null;
+
+function disabledAdeActionDomainSet(): ReadonlySet<string> {
+  // Resolved on first use rather than at import: this module is loaded by the
+  // CLI for every command, and reading the plugin registry to answer a question
+  // most commands never ask would put a filesystem hit on `ade --version`.
+  disabledAdeActionDomains ??= resolveDisabledActionDomains();
+  return disabledAdeActionDomains;
+}
+
+function refreshDisabledAdeActionDomains(): void {
+  disabledAdeActionDomains = null;
+}
+
+subscribeToPluginChanges((event) => {
+  if (event.kind === "installs" || event.kind === "status") refreshDisabledAdeActionDomains();
+});
+
+/** Test seam: drop the memo after a suite writes its own plugin registry. */
+export function refreshDisabledAdeActionDomainsForTests(): void {
+  refreshDisabledAdeActionDomains();
+}
+
+/**
+ * The refusal a gated domain earns. Policy, never `methodNotFound` — a client
+ * that reads "no such method" concludes the host is too old and silently takes
+ * a legacy path, which is how a permission denial once turned into a wrong
+ * fallback in this codebase.
+ *
+ * Returns null when there is nothing honest to say, and the caller keeps its
+ * ordinary unknown-domain error rather than inventing a plugin to blame.
+ */
+function gatedAdeActionDomainError(domain: string): JsonRpcError | null {
+  if (!disabledAdeActionDomainSet().has(domain)) return null;
+  const denial = buildGatedDomainDenial(domain);
+  if (!denial) return null;
+  return new JsonRpcError(JsonRpcErrorCode.policyDenied, denial.message, denial.data);
+}
 
 const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "get_environment_info",
@@ -3741,7 +3794,7 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
-    const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
+    const exposedDomains = domains.filter((entry) => !disabledAdeActionDomainSet().has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
     const actions = exposedDomains.flatMap((entry) => {
@@ -3772,12 +3825,11 @@ async function runTool(args: {
   if (name === "run_ade_action") {
     const domain = assertNonEmptyString(toolArgs.domain, "domain") as AdeActionDomain;
     const action = assertNonEmptyString(toolArgs.action, "action");
-    if (DISABLED_ADE_ACTION_DOMAINS.has(domain)) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
-    }
+    const gated = gatedAdeActionDomainError(domain);
+    if (gated) throw gated;
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
-    if (!service) {
+    if (disabledAdeActionDomainSet().has(domain) || !service) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
     }
     let callable = service[action];

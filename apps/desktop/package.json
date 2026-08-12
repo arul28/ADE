@@ -303,6 +303,7 @@
         "to": "plugins",
         "filter": [
           "**/*",
+          "**/skills/.claude-plugin/**/*",
           "!**/node_modules/**",
           "!**/.git/**",
           "!README.md"

@@ -16,9 +16,11 @@ credentials. The daemon does the authenticated Linear API call on your behalf.
 You do **not** need to know how you were launched, what mode you are in, or how
 the issue got attached. You have a task, an attached issue, and these commands.
 
-Prefer `ade linear` over any Linear MCP server or direct Linear API call — the
-`ade linear` bridge is the connection that is actually configured for this
-workspace, and it keeps the issue's ADE links and sync state consistent.
+Prefer `ade linear` over any Linear MCP server or direct Linear API call. It is
+ADE's premium layer for Linear, not the only road to it: a raw API call with a
+token of your own still works. What `ade linear` adds is the connection already
+configured for this workspace — no token to find — and the issue's ADE links and
+sync state kept consistent.
 
 ## Knowing which issue is yours
 

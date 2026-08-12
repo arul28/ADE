@@ -110,6 +110,100 @@ describe("installing a bundled package the way the web client does", () => {
   });
 });
 
+/**
+ * Skills that ship inside the plugin that owns them.
+ *
+ * `ade-linear`, `ade-ios-simulator` and `ade-app-control` describe surfaces an
+ * official plugin gates, so they live in `plugins/<id>/skills/` and not in the
+ * shared bundled root. That placement IS the gate: the existing enable/install
+ * filter answers for them, and no runtime is asked to exclude anything. The
+ * skills nobody gates have to stay put just as firmly — a move that quietly
+ * took `ade-browser` with it would be a capability regression on every machine.
+ */
+describe("plugin-owned agent skills", () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../..");
+  const repoPluginsRoot = path.join(repoRoot, "plugins");
+  const bundledSkillsRoot = path.join(repoRoot, "apps/desktop/resources/agent-skills");
+
+  const gated = [
+    { pluginId: "ade-linear", skillName: "ade-linear" },
+    // The id and the skill name are deliberately different words here.
+    { pluginId: "ade-ios-sim", skillName: "ade-ios-simulator" },
+    { pluginId: "ade-app-control", skillName: "ade-app-control" },
+  ] as const;
+
+  it.each(gated)("$skillName ships inside $pluginId and nowhere else", ({ pluginId, skillName }) => {
+    expect(fs.existsSync(path.join(repoPluginsRoot, pluginId, "skills", skillName, "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(bundledSkillsRoot, skillName))).toBe(false);
+  });
+
+  it.each(gated)("$pluginId declares its skills root as a catalogue directory", ({ pluginId, skillName }) => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(repoPluginsRoot, pluginId, "plugin.json"), "utf8"),
+    ) as { skills?: unknown };
+    // The declared path must be the directory that CONTAINS skill directories:
+    // every consumer (Codex extraRoots, ADE_AGENT_SKILLS_DIRS, `ade skill list`)
+    // reads `<root>/<skill>/SKILL.md`, so naming the skill directory itself
+    // would publish a root with no skills in it.
+    expect(manifest.skills).toEqual(["skills"]);
+    expect(fs.existsSync(path.join(repoPluginsRoot, pluginId, "skills", skillName, "SKILL.md"))).toBe(true);
+  });
+
+  it.each(gated)("$skillName is absent until $pluginId is installed, and gone again after", async ({
+    pluginId,
+    skillName,
+  }) => {
+    const pluginsRoot = scratchPluginsRoot();
+    const install = createPluginInstallService({
+      logger: testLogger(),
+      pluginsRoot,
+      builtinPluginsRoot: repoPluginsRoot,
+    });
+    const skillsRoot = path.join(pluginsRoot, pluginId, "skills");
+
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).toEqual([]);
+
+    await install.install({ source: path.join(repoPluginsRoot, pluginId) });
+
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).toContain(skillsRoot);
+    expect(install.skillRoots()).toContain(skillsRoot);
+    expect(fs.existsSync(path.join(skillsRoot, skillName, "SKILL.md"))).toBe(true);
+    // Claude reads plugin roots, not ADE_AGENT_SKILLS_DIRS, so the marker has
+    // to travel with the package or the skill loads everywhere but there.
+    expect(fs.existsSync(path.join(skillsRoot, ".claude-plugin", "plugin.json"))).toBe(true);
+
+    install.setEnabled(pluginId, false);
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).not.toContain(skillsRoot);
+
+    install.setEnabled(pluginId, true);
+    expect(install.uninstall(pluginId)).toEqual({ removed: true });
+    expect(listPluginAgentSkillRoots({ pluginsRoot })).toEqual([]);
+    expect(fs.existsSync(skillsRoot)).toBe(false);
+  });
+
+  it.each(["ade-cli-control-plane", "ade-browser"])(
+    "%s stays in the shared bundled root whatever is installed",
+    async (skillName) => {
+      const pluginsRoot = scratchPluginsRoot();
+      const install = createPluginInstallService({
+        logger: testLogger(),
+        pluginsRoot,
+        builtinPluginsRoot: repoPluginsRoot,
+      });
+      const bundledSkill = path.join(bundledSkillsRoot, skillName, "SKILL.md");
+
+      expect(fs.existsSync(bundledSkill)).toBe(true);
+      await install.install({ source: path.join(repoPluginsRoot, "ade-linear") });
+      expect(fs.existsSync(bundledSkill)).toBe(true);
+      // Nothing about an install or an uninstall can reach the shared root.
+      expect(listPluginAgentSkillRoots({ pluginsRoot }).some((root) => root.startsWith(bundledSkillsRoot)))
+        .toBe(false);
+      install.uninstall("ade-linear");
+      expect(fs.existsSync(bundledSkill)).toBe(true);
+    },
+  );
+});
+
 describe("builtin plugins root", () => {
   function tree(files: Record<string, string>): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-builtin-root-"));

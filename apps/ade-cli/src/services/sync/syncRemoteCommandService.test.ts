@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
@@ -17,6 +17,50 @@ import {
 } from "../plugins/pluginInstallServiceRef";
 import { setPluginPresenceService } from "../plugins/pluginPresenceService";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+
+
+/**
+ * Point the machine ADE dir at a scratch registry with Linear installed.
+ *
+ * `cto.*Linear*` is plugin-owned capability now: the sync registrar refuses it
+ * on a machine without `ade-linear`. Without this the suite would describe
+ * whatever plugins the developer running it happens to have, and every Linear
+ * command would pass or fail by accident. The gating block installs nothing on
+ * purpose.
+ */
+const machinePluginDirs: string[] = [];
+const originalSyncAdeHome = process.env.ADE_HOME;
+
+function useSyncMachineWithPlugins(pluginIds: readonly string[]): void {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-plugins-"));
+  machinePluginDirs.push(home);
+  fs.mkdirSync(path.join(home, "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "plugins", "state.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: Object.fromEntries(pluginIds.map((pluginId) => [pluginId, {
+        version: "1.0.0",
+        enabled: true,
+        source: { kind: "builtin" },
+        installedAt: "2026-08-01T00:00:00.000Z",
+      }])),
+    }),
+  );
+  process.env.ADE_HOME = home;
+}
+
+beforeEach(() => {
+  useSyncMachineWithPlugins(["ade-linear", "ade-ios-sim", "ade-app-control"]);
+});
+
+afterEach(() => {
+  if (originalSyncAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalSyncAdeHome;
+  while (machinePluginDirs.length) {
+    fs.rmSync(machinePluginDirs.pop()!, { recursive: true, force: true });
+  }
+});
 
 function makePayload(
   action: string,
@@ -3467,5 +3511,33 @@ describe("plugin remote commands", () => {
       pluginId: "graph",
       machineKey: "machine-b",
     }))).rejects.toMatchObject({ code: "plugin_machine_unreachable" });
+  });
+});
+
+describe("plugin-gated sync commands", () => {
+  /**
+   * Phones and the web client reach Linear through named sync commands rather
+   * than through an action domain, so uninstalling on the desktop has to stop
+   * them too — otherwise the machine that no longer has Linear would keep
+   * serving Linear reads and writes to every paired device.
+   */
+  it("refuses a Linear command on a machine without the plugin", async () => {
+    useSyncMachineWithPlugins([]);
+    process.env.ADE_BUILTIN_PLUGINS_DIR = path.resolve(__dirname, "../../../../../plugins");
+    try {
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("cto.getLinearConnectionStatus")))
+        .rejects.toThrow(/ade-linear plugin/);
+    } finally {
+      delete process.env.ADE_BUILTIN_PLUGINS_DIR;
+    }
+  });
+
+  it("serves it again once the plugin is installed", async () => {
+    useSyncMachineWithPlugins(["ade-linear"]);
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("cto.getLinearConnectionStatus"))).resolves.toBeDefined();
   });
 });

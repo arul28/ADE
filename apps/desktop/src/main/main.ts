@@ -249,6 +249,7 @@ import {
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
+import { buildGatedDomainDenial } from "./services/plugins/gatedActionDomains";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
@@ -4816,6 +4817,9 @@ app.whenReady().then(async () => {
         listActions(domain: string): string[] {
           return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
             .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+        },
+        unavailableReason(domain: string): string | null {
+          return buildGatedDomainDenial(domain)?.message ?? null;
         },
       };
       automationService?.bindAdeActionRegistry(adeActionLookup);
