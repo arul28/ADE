@@ -509,3 +509,59 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
     });
   });
 });
+
+describe("SessionContextMenu spawn kind", () => {
+  let updateSession: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    updateSession = vi.fn().mockResolvedValue({ spawnKind: "peer" });
+    (window as unknown as { ade: unknown }).ade = {
+      agentChat: { updateSession },
+      sessions: {},
+    };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.clearAllMocks();
+  });
+
+  it("offers Demote to peer on a subagent child and writes spawnKind peer", async () => {
+    const session = makeSession({
+      orchestrationParentSessionId: "parent-1",
+      spawnKind: "subagent",
+    });
+    const { onClose } = renderMenu(session);
+
+    fireEvent.click(screen.getByRole("button", { name: "Demote to peer" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(
+        { sessionId: "chat-1", spawnKind: "peer" },
+      );
+    });
+    expect(onClose).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
+  });
+
+  it("offers Promote to subagent on a peer child", async () => {
+    const session = makeSession({
+      orchestrationParentSessionId: "parent-1",
+      spawnKind: "peer",
+    });
+    renderMenu(session);
+
+    fireEvent.click(screen.getByRole("button", { name: "Promote to subagent" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(
+        { sessionId: "chat-1", spawnKind: "subagent" },
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
+  });
+
+  it("hides demote and promote on a chat with no parent", () => {
+    renderMenu(makeSession({ spawnKind: "subagent" }));
+    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
+  });
+});

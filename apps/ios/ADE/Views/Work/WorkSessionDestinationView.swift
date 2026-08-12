@@ -1469,7 +1469,12 @@ struct WorkSessionDestinationView: View {
     }
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
-      chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
+      chatSummaryContext: WorkChatSummaryRenderContext(
+        composerChatSummary,
+        parentTitle: composerChatSummary?.orchestrationParentSessionId.flatMap { parentId in
+          syncService.chatSummaryCache[parentId]?.title
+        }
+      ),
       transcript: transcriptForView,
       transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
       fallbackEntries: fallbackEntriesForView,
@@ -1576,7 +1581,9 @@ struct WorkSessionDestinationView: View {
           await syncService.retryFullChatEventSnapshot(sessionId: sessionId)
           await loadTranscript(forceRemote: true, preferLightweight: false)
         }
-      }
+      },
+      onTakeOverSubagent: viewingSubagent ? nil : takeOverSubagent,
+      onKeepReportingSubagent: viewingSubagent ? nil : keepReportingSubagent
     )
   }
 

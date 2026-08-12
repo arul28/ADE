@@ -557,6 +557,9 @@ ade chat scheduled-work cancel session-id job-id    # cancel one job; Claude-nat
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # provider-neutral wait | nudge | retry | resume; falls back for older Codex brains
 ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
+ade chat demote [session-id]                                     # take over a subagent: it becomes a peer and reports stop; defaults to $ADE_CHAT_SESSION_ID
+ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
+ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers

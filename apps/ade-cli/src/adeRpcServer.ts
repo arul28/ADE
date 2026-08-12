@@ -2668,6 +2668,8 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "restoreCancelledQueue",
+  "setSpawnKind",
+  "dismissSubagentTakeoverPrompt",
 ]);
 
 function scopeChatAdeActionArgs(

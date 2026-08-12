@@ -1940,6 +1940,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
+    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
@@ -1961,9 +1964,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link.
-    --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after every turn while the parent owns the mission;
-                            peer leaves quiet notes.
+    --type <subagent|peer>  Required with a parent. subagent always wakes the
+                            parent after every turn; peer leaves quiet notes.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -2017,9 +2019,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
     --no-parent             Create the chat without a parent link.
-    --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after every turn while the parent owns the mission;
-                            peer leaves quiet notes.
+    --type <subagent|peer>  Required with a parent. subagent always wakes the
+                            parent after every turn; peer leaves quiet notes.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
@@ -8065,6 +8066,65 @@ function buildChatPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "demote") {
+    return {
+      kind: "execute",
+      label: "chat demote",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setSpawnKind",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+            spawnKind: "peer",
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "promote") {
+    return {
+      kind: "execute",
+      label: "chat promote",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setSpawnKind",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+            spawnKind: "subagent",
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "keep-reporting" || sub === "dismiss-takeover") {
+    return {
+      kind: "execute",
+      label: "chat keep-reporting",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "dismissSubagentTakeoverPrompt",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+          }),
+        ),
+      ],
+    };
+  }
   return {
     kind: "execute",
     label: `chat ${sub}`,

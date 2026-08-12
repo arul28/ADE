@@ -13089,7 +13089,9 @@ final class SyncService: ObservableObject {
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
     computerUse: RemoteJSONValue? = nil,
-    manuallyNamed: Bool? = nil
+    manuallyNamed: Bool? = nil,
+    spawnKind: String? = nil,
+    subagentTakeoverPromptShown: Bool? = nil
   ) async throws -> AgentChatSession {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableChatCommand(
@@ -13112,7 +13114,9 @@ final class SyncService: ObservableObject {
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
         computerUse: computerUse,
-        manuallyNamed: manuallyNamed
+        manuallyNamed: manuallyNamed,
+        spawnKind: spawnKind,
+        subagentTakeoverPromptShown: subagentTakeoverPromptShown
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,

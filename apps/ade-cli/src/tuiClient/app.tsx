@@ -128,6 +128,7 @@ import {
   saveRuntimeTempAttachment,
   sendChatMessage,
   sendToTerminalSession,
+  setChatSpawnKind,
   signalTerminal,
   setClaudeOutputStyle,
   setSessionStatusNote,
@@ -11071,6 +11072,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           "  /session settle [id] [outcome]       file the row as done",
           "  /session unsettle [id]               undo a settle",
           "  /session keep-active [id]            pin the row active against a later settle",
+          "  /session demote [id]                 take over a subagent so reports stop",
+          "  /session promote [id]                restore a peer as a subagent",
           "",
           "Run /session snooze with no duration to pick one from the list.",
         ].join("\n"),
@@ -11129,7 +11132,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         } else if (lifecycleVerb === "unsettle") {
           await unsettleSession(conn, target.sessionId);
           addNotice(`Removed the session's settled state.${scope}`, "success");
-        } else {
+        } else if (lifecycleVerb === "demote") {
+          await setChatSpawnKind(conn, target.sessionId, "peer");
+          addNotice(`Took over the chat. Reports to the parent stop.${scope}`, "success");
+        } else if (lifecycleVerb === "promote") {
+          await setChatSpawnKind(conn, target.sessionId, "subagent");
+          addNotice(`Restored the chat as a subagent. Reports resume.${scope}`, "success");
+        } else if (lifecycleVerb === "keep-active") {
           // keep-active: the tri-state override's "active" pin. It suppresses
           // the settled tier for a row even if something later writes
           // settled_at (e.g. the PR-merge policy), so the user can hold a row
@@ -11137,6 +11146,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           // exit is "ended", never "settled" (see sessionCanonicalState.ts).
           await setSessionSettleOverride(conn, target.sessionId, "active");
           addNotice(`Pinned the session active.${scope}`, "success");
+        } else {
+          const _exhaustive: never = lifecycleVerb;
+          return _exhaustive;
         }
         await refreshState();
       } catch (err) {

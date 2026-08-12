@@ -151,3 +151,18 @@ export function clearSessionWokeMarker(
       console.error("[sessionLifecycle] clearWokeMarker failed", { sessionId, error });
     });
 }
+
+export async function setChatSpawnKind(
+  session: Pick<TerminalSessionSummary, "id">,
+  spawnKind: "subagent" | "peer",
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const action = spawnKind === "peer" ? "Take over" : "Promote to subagent";
+  try {
+    await (pin
+      ? window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }, pin)
+      : window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }));
+  } catch (error) {
+    reportFailure(action, session.id, error);
+  }
+}

@@ -413,7 +413,42 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func selectReasoningEffort(_ effort: String) async {
+  func takeOverSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(sessionId: sessionId, spawnKind: "peer")
+      if var summary = chatSummary {
+        summary.spawnKind = updated.spawnKind
+        summary.subagentTakeoverPromptShownAt = updated.subagentTakeoverPromptShownAt
+        chatSummary = summary
+        syncService.cacheChatSummary(summary)
+      }
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func keepReportingSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        subagentTakeoverPromptShown: true
+      )
+      if var summary = chatSummary {
+        summary.subagentTakeoverPromptShownAt = updated.subagentTakeoverPromptShownAt
+          ?? ISO8601DateFormatter().string(from: Date())
+        chatSummary = summary
+        syncService.cacheChatSummary(summary)
+      }
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
     let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, reasoningEffort: trimmed)

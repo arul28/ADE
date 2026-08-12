@@ -92,7 +92,10 @@ import {
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
-import { parentShouldWakeForChildTurn } from "./spawnMissionOwnership";
+import {
+  countHumanChildMessagesForTurn,
+  formatHumanChildMessageAnnotation,
+} from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -239,6 +242,9 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
   AgentChatSpawnCompletion,
+  AgentChatSpawnKind,
+  AgentChatSetSpawnKindArgs,
+  AgentChatDismissSubagentTakeoverPromptArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
@@ -1039,6 +1045,7 @@ type PersistedChatState = {
   orchestrationRole?: "lead" | "worker" | "validator";
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
+  subagentTakeoverPromptShownAt?: string | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -6214,6 +6221,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
   "orchestrationRole",
   "orchestrationParentSessionId",
   "spawnKind",
+  "subagentTakeoverPromptShownAt",
   "orchestrationTag",
   "orchestrationStepId",
   "orchestrationBundlePath",
@@ -6244,6 +6252,10 @@ function hydrateOrchestrationFields(
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
+  }
+  const shownAt = record.subagentTakeoverPromptShownAt;
+  if (typeof shownAt === "string" && shownAt.trim().length) {
+    out.subagentTakeoverPromptShownAt = shownAt.trim();
   }
   const tag = record.orchestrationTag;
   if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
@@ -6311,7 +6323,7 @@ function buildSpawnSelfReportGuidance(
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. While your parent owns your current mission, ADE automatically wakes it after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. If a human messages you directly, completions become quiet notes until your parent dispatches again. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. ADE automatically wakes your parent after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. A human message does not close that report channel. If a human takes this chat over, ADE converts you to a peer and completions become quiet notes. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -29623,11 +29635,9 @@ export function createAgentChatService(args: {
 
   /**
    * Child chat sessions spawned with a parent lineage. The relationship lives
-   * on the persisted child session, while parent-dispatch causality lives on
-   * the child's persisted user-message metadata — per turn for the turn that
-   * was dispatched, and across turns as mission ownership. Completion deliveries
-   * carry the child turn id in the parent transcript, providing durable dedupe
-   * without a process-local spawn tracker.
+   * on the persisted child session. Wake vs quiet is the child's `spawnKind`.
+   * Completion deliveries carry the child turn id in the parent transcript,
+   * providing durable dedupe without a process-local spawn tracker.
    */
   const spawnCompletionDeliveriesInFlight = new Set<string>();
 
@@ -29672,6 +29682,110 @@ export function createAgentChatService(args: {
     });
   };
 
+  const parentChatStillExists = (parentSessionId: string): boolean => {
+    const live = managedSessions.get(parentSessionId);
+    if (live && !live.deleted) return true;
+    const row = sessionService.get(parentSessionId);
+    return Boolean(row && isChatToolType(row.toolType));
+  };
+
+  const emitSpawnKindMeta = (managed: ManagedChatSession): void => {
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      ...(managed.session.spawnKind ? { spawnKind: managed.session.spawnKind } : {}),
+      subagentTakeoverPromptShownAt: managed.session.subagentTakeoverPromptShownAt ?? null,
+    });
+  };
+
+  const postSpawnTakeoverNote = (child: ManagedChatSession, parentSessionId: string): void => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    try {
+      const parent = ensureManagedSession(parentSessionId);
+      if (parent.deleted) return;
+      emitChatEvent(parent, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_takeover",
+        message: `The user took over "${childTitle}" — reports stop here.`,
+        detail: {
+          spawnTakeover: {
+            childSessionId: child.session.id,
+            childTitle,
+          },
+        },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.spawn_takeover_note_failed", {
+        childSessionId: child.session.id,
+        parentSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const applySpawnKindChange = ({
+    sessionId,
+    spawnKind,
+    source,
+  }: {
+    sessionId: string;
+    spawnKind: AgentChatSpawnKind;
+    source: "takeover" | "promote" | "parent_dispatch";
+  }): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
+    if (!parentSessionId || parentSessionId === sessionId) {
+      throw new Error("This chat is not a child of another chat.");
+    }
+    if (spawnKind === "subagent" && source !== "parent_dispatch" && !parentChatStillExists(parentSessionId)) {
+      throw new Error("The parent chat is gone, so this chat cannot report back.");
+    }
+    const previous = managed.session.spawnKind;
+    if (source === "takeover") {
+      managed.session.subagentTakeoverPromptShownAt = nowIso();
+    }
+    managed.session.spawnKind = spawnKind;
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    logger.info("agent_chat.spawn_kind_changed", {
+      sessionId,
+      parentSessionId,
+      previousSpawnKind: previous ?? null,
+      spawnKind,
+      source,
+    });
+    if (spawnKind === "peer" && previous !== "peer" && source === "takeover") {
+      postSpawnTakeoverNote(managed, parentSessionId);
+    }
+    return managed.session;
+  };
+
+  const setSpawnKind = ({ sessionId, spawnKind }: AgentChatSetSpawnKindArgs): AgentChatSession => {
+    if (spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("Spawn type must be subagent or peer.");
+    }
+    return applySpawnKindChange({
+      sessionId,
+      spawnKind,
+      source: spawnKind === "peer" ? "takeover" : "promote",
+    });
+  };
+
+  const dismissSubagentTakeoverPrompt = (
+    { sessionId }: AgentChatDismissSubagentTakeoverPromptArgs,
+  ): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    if (!managed.session.orchestrationParentSessionId?.trim()) {
+      return managed.session;
+    }
+    if (managed.session.subagentTakeoverPromptShownAt) return managed.session;
+    managed.session.subagentTakeoverPromptShownAt = nowIso();
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    return managed.session;
+  };
+
   const reportChildSpawnEnded = (
     childSessionId: string,
     status: "completed" | "interrupted" | "failed",
@@ -29691,18 +29805,18 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
-    // Wake decision lives in `spawnMissionOwnership` so the policy — which
-    // inputs count as a directive — is stated and tested in one place. Peers
-    // never wake, so they never pay for the transcript read. Read once, before
-    // the delivery retries: a retry must not re-decide ownership.
-    const parentShouldWake = spawnKind === "subagent" && parentShouldWakeForChildTurn({
-      history: mergeEnvelopeStreams(
-        readTranscriptEnvelopes(child),
-        eventHistoryBySession.get(childSessionId) ?? [],
-      ),
-      parentSessionId,
-      turnId: resolvedTurnId,
-    });
+    // Subagent completions always wake the parent. Human messages no longer
+    // steal that channel — only an explicit demote to peer does. Peers skip
+    // the transcript read because they never wake.
+    const childHistory = mergeEnvelopeStreams(
+      readTranscriptEnvelopes(child),
+      eventHistoryBySession.get(childSessionId) ?? [],
+    );
+    const parentShouldWake = spawnKind === "subagent";
+    const humanMessageCount = parentShouldWake
+      ? countHumanChildMessagesForTurn(childHistory, resolvedTurnId)
+      : 0;
+    const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -29710,15 +29824,19 @@ export function createAgentChatService(args: {
       ?.text
       .replace(/\s+/g, " ")
       .trim();
-    const summary = resultStatus === "completed" && assistantSummary
-      ? assistantSummary.length > 1_200
+    let baseSummary: string;
+    if (resultStatus === "completed" && assistantSummary) {
+      baseSummary = assistantSummary.length > 1_200
         ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
-        : assistantSummary
-      : resultStatus === "completed"
-        ? spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished."
-      : resultStatus === "stopped"
-        ? "Stopped before finishing."
-        : "Turn failed.";
+        : assistantSummary;
+    } else if (resultStatus === "completed") {
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished.";
+    } else if (resultStatus === "stopped") {
+      baseSummary = "Stopped before finishing.";
+    } else {
+      baseSummary = "Turn failed.";
+    }
+    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
     const childTitle = sessionService.get(childSessionId)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
@@ -29728,6 +29846,7 @@ export function createAgentChatService(args: {
       childTurnId: resolvedTurnId,
       status: resultStatus,
       summary,
+      ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
     const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
@@ -29780,7 +29899,7 @@ export function createAgentChatService(args: {
               type: "system_notice",
               noticeKind: "info",
               status: "spawn_completed",
-              message: `${spawnKind === "subagent" ? "Subagent" : "Peer"} "${childTitle}" turn finished`,
+              message: `Peer "${childTitle}" turn finished`,
               detail: { spawnCompletion },
             });
           }
@@ -32686,6 +32805,18 @@ export function createAgentChatService(args: {
     allowPendingInput?: boolean;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    const dispatchParentId = metadata?.spawnDispatch?.parentSessionId?.trim();
+    if (
+      dispatchParentId
+      && managed.session.spawnKind === "peer"
+      && managed.session.orchestrationParentSessionId?.trim() === dispatchParentId
+    ) {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: "subagent",
+        source: "parent_dispatch",
+      });
+    }
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
     const trimmed = trimmedText.length
@@ -41402,6 +41533,8 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
+    spawnKind: requestedSpawnKind,
+    subagentTakeoverPromptShown,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
@@ -41863,6 +41996,17 @@ export function createAgentChatService(args: {
     if (manuallyNamed !== undefined && title === undefined) {
       managed.manuallyNamed = manuallyNamed;
       if (manuallyNamed) managed.runtimeTitleAdopted = false;
+    }
+
+    if (requestedSpawnKind === "subagent" || requestedSpawnKind === "peer") {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: requestedSpawnKind,
+        source: requestedSpawnKind === "peer" ? "takeover" : "promote",
+      });
+    }
+    if (subagentTakeoverPromptShown === true) {
+      dismissSubagentTakeoverPrompt({ sessionId });
     }
 
     persistChatState(managed);
@@ -43833,6 +43977,7 @@ export function createAgentChatService(args: {
       orchestrationRole?: "lead" | "worker" | "validator" | null;
       orchestrationParentSessionId?: string | null;
       spawnKind?: AgentChatSession["spawnKind"] | null;
+      subagentTakeoverPromptShownAt?: string | null;
       orchestrationTag?: string | null;
       orchestrationStepId?: string | null;
       orchestrationBundlePath?: string | null;
@@ -44437,6 +44582,8 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    setSpawnKind,
+    dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,
     isTranscriptPathActive,
     warmupModel,

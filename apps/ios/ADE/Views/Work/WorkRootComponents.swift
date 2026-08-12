@@ -567,6 +567,10 @@ struct WorkSessionListRow: View {
   var onKeepActive: (TerminalSessionSummary) -> Void = { _ in }
   var onSnooze: (TerminalSessionSummary, WorkSnoozeDuration) -> Void = { _, _ in }
   var onWake: (TerminalSessionSummary) -> Void = { _ in }
+  /// Demote a subagent chat to a peer so it stops reporting to its parent.
+  var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
+  /// Promote a peer chat back to a subagent so it reports to its parent again.
+  var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
   /// The host advertises `work.deleteSession` — the stop-then-delete path for a
   /// non-chat row. Older hosts never had it, so a phone talking to one hides the
   /// two destructive items rather than offering a control that always fails.
@@ -669,6 +673,18 @@ struct WorkSessionListRow: View {
       && session.settledAt != nil
       && session.resolvedSettleOverride != .active
       && canonicalPhase == .settled
+  }
+
+  private var canDemoteToPeer: Bool {
+    isChat
+      && chatSummary?.spawnKind == .subagent
+      && !(chatSummary?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
+  private var canPromoteToSubagent: Bool {
+    isChat
+      && chatSummary?.spawnKind == .peer
+      && !(chatSummary?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
   }
 
   private var snoozeOptions: [WorkSnoozeOption] {
@@ -865,7 +881,7 @@ struct WorkSessionListRow: View {
   @ViewBuilder
   private func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
-    if canStopRuntime || lifecycleAvailable || snoozeAvailable {
+    if canStopRuntime || lifecycleAvailable || snoozeAvailable || canDemoteToPeer || canPromoteToSubagent {
       Divider()
       // Stop runtime moved here from the identity block: it is a lifecycle
       // change, and it is NOT destructive — the session and its transcript
@@ -924,6 +940,20 @@ struct WorkSessionListRow: View {
           onKeepActive(session)
         } label: {
           Label("Keep active", systemImage: "pin.circle")
+        }
+      }
+      if canDemoteToPeer {
+        Button {
+          onDemoteToPeer(session)
+        } label: {
+          Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+        }
+      }
+      if canPromoteToSubagent {
+        Button {
+          onPromoteToSubagent(session)
+        } label: {
+          Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
         }
       }
     }
