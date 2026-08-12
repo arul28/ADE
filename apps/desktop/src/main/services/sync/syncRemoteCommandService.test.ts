@@ -241,6 +241,8 @@ function createMockAgentChatService() {
     respondToInput: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined),
     updateSession: vi.fn().mockResolvedValue(undefined),
+    setSpawnKind: vi.fn().mockResolvedValue({ id: "sess-1", spawnKind: "peer" }),
+    dismissSubagentTakeoverPrompt: vi.fn().mockResolvedValue({ id: "sess-1" }),
     getCodexGoal: vi.fn().mockResolvedValue({ objective: "Ship it", status: "active", tokenBudget: null }),
     setCodexGoal: vi.fn().mockResolvedValue({ objective: "Ship it", status: "active", tokenBudget: null }),
     setCodexGoalStatus: vi.fn().mockResolvedValue({ objective: "Ship it", status: "paused", tokenBudget: null }),
@@ -1584,6 +1586,42 @@ describe("createSyncRemoteCommandService", () => {
           enabled: true,
           temperature: 0.5,
         },
+      });
+    });
+
+    it("chat.updateSession forwards spawnKind and takeover-banner dismissal", async () => {
+      await service.execute(makePayload("chat.updateSession", {
+        sessionId: "sess-1",
+        spawnKind: "peer",
+        subagentTakeoverPromptShown: true,
+      }));
+
+      expect(agentChatService.updateSession).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        spawnKind: "peer",
+        subagentTakeoverPromptShown: true,
+      });
+    });
+
+    it("chat.setSpawnKind routes to agentChatService.setSpawnKind", async () => {
+      await service.execute(makePayload("chat.setSpawnKind", {
+        sessionId: "sess-1",
+        spawnKind: "peer",
+      }));
+
+      expect(agentChatService.setSpawnKind).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        spawnKind: "peer",
+      });
+    });
+
+    it("chat.dismissSubagentTakeoverPrompt routes to the chat service", async () => {
+      await service.execute(makePayload("chat.dismissSubagentTakeoverPrompt", {
+        sessionId: "sess-1",
+      }));
+
+      expect(agentChatService.dismissSubagentTakeoverPrompt).toHaveBeenCalledWith({
+        sessionId: "sess-1",
       });
     });
 

@@ -169,8 +169,12 @@ struct WorkChatSummaryRenderContext: Equatable {
   let modelLabel: String
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
+  let spawnKind: AgentChatSpawnKind?
+  let orchestrationParentSessionId: String?
+  let subagentTakeoverPromptShownAt: String?
+  let parentTitle: String?
 
-  init(_ summary: AgentChatSessionSummary?) {
+  init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
       self.isAvailable = false
       self.provider = ""
@@ -187,6 +191,10 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelLabel = "Model"
       self.contextWindowFallback = nil
       self.claudeGoal = nil
+      self.spawnKind = nil
+      self.orchestrationParentSessionId = nil
+      self.subagentTakeoverPromptShownAt = nil
+      self.parentTitle = nil
       return
     }
 
@@ -205,6 +213,10 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelLabel = prettyWorkChatModelName(summary.model)
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
+    self.spawnKind = summary.spawnKind
+    self.orchestrationParentSessionId = summary.orchestrationParentSessionId
+    self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
+    self.parentTitle = parentTitle
   }
 
   var currentModelId: String {
@@ -392,6 +404,8 @@ struct WorkChatSessionView: View {
   /// Re-requests the transcript after a failed load. When nil the failure state
   /// renders without a Retry button rather than offering a dead control.
   var onRetryTranscript: (() -> Void)? = nil
+  var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
+  var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -1156,6 +1170,26 @@ struct WorkChatSessionView: View {
             await runSessionAction {
               await onRestoreCancelledQueue(recovery.recoveryId)
             }
+          }
+        )
+      }
+
+      if chatSummaryContext.spawnKind == .subagent,
+         let parentId = chatSummaryContext.orchestrationParentSessionId,
+         !parentId.isEmpty,
+         chatSummaryContext.subagentTakeoverPromptShownAt == nil,
+         onTakeOverSubagent != nil || onKeepReportingSubagent != nil {
+        WorkSubagentTakeoverBanner(
+          parentTitle: chatSummaryContext.parentTitle,
+          takeOverEnabled: onTakeOverSubagent != nil && !actionInFlight && !hostUnreachable,
+          keepReportingEnabled: onKeepReportingSubagent != nil && !actionInFlight && !hostUnreachable,
+          onTakeOver: {
+            guard let onTakeOverSubagent else { return }
+            await runSessionAction { await onTakeOverSubagent() }
+          },
+          onKeepReporting: {
+            guard let onKeepReportingSubagent else { return }
+            await runSessionAction { await onKeepReportingSubagent() }
           }
         )
       }
@@ -2822,6 +2856,63 @@ private struct WorkChatComposerDraftInput: View {
       Image(systemName: "trash")
         .font(.system(size: 11, weight: .bold))
     }
+  }
+}
+
+private struct WorkSubagentTakeoverBanner: View {
+  let parentTitle: String?
+  let takeOverEnabled: Bool
+  let keepReportingEnabled: Bool
+  let onTakeOver: @MainActor () async -> Void
+  let onKeepReporting: @MainActor () async -> Void
+
+  private var line: String {
+    if let named = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !named.isEmpty {
+      return "This chat reports back to \"\(named)\". Take it over?"
+    }
+    return "This chat reports back to its parent. Take it over?"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Take over this chat?")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(line)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button {
+          Task { await onTakeOver() }
+        } label: {
+          Text("Take over")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!takeOverEnabled)
+        Button {
+          Task { await onKeepReporting() }
+        } label: {
+          Text("Keep reporting")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!keepReportingEnabled)
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(ADEColor.accent.opacity(0.08))
+    )
+    .accessibilityElement(children: .contain)
   }
 }
 

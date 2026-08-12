@@ -3380,6 +3380,26 @@ function renderEvent(
         </button>
       );
     }
+    if (event.noticeKind === "info" && event.status === "spawn_takeover") {
+      const takeover = event.detail && typeof event.detail === "object" ? event.detail.spawnTakeover : undefined;
+      const childTitle = takeover?.childTitle?.trim() || "chat";
+      const childSessionId = typeof takeover?.childSessionId === "string" && takeover.childSessionId.length
+        ? takeover.childSessionId
+        : null;
+      return (
+        <button
+          type="button"
+          disabled={!childSessionId}
+          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
+          title={childSessionId ? "Open the chat the user took over" : undefined}
+        >
+          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
+          <span className="min-w-0 truncate">The user took over "{childTitle}" — reports stop here.</span>
+          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
+        </button>
+      );
+    }
     if (event.noticeKind === "info" && event.status === "spawn_completed") {
       const completion: AgentChatSpawnCompletion | undefined =
         event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;

@@ -157,11 +157,10 @@ is fire-and-forget and leaves quiet turn-completion notes. Missing types and
 the legacy `none` value are rejected for new parented sessions.
 
 Subagent chat turns return their child turn id and latest bounded assistant
-summary, steering an active parent or waking an idle parent. A completion wakes
-the parent when the parent started that turn *or* still owns the child's
-mission — the most recent directive-class input to the child was
-parent-dispatched. The policy lives in
-`services/chat/spawnMissionOwnership.ts`. These inputs continue the mission in
+summary, steering an active parent or waking an idle parent. A subagent always
+wakes its parent; a peer never does. The policy lives in
+`services/chat/spawnMissionOwnership.ts` plus the child's persisted
+`spawnKind`. These inputs continue the mission in
 flight rather than reassigning it, so a subagent that self-schedules wakeups —
 an ADE ship loop polling CI, say — still wakes its parent when the mission
 finishes:
@@ -178,11 +177,13 @@ finishes:
 - `deliveryState: "queued"` — superseded by the delivered copy, which carries
   the authoritative metadata (the queue path strips `scheduledWake`).
 
-A direct human message is a directive and moves ownership to the human, making
-completions quiet notes until the parent dispatches again. A handoff prompt is
-also a directive — it carries a human's continuation intent. Ownership is read
-at completion time; ADE keeps no per-schedule provenance. Peer turns are always
-quiet notes.
+A direct human message on a subagent does not steal the report channel. The
+next wake names how many human messages landed in that turn. Taking over
+(demote to peer) is an explicit user action — composer banner, session menu,
+`ade chat demote`, or `/session demote` — and posts a quiet parent note that
+reports stop. Promoting restores the channel when the parent chat still
+exists. A later parent dispatch into a peer child auto-promotes it back to
+subagent. Peer turns are always quiet notes.
 
 All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
 `chat.messageSession`, `chat.sendMessage` and `chat.steer` before any

@@ -893,6 +893,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
+  var subagentTakeoverPromptShownAt: String? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -951,6 +953,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
       && lhs.orchestrationTag == rhs.orchestrationTag
       && lhs.orchestrationStepId == rhs.orchestrationStepId
       && lhs.orchestrationBundlePath == rhs.orchestrationBundlePath
@@ -986,6 +989,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
   /// change"; only an explicit null sets this so `applyModeUpdate` assigns nil.
   var cursorConfigValuesWasCleared: Bool = false
+  var spawnKind: AgentChatSpawnKind?
+  var subagentTakeoverPromptShownAt: String?
+  var subagentTakeoverPromptShownAtWasCleared: Bool = false
 
   private enum CodingKeys: String, CodingKey {
     case permissionMode
@@ -1000,6 +1006,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
+    case spawnKind
+    case subagentTakeoverPromptShownAt
   }
 
   init(from decoder: Decoder) throws {
@@ -1040,6 +1048,14 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       cursorConfigValues = nil
       cursorConfigValuesWasCleared = false
     }
+    spawnKind = try c.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    if c.contains(.subagentTakeoverPromptShownAt) {
+      subagentTakeoverPromptShownAt = try c.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
+      subagentTakeoverPromptShownAtWasCleared = subagentTakeoverPromptShownAt == nil
+    } else {
+      subagentTakeoverPromptShownAt = nil
+      subagentTakeoverPromptShownAtWasCleared = false
+    }
   }
 
   /// True when the event carries at least one mode field. A bare
@@ -1058,6 +1074,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || cursorModeSnapshot != nil
       || cursorConfigValues != nil
       || cursorConfigValuesWasCleared
+      || spawnKind != nil
+      || subagentTakeoverPromptShownAt != nil
+      || subagentTakeoverPromptShownAtWasCleared
   }
 }
 
@@ -1089,6 +1108,12 @@ extension AgentChatSessionSummary {
       // rather than leaving the stale values in place.
       cursorConfigValues = nil
     }
+    if let v = update.spawnKind { spawnKind = v }
+    if let v = update.subagentTakeoverPromptShownAt {
+      subagentTakeoverPromptShownAt = v
+    } else if update.subagentTakeoverPromptShownAtWasCleared {
+      subagentTakeoverPromptShownAt = nil
+    }
   }
 
   /// Overlay the mode fields from another summary (used to fold a cache-side
@@ -1119,6 +1144,8 @@ extension AgentChatSessionSummary {
     cursorModeId = other.cursorModeId
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     cursorConfigValues = other.cursorConfigValues
+    if let v = other.spawnKind { spawnKind = v }
+    if let v = other.subagentTakeoverPromptShownAt { subagentTakeoverPromptShownAt = v }
   }
 }
 
@@ -1591,6 +1618,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  var subagentTakeoverPromptShownAt: String? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -1637,6 +1665,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case orchestrationRole
     case orchestrationParentSessionId
     case spawnKind
+    case subagentTakeoverPromptShownAt
     case orchestrationTag
     case orchestrationStepId
     case orchestrationBundlePath
@@ -1685,6 +1714,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    subagentTakeoverPromptShownAt = try container.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
     orchestrationStepId = try container.decodeIfPresent(String.self, forKey: .orchestrationStepId)
     orchestrationBundlePath = try container.decodeIfPresent(String.self, forKey: .orchestrationBundlePath)
@@ -1731,6 +1761,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
     try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
     try container.encodeIfPresent(spawnKind, forKey: .spawnKind)
+    try container.encodeIfPresent(subagentTakeoverPromptShownAt, forKey: .subagentTakeoverPromptShownAt)
     try container.encodeIfPresent(orchestrationTag, forKey: .orchestrationTag)
     try container.encodeIfPresent(orchestrationStepId, forKey: .orchestrationStepId)
     try container.encodeIfPresent(orchestrationBundlePath, forKey: .orchestrationBundlePath)
@@ -3395,6 +3426,8 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var unifiedPermissionMode: String?
   var computerUse: RemoteJSONValue?
   var manuallyNamed: Bool?
+  var spawnKind: String?
+  var subagentTakeoverPromptShown: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {

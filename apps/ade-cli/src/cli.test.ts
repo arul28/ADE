@@ -3496,6 +3496,8 @@ describe("ADE CLI", () => {
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
       expect(help.text).toContain("ade chat ask");
+      expect(help.text).toContain("ade chat demote");
+      expect(help.text).toContain("ade chat promote");
       // Settling is user-/PR-merge-driven only; the help must say so rather
       // than advertise a command that no longer exists.
       expect(help.text).toContain("'chat settle' / 'chat unsettle' were removed");
@@ -3910,6 +3912,48 @@ describe("ADE CLI", () => {
       "restore-queue",
       "chat-1",
     ])).toThrow(/recoveryId/);
+  });
+
+  it("routes chat demote, promote, and keep-reporting to spawn-kind actions", () => {
+    const demote = expectExecutePlan(buildCliPlan(["chat", "demote", "chat-1"]));
+    expect(demote.label).toBe("chat demote");
+    expect(demote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "chat-1", spawnKind: "peer" },
+      },
+    });
+
+    const promote = expectExecutePlan(buildCliPlan(["chat", "promote", "chat-1"]));
+    expect(promote.label).toBe("chat promote");
+    expect(promote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "chat-1", spawnKind: "subagent" },
+      },
+    });
+
+    const keep = expectExecutePlan(buildCliPlan(["chat", "keep-reporting", "chat-1"]));
+    expect(keep.label).toBe("chat keep-reporting");
+    expect(keep.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "dismissSubagentTakeoverPrompt",
+        args: { sessionId: "chat-1" },
+      },
+    });
+
+    const envDemote = withEnv({ ADE_CHAT_SESSION_ID: "env-chat" }, () =>
+      expectExecutePlan(buildCliPlan(["chat", "demote"])));
+    expect(envDemote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "env-chat", spawnKind: "peer" },
+      },
+    });
   });
 
   it.each([

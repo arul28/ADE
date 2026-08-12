@@ -1456,6 +1456,7 @@ struct WorkSessionDestinationView: View {
       "chat.dispatchSteer",
       sessionId: session.id
     )
+    let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -1469,7 +1470,12 @@ struct WorkSessionDestinationView: View {
     }
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
-      chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
+      chatSummaryContext: WorkChatSummaryRenderContext(
+        composerChatSummary,
+        parentTitle: composerChatSummary?.orchestrationParentSessionId.flatMap { parentId in
+          syncService.chatSummaryCache[parentId]?.title
+        }
+      ),
       transcript: transcriptForView,
       transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
       fallbackEntries: fallbackEntriesForView,
@@ -1576,7 +1582,9 @@ struct WorkSessionDestinationView: View {
           await syncService.retryFullChatEventSnapshot(sessionId: sessionId)
           await loadTranscript(forceRemote: true, preferLightweight: false)
         }
-      }
+      },
+      onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
+      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil
     )
   }
 

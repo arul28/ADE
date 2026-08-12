@@ -113,6 +113,7 @@ import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -7419,6 +7420,10 @@ export function AgentChatPane({
         if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
+        if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (meta.subagentTakeoverPromptShownAt !== undefined) {
+          summaryPatch.subagentTakeoverPromptShownAt = meta.subagentTakeoverPromptShownAt;
+        }
         if (Object.keys(summaryPatch).length > 0) {
           patchSessionSummary(envelope.sessionId, summaryPatch);
         }
@@ -7428,7 +7433,9 @@ export function AgentChatPane({
         // (mirrors the plan-mode transition special-case below). summaryPatch's
         // keys are exactly `title` plus the mode fields (each gated on the same
         // `meta.X !== undefined` check), so any non-title key means a mode changed.
-        const modeChanged = Object.keys(summaryPatch).some((key) => key !== "title");
+        const modeChanged = Object.keys(summaryPatch).some((key) =>
+          key !== "title" && key !== "spawnKind" && key !== "subagentTakeoverPromptShownAt"
+        );
         if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
           if (meta.interactionMode !== undefined) {
             setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
@@ -12046,6 +12053,55 @@ export function AgentChatPane({
   const lifecycleBanner = composerSessionId ? (
     <ChatLifecycleBanner sessionId={composerSessionId} />
   ) : null;
+  const takeoverBanner = composerSessionId
+    && selectedSession?.spawnKind === "subagent"
+    && selectedSession.orchestrationParentSessionId
+    && !selectedSession.subagentTakeoverPromptShownAt
+    ? (
+      <ChatSubagentTakeoverBanner
+        parentTitle={spawnLineage?.parentTitle ?? null}
+        onTakeOver={() => {
+          const sessionId = composerSessionId;
+          const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
+          patchSessionSummary(sessionId, {
+            spawnKind: "peer",
+            subagentTakeoverPromptShownAt: new Date().toISOString(),
+          });
+          void window.ade.agentChat.updateSession({
+            sessionId,
+            spawnKind: "peer",
+          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+            patchSessionSummary(sessionId, {
+              spawnKind: updated.spawnKind,
+              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt,
+            });
+          }).catch((err) => {
+            patchSessionSummary(sessionId, {
+              spawnKind: "subagent",
+              subagentTakeoverPromptShownAt: previousShownAt,
+            });
+            setError(err instanceof Error ? err.message : String(err));
+          });
+        }}
+        onKeepReporting={() => {
+          const sessionId = composerSessionId;
+          const shownAt = new Date().toISOString();
+          patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: shownAt });
+          void window.ade.agentChat.updateSession({
+            sessionId,
+            subagentTakeoverPromptShown: true,
+          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+            patchSessionSummary(sessionId, {
+              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
+            });
+          }).catch((err) => {
+            patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: null });
+            setError(err instanceof Error ? err.message : String(err));
+          });
+        }}
+      />
+    )
+    : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
 
@@ -12695,6 +12751,7 @@ export function AgentChatPane({
       {awayDigestStrip}
       <LaneBranchDriftStrip laneId={laneId} />
       {lifecycleBanner}
+      {takeoverBanner}
       {composerElement}
     </div>
   );
@@ -13137,6 +13194,7 @@ export function AgentChatPane({
                         {awayDigestStrip}
                         <LaneBranchDriftStrip laneId={laneId} />
                         {lifecycleBanner}
+                        {takeoverBanner}
                         {composerElement}
                       </div>
                     ) : null}

@@ -413,6 +413,52 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func takeOverSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(sessionId: sessionId, spawnKind: "peer")
+      applySpawnKindSessionUpdate(updated, spawnKind: updated.spawnKind ?? .peer)
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func keepReportingSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        subagentTakeoverPromptShown: true
+      )
+      applySpawnKindSessionUpdate(updated)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func applySpawnKindSessionUpdate(
+    _ updated: AgentChatSession,
+    spawnKind: AgentChatSpawnKind? = nil
+  ) {
+    let shownAtFallback = ISO8601DateFormatter().string(from: Date())
+    guard let summary = workApplyingSpawnKindUpdate(
+      current: chatSummary,
+      fallback: lastKnownChatSummary ?? initialChatSummary,
+      spawnKind: spawnKind ?? updated.spawnKind,
+      subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt,
+      shownAtFallback: shownAtFallback
+    ) else { return }
+    chatSummary = summary
+    lastKnownChatSummary = summary
+    syncService.cacheChatSummary(summary)
+  }
+
+  @MainActor
   func selectReasoningEffort(_ effort: String) async {
     let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
     do {

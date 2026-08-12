@@ -10489,10 +10489,18 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("leaves a quiet completion note when a human dispatches the child's first turn", async () => {
+    it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-human", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-human-summary",
+            content: [{ type: "text", text: "Adjusted the retry." }],
+            usage: { input_tokens: 1, output_tokens: 4 },
+          },
+        };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -10519,15 +10527,24 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
         )).toBe(true);
       });
-      expect(events.some((event) =>
+      const wake = events.find((event) =>
         event.sessionId === parent.id
         && event.event.type === "user_message"
         && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      );
+      expect(wake?.event.type === "user_message" && wake.event.metadata?.spawnCompletion?.humanMessageCount).toBe(1);
+      expect(wake?.event.type === "user_message" && wake.event.metadata?.spawnCompletion?.summary).toContain(
+        "The user also sent 1 message to this chat.",
+      );
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+        && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
       )).toBe(false);
     });
 
@@ -10610,7 +10627,7 @@ describe("createAgentChatService", () => {
         .not.toBe((dispatchedWake!.event as any).metadata.spawnCompletion.childTurnId);
     });
 
-    it("leaves a quiet note for a scheduled turn after a human takes over the mission", async () => {
+    it("keeps waking the parent after a human messages a subagent, including later scheduled turns", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-handover", slash_commands: [] };
@@ -10656,7 +10673,10 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => expect(parentWakes()).toHaveLength(1));
 
       await service.sendMessage({ sessionId: child.id, text: "Actually, hold on — do this instead." });
-      await vi.waitFor(() => expect(quietNotices()).toHaveLength(1));
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(2));
+      const secondWake = parentWakes()[1];
+      expect(secondWake?.event.type === "user_message"
+        && secondWake.event.metadata?.spawnCompletion?.humanMessageCount).toBe(1);
 
       await service.messageSession({
         sessionId: child.id,
@@ -10672,8 +10692,8 @@ describe("createAgentChatService", () => {
         },
       });
 
-      await vi.waitFor(() => expect(quietNotices()).toHaveLength(2));
-      expect(parentWakes()).toHaveLength(1);
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(3));
+      expect(quietNotices()).toHaveLength(0);
     });
 
     it("emits a quiet completion notice without a wake when a peer finishes", async () => {
@@ -10724,6 +10744,185 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("demotes a subagent to a peer, notes the parent, and keeps later turns quiet", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-demote", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-demote",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Review child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      const demoted = service.setSpawnKind({ sessionId: child.id, spawnKind: "peer" });
+      expect(demoted.spawnKind).toBe("peer");
+      expect(demoted.subagentTakeoverPromptShownAt).toBeTruthy();
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_takeover"
+          && (event.event.detail as any)?.spawnTakeover?.childSessionId === child.id
+        )).toBe(true);
+      });
+      const takeover = events.find((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_takeover"
+      );
+      expect(takeover?.event.type === "system_notice" && takeover.event.message).toBe(
+        'The user took over "Review child" — reports stop here.',
+      );
+
+      await service.sendMessage({ sessionId: child.id, text: "Keep going without the parent." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed"
+          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      )).toBe(false);
+    });
+
+    it("promotes a peer back to a subagent when the parent still exists", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-promote", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-promote",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Promoted child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+
+      expect(service.setSpawnKind({ sessionId: child.id, spawnKind: "subagent" }).spawnKind).toBe("subagent");
+      await service.sendMessage({ sessionId: child.id, text: "Report back." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+    });
+
+    it("refuses to promote when the parent chat is gone", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Orphaned child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+      expect(() => service.setSpawnKind({ sessionId: child.id, spawnKind: "subagent" })).toThrow(
+        /parent chat is gone/i,
+      );
+    });
+
+    it("auto-promotes a peer back to a subagent when the parent dispatches again", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-autoped", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-autoped",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Reclaimed child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Do this next.",
+        metadata: {
+          spawnDispatch: { parentSessionId: parent.id, dispatchedAt: "2026-08-12T00:00:00.000Z" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+      expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("subagent");
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_takeover"
+      )).toBe(false);
+    });
+
+    it("persists the takeover prompt as shown without changing spawn kind", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const dismissed = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(dismissed.spawnKind).toBe("subagent");
+      expect(dismissed.subagentTakeoverPromptShownAt).toBeTruthy();
+      expect((await service.getSessionSummary(child.id))?.subagentTakeoverPromptShownAt).toBe(
+        dismissed.subagentTakeoverPromptShownAt,
+      );
+    });
+
     it("reports a stopped completion before deleting an unfinished child", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
@@ -10742,12 +10941,11 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         const completion = events.find((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
         );
         expect(completion).toBeTruthy();
-        expect((completion!.event as any).detail.spawnCompletion).toMatchObject({
+        expect(completion!.event.type === "user_message" && completion!.event.metadata?.spawnCompletion).toMatchObject({
           childSessionId: child.id,
           childTitle: "Deleted child",
           spawnKind: "subagent",

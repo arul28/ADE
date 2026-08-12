@@ -1049,6 +1049,17 @@ export async function tagChat(connection: AdeCodeConnection, sessionId: string, 
   });
 }
 
+export async function setChatSpawnKind(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  spawnKind: "subagent" | "peer",
+): Promise<AgentChatSession> {
+  return await connection.action("chat", "setSpawnKind", {
+    sessionId,
+    spawnKind,
+  });
+}
+
 export async function updateChatModel(args: {
   connection: AdeCodeConnection;
   sessionId: string;

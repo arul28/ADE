@@ -86,6 +86,8 @@ describe("/session slash commands", () => {
       "/session settle",
       "/session unsettle",
       "/session keep-active",
+      "/session demote",
+      "/session promote",
     ]) {
       const spec = BUILTIN_COMMANDS.find((command) => command.name === name);
       expect(spec, name).toBeDefined();
@@ -101,6 +103,9 @@ describe("/session slash commands", () => {
     expect(parseCommand("/session snooze abc 1h")?.args).toBe("abc 1h");
     expect(parseCommand("/session keep-active")?.name).toBe("/session keep-active");
     expect(parseCommand("/session unsettle sess-9")?.args).toBe("sess-9");
+    expect(parseCommand("/session demote")?.name).toBe("/session demote");
+    expect(parseCommand("/session promote chat-9")?.name).toBe("/session promote");
+    expect(parseCommand("/session promote chat-9")?.args).toBe("chat-9");
 
     expect(paletteCommands("/session sn")).toContainEqual(expect.objectContaining({
       name: "/session snooze",

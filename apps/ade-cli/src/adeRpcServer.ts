@@ -2668,7 +2668,15 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "restoreCancelledQueue",
+  "setSpawnKind",
+  "dismissSubagentTakeoverPrompt",
 ]);
+
+function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): boolean {
+  return chatArgs.spawnKind === "subagent"
+    || chatArgs.spawnKind === "peer"
+    || chatArgs.subagentTakeoverPromptShown === true;
+}
 
 function scopeChatAdeActionArgs(
   session: SessionState,
@@ -2677,7 +2685,8 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
-  if (!SCOPED_CHAT_ACTIONS.has(action)) return chatArgs;
+  const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
+  if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) return chatArgs;
 
   const scopedArgs = { ...chatArgs };
@@ -3833,7 +3842,10 @@ async function runTool(args: {
     } else if (
       !callerIsCto
       && domain === "chat"
-      && SCOPED_CHAT_ACTIONS.has(action)
+      && (
+        SCOPED_CHAT_ACTIONS.has(action)
+        || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
+      )
     ) {
       const chatArgs = requireObjectArgsForScopedAdeAction(
         domain,
