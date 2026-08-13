@@ -146,7 +146,7 @@ const TABS: ShowcaseTab[] = [
     summary: "The proof and control surfaces agents need, built in.",
     bullets: [
       "Shared browser pane for web QA and proof capture.",
-      "iOS Simulator and App Control in the tools drawer.",
+      "iOS Simulator and Electron Control in the tools drawer.",
       "Every tool scoped to the active worktree.",
     ],
     footnote: "Agents get computer use; you get the same controls, one click away.",

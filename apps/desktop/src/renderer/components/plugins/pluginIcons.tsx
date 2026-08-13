@@ -8,12 +8,15 @@ import {
   ChartLine,
   ChatCircleDots,
   Clock,
+  ClockCounterClockwise,
   Cloud,
   Code,
   Compass,
   Cube,
   CurrencyDollar,
   Database,
+  Desktop,
+  DeviceMobile,
   EnvelopeSimple,
   Eye,
   FileCode,
@@ -44,6 +47,7 @@ import {
   PuzzlePiece,
   Robot,
   Rocket,
+  Rows,
   ShieldCheck,
   Sparkle,
   Star,
@@ -82,12 +86,15 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   "chart-bar": ChartBar,
   chat: ChatCircleDots,
   clock: Clock,
+  "clock-counter-clockwise": ClockCounterClockwise,
   cloud: Cloud,
   code: Code,
   compass: Compass,
   cube: Cube,
   currency: CurrencyDollar,
   database: Database,
+  desktop: Desktop,
+  "device-mobile": DeviceMobile,
   envelope: EnvelopeSimple,
   eye: Eye,
   file: FileCode,
@@ -106,6 +113,7 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   lightning: Lightning,
   link: Link,
   list: ListChecks,
+  "list-checks": ListChecks,
   lock: Lock,
   magic: MagicWand,
   microphone: Microphone,
@@ -118,6 +126,7 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   puzzle: PuzzlePiece,
   robot: Robot,
   rocket: Rocket,
+  rows: Rows,
   shield: ShieldCheck,
   sparkle: Sparkle,
   star: Star,
@@ -215,6 +224,79 @@ export const PLUGIN_IDENTITY_COLORS: readonly string[] = [
   "var(--plugin-identity-7)",
 ];
 
+/* ── Official brand marks ───────────────────────────────────────────────── */
+
+/**
+ * Tile artwork for the three officials that carry someone else's brand.
+ *
+ * Linear, Apple and Electron are recognised by their marks, not by a glyph from
+ * a generic set — an issue tracker drawn as a checklist and a simulator drawn as
+ * `</>` is what the gallery looked like before this map existed. The rest of the
+ * official set stays on glyph-plus-colour, which is the identity the whole
+ * catalogue is built on; a logo is for a name a reader already knows.
+ *
+ * Inline SVG source rather than a URL, because these must render with the
+ * network off. The bundled listings are what the Marketplace shows on a cold,
+ * offline start, and a tile that only appears once a directory answers is a tile
+ * that is missing exactly when the app is trying to prove it still works. The
+ * strings mirror `plugins/<id>/icon.svg` — the published packages carry the same
+ * artwork so a directory entry can point `iconUrl` at a raw URL later — and the
+ * two copies are edited together.
+ *
+ * Each is a FULL-BLEED square: the mark sits on its own brand background rather
+ * than being drawn in a theme colour. An `<img>` is a separate document, so
+ * `currentColor` and the theme's CSS variables do not reach inside it; a black
+ * Apple mark would be a black square on a dark theme. Carrying the background
+ * makes the tile legible in both themes and gives it the weight of an app icon.
+ */
+const OFFICIAL_PLUGIN_LOGOS: Record<string, string> = {
+  "ade-linear":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+    + '<rect width="64" height="64" fill="#5E6AD2"/>'
+    + '<g transform="translate(13.4 13.4) scale(1.547)" fill="#FFFFFF">'
+    + '<path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"/>'
+    + "</g></svg>",
+  "ade-ios-sim":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+    + '<defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0" stop-color="#4E4E54"/><stop offset="1" stop-color="#232326"/>'
+    + "</linearGradient></defs>"
+    + '<rect width="64" height="64" fill="url(#a)"/>'
+    + '<g transform="translate(15.7 15.4) scale(1.36)" fill="#FFFFFF">'
+    + '<path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>'
+    + "</g></svg>",
+  "ade-app-control":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+    + '<rect width="64" height="64" fill="#2B2E3A"/>'
+    + '<g transform="rotate(30 32 32)">'
+    + '<g fill="none" stroke="#9FEAF9" stroke-width="3">'
+    + '<ellipse cx="32" cy="32" rx="22" ry="8.4"/>'
+    + '<ellipse cx="32" cy="32" rx="22" ry="8.4" transform="rotate(60 32 32)"/>'
+    + '<ellipse cx="32" cy="32" rx="22" ry="8.4" transform="rotate(120 32 32)"/>'
+    + "</g>"
+    + '<circle cx="53.4" cy="27.6" r="4.2" fill="#9FEAF9"/>'
+    + "</g>"
+    + '<circle cx="32" cy="32" r="5.4" fill="#9FEAF9"/>'
+    + "</svg>",
+};
+
+/**
+ * The bundled mark for an official plugin, as a `data:` URL, or null.
+ *
+ * Encoded on demand rather than stored encoded so the artwork above stays
+ * readable and diffable. `encodeURIComponent` is the whole escape: `#` in a
+ * fill would otherwise start a fragment and drop the rest of the document.
+ *
+ * Keyed by id alone, and deliberately so: the same plugin must look the same
+ * bundled, listed, and installed, and the id is the only field that is the same
+ * in all three. A directory entry that publishes its own `iconUrl` still wins —
+ * see {@link pluginIdentity} — so this never overrides what an author shipped.
+ */
+export function officialPluginLogo(pluginId: string): string | null {
+  const svg = Object.hasOwn(OFFICIAL_PLUGIN_LOGOS, pluginId) ? OFFICIAL_PLUGIN_LOGOS[pluginId]! : null;
+  return svg === null ? null : `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 /**
  * FNV-1a over the plugin id.
  *
@@ -249,6 +331,11 @@ export type PluginIdentity = {
  * catalogue reads as broken, and "the author didn't fill in a field" is not
  * something a reader should be able to see.
  *
+ * The image layer has a second half: an official whose mark ADE bundles falls
+ * back to that mark when no image was published. Published beats bundled so a
+ * directory entry can move a logo without shipping a build, and bundled beats
+ * nothing so the marks survive an offline start.
+ *
  * The derived pair is two independent draws off one hash so that two plugins
  * sharing a glyph are unlikely to share its colour as well.
  */
@@ -270,9 +357,10 @@ export function pluginIdentity(input: {
     // A second, decorrelated draw: `hash >>> 8` so a glyph collision does not
     // drag the colour along with it.
     : PLUGIN_IDENTITY_COLORS[(hash >>> 8) % PLUGIN_IDENTITY_COLORS.length]!;
+  const published = input.iconUrl?.trim();
   return {
     Icon: pluginIcon(glyph),
     color,
-    imageUrl: input.iconUrl?.trim() ? input.iconUrl.trim() : null,
+    imageUrl: published ? published : officialPluginLogo(input.pluginId),
   };
 }

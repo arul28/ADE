@@ -296,7 +296,17 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
   const level = appResourcePressureLevel(usage);
   if (level === 0) return null;
   const color =
-    level >= 4 ? "#F87171" : level === 3 ? "#FB7185" : level === 2 ? "#FB923C" : "#FBBF24";
+    level >= 4
+      ? "var(--shell-pressure-4)"
+      : level === 3
+      ? "var(--shell-pressure-3)"
+      : level === 2
+      ? "var(--shell-pressure-2)"
+      : "var(--shell-pressure-1)";
+  // The ramp is a token now, so the border/fill/glow can no longer be written as
+  // `${color}80` — a `var()` takes no hex-alpha suffix. Each percentage below is
+  // the alpha byte it replaces (0x80, 0x1f, 0x22) as a fraction of 255.
+  const tint = (percent: number) => `color-mix(in srgb, ${color} ${percent}%, transparent)`;
   const description = resourcePressureDescription(usage);
   return (
     <SmartTooltip
@@ -325,9 +335,9 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
         )}
         style={{
           color,
-          borderColor: `${color}80`,
-          background: `${color}1f`,
-          boxShadow: `0 0 0 1px ${color}22, 0 0 16px -10px ${color}`,
+          borderColor: tint(50.2),
+          background: tint(12.2),
+          boxShadow: `0 0 0 1px ${tint(13.3)}, 0 0 16px -10px ${color}`,
           outline: "none",
         }}
         onClick={() => {
@@ -491,7 +501,7 @@ function HeaderStatusMenu({
               aria-label="Connections and usage"
               className={cn(
                 "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-                "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
+                "bg-[color:var(--shell-surface)] p-1.5 shadow-2xl shadow-black/45",
               )}
               style={{ top: menuPos.top, right: menuPos.right }}
             >
@@ -565,7 +575,7 @@ function MachineSwitcherMenu({
       aria-label={`Machines for ${group.displayName}`}
       className={cn(
         "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-        "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
+        "bg-[color:var(--shell-surface)] p-1.5 shadow-2xl shadow-black/45",
       )}
       style={
         {
@@ -2720,10 +2730,11 @@ export function TopBar({
               WebkitAppRegion: "no-drag",
               ...(remoteStatusCount > 0
                 ? {
-                    color: "#FBBF24",
-                    borderColor: "rgba(245,158,11,0.58)",
+                    color: "var(--shell-attention-fg)",
+                    borderColor: "color-mix(in srgb, var(--shell-attention-edge) 58%, transparent)",
                     boxShadow:
-                      "0 0 0 1px rgba(245,158,11,0.20), 0 0 16px -8px rgba(245,158,11,0.9)",
+                      "0 0 0 1px color-mix(in srgb, var(--shell-attention-edge) 20%, transparent),"
+                      + " 0 0 16px -8px color-mix(in srgb, var(--shell-attention-edge) 90%, transparent)",
                   }
                 : {}),
             } as React.CSSProperties
@@ -2917,7 +2928,7 @@ export function TopBar({
                 ref={connectionsPanelRef}
                 className={cn(
                   "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(560px,calc(100vw-24px))]",
-                  "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+                  "rounded-xl border border-white/10 bg-[color:var(--shell-surface)] shadow-2xl shadow-black/45",
                 )}
                 role="dialog"
                 aria-modal="true"

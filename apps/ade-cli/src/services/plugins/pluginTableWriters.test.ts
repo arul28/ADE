@@ -170,6 +170,58 @@ describe("plugin table writers", () => {
     })).toThrowError(/maximum is/);
   });
 
+  it("stamps the mobile flag into the stored schema without touching the SQL shape", () => {
+    const schema = (panelId: string) => db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", panelId],
+    )?.schema_json ?? "";
+    const put = (panelId: string, mobile?: boolean) => putPluginPanel(db, {
+      pluginId: "graph",
+      panelId,
+      title: "Panel",
+      icon: "graph",
+      surface: "work",
+      schemaJson: '{"v":1,"body":[]}',
+      vocabVersion: 1,
+      ...(mobile === undefined ? {} : { mobile }),
+      nowIso: NOW,
+    });
+
+    put("desktop-only", false);
+    expect(JSON.parse(schema("desktop-only"))).toEqual({ v: 1, body: [], mobile: false });
+
+    // Absent means yes, and the row says so out loud: a client reading the flag
+    // and one that has never heard of it must reach the same answer.
+    put("phone", true);
+    expect(JSON.parse(schema("phone"))).toEqual({ v: 1, body: [], mobile: true });
+    put("unstated");
+    expect(JSON.parse(schema("unstated"))).toEqual({ v: 1, body: [], mobile: true });
+
+    // Flipping back has to REMOVE the false, not leave a stale one behind.
+    put("desktop-only", true);
+    expect(JSON.parse(schema("desktop-only"))).toEqual({ v: 1, body: [], mobile: true });
+  });
+
+  it("keeps a schema it cannot stamp byte-identical", () => {
+    // Not an object: there is nowhere to put the key, and inventing a wrapper
+    // would turn an unrenderable panel into a differently unrenderable one.
+    putPluginPanel(db, {
+      pluginId: "graph",
+      panelId: "array",
+      title: "",
+      icon: "",
+      surface: "",
+      schemaJson: "[1,2]",
+      vocabVersion: 1,
+      mobile: false,
+      nowIso: NOW,
+    });
+    expect(db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", "array"],
+    )?.schema_json).toBe("[1,2]");
+  });
+
   it("skips unchanged presence rows and removes ones that are gone", () => {
     const rows = [
       { pluginId: "graph", version: "1.0.0", enabled: true, displayName: "Graph", icon: "graph", accent: "#000" },

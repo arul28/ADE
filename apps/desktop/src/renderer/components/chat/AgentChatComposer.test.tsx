@@ -1718,7 +1718,7 @@ describe("AgentChatComposer", () => {
     const trigger = screen.getByRole("button", { name: "More composer controls" });
     fireEvent.click(trigger);
     const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
-    const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
+    const appControl = screen.getByRole("menuitemcheckbox", { name: /Electron Control/i });
     expect((issue as HTMLButtonElement).disabled).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(appControl));
     fireEvent.keyDown(appControl, { key: "ArrowDown" });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PLUGIN_BUILTIN_SURFACE_IDS, parsePluginManifest } from "./manifest";
+import { PLUGIN_BUILTIN_SURFACE_IDS, PLUGIN_BUILTIN_SURFACE_MOBILE, parsePluginManifest } from "./manifest";
 
 /**
  * `surfaces[].builtin` — the field that lets a plugin gate a compiled-in tab.
@@ -60,6 +60,53 @@ describe("manifest builtin surfaces", () => {
       surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main" }],
     }));
     expect(parsed.manifest?.surfaces[0]).not.toHaveProperty("builtin");
+  });
+
+  /**
+   * A gated built-in draws compiled code, so whether it appears on the phone is
+   * a fact about what iOS ships — not something a manifest gets to assert.
+   */
+  it("clamps mobile to what the phone has a page for", () => {
+    const parsed = parsePluginManifest(manifest({
+      official: true,
+      surfaces: [{ ...graphSurface, mobile: true }],
+    }));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(false);
+    expect(parsed.warnings.join(" ")).toContain("no page for");
+  });
+
+  it("lets a built-in the phone does ship stay on it", () => {
+    const parsed = parsePluginManifest(manifest({
+      official: true,
+      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+    }));
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(true);
+  });
+
+  it("lets an author narrow a mobile-capable built-in", () => {
+    // Narrowing is always allowed: the ceiling says what iOS CAN draw, the flag
+    // says what this plugin wants drawn.
+    const parsed = parsePluginManifest(manifest({
+      official: true,
+      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear", mobile: false }],
+    }));
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(false);
+  });
+
+  it("gives a refused builtin claim the ordinary surface default", () => {
+    // The `builtin` was dropped, so what is left is a plain tab — and a plain
+    // tab is mobile-capable. The clamp must not outlive the claim it clamped.
+    const parsed = parsePluginManifest(manifest({ surfaces: [graphSurface] }));
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
+    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(true);
+  });
+
+  it("keeps the mobile table aligned with the gateable list", () => {
+    expect(Object.keys(PLUGIN_BUILTIN_SURFACE_MOBILE).sort()).toEqual([...PLUGIN_BUILTIN_SURFACE_IDS].sort());
+    expect(PLUGIN_BUILTIN_SURFACE_MOBILE.linear).toBe(true);
   });
 
   it("keeps the gateable list closed", () => {

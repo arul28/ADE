@@ -7,7 +7,7 @@ description: Use this skill when you need to hand work to another ADE agent, wai
 
 ## Core rule
 
-Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
+Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, Electron Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
 
 Do not route ordinary repo commands through ADE chat-attached terminals. Those
 terminals exist so ADE Work chats can expose long-running process logs or let a
@@ -44,11 +44,11 @@ ade actions list --domain project_secret --text
 
 ## Socket mode
 
-Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, iOS Simulator, Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-ios-simulator**, and **ade-browser** skills all assume it.
+Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for Electron Control, iOS Simulator, Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-ios-simulator**, and **ade-browser** skills all assume it.
 
 ### Owning a drawer surface
 
-ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches, and the drawer services (App Control, iOS Simulator, browser) carry them so the Work tools pane attributes what you drive to your lane rather than to the visible chat. When you *attach to something already running* instead of starting it yourself, run that surface's `claim` subcommand first — `ade --socket app-control claim`, `ade --socket ios-sim claim`, `ade --socket browser claim` — or Work will keep showing the previous owner.
+ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches, and the drawer services (Electron Control, iOS Simulator, browser) carry them so the Work tools pane attributes what you drive to your lane rather than to the visible chat. When you *attach to something already running* instead of starting it yourself, run that surface's `claim` subcommand first — `ade --socket app-control claim`, `ade --socket ios-sim claim`, `ade --socket browser claim` — or Work will keep showing the previous owner.
 
 ## Runtime daemon vs. desktop bridge
 

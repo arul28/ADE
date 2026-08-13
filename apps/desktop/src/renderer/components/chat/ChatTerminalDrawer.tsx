@@ -14,18 +14,18 @@ function deriveAppControlTabState(session: AppControlSession | null): AppControl
   if (!session?.terminalSessionId) return null;
   const lostConnection = session.status === "running" && Boolean(session.connectedAt) && !session.cdpEndpoint;
   if (session.status === "connected") {
-    return { terminalSessionId: session.terminalSessionId, tone: "active", title: `App Control connected · ${session.label}` };
+    return { terminalSessionId: session.terminalSessionId, tone: "active", title: `Electron Control connected · ${session.label}` };
   }
   if (session.status === "starting" || (session.status === "running" && !lostConnection)) {
-    return { terminalSessionId: session.terminalSessionId, tone: "warn", title: `App Control launching · ${session.label}` };
+    return { terminalSessionId: session.terminalSessionId, tone: "warn", title: `Electron Control launching · ${session.label}` };
   }
   if (session.status === "exited" || session.status === "stopped" || session.status === "failed" || lostConnection) {
     return {
       terminalSessionId: session.terminalSessionId,
       tone: "error",
       title: lostConnection
-        ? `App Control disconnected · ${session.lastError ?? "app may have quit"}`
-        : `App Control ${session.status}`,
+        ? `Electron Control disconnected · ${session.lastError ?? "app may have quit"}`
+        : `Electron Control ${session.status}`,
     };
   }
   return null;
@@ -343,7 +343,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       id: tabId,
       ptyId: revealRequest.ptyId,
       sessionId: revealRequest.terminalId,
-      label: revealRequest.label || "App Control",
+      label: revealRequest.label || "Electron Control",
       exited: false,
     };
     setTabs((prev) => {

@@ -62,7 +62,7 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     actionDomains: ["linear_credentials", "linear_oauth", "linear_issue_tracker"],
   },
   { builtinId: "ios", route: null, ownerPluginId: "ade-ios-sim", title: "iOS Simulator", actionDomains: ["ios_simulator"] },
-  { builtinId: "app-control", route: null, ownerPluginId: "ade-app-control", title: "App Control", actionDomains: ["app_control"] },
+  { builtinId: "app-control", route: null, ownerPluginId: "ade-app-control", title: "Electron Control", actionDomains: ["app_control"] },
 ];
 
 /** The surface that owns an action domain, or null for ADE's own domains. */

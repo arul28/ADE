@@ -858,7 +858,7 @@ For a Windows-relevant diff, the bound head must have a terminal-green native
 `windows-foundation` check. Also require the packaged Windows job when the diff
 changes packaging, native bundle contents, or release-contract inputs. Record
 Computer Use evidence by capability: native screenshot/video/OS GUI control
-may be explicitly unavailable on Windows while App Control and proof-file
+may be explicitly unavailable on Windows while Electron Control and proof-file
 ingestion remain supported and independently tested. Clean-host Stable/Beta
 coexistence, second-account pipe denial, reboot/restart recovery,
 signed/installed update proof, and real GUI captures are external host evidence;

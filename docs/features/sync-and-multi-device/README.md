@@ -74,7 +74,7 @@ per-user/channel named pipe for local RPC and the packaged
 `crdtSyncAvailable` status prevents pairing when the extension is unavailable;
 Connections surfaces the failure with reinstall/restart guidance. Native
 macOS computer use and iOS Simulator are separate capabilities and do not gate
-Windows phone pairing, App Control, browser control, or proof ingestion.
+Windows phone pairing, Electron Control, browser control, or proof ingestion.
 
 ### The machine-wide sync host lease
 

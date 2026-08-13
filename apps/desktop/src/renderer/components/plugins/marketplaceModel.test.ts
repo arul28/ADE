@@ -10,6 +10,7 @@ import {
   describePluginSource,
   pluginAuthorUrl,
   installStateFor,
+  installedPluginIds,
   listingFromInstalled,
   marketplaceRouteFromPath,
   mergeMarketplaceCatalogue,
@@ -220,6 +221,32 @@ describe("queryMarketplace", () => {
       .map((entry) => entry.pluginId)).toEqual(["graph"]);
     expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "themes" })
       .map((entry) => entry.pluginId)).toEqual(["slate-theme"]);
+  });
+
+  it("keeps only what is installed on this machine under the installed chip", () => {
+    const installed = installedPluginIds([
+      installedPlugin({ pluginId: "history" }),
+      // Turned off still counts as installed: the chip answers "do I have it",
+      // not "is it running".
+      installedPlugin({ pluginId: "slate-theme", enabled: false }),
+    ]);
+    const found = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" }, installed);
+    expect(found.map((entry) => entry.pluginId)).toEqual(["history", "slate-theme"]);
+  });
+
+  it("keeps nothing under the installed chip when no set is supplied", () => {
+    // The default matters: a caller that forgets the set must show an empty
+    // list rather than silently showing the whole catalogue as installed.
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" })).toEqual([]);
+  });
+
+  it("scopes the surface facets to the installed chip", () => {
+    const facets = deriveSurfaceFacets(
+      catalogue,
+      { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" },
+      installedPluginIds([installedPlugin({ pluginId: "graph" })]),
+    );
+    expect(facets).toEqual([{ surface: "lanes", label: "Lanes", total: 1 }]);
   });
 
   it("keeps only listings that extend every selected surface", () => {

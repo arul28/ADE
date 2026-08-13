@@ -3261,7 +3261,7 @@ export function AgentChatComposer({
       const savedRange = richSelectionRef.current;
       // Prefer cursor insertion only when the user is actually typing in the
       // editor — otherwise (chips arriving from an external panel like
-      // App Control or iOS sim) just append to the end, which makes
+      // Electron Control or iOS sim) just append to the end, which makes
       // multi-chip ordering deterministic.
       if (isFocusedInsideEditor && savedRange && editor.contains(savedRange.commonAncestorContainer)) {
         const range = savedRange.cloneRange();
@@ -4504,7 +4504,7 @@ export function AgentChatComposer({
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
-    if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
+    if (!draft.trim().length && hasAppControlContext) return "Send selected Electron Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
     if (!draft.trim().length && hasBuiltInBrowserContext) return "Send selected browser context";
     return "Send";
@@ -4809,7 +4809,7 @@ export function AgentChatComposer({
                 <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="shrink-0 rounded border border-sky-300/22 bg-sky-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-sky-100/75">
-                      App Control
+                      Electron Control
                     </span>
                     <span className="truncate text-sky-50/85">{appControlContextDisplayLabel(selectedAppControlContext)}</span>
                     {appControlContextRoleHint(selectedAppControlContext) ? (
@@ -5416,7 +5416,7 @@ export function AgentChatComposer({
                 ...(showAppControlToggle && onToggleAppControl
                   ? [{
                       id: "app-control",
-                      label: appControlOpen ? "Close App Control" : "Open App Control",
+                      label: appControlOpen ? "Close Electron Control" : "Open Electron Control",
                       icon: <Desktop size={14} weight={appControlOpen ? "fill" : "regular"} />,
                       active: appControlOpen,
                       onSelect: onToggleAppControl,

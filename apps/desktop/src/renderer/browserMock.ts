@@ -5136,7 +5136,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         providers: [{
           provider: "cdp",
           available: false,
-          detail: "Browser preview does not run App Control.",
+          detail: "Browser preview does not run Electron Control.",
         }],
       }),
       launch: resolvedArg({} as any),

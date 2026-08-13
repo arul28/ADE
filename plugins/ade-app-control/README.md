@@ -1,15 +1,18 @@
-## App Control
+## Electron Control
 
-Drive and inspect a desktop app from ADE — launch it or attach to one already
+Drive and inspect an Electron app from ADE — launch it or attach to one already
 running, click and type in it, read its logs, and pull what is on screen into
 the chat.
 
-App Control was part of ADE itself until plugins existed. Nothing about it
+It works over the Chrome DevTools Protocol, so it drives Electron and Chromium
+apps rather than native desktop apps.
+
+Electron Control was part of ADE itself until plugins existed. Nothing about it
 changed — it stopped being something everyone has to carry.
 
 ### What it adds
 
-- The **App Control** pane in the Work tools, and its chat drawer.
+- The **Electron Control** pane in the Work tools, and its chat drawer.
 
 ### Notes
 

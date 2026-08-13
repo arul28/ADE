@@ -174,7 +174,7 @@ describe("ChatAppControlPanel", () => {
 
     fireEvent.click(screen.getByText("Help wire CDP"));
 
-    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE App Control."));
+    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE Electron Control."));
   });
 
   it("drives connected-session controls without launching or sending input", async () => {
@@ -243,13 +243,13 @@ describe("ChatAppControlPanel", () => {
         sessionId="chat-connected"
         laneId="lane-2"
         projectRoot="/repo"
-        controlDisabledReason="This App Control view is attached to Lane 1, not Lane 2."
+        controlDisabledReason="This Electron Control view is attached to Lane 1, not Lane 2."
       />,
     );
 
     const targetSelect = await screen.findByLabelText("Switch the controlled window") as HTMLSelectElement;
     expect(targetSelect.disabled).toBe(true);
-    expect(screen.queryByLabelText("Stop App Control session")).toBeNull();
+    expect(screen.queryByLabelText("Stop Electron Control session")).toBeNull();
     expect((screen.getByTitle("Re-capture screenshot and DOM snapshot") as HTMLButtonElement).disabled).toBe(true);
 
     const typeInput = screen.getByLabelText("Text to type into the focused app element") as HTMLInputElement;

@@ -29,7 +29,7 @@ export type LocalComputerUseCapabilities = {
 };
 
 const NATIVE_COMPUTER_USE_BLOCKED_DETAIL =
-  "Native screenshot, video, and OS GUI control are currently implemented for macOS only. App Control and proof-file ingestion remain available on supported desktop platforms.";
+  "Native screenshot, video, and OS GUI control are currently implemented for macOS only. Electron Control and proof-file ingestion remain available on supported desktop platforms.";
 
 function present(command: string, detail: string): LocalComputerUseCapability {
   return { state: "present", available: true, command, detail };

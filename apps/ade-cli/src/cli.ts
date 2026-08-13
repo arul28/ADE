@@ -1847,7 +1847,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
     $ ade terminal read --terminal <session-id> --text Read terminal scrollback
     $ ade terminal read --pty <pty-id> --text       Read by PTY id
-    $ ade app-control logs --text                   Read the active App Control launch terminal
+    $ ade app-control logs --text                   Read the active Electron Control launch terminal
     $ ade terminal write --terminal <session-id> --data "y\\n"
     $ ade terminal signal --terminal <session-id> --signal SIGINT
 `,
@@ -2229,15 +2229,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim type "hello" --text              Type into the launched app
 `,
   "app-control": `${ADE_BANNER}
-  App Control
+  Electron Control
 
-  App Control is ADE's bridge for developer-owned app sessions. The first
-  supported kind is Electron: ADE can launch or connect to an Electron renderer
-  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
-  elements, selected UI context, and basic input in the same style as the iOS
-  simulator drawer. App Control is intentionally a bridge: Playwright,
-  agent-browser, Computer Use, and other tools may also attach to the same app;
-  ADE keeps the launch/session state and turns snapshots into chat context.
+  Electron Control drives developer-owned Electron and Chromium apps over the
+  Chrome DevTools Protocol. ADE can launch or connect to a renderer that exposes
+  a CDP port, then capture screenshots, DOM elements, selected UI context, and
+  basic input in the same style as the iOS simulator drawer. Electron Control is
+  intentionally a bridge: Playwright, agent-browser, Computer Use, and other
+  tools may also attach to the same app; ADE keeps the launch/session state and
+  turns snapshots into chat context.
 
   Launching runs the command in the attached terminal instead of a hidden child
   process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
@@ -2259,11 +2259,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control connect --cdp-port 9222      Attach to an already-running app
     $ ade app-control targets --text               List debuggable CDP targets
     $ ade app-control attach-target --target <id>  Attach to one renderer target
-    $ ade app-control logs --text                  Read the active App Control launch terminal
+    $ ade app-control logs --text                  Read the active Electron Control launch terminal
     $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
     $ ade app-control focus --text                 Raise the controlled app window on demand
     $ ade app-control minimize --text              Minimize the controlled app window
-    $ ade app-control stop --text                  Signal the App Control terminal session
+    $ ade app-control stop --text                  Signal the Electron Control terminal session
     $ ade app-control actions --text               List every callable app_control action
     $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
     $ ade terminal read --pty <pty-id> --text      Read by PTY id
@@ -2906,7 +2906,7 @@ function buildAppControlHelp(args: string[]): string {
   Focused help for '${rawSubcommand}':
     Most subcommands accept --input-json and --arg/--arg-json as escape hatches.
     Use "ade app-control actions --text" to inspect the exact service methods.
-    Use --socket when you want the desktop drawer and CLI to share the same live App Control session.
+    Use --socket when you want the desktop drawer and CLI to share the same live Electron Control session.
 `;
   return focused;
 }
@@ -9654,13 +9654,13 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "actions")
     return {
       kind: "execute",
-      label: "App Control actions",
+      label: "Electron Control actions",
       steps: [listActionsStep("actions", "app_control")],
     };
   if (sub === "status")
     return {
       kind: "execute",
-      label: "App Control status",
+      label: "Electron Control status",
       steps: [
         actionStep(
           "result",
@@ -9688,10 +9688,10 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "claim") {
-    const claimArgs = readRequiredToolClaimArgs(args, "App Control");
+    const claimArgs = readRequiredToolClaimArgs(args, "Electron Control");
     return {
       kind: "execute",
-      label: "App Control claim",
+      label: "Electron Control claim",
       steps: [
         actionStep(
           "result",
@@ -9785,7 +9785,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       );
     return {
       kind: "execute",
-      label: "App Control launch",
+      label: "Electron Control launch",
       steps: [
         actionStep(
           "result",
@@ -9811,7 +9811,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     const claimArgs = readToolClaimArgs(args);
     return {
       kind: "execute",
-      label: "App Control connect",
+      label: "Electron Control connect",
       steps: [
         actionStep(
           "result",
@@ -9835,7 +9835,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "targets" || sub === "list-targets") {
     return {
       kind: "execute",
-      label: "App Control targets",
+      label: "Electron Control targets",
       steps: [
         actionStep(
           "result",
@@ -9853,7 +9853,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     );
     return {
       kind: "execute",
-      label: "App Control attach target",
+      label: "Electron Control attach target",
       steps: [
         actionArgsListStep("result", "app_control", "attachToTarget", [
           targetId,
@@ -9869,7 +9869,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   ) {
     return {
       kind: "execute",
-      label: "App Control stop",
+      label: "Electron Control stop",
       steps: [
         actionStep(
           "result",
@@ -9885,7 +9885,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "focus" || sub === "reveal" || sub === "front") {
     return {
       kind: "execute",
-      label: "App Control focus window",
+      label: "Electron Control focus window",
       steps: [
         actionStep(
           "result",
@@ -9899,7 +9899,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "minimize" || sub === "hide") {
     return {
       kind: "execute",
-      label: "App Control minimize window",
+      label: "Electron Control minimize window",
       steps: [
         actionStep(
           "result",
@@ -9913,7 +9913,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "screenshot" || sub === "capture") {
     return {
       kind: "execute",
-      label: "App Control screenshot",
+      label: "Electron Control screenshot",
       steps: [
         actionStep(
           "result",
@@ -9927,7 +9927,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
     return {
       kind: "execute",
-      label: "App Control snapshot",
+      label: "Electron Control snapshot",
       steps: [
         actionStep(
           "result",
@@ -9944,7 +9944,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
     return {
       kind: "execute",
-      label: "App Control inspect point",
+      label: "Electron Control inspect point",
       steps: [
         actionStep(
           "result",
@@ -9968,7 +9968,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "select") {
     return {
       kind: "execute",
-      label: "App Control select",
+      label: "Electron Control select",
       steps: [
         actionStep(
           "result",
@@ -9988,7 +9988,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "click" || sub === "tap") {
     return {
       kind: "execute",
-      label: "App Control click",
+      label: "Electron Control click",
       steps: [
         actionStep(
           "result",
@@ -10007,7 +10007,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "scroll" || sub === "wheel") {
     return {
       kind: "execute",
-      label: "App Control scroll",
+      label: "Electron Control scroll",
       steps: [
         actionStep(
           "result",
@@ -10029,7 +10029,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     const key = readValue(args, ["--key"]) ?? firstPositional(args);
     return {
       kind: "execute",
-      label: "App Control key",
+      label: "Electron Control key",
       steps: [
         actionStep(
           "result",
@@ -10049,7 +10049,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
   if (sub === "type" || sub === "text") {
     return {
       kind: "execute",
-      label: "App Control type",
+      label: "Electron Control type",
       steps: [
         actionStep(
           "result",
@@ -19601,7 +19601,7 @@ function formatAppControlStatus(value: unknown): string {
       ? status
       : {};
   return [
-    renderKeyValues("ADE App Control", [
+    renderKeyValues("ADE Electron Control", [
       ["supported", status.supported],
       ["platform", status.platform],
       ["active app", session.label],
@@ -19862,7 +19862,7 @@ function formatAppControlSnapshot(value: unknown): string {
     )
     .join(", ");
   return [
-    renderKeyValues("ADE App Control snapshot", [
+    renderKeyValues("ADE Electron Control snapshot", [
       ["title", snapshot.title],
       ["url", snapshot.url],
       ["captured", snapshot.capturedAt],
@@ -20127,7 +20127,7 @@ function formatAppControlSelection(value: unknown): string {
   const selected = isRecord(metadata.selectedElement)
     ? metadata.selectedElement
     : {};
-  return renderKeyValues("ADE App Control selection", [
+  return renderKeyValues("ADE Electron Control selection", [
     ["component", item.componentId],
     [
       "source",
@@ -20573,15 +20573,21 @@ function inferFormatter(
   )
     return "ios-sim-preview";
   if (
-    label === "app control status" ||
-    label === "app control launch" ||
-    label === "app control connect" ||
-    label === "app control stop"
+    label === "electron control status" ||
+    label === "electron control launch" ||
+    label === "electron control connect" ||
+    label === "electron control stop"
   )
     return "app-control-status";
-  if (label === "app control snapshot" || label === "app control screenshot")
+  if (
+    label === "electron control snapshot" ||
+    label === "electron control screenshot"
+  )
     return "app-control-snapshot";
-  if (label === "app control select" || label === "app control inspect point")
+  if (
+    label === "electron control select" ||
+    label === "electron control inspect point"
+  )
     return "app-control-selection";
   if (
     label === "browser status" ||

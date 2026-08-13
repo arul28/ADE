@@ -78,7 +78,7 @@ export function AutoUpdateErrorDialog({
           <Dialog.Content
             className={cn(
               "pointer-events-auto relative w-[min(92vw,460px)] overflow-hidden rounded-xl",
-              "border border-amber-200/20 bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/55 outline-none",
+              "border border-amber-200/20 bg-[color:var(--shell-surface)] text-fg shadow-2xl shadow-black/55 outline-none",
             )}
           >
             <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber-300/70 to-transparent" />

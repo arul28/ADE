@@ -2501,7 +2501,7 @@ export function registerIpc({
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
     const service = getCtx().appControlService;
     if (!service) {
-      throw new Error("App Control service is not available.");
+      throw new Error("Electron Control service is not available.");
     }
     return service;
   };
@@ -2536,7 +2536,7 @@ export function registerIpc({
       windowId: win?.id ?? null,
       senderUrl: senderUrl || null,
     });
-    throw new Error("App Control is only available to the ADE renderer.");
+    throw new Error("Electron Control is only available to the ADE renderer.");
   };
 
   const assertAppControlRateLimit = (
@@ -2566,7 +2566,7 @@ export function registerIpc({
         count: bucket.count,
         windowMs: limit.windowMs,
       });
-      throw new Error("Too many App Control requests. Try again shortly.");
+      throw new Error("Too many Electron Control requests. Try again shortly.");
     }
     bucket.count += 1;
   };
@@ -2848,7 +2848,7 @@ export function registerIpc({
 
   const invalidAppControlArg = (channel: string, reason: string): never => {
     getCtx().logger.warn("ipc.app_control.invalid_args", { channel, reason });
-    throw new Error(`Invalid App Control payload: ${reason}`);
+    throw new Error(`Invalid Electron Control payload: ${reason}`);
   };
 
   const appControlRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {

@@ -402,8 +402,21 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
 
 /* ── Filter, sort, search ───────────────────────────────────────────────── */
 
-export type MarketplaceChip = "all" | "official" | "featured" | "themes";
+export type MarketplaceChip = "all" | "installed" | "official" | "featured" | "themes";
 export type MarketplaceSort = "installs" | "stars" | "new";
+
+/**
+ * Plugin ids present on this machine, in the shape the chip filter wants.
+ *
+ * The installed set is not part of {@link MarketplaceQuery} because it is not
+ * something the reader chose — it changes under them as installs land, and a
+ * query that carried it would go stale the moment one did.
+ */
+export function installedPluginIds(installed: readonly InstalledPlugin[]): ReadonlySet<string> {
+  return new Set(installed.map((plugin) => plugin.pluginId));
+}
+
+const NO_INSTALLS: ReadonlySet<string> = new Set<string>();
 
 export type MarketplaceQuery = {
   search: string;
@@ -434,8 +447,14 @@ function matchesSearch(listing: MarketplaceListing, search: string): boolean {
   return needle.split(/\s+/).every((word) => haystack.includes(word));
 }
 
-function matchesChip(listing: MarketplaceListing, chip: MarketplaceChip): boolean {
+function matchesChip(
+  listing: MarketplaceListing,
+  chip: MarketplaceChip,
+  installed: ReadonlySet<string>,
+): boolean {
   switch (chip) {
+    case "installed":
+      return installed.has(listing.pluginId);
     case "official":
       return listing.official;
     case "featured":
@@ -476,10 +495,12 @@ function compareListings(a: MarketplaceListing, b: MarketplaceListing, sort: Mar
 export function queryMarketplace(
   listings: readonly MarketplaceListing[],
   query: MarketplaceQuery,
+  /** From {@link installedPluginIds}. Only the "installed" chip reads it. */
+  installed: ReadonlySet<string> = NO_INSTALLS,
 ): MarketplaceListing[] {
   const surfaces = query.surfaces;
   return listings
-    .filter((listing) => matchesChip(listing, query.chip))
+    .filter((listing) => matchesChip(listing, query.chip, installed))
     .filter((listing) => surfaces.every((surface) => listing.surfaces.includes(surface)))
     .filter((listing) => matchesSearch(listing, query.search))
     .sort((a, b) => compareListings(a, b, query.sort));
@@ -497,9 +518,10 @@ export type SurfaceFacet = { surface: PluginSurfaceId; label: string; total: num
 export function deriveSurfaceFacets(
   listings: readonly MarketplaceListing[],
   query: MarketplaceQuery,
+  installed: ReadonlySet<string> = NO_INSTALLS,
 ): SurfaceFacet[] {
   const scoped = listings
-    .filter((listing) => matchesChip(listing, query.chip))
+    .filter((listing) => matchesChip(listing, query.chip, installed))
     .filter((listing) => matchesSearch(listing, query.search));
   return PLUGIN_SURFACE_IDS
     .map((surface) => ({

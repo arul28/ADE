@@ -549,15 +549,17 @@ final class DatabaseService {
           }
         }
       ) { statement in
-        PluginPanelRecord(
+        let schemaJSON = stringValue(statement, index: 5) ?? ""
+        return PluginPanelRecord(
           pluginId: stringValue(statement, index: 0) ?? "",
           panelId: stringValue(statement, index: 1) ?? "",
           title: stringValue(statement, index: 2) ?? "",
           icon: stringValue(statement, index: 3) ?? "",
           surface: stringValue(statement, index: 4) ?? "",
-          schemaJSON: stringValue(statement, index: 5) ?? "",
+          schemaJSON: schemaJSON,
           vocabVersion: Int(sqlite3_column_int64(statement, 6)),
-          updatedAt: stringValue(statement, index: 7) ?? ""
+          updatedAt: stringValue(statement, index: 7) ?? "",
+          mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON)
         )
       }
       .filter { !$0.pluginId.isEmpty && !$0.panelId.isEmpty }

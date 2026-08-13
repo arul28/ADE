@@ -434,6 +434,27 @@ describe("plugin start and panel materialization", () => {
     expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Live from quiet-plugin" });
   });
 
+  it("corrects a stale mobile flag on a live panel without replacing its content", async () => {
+    // `mobile` is the host's answer, not the plugin's: it moves when a manifest
+    // changes it or a new ADE resolves it differently. A codeless plugin never
+    // republishes, so a convergence pass has to fix the flag in place —
+    // otherwise the phone keeps listing a panel the manifest has taken off it,
+    // forever. Fixing it must not cost the live content, which is the whole
+    // reason a plain pass does not replace panels.
+    const { plugins, store } = await hostWithFixture({ source: codelessPluginDir() });
+    store!.updatePanel("quiet-plugin", "main", {
+      schema: { v: 1, title: "Live" },
+      vocabVersion: 1,
+      mobile: false,
+    });
+    expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Live", mobile: false });
+
+    await plugins.enable({ pluginId: "quiet-plugin" });
+
+    // The manifest's tab surface says nothing about mobile, so it is mobile.
+    expect(store!.readPanel("quiet-plugin", "main")?.schema).toMatchObject({ title: "Live", mobile: true });
+  });
+
   it("tells running plugins that the install set moved", async () => {
     vi.useFakeTimers();
     try {

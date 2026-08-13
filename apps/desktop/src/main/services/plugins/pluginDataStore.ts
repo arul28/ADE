@@ -55,7 +55,15 @@ export type PluginDataStore = {
   updatePanel(
     pluginId: string,
     panelId: string,
-    args: { title?: string; icon?: string; surface?: string; schema: unknown; vocabVersion: number },
+    args: {
+      title?: string;
+      icon?: string;
+      surface?: string;
+      schema: unknown;
+      vocabVersion: number;
+      /** Whether the phone lists this panel. Omitted means yes — see the writer. */
+      mobile?: boolean;
+    },
   ): void;
   /** The materialized panel row, which is what every client actually renders. */
   readPanel(pluginId: string, panelId: string): PluginPanelRecord | null;
@@ -253,6 +261,7 @@ export function createPluginDataStore(deps: {
           surface: args.surface ?? "",
           schemaJson: encodePluginJson(args.schema),
           vocabVersion: Math.trunc(args.vocabVersion),
+          ...(args.mobile === undefined ? {} : { mobile: args.mobile }),
           nowIso: nowIso(),
         });
       });

@@ -101,6 +101,13 @@ struct PluginPanelRecord: Equatable, Identifiable {
   /// is too old without parsing at all.
   var vocabVersion: Int
   var updatedAt: String
+  /// Whether the declaring machine marked this panel as one the phone shows.
+  ///
+  /// Defaults to true, and that default is the back-compat contract: rows
+  /// written before the flag existed carry no answer, and a plugin platform that
+  /// hid panels it was unsure about would make an ADE upgrade on the desktop
+  /// look like plugins disappearing from the phone.
+  var mobile = true
 
   var displayTitle: String {
     title.isEmpty ? panelId : title
@@ -110,6 +117,27 @@ struct PluginPanelRecord: Equatable, Identifiable {
   /// version earns the "Update ADE" fallback rather than an attempt.
   var isRenderableVersion: Bool {
     vocabVersion <= PluginVocabulary.version
+  }
+
+  /// Read the mobile flag the host stamped into `schema_json`.
+  ///
+  /// It rides inside the schema because `plugin_panels` is a CRR with a frozen
+  /// SQL shape — every version the platform has needed has been carried in the
+  /// JSON payload, and an old client simply ignores a root key it does not know.
+  ///
+  /// The substring guard is not the check, it is the fast path: the roster
+  /// decodes every panel row and deliberately leaves `schema_json` unparsed, so
+  /// paying for a full parse per row to answer a question almost no row raises
+  /// would undo that. Correctness comes from the root lookup below, which runs
+  /// only on rows that could possibly carry the key.
+  static func mobileFlag(inSchemaJSON schemaJSON: String) -> Bool {
+    guard schemaJSON.contains("\"mobile\"") else { return true }
+    guard let data = schemaJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let flag = PluginPanelParser.boolValue(object["mobile"]) else {
+      return true
+    }
+    return flag
   }
 }
 

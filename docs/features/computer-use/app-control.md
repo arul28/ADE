@@ -1,10 +1,10 @@
-# App Control
+# Electron Control
 
-App Control is ADE's bridge for driving developer-owned app sessions from inside a chat. The first supported `AppControlAppKind` is `electron`: ADE launches (or connects to) an Electron renderer that exposes a Chrome DevTools Protocol port, captures screenshots and DOM elements, resolves elements back to their source files, and lets the user attach screenshot-backed UI context to a chat as `AppControlContextItem`s.
+Electron Control is ADE's bridge for driving developer-owned Electron and Chromium app sessions from inside a chat, over the Chrome DevTools Protocol. It does not drive arbitrary native desktop apps — the app has to expose a CDP port. The `AppControlAppKind` it implements is `electron`: ADE launches (or connects to) an Electron renderer that exposes a Chrome DevTools Protocol port, captures screenshots and DOM elements, resolves elements back to their source files, and lets the user attach screenshot-backed UI context to a chat as `AppControlContextItem`s.
 
-App Control is intentionally a *bridge*. Other automation stacks — Playwright, agent-browser, browser-use, Claude's `computer_use` — can attach to the same Electron app and continue to be useful. ADE's job is to keep the launch state, the visible launch terminal, screenshots, DOM/selector packets, source candidates, and chat-attached context coherent across those tools.
+Electron Control is intentionally a *bridge*. Other automation stacks — Playwright, agent-browser, browser-use, Claude's `computer_use` — can attach to the same Electron app and continue to be useful. ADE's job is to keep the launch state, the visible launch terminal, screenshots, DOM/selector packets, source candidates, and chat-attached context coherent across those tools.
 
-App Control runs on the runtime that owns the project. The launch terminal, CDP attachment, screencast frames, screenshots, and source-matching all execute on the runtime host; the renderer just streams the resulting frames and chips. Because Electron apps under inspection live on the runtime host's filesystem, App Control naturally runs on whichever machine has the source tree.
+Electron Control runs on the runtime that owns the project. The launch terminal, CDP attachment, screencast frames, screenshots, and source-matching all execute on the runtime host; the renderer just streams the resulting frames and chips. Because Electron apps under inspection live on the runtime host's filesystem, Electron Control naturally runs on whichever machine has the source tree.
 
 ## Source file map
 
@@ -31,7 +31,7 @@ App Control runs on the runtime that owns the project. The launch terminal, CDP 
 ### Shared types
 
 - `apps/desktop/src/shared/types/appControl.ts` — the type contract:
-  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active App Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
+  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active Electron Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
   - capture: `AppControlScreenshot`, `AppControlScreen`, `AppControlElement`, `AppControlFrame`, `AppControlSnapshot`, `AppControlSnapshotProvider`, `AppControlScreencastFrame`.
   - coordinate spaces: `AppControlCoordinateSpace` is `"screenshot"` for bitmap pixels or `"viewport"` for CDP CSS viewport coordinates. Live renderer clicks use viewport coordinates so CDP input lands on the actual element under the pointer.
   - context: `AppControlContextItem` (`kind: "app_control_element"`), `AppControlSourceMatch`, `AppControlInspectResult`, `AppControlSelectResult`.
@@ -71,7 +71,7 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
 ### Renderer
 
-- `apps/desktop/src/renderer/components/chat/ChatAppControlPanel.tsx` — the App Control panel. Two mount points:
+- `apps/desktop/src/renderer/components/chat/ChatAppControlPanel.tsx` — the Electron Control panel. Two mount points:
   - Under `AgentChatPane`'s in-chat drawer (chat-scoped, `sessionId` set, persisted under `sessionStorage["ade.chat.appControlPanel.chat:<sessionId>"]`).
   - Inside the Work right-edge sidebar's `app-control` tab (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<laneId>:<projectRoot>"]`).
 
@@ -80,9 +80,9 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - **Inspect** — overlays a DevTools-style outline on the screenshot or live frame. Hovering calls backend `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
 
   Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.
-- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus` to gate the header toggle on platform support only when lane tool drawers are visible. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat App Control drawer toggle and status poll are suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
-- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel under the `app-control` tab and runs its own `AppControlSession` subscription. When the active session's `laneId` differs from the sidebar's active lane it shows a `WarningBanner` ("App Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
-- `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` reads `AppControlSession` to decorate the App Control launch terminal tab with a status tone (`active` / `warn` / `error`).
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders Electron Control chips alongside file attachments. The pane polls `ade.appControl.getStatus` to gate the header toggle on platform support only when lane tool drawers are visible. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat Electron Control drawer toggle and status poll are suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel under the `app-control` tab and runs its own `AppControlSession` subscription. When the active session's `laneId` differs from the sidebar's active lane it shows a `WarningBanner` ("Electron Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
+- `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` reads `AppControlSession` to decorate the Electron Control launch terminal tab with a status tone (`active` / `warn` / `error`).
 
 ### ADE CLI
 
@@ -94,12 +94,12 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - `screenshot`, `snapshot`, `inspect`, `select`
   - `click`, `type`, `scroll`, `key` (`inspect`, `select`, `click`, and `scroll` accept `--coords screenshot|viewport`)
   - `targets`, `attach`
-  - `logs`, `terminal write`, `terminal signal` — operate on the active App Control launch terminal
+  - `logs`, `terminal write`, `terminal signal` — operate on the active Electron Control launch terminal
 - `ade terminal <sub>`: `list`, `active`, `read`, `write`, `signal` — control the in-chat terminal owned by a chat session.
 
 `apps/ade-cli/src/bootstrap.ts` constructs an `AppControlService` for headless mode using the same `resolveLaneId` strategy as the desktop main process.
 
-The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells agents to use socket-backed ADE CLI surfaces when live desktop state matters, to read the relevant Agent Skill for detailed App Control steps, and to register proof artifacts through `ade proof ...` after captures.
+The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells agents to use socket-backed ADE CLI surfaces when live desktop state matters, to read the relevant Agent Skill for detailed Electron Control steps, and to register proof artifacts through `ade proof ...` after captures.
 
 ### Action registry
 
@@ -123,7 +123,7 @@ The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells ag
    A command that genuinely needs a shell falls back to platform-specific
    PowerShell or cmd quoting. Structured parsing is deliberately Windows-only;
    macOS/Linux custom shell semantics are not reinterpreted.
-2. **Visible chat terminal.** Instead of spawning a hidden child process, the service runs the resolved command through the chat-owned PTY (`ptyService.create(...)` with `chatSessionId`). The user sees the stdout/stderr in the chat terminal drawer, and the App Control session records the resulting `terminalSessionId` + `terminalPtyId`. App Control's CDP provider is supported on Windows; OS-level computer use remains a separate macOS-only capability.
+2. **Visible chat terminal.** Instead of spawning a hidden child process, the service runs the resolved command through the chat-owned PTY (`ptyService.create(...)` with `chatSessionId`). The user sees the stdout/stderr in the chat terminal drawer, and the Electron Control session records the resulting `terminalSessionId` + `terminalPtyId`. Electron Control's CDP provider is supported on Windows; OS-level computer use remains a separate macOS-only capability.
 3. **CDP discovery.** `listCdpTargets(port)` polls `http://127.0.0.1:<port>/json` every 500 ms. A health-check timer keeps polling at 2 s once a target is selected. `pickCdpTarget` prefers `page` > `webview` > anything with a non-`devtools://` URL.
 4. **Attach.** `CdpClient.connect(webSocketDebuggerUrl)` opens the long-lived WebSocket. The session transitions `starting` → `running` → `connected` and `cdpEndpoint` / `cdpTargetId` are filled in. `Page.startScreencast` is enabled lazily so the renderer panel can paint frames.
 5. **Health.** If the WebSocket drops, the session moves back to `running` (terminal still alive) or `failed` (terminal exited). `lastError` carries the last CDP failure for the renderer to display.
@@ -145,14 +145,14 @@ Routine capture and input paths do not raise or normalize the external Electron 
 
 ## Input
 
-- `click({ x, y, scale, coordinateSpace })` sends CDP `Input.dispatchMouseEvent` at viewport coordinates. The default coordinate space is `"screenshot"` for backwards-compatible CLI/API calls, and the renderer panel sends `"viewport"` so live-frame clicks land on the actual element under the pointer without any scale conversion. Screenshot-space coordinates are normalized to viewport space using independent x and y scale factors derived from the most recent `Page.screencastFrame` metadata (`deviceWidth` / image-width for x, `deviceHeight` / image-height for y), so non-uniform scaling (e.g. a resized window) does not skew click targets. Shared `services/shared/imageDimensions.ts` extracts width/height from both PNG and JPEG screenshot buffers (JPEG parsing scans SOF markers). For hidden renderers, App Control tries `dispatchDomClick` first as a synthetic in-page fallback.
+- `click({ x, y, scale, coordinateSpace })` sends CDP `Input.dispatchMouseEvent` at viewport coordinates. The default coordinate space is `"screenshot"` for backwards-compatible CLI/API calls, and the renderer panel sends `"viewport"` so live-frame clicks land on the actual element under the pointer without any scale conversion. Screenshot-space coordinates are normalized to viewport space using independent x and y scale factors derived from the most recent `Page.screencastFrame` metadata (`deviceWidth` / image-width for x, `deviceHeight` / image-height for y), so non-uniform scaling (e.g. a resized window) does not skew click targets. Shared `services/shared/imageDimensions.ts` extracts width/height from both PNG and JPEG screenshot buffers (JPEG parsing scans SOF markers). For hidden renderers, Electron Control tries `dispatchDomClick` first as a synthetic in-page fallback.
 - `typeText({ text })` calls `Input.insertText`. `dispatchKey({ type, key, code, text, modifiers })` is the lower-level escape hatch for shortcuts and special keys.
 - `scroll({ x, y, deltaX, deltaY, coordinateSpace })` is `Input.dispatchMouseEvent` with `type: "mouseWheel"`.
 - All input calls go through a single shared `CdpClient` (`withCdp`) so the WebSocket isn't reopened per click; this measurably reduces input latency.
 
 ## Chat-owned terminal model
 
-The App Control launch terminal is a regular ADE chat terminal — it inserts a `terminal_sessions` row and routes through `ptyService`. To make these terminals first-class for chat agents, the branch widens the schema and PTY service:
+The Electron Control launch terminal is a regular ADE chat terminal — it inserts a `terminal_sessions` row and routes through `ptyService`. To make these terminals first-class for chat agents, the branch widens the schema and PTY service:
 
 - `terminal_sessions` gains a `chat_session_id` column (nullable, indexed). Set when a PTY is created with `chatSessionId` in `PtyCreateArgs`.
 - `ptyService` keeps two in-memory maps: `terminalChatSessions` (terminalId → chatSessionId) and `activeTerminalByChatSession`. Disposing a chat terminal automatically promotes the most recently created sibling so `terminal.read --chat-session <id>` always resolves a sensible target.
@@ -169,11 +169,11 @@ The App Control launch terminal is a regular ADE chat terminal — it inserts a 
 - `computer-use` — placeholder for delegating to Claude `computer_use` / Ghost OS-style backends.
 - `external` — when an external automation tool (Playwright, agent-browser) holds the connection.
 
-Only one App Control session is active per project at a time. Re-launching/connecting with `force: true` cleans up the previous session first.
+Only one Electron Control session is active per project at a time. Re-launching/connecting with `force: true` cleans up the previous session first.
 
 ## Cross-links
 
-- [`README.md`](./README.md) — the proof-artifact broker; App Control sits next to it but does not write to `computer_use_artifacts`.
+- [`README.md`](./README.md) — the proof-artifact broker; Electron Control sits next to it but does not write to `computer_use_artifacts`.
 - [`../chat/composer-and-ui.md`](../chat/composer-and-ui.md) — composer chip rendering for `AppControlContextItem`s.
 - [`../terminals-and-sessions/README.md`](../terminals-and-sessions/README.md) — `chat_session_id` column and the new `ade.terminal.*` IPC surface.
 - [`../agents/tool-registration.md`](../agents/tool-registration.md) — how `ADE_CHAT_SESSION_ID` reaches the agent runtime and how `app_control` / `terminal` ADE CLI domains are exposed.

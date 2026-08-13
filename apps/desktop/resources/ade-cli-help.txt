@@ -15,6 +15,8 @@ _    ____  _____
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -22,13 +24,14 @@ _    ____  _____
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -61,12 +64,13 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -98,8 +102,8 @@ _    ____  _____
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -152,6 +156,8 @@ _    ____  _____
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -159,13 +165,14 @@ _    ____  _____
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -198,12 +205,13 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -235,8 +243,8 @@ _    ____  _____
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -327,10 +335,13 @@ _    ____  _____
 
   Lanes
 
-  Lanes are ADE-managed worktrees and branches. Most commands accept either
-  --lane <lane-id> or a positional lane id.
+  Every git worktree of the project is a lane. "ade lanes list" reconciles lane
+  rows against git on each call, so a worktree you created by hand shows up as a
+  lane with no attach step, and a lane whose worktree is gone from git and disk
+  stops being listed. Most commands accept either --lane <lane-id> or a
+  positional lane id.
 
-    $ ade lanes list --text                         Show lane stack graph and branch names
+    $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
@@ -354,14 +365,15 @@ _    ____  _____
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
                                                     Child lanes carry the parent's unmerged work
-    $ ade lanes import --branch <branch>            Register an existing branch/worktree
+    $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
+                                                    worktree (fails if the branch is already checked out somewhere —
+                                                    that worktree is already a lane)
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
     $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
     $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
-    $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
@@ -510,7 +522,7 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
-    $ ade prs checks <pr> --text                    Show check status
+    $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
@@ -540,9 +552,9 @@ _    ____  _____
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
+    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --no-parent --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
@@ -573,7 +585,7 @@ _    ____  _____
     $ ade terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
     $ ade terminal read --terminal <session-id> --text Read terminal scrollback
     $ ade terminal read --pty <pty-id> --text       Read by PTY id
-    $ ade app-control logs --text                   Read the active App Control launch terminal
+    $ ade app-control logs --text                   Read the active Electron Control launch terminal
     $ ade terminal write --terminal <session-id> --data "y\n"
     $ ade terminal signal --terminal <session-id> --signal SIGINT
 
@@ -605,7 +617,7 @@ _    ____  _____
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat note "testing desktop auth fallback" # Update the Work status line (3–6 words, max 72 characters)
+    $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for 6 words or fewer; truncated past 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
@@ -665,7 +677,7 @@ _    ____  _____
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -713,7 +725,7 @@ _    ____  _____
   Agent sessions
 
   Compatibility path for older agent launches. Prefer:
-    $ ade new chat --mode cli --lane <lane> --provider codex --prompt "Fix the failing test"
+    $ ade new chat --mode cli --lane <lane> --provider codex --no-parent --prompt "Fix the failing test"
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
     $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto
@@ -748,6 +760,8 @@ _    ____  _____
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -755,13 +769,14 @@ _    ____  _____
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -794,12 +809,13 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -831,8 +847,8 @@ _    ____  _____
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -948,6 +964,8 @@ _    ____  _____
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -955,13 +973,14 @@ _    ____  _____
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -994,12 +1013,13 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -1031,8 +1051,8 @@ _    ____  _____
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1174,15 +1194,15 @@ _    ____  _____
   / ___ \| |_| | |___
  /_/   \_\____/|_____|
 
-  App Control
+  Electron Control
 
-  App Control is ADE's bridge for developer-owned app sessions. The first
-  supported kind is Electron: ADE can launch or connect to an Electron renderer
-  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
-  elements, selected UI context, and basic input in the same style as the iOS
-  simulator drawer. App Control is intentionally a bridge: Playwright,
-  agent-browser, Computer Use, and other tools may also attach to the same app;
-  ADE keeps the launch/session state and turns snapshots into chat context.
+  Electron Control drives developer-owned Electron and Chromium apps over the
+  Chrome DevTools Protocol. ADE can launch or connect to a renderer that exposes
+  a CDP port, then capture screenshots, DOM elements, selected UI context, and
+  basic input in the same style as the iOS simulator drawer. Electron Control is
+  intentionally a bridge: Playwright, agent-browser, Computer Use, and other
+  tools may also attach to the same app; ADE keeps the launch/session state and
+  turns snapshots into chat context.
 
   Launching runs the command in the attached terminal instead of a hidden child
   process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
@@ -1204,11 +1224,11 @@ _    ____  _____
     $ ade app-control connect --cdp-port 9222      Attach to an already-running app
     $ ade app-control targets --text               List debuggable CDP targets
     $ ade app-control attach-target --target <id>  Attach to one renderer target
-    $ ade app-control logs --text                  Read the active App Control launch terminal
+    $ ade app-control logs --text                  Read the active Electron Control launch terminal
     $ ade app-control terminal write --data "y\n" Answer a prompt in that terminal
     $ ade app-control focus --text                 Raise the controlled app window on demand
     $ ade app-control minimize --text              Minimize the controlled app window
-    $ ade app-control stop --text                  Signal the App Control terminal session
+    $ ade app-control stop --text                  Signal the Electron Control terminal session
     $ ade app-control actions --text               List every callable app_control action
     $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
     $ ade terminal read --pty <pty-id> --text      Read by PTY id
@@ -1368,6 +1388,8 @@ _    ____  _____
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
+    $ ade connect [--status]                        Link this machine to your ADE account
+    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
     $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
@@ -1375,13 +1397,14 @@ _    ____  _____
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -1414,12 +1437,13 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -1451,8 +1475,8 @@ _    ____  _____
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1528,7 +1552,7 @@ _    ____  _____
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade --role cto actions list --domain attention --text
-                                                    Discover account-wide Attention actions
+                                                    Discover account-wide Activity actions
     $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
                                                     Read work across connected machines and projects
     $ ade actions run <domain.action> --input-json '{"key":"value"}'

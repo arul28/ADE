@@ -171,7 +171,10 @@ describe("pluginDataStore", () => {
     store.updatePanel("graph", "main", { title: "Graph", schema: { type: "stack" }, vocabVersion: 2 });
     const panel = store.readPanel("graph", "main");
     expect(panel).toMatchObject({ pluginId: "graph", panelId: "main", title: "Graph", vocabVersion: 2 });
-    expect(panel?.schema).toEqual({ type: "stack" });
+    // The stored schema carries the host's resolved `mobile` flag alongside what
+    // the plugin wrote: `plugin_panels` has no column for it, so the writer
+    // stamps it into the payload. Absent from the update means yes.
+    expect(panel?.schema).toEqual({ type: "stack", mobile: true });
     expect(panel?.updatedAt).toBeTruthy();
 
     expect(store.readPanel("graph", "missing")).toBeNull();

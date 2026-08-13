@@ -2468,7 +2468,7 @@ function dispatchRemoteRuntimeEventPayload(
       try {
         cb(appControlEvent);
       } catch (error) {
-        console.error("preload remote App Control listener failed", error);
+        console.error("preload remote Electron Control listener failed", error);
       }
     }
   }

@@ -567,7 +567,7 @@ export function LinearQuickViewButton({
         role="dialog"
         aria-modal="true"
         aria-label="Linear deeplink unavailable"
-        className="w-[min(440px,100%)] overflow-hidden rounded-xl border border-white/12 bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+        className="w-[min(440px,100%)] overflow-hidden rounded-xl border border-white/12 bg-[color:var(--shell-surface)] text-fg shadow-2xl shadow-black/50"
       >
         <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
           <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
@@ -713,7 +713,7 @@ export function LinearQuickViewButton({
             role="dialog"
             aria-modal="true"
             aria-label="Linear quick view"
-            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--shell-surface)] text-fg shadow-2xl shadow-black/50"
             style={{
               borderColor: "rgba(123, 138, 240, 0.55)",
               boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",

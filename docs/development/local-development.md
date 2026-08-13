@@ -142,7 +142,7 @@ data. A fresh worktree has no `node_modules` — symlink the root and `apps/desk
 `node_modules` from the primary checkout, or run `npm run setup` inside the
 worktree first.
 
-When launching that same flow through ADE App Control from a running Alpha/Beta
+When launching that same flow through ADE Electron Control from a running Alpha/Beta
 ADE window, also clear the packaged-channel environment variables inherited from
 the host app (and use an absolute lane cwd). Otherwise the dev Electron app can
 reuse the Alpha/Beta profile and lose the single-instance lock instead of opening

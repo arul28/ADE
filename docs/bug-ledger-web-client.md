@@ -255,7 +255,7 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
   Transcripts/Product Analytics/Launch Prompt (localStorage or existing descriptors); keep hidden
   Secrets/Providers/GitHub creds/Dictation/ADE CLI/Auto-updates/Storage (no `storage.*` namespace)/Session
   Lifecycle/Lane Templates (reads land, writes silently discard).
-- C12g `native-only, keep hidden` — iOS Sim / Built-in Browser / App Control / Computer Use are Work-tab panes (not
+- C12g `native-only, keep hidden` — iOS Sim / Built-in Browser / Electron Control / Computer Use are Work-tab panes (not
   tabs), all sharing `createNativeUnavailableNamespace` (`adapter/misc.ts:539-542`, `:661-668`). Correct as-is.
 - C12-sec `SECURITY` — **`cto.setLinearToken` is registered `viewerAllowed: true`** (`syncRemoteCommandService.ts:4826`);
   it's unreachable from browsers only because the adapter never wired it. Mechanically completing the CTO namespace

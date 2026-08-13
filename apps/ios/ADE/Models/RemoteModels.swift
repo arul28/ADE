@@ -3821,7 +3821,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var resumeCommand: String?
   var resumeMetadata: TerminalResumeMetadata?
   var chatIdleSinceAt: String?
-  /// Parent chat session id when this terminal was launched from a chat (e.g. App Control,
+  /// Parent chat session id when this terminal was launched from a chat (e.g. Electron Control,
   /// in-chat terminal drawer). Mirrors the desktop `TerminalSessionSummary.chatSessionId`.
   var chatSessionId: String? = nil
   /// Current pending approval/input item id when the backing chat is waiting on the user.

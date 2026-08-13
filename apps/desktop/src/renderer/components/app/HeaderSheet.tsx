@@ -126,7 +126,7 @@ export function HeaderSheet({
         ref={panelRef}
         className={cn(
           panelPositionClassName,
-          "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+          "rounded-xl border border-white/10 bg-[color:var(--shell-surface)] shadow-2xl shadow-black/45",
         )}
         role="dialog"
         aria-modal="true"
@@ -135,7 +135,7 @@ export function HeaderSheet({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--shell-surface)] px-4 py-3">
           <div className="flex min-w-0 items-center gap-2">
             {icon}
             <div className="min-w-0">

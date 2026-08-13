@@ -3,7 +3,7 @@
  *
  * A manifest `builtin` contribution does not render a vocabulary panel. It
  * names a surface that is compiled into ADE — the Graph canvas, the Review and
- * History pages, the Linear, iOS Simulator and App Control panes — and says
+ * History pages, the Linear, iOS Simulator and Electron Control panes — and says
  * "installing me is what puts this in the product".
  *
  * ## Hidden is the default, and it is a default, not a fallback

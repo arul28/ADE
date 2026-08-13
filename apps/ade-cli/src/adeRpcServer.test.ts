@@ -35,7 +35,7 @@ const originalAdeEnv = new Map<string, string | undefined>(
 /**
  * Point the machine ADE dir at a scratch plugin registry.
  *
- * Plugin-owned action domains — Linear's, the iOS Simulator's, App Control's —
+ * Plugin-owned action domains — Linear's, the iOS Simulator's, Electron Control's —
  * are refused on a machine whose plugin is not installed. Without this the
  * suite would describe whatever plugins the developer running it happens to
  * have, and `linear_issue_tracker.createComment` would pass or fail by

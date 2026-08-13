@@ -153,7 +153,7 @@ function appControlContextLabel(item: AppControlContextItem): string {
   for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.tagName]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return "App Control element";
+  return "Electron Control element";
 }
 
 export function formatAppControlContextChipsForDisplay(items: AppControlContextItem[]): string {
@@ -228,7 +228,7 @@ export function formatAppControlContextForPrompt(items: AppControlContextItem[])
     return `${index + 1}. ${appControlContextLabel(item)} (${source}, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}${snippet}`;
   });
   return [
-    "App Control visual inspect context attached by the user.",
+    "Electron Control visual inspect context attached by the user.",
     "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.",
     "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, nearbyElements, console/browser context, and exact source when available.",
     ...rows,

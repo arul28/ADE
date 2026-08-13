@@ -4,7 +4,7 @@
   "displayName": "Review",
   "description": "AI review passes over your project and pull requests \u2014 as an optional tab.",
   "icon": "git-pull-request",
-  "accent": "#7C6FF0",
+  "accent": "#22A06B",
   "vocabVersion": 1,
   "surfaces": [
     {
@@ -13,7 +13,8 @@
       "title": "Review",
       "icon": "git-pull-request",
       "panelId": "main",
-      "builtin": "review"
+      "builtin": "review",
+      "mobile": false
     }
   ],
   "panels": [

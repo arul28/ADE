@@ -76,7 +76,7 @@ vi.mock("../chat/ChatAppControlPanel", async () => {
         type: "button",
         disabled: !props.onAddContext,
         onClick: () => props.onAddContext?.(appControlContextItem),
-      }, "Add App Control context"),
+      }, "Add Electron Control context"),
     ),
   };
 });
@@ -386,7 +386,7 @@ describe("WorkSidebar context targets", () => {
     vi.restoreAllMocks();
   });
 
-  it("passes chat session ids into iOS and App Control panels and dispatches chat events", async () => {
+  it("passes chat session ids into iOS and Electron Control panels and dispatches chat events", async () => {
     const received: unknown[] = [];
     window.addEventListener("ade:agent-chat:add-ios-context", (event) => {
       received.push((event as CustomEvent).detail);
@@ -529,7 +529,7 @@ describe("WorkSidebar context targets", () => {
     expect(received[0]).not.toHaveProperty("sessionId");
   });
 
-  it("warns when App Control is attached to another lane while keeping Work controls usable", async () => {
+  it("warns when Electron Control is attached to another lane while keeping Work controls usable", async () => {
     const { terminalWrite } = installAdeMock({ appControlSession: otherLaneAppControlSession });
 
     renderSidebar({
@@ -538,10 +538,10 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This App Control view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This Electron Control view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toBe("");
-    expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(screen.getByText("Add App Control context"));
+    expect((screen.getByText("Add Electron Control context") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Add Electron Control context"));
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
@@ -664,7 +664,7 @@ describe("WorkSidebar context targets", () => {
     expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Electron Control" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
     expect(screen.queryByTestId("browser-panel")).toBeNull();
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
@@ -687,7 +687,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.getByRole("button", { name: "App Control" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Electron Control" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
     expect(screen.queryByTestId("ios-panel")).toBeNull();
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
@@ -705,7 +705,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Electron Control" })).toBeNull();
     expect(screen.queryByTestId("ios-panel")).toBeNull();
     expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();

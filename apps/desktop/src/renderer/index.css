@@ -47,6 +47,10 @@
   --color-card: #1A1830;
   --color-card-fg: #F0F0F2;
   --color-card-rgb: 28, 25, 38;
+  /* Opaque twin of --color-card, for dialogs and menus that float over live
+     content. --color-card itself is allowed to be translucent per theme; this
+     one may not be, or the app shows through the modal behind the text. */
+  --color-card-solid: #181423;
   --color-secondary: #252232;
   --color-secondary-fg: #A8A8B4;
   --color-muted: #1E1B28;
@@ -205,12 +209,39 @@
   --shell-status-running: #34d399;
   --shell-status-attention: #fbbf24;
 
+  /* The plate every header-spawned popover, sheet, dialog and toast is drawn
+     on. Opaque by construction — these float over live content, so a
+     translucent value lets the app read straight through the menu. */
+  --shell-surface: #121019;
+
+  /* Resource-pressure ramp, mild → severe. Its own four-step scale rather than
+     warning/error, which are two-state statuses and cannot express a gradient. */
+  --shell-pressure-1: #FBBF24;
+  --shell-pressure-2: #FB923C;
+  --shell-pressure-3: #FB7185;
+  --shell-pressure-4: #F87171;
+
+  /* "There is something here for you" highlight on a header control: the glyph
+     colour, and the warmer edge its border and glow are mixed from. */
+  --shell-attention-fg: #FBBF24;
+  --shell-attention-edge: #F59E0B;
+
   /* Work tab (sessions + view panes) */
   --work-chrome-surface: var(--chat-canvas-bg, var(--color-card));
   --work-pane-border: rgba(255, 255, 255, 0.06);
   --work-pane-header-bg: rgba(255, 255, 255, 0.03);
   --work-sidebar-bg: #161618;
   --work-session-sidebar-bg: rgb(11, 11, 16);
+
+  /* Work tool-rail identity colours — one per pane, so the selected tool is
+     legible from the rail alone. Identity, not status: nothing about the
+     particular hue means anything beyond "not the neighbouring one". */
+  --work-rail-terminal: #c4b5fd;
+  --work-rail-git: #34d399;
+  --work-rail-files: #fbbf24;
+  --work-rail-ios: #60a5fa;
+  --work-rail-app-control: #a78bfa;
+  --work-rail-browser: #22d3ee;
 
   /* Work tab combobox / popover */
   --work-popover-bg: rgba(22, 20, 30, 0.96);
@@ -380,6 +411,29 @@
 
   --shell-status-running: #10b981;
   --shell-status-attention: #d97706;
+
+  /* The tokens below are deliberately the same values as the dark block.
+     Every surface that reads them shipped a hardcoded dark literal that the
+     light theme never escaped, so a lighter value here would not be
+     "tokenising" the chrome, it would be redesigning it. Extracting the literal
+     and changing it are separate changes; this is the first. A theme plugin can
+     now set all of them per scheme, which is how the shipped themes give the
+     header and its menus a light-theme plate. */
+  --shell-surface: #121019;
+  --shell-pressure-1: #FBBF24;
+  --shell-pressure-2: #FB923C;
+  --shell-pressure-3: #FB7185;
+  --shell-pressure-4: #F87171;
+  --shell-attention-fg: #FBBF24;
+  --shell-attention-edge: #F59E0B;
+  --color-card-solid: #181423;
+
+  --work-rail-terminal: #c4b5fd;
+  --work-rail-git: #34d399;
+  --work-rail-files: #fbbf24;
+  --work-rail-ios: #60a5fa;
+  --work-rail-app-control: #a78bfa;
+  --work-rail-browser: #22d3ee;
 
   --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
   --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);

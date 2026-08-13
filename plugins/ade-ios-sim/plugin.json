@@ -4,7 +4,7 @@
   "displayName": "iOS Simulator",
   "description": "Drive an iOS Simulator from the Work tools, on a Mac.",
   "icon": "device-mobile",
-  "accent": "#7C6FF0",
+  "accent": "#8A8F98",
   "vocabVersion": 1,
   "surfaces": [
     {
@@ -13,7 +13,8 @@
       "title": "iOS Simulator",
       "icon": "device-mobile",
       "panelId": "main",
-      "builtin": "ios"
+      "builtin": "ios",
+      "mobile": false
     }
   ],
   "panels": [

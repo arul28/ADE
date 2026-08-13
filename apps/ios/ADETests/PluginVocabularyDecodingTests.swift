@@ -121,6 +121,25 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertFalse(newer.isRenderableVersion)
     // Title falls back to the panel id so an entry is never blank.
     XCTAssertEqual(current.displayTitle, "main")
+    // Nothing said means the panel shows here, which is what every row written
+    // before the flag existed says.
+    XCTAssertTrue(current.mobile)
+  }
+
+  func testMobileFlagDefaultsToShownAndOnlyABooleanTakesItAway() {
+    XCTAssertFalse(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "v": 1, "mobile": false }"#))
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "v": 1, "mobile": true }"#))
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "v": 1 }"#))
+    // A host writing something other than a boolean, or a panel too damaged to
+    // parse, must not silently remove itself from the phone.
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "mobile": "false" }"#))
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "mobile": 0 }"#))
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: #"{ "mobile": fal"#))
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(inSchemaJSON: ""))
+    // Nested is not the root: only the key the host stamps at the top decides.
+    XCTAssertTrue(PluginPanelRecord.mobileFlag(
+      inSchemaJSON: #"{ "v": 1, "body": [{ "component": "text", "text": "mobile", "mobile": false }] }"#
+    ))
   }
 
   // MARK: - Panel-fatal damage

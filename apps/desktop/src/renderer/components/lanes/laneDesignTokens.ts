@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 export const COLORS = {
   pageBg: "var(--color-bg)",
   cardBg: "rgba(255,255,255,0.03)",
-  cardBgSolid: "#181423",
+  cardBgSolid: "var(--color-card-solid)",
   recessedBg: "rgba(255,255,255,0.02)",
   hoverBg: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
   border: "var(--color-border)",

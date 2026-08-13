@@ -4,7 +4,10 @@ import { ArrowSquareOut, Package } from "@phosphor-icons/react";
 import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { SettingsText } from "../settings/primitives/SettingsControls";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+// The system browser: this button fires from inside an open dialog, so a page
+// loaded into ADE's built-in browser pane would land somewhere nobody is
+// looking and the button would read as doing nothing.
+import { openExternalUrl } from "../../lib/openExternal";
 import { useRootAppStore } from "../../state/appStore";
 import {
   inspectPluginSource,
@@ -291,7 +294,7 @@ export function PluginInstallDialog({
           {source ? (
             <button
               type="button"
-              onClick={() => openUrlInAdeBrowser(source)}
+              onClick={() => openExternalUrl(source)}
               style={{
                 ...outlineButton({ height: 26, padding: "0 9px", fontSize: 11 }),
                 background: "transparent",

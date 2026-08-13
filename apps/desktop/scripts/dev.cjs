@@ -230,7 +230,7 @@ async function main() {
     throw new Error(`Electron remote debugging port ${remoteDebugPort} is already in use.`);
   }
   if (process.env.ADE_APP_CONTROL_CDP_PORT) {
-    process.stdout.write(`[ade] honoring ADE App Control CDP port ${remoteDebugPort}\n`);
+    process.stdout.write(`[ade] honoring ADE Electron Control CDP port ${remoteDebugPort}\n`);
   }
   process.stdout.write(`[ade] dev launcher using ${devServerUrl}\n`);
   process.stdout.write(`[ade] electron CDP endpoint: http://127.0.0.1:${remoteDebugPort}/json/version\n`);

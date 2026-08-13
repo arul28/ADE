@@ -4,7 +4,7 @@
   "displayName": "Graph",
   "description": "Lanes, commits and PR overlays on one canvas — as an optional tab.",
   "icon": "graph",
-  "accent": "#7C6FF0",
+  "accent": "#6366F1",
   "vocabVersion": 1,
   "surfaces": [
     {
@@ -13,7 +13,8 @@
       "title": "Graph",
       "icon": "graph",
       "panelId": "main",
-      "builtin": "graph"
+      "builtin": "graph",
+      "mobile": false
     }
   ],
   "panels": [

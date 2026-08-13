@@ -7,6 +7,7 @@ import {
   parsePluginManifest,
   parsePluginManifestJson,
   pluginHasRuntimeEntry,
+  pluginPanelShowsOnMobile,
 } from "./manifest";
 
 function validManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -236,12 +237,59 @@ describe("webview surfaces", () => {
     expect(result.warnings.join(" ")).toMatch(/cannot be combined with a "webview" surface/);
   });
 
+  it("resolves a webview surface to desktop-only while keeping its panel on the phone", () => {
+    const result = parsePluginManifest(webviewSurface({ mobile: true }));
+    expect(result.manifest!.surfaces[0]?.mobile).toBe(false);
+    expect(result.warnings.join(" ")).toMatch(/cannot be true on a "webview" surface/);
+    // The panel the webview names is what the phone renders in its place, so it
+    // stays listed there — that fallback is the whole reason panelId is required.
+    expect(pluginPanelShowsOnMobile(result.manifest!.surfaces[0]!)).toBe(true);
+  });
+
   it("refuses a surface kind it does not know", () => {
     const result = parsePluginManifest(validManifest({
       surfaces: [{ kind: "overlay", id: "x", title: "X", panelId: "main" }],
     }));
     expect(result.manifest!.surfaces).toEqual([]);
     expect(result.warnings.join(" ")).toMatch(/kind must be "tab", "pane" or "webview"/);
+  });
+});
+
+/**
+ * `surfaces[].mobile` — the author's per-surface answer to "does this belong on
+ * the phone". Everything here is about the default and the clamps: the flag can
+ * only ever narrow what the surface kind already supports, and a manifest that
+ * does not mention it must behave exactly as it did before the key existed.
+ */
+describe("surface mobile flag", () => {
+  const surface = (overrides: Record<string, unknown> = {}) => parsePluginManifest(validManifest({
+    surfaces: [{ kind: "pane", id: "notes", title: "Notes", panelId: "main", ...overrides }],
+  })).manifest!.surfaces[0]!;
+
+  it("defaults a panel surface to mobile", () => {
+    expect(surface().mobile).toBe(true);
+    expect(pluginPanelShowsOnMobile(surface())).toBe(true);
+  });
+
+  it("honours an author who turns a surface off", () => {
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "pane", id: "notes", title: "Notes", panelId: "main", mobile: false }],
+    }));
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest!.surfaces[0]?.mobile).toBe(false);
+    expect(pluginPanelShowsOnMobile(parsed.manifest!.surfaces[0]!)).toBe(false);
+  });
+
+  it("treats a non-boolean as absent rather than failing the surface", () => {
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main", mobile: "yes" }],
+    }));
+    // Tolerant on shape, loud in the warning: the surface still exists, and the
+    // author still learns their value did nothing.
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.manifest!.surfaces).toHaveLength(1);
+    expect(parsed.manifest!.surfaces[0]?.mobile).toBe(true);
+    expect(parsed.warnings.join(" ")).toMatch(/mobile must be true or false/);
   });
 });
 

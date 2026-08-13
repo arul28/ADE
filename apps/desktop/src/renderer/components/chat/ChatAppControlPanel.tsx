@@ -313,7 +313,7 @@ export function ChatAppControlPanel({
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
   const controlsDisabled = Boolean(controlDisabledReason);
-  const controlsDisabledMessage = controlDisabledReason ?? "This App Control session is read-only from the current lane.";
+  const controlsDisabledMessage = controlDisabledReason ?? "This Electron Control session is read-only from the current lane.";
   const sessionConnected = activeSession?.status === "connected";
   const waitingForCdp = Boolean(
     activeSession
@@ -650,7 +650,7 @@ export function ChatAppControlPanel({
   }, [refreshSnapshot, refreshStatus]);
 
   // Refresh the list of CDP targets while the session is connected so the
-  // user can switch to a freshly-opened window without restarting App Control.
+  // user can switch to a freshly-opened window without restarting Electron Control.
   useEffect(() => {
     if (status?.activeSession?.status !== "connected") {
       setTargets([]);
@@ -805,7 +805,7 @@ export function ChatAppControlPanel({
   const attachSelection = useCallback(
     async (x: number, y: number) => {
       if (modeRef.current !== "inspect") {
-        throw new Error("Switch to Inspect mode to attach App Control context.");
+        throw new Error("Switch to Inspect mode to attach Electron Control context.");
       }
       if (controlsDisabled) {
         throw new Error(controlsDisabledMessage);
@@ -856,7 +856,7 @@ export function ChatAppControlPanel({
       try {
         onAddContext(contextItem);
       } catch (error) {
-        throw new Error(`Could not insert App Control context: ${errorMessage(error)}`);
+        throw new Error(`Could not insert Electron Control context: ${errorMessage(error)}`);
       }
       setSelectedContextItem(contextItem);
       setSelectedPoint({ x, y });
@@ -969,7 +969,7 @@ export function ChatAppControlPanel({
   const requestDebugHelp = useCallback(() => {
     onInsertDraft?.(
       [
-        "Set up this Electron app for ADE App Control.",
+        "Set up this Electron app for ADE Electron Control.",
         "Wire ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT into the launch command, then verify with `ade app-control launch --command \"<command>\" --text` and `ade app-control snapshot --text`.",
       ].join("\n"),
     );
@@ -995,7 +995,7 @@ export function ChatAppControlPanel({
               if (launchCwd) setLaunchCwd("");
             }}
             placeholder='Launch command, e.g. "pnpm dev"'
-            aria-label="App Control launch command"
+            aria-label="Electron Control launch command"
             className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
             onKeyDown={(event) => {
               if (event.key === "Enter" && canLaunch) void launchSelected();
@@ -1007,7 +1007,7 @@ export function ChatAppControlPanel({
             onClick={launchSelected}
             className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded border border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] px-2 text-[10px] font-medium text-fg/90 transition-colors hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-45"
             title="Launch command in the terminal"
-            aria-label="Launch App Control command"
+            aria-label="Launch Electron Control command"
           >
             {busy === "launch" ? <SpinnerGap size={13} className="animate-spin" /> : <Play size={12} weight="fill" />}
             Run
@@ -1082,7 +1082,7 @@ export function ChatAppControlPanel({
               onClick={stopSession}
               className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-rose-400/22 bg-rose-500/10 px-2 text-[10px] font-medium text-rose-100/85 transition-colors hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-45"
               title="Stop the active session"
-              aria-label="Stop App Control session"
+              aria-label="Stop Electron Control session"
             >
               {busy === "stop" ? <SpinnerGap size={12} className="animate-spin" /> : <Stop size={11} weight="fill" />}
               Stop
@@ -1186,7 +1186,7 @@ export function ChatAppControlPanel({
         >
           <WarningCircle size={12} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">
-            Waiting for CDP on 127.0.0.1:{activeSession.cdpPort}. If the app is running but App Control is blank, quit any existing app instance or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.
+            Waiting for CDP on 127.0.0.1:{activeSession.cdpPort}. If the app is running but Electron Control is blank, quit any existing app instance or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.
           </span>
         </div>
       ) : null}
@@ -1241,7 +1241,7 @@ export function ChatAppControlPanel({
               "inline-flex items-center rounded-md border border-white/[0.08] bg-black/55 p-0.5 backdrop-blur",
               !hasActiveSession ? "opacity-45" : null,
             )}
-            aria-label="App Control mode"
+            aria-label="Electron Control mode"
           >
             {(["control", "inspect"] as const).map((nextMode) => (
               <button

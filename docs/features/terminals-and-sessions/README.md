@@ -641,7 +641,7 @@ Renderer surfaces:
   state, while all windows share the same `persist:ade-browser`
   partition for authentication. On remote-bound Work surfaces, the sidebar is
   limited to the runtime-backed `git` and `files` tabs and automatically
-  switches away from local-only iOS / App Control / Browser tabs. It still
+  switches away from local-only iOS / Electron Control / Browser tabs. It still
   flows selections to the active
   chat through the same dispatch path as the other tool tabs. The active
   Work session picks the sidebar's insertion target
@@ -653,7 +653,7 @@ Renderer surfaces:
   `insert-draft` events (draft targets include `draftTargetId` instead
   of `sessionId` in the event detail), while tracked agent
   CLI PTYs (Claude / Codex / Cursor / OpenCode / Droid) receive the
-  same iOS / App Control / browser / attachment / draft
+  same iOS / Electron Control / browser / attachment / draft
   payloads formatted into prompt text by
   `apps/desktop/src/renderer/lib/visualContextFormatting.ts` and
   written into the PTY through `window.ade.pty.write` as a
@@ -663,7 +663,7 @@ Renderer surfaces:
   matching `TerminalView` can briefly highlight the new content. When
   no chat, draft, or tracked agent CLI session is open, attachment is
   disabled with a banner. Lane mismatches between the Work lane and an
-  existing App Control / iOS Simulator session are shown as an
+  existing Electron Control / iOS Simulator session are shown as an
   informational warning banner but no longer block context insertion —
   controls affect the running tool while inserted context goes to the
   current chat, draft, or CLI target. The tab strip must stay reachable
@@ -1816,7 +1816,7 @@ PTY:
 | `ade.pty.data` (event) | stream stdout/stderr to the renderer |
 | `ade.pty.exit` (event) | final exit code |
 
-Attached terminals (`ade.terminal.*` — used by the chat/CLI terminal panel, the App Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
+Attached terminals (`ade.terminal.*` — used by the chat/CLI terminal panel, the Electron Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
 
 | Channel | Purpose |
 |---|---|

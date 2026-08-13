@@ -49,48 +49,57 @@ import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
 import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
 import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
+/**
+ * The glow behind a rail item is the item's own colour at low alpha, so the two
+ * are one decision, not two. Deriving it here means a theme overrides a single
+ * `--work-rail-*` token and gets both.
+ */
+function railGlow(token: string, percent: number): string {
+  return `radial-gradient(circle, color-mix(in srgb, var(${token}) ${percent}%, transparent) 0%, transparent 70%)`;
+}
+
 const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
   {
     id: "terminal",
     label: "Terminal",
     icon: Terminal,
-    gradient: "radial-gradient(circle, rgba(196,181,253,0.38) 0%, transparent 70%)",
-    color: "#c4b5fd",
+    gradient: railGlow("--work-rail-terminal", 38),
+    color: "var(--work-rail-terminal)",
   },
   {
     id: "git",
     label: "Git",
     icon: GitBranch,
-    gradient: "radial-gradient(circle, rgba(52,211,153,0.42) 0%, transparent 70%)",
-    color: "#34d399",
+    gradient: railGlow("--work-rail-git", 42),
+    color: "var(--work-rail-git)",
   },
   {
     id: "files",
     label: "Files",
     icon: FolderOpen,
-    gradient: "radial-gradient(circle, rgba(251,191,36,0.38) 0%, transparent 70%)",
-    color: "#fbbf24",
+    gradient: railGlow("--work-rail-files", 38),
+    color: "var(--work-rail-files)",
   },
   {
     id: "ios",
     label: "iOS Sim",
     icon: DeviceMobile,
-    gradient: "radial-gradient(circle, rgba(96,165,250,0.4) 0%, transparent 70%)",
-    color: "#60a5fa",
+    gradient: railGlow("--work-rail-ios", 40),
+    color: "var(--work-rail-ios)",
   },
   {
     id: "app-control",
-    label: "App Control",
+    label: "Electron Control",
     icon: Desktop,
-    gradient: "radial-gradient(circle, rgba(167,139,250,0.42) 0%, transparent 70%)",
-    color: "#a78bfa",
+    gradient: railGlow("--work-rail-app-control", 42),
+    color: "var(--work-rail-app-control)",
   },
   {
     id: "browser",
     label: "Browser",
     icon: Globe,
-    gradient: "radial-gradient(circle, rgba(34,211,238,0.38) 0%, transparent 70%)",
-    color: "#22d3ee",
+    gradient: railGlow("--work-rail-browser", 38),
+    color: "var(--work-rail-browser)",
   },
 ];
 
@@ -102,7 +111,7 @@ function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
 
 /**
  * Terminal, Git, Files and Browser are ADE itself and are never gated. iOS Sim
- * and App Control are compiled panes owned by plugins, so each needs its
+ * and Electron Control are compiled panes owned by plugins, so each needs its
  * owner installed and enabled on top of the host checks it already had —
  * a Mac with no iOS Simulator plugin has no iOS Sim tab.
  *
@@ -414,7 +423,7 @@ export function WorkSidebar({
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
     if (effectiveTab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
+      return laneMismatchMessage("Electron Control", appControlSession.laneId, laneId, lanes);
     }
     if (effectiveTab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
       return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, lanes);

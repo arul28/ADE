@@ -165,7 +165,7 @@ describe("appControlLaunchCommand", () => {
     }
   });
 
-  it("does not rewrite scripts that already forward App Control flags", () => {
+  it("does not rewrite scripts that already forward Electron Control flags", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-launch-"));
     try {
       fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({

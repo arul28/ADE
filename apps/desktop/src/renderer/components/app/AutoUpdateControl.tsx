@@ -335,7 +335,7 @@ export function AutoUpdateControl() {
             <Dialog.Content
               className={cn(
                 "ade-update-installed-card pointer-events-auto relative w-[min(92vw,420px)]",
-                "overflow-hidden rounded-xl border border-white/[0.12] bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/55 outline-none",
+                "overflow-hidden rounded-xl border border-white/[0.12] bg-[color:var(--shell-surface)] text-fg shadow-2xl shadow-black/55 outline-none",
               )}
             >
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-300/60 to-transparent" />

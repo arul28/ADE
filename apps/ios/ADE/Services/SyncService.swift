@@ -9043,8 +9043,17 @@ final class SyncService: ObservableObject {
     PluginPresenceCatalog(records: database.fetchPluginPresence())
   }
 
+  /// Panels this phone should show, which is not every panel in the mirror.
+  ///
+  /// A plugin declares per surface whether it belongs on mobile, and the machine
+  /// that wrote the row resolved that into the panel itself. Filtering here
+  /// rather than in ``Database`` keeps the mirror a faithful copy of what the
+  /// host wrote — a desktop-only panel is still replicated, still counted by the
+  /// storage tools, and still there if a later build learns to draw it — while
+  /// giving every plugin surface on the phone (the entry menu, the pane, a
+  /// `plugin` deeplink) one definition of what it may open.
   func pluginPanels(pluginId: String? = nil) -> [PluginPanelRecord] {
-    database.fetchPluginPanels(pluginId: pluginId)
+    database.fetchPluginPanels(pluginId: pluginId).filter(\.mobile)
   }
 
   /// Rows for one bound component, capped at what the component can draw.

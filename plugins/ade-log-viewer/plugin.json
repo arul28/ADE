@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "Log viewer",
   "description": "Reads the end of .log and .ndjson files in Files, with levels picked out.",
-  "icon": "list",
+  "icon": "rows",
   "accent": "#4C9AFF",
   "vocabVersion": 1,
   "entry": "index.js",

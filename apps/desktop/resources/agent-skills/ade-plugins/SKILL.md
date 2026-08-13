@@ -90,7 +90,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `minAdeVersion` | no | Floor. An ADE below it will not load the plugin; an unknown host version never locks the user out |
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
-| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI* |
+| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile* |
 | `panels[]` | no | `{id, schemaFile?, title?, icon?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime |
 | `sockets[]` | no | See *Sockets* below |
 | `collections` | no | `{"<name>": {"sync": true\|false}}`. `sync: true` rides the sync layer to your other devices |
@@ -108,6 +108,17 @@ Manifest-level rules the parser enforces (a violation drops that entry, not the 
 - `toolbar-action` and `row-menu-item` sockets require `actionId`.
 - `file-viewer` requires at least one `".ext"` extension.
 - A `webview` surface requires `entryHtml`, and it must name an `.html` (or `.htm`) file inside the plugin. A `webview` with no page is dropped, not warned about. `entryHtml` on any other kind is ignored.
+
+### Mobile
+
+Every surface says whether it belongs on the phone. Set `"mobile": false` on a surface that only makes sense on a big screen, and ADE's iOS app leaves it out of the plugin menu and will not open it.
+
+- **Default: `true`** for a `tab` or a `pane`. Say nothing and your panel shows up on the phone, which is the point of writing a panel schema instead of a page.
+- **`false` is a good answer** when the panel needs a wide table, a long form, or a keyboard to be worth opening. Hiding it there is kinder than shipping a cramped version of it.
+- **A `webview` is desktop-only either way.** Its page never draws on the phone; the panel named by its `panelId` does. Setting `mobile` on a webview surface changes nothing (ADE warns and ignores it), so put your effort into making that panel say something useful.
+- **`mobile` only ever takes a surface away.** It cannot add one. A value that is not `true` or `false` is ignored with a warning, and the default applies.
+
+Set it per surface, not per plugin: a plugin with a summary pane and a settings tab can keep the first and drop the second.
 
 ## Panel schemas — the UI vocabulary
 
@@ -516,6 +527,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | Panel renders on desktop, marker on iOS or the TUI | Expected for `chart`, and for `video`/`image` in the TUI. Not a bug — give the panel something else to say |
 | A webview page loads but stays blank | Almost always the CSP: `script-src 'self'` blocks inline `<script>`, `onclick=` attributes, `eval`, and anything from a CDN. Move the code into a `.js` file next to the page and load it with `src` |
 | A file in the page 404s or does not run | The path escaped the plugin directory, the file is not there, or its extension is outside the served content-type map (a `.ts` or `.jsx` arrives as `application/octet-stream` and will not execute). A directory URL resolves to `index.html`; a directory itself is a 404 |
+| Panel shows on desktop but not on the phone at all | The surface says `"mobile": false`, or it is a `webview` (never on the phone) — see *Mobile*. The flag is resolved by the machine that publishes the panel, so edit the manifest and `ade plugin reload <id>` on that machine |
 | The webview surface shows a panel instead of the page | You are not on the desktop. iOS, the web client, and the TUI render the surface's `panelId` — that is the design, so make that panel say something useful |
 | `adePlugin.collections.put` fails with `plugins_unavailable` | A page can only write where the plugin host runs in the same process. Call your own action with `adePlugin.invoke(...)` and write from the child instead |
 | Contribution never appears | Check `manifest.sockets` declares the kind on that surface, the payload validates for that kind, and you published from the machine that owns the entity |

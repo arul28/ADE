@@ -21,6 +21,7 @@ import type { AdeDb } from "../state/kvDb";
 import {
   parsePluginManifestJson,
   pluginHasRuntimeEntry,
+  pluginPanelShowsOnMobile,
   type PluginManifest,
   type PluginManifestSetting,
 } from "../../../shared/plugins/manifest";
@@ -683,15 +684,38 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       const schema = readDeclaredPanelSchema(installed.root, panel.schemaFile);
       if (schema === undefined) continue;
       const surface = manifest.surfaces.find((entry) => entry.panelId === panel.id);
+      // A panel no surface names is reachable only by a client that asks for it
+      // directly, so nothing here decides it is desktop-only.
+      const mobile = surface ? pluginPanelShowsOnMobile(surface) : true;
+      const declared = {
+        ...(panel.title ? { title: panel.title } : {}),
+        ...(panel.icon ? { icon: panel.icon } : {}),
+        ...(surface ? { surface: surface.id } : {}),
+        mobile,
+      };
       for (const attached of projects.values()) {
         try {
-          if (!replace && attached.data.readPanel(pluginId, panel.id)) continue;
+          const existing = replace ? null : attached.data.readPanel(pluginId, panel.id);
+          if (existing) {
+            // The row's CONTENT belongs to the plugin, and a plain convergence
+            // pass must not clobber it. `mobile` is not content: it is the
+            // host's answer, and it moves when the manifest changes it or when
+            // a new ADE resolves it differently. A codeless plugin never
+            // republishes, so a stale answer here would be permanent — the flag
+            // is rewritten onto the schema the row already holds instead.
+            const stored = isRecord(existing.schema) ? existing.schema : null;
+            if (!stored || stored.mobile === mobile) continue;
+            attached.data.updatePanel(pluginId, panel.id, {
+              ...declared,
+              schema: existing.schema,
+              vocabVersion: existing.vocabVersion,
+            });
+            continue;
+          }
           // Through the store, so the budget writer sees this row exactly as it
           // sees a `panels.update` from the plugin itself.
           attached.data.updatePanel(pluginId, panel.id, {
-            ...(panel.title ? { title: panel.title } : {}),
-            ...(panel.icon ? { icon: panel.icon } : {}),
-            ...(surface ? { surface: surface.id } : {}),
+            ...declared,
             schema,
             vocabVersion: manifest.vocabVersion,
           });

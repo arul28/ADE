@@ -6,7 +6,7 @@ This worktree/branch exists to keep **ADE desktop** fully usable on **Windows** 
 
 The Windows x64 implementation is now wired end to end in source and CI:
 local runtime service, user/channel-isolated named pipes, ConPTY/provider
-resume, App Control launch, Windows chrome/capability gating, packaged
+resume, Electron Control launch, Windows chrome/capability gating, packaged
 CR-SQLite proof, NSIS packaging, updater authority, and fail-closed signed
 release gates. The pull-request build is intentionally an **unsigned internal
 preview**. Public availability remains disabled until the external clean-VM
@@ -40,10 +40,10 @@ These are the foundations that should stay merged from this lane (see also `docs
 | **Child processes** | `processExecution` — `cmd`/`bat` via `ComSpec`, `windowsVerbatimArguments`, `taskkill` for trees. Both `resolveWindowsCmdInvocation` (argv form) and `resolveWindowsCmdLineInvocation` (pre-built command-string form) wrap a single outer `cmd.exe /d /s /c "…"` so embedded `&&` chains don't break out of quoting. Long-running children that previously called `child.kill("SIGKILL")` (git, automation runs) now route through `terminateProcessTree` so taskkill cleans up Windows process groups. |
 | **PATH for CLIs** | `augmentProcessPathWithShellAndKnownCliDirs` has an explicit `win32` path (no POSIX `sh -ic`). |
 | **PTY/providers** | `ptyService` supports no-profile Windows PowerShell 5.1/7, cmd, and Git Bash. Provider launch/resume materializes structured command, argv, environment, and recovery metadata on the lane-owning runtime, with ConPTY resize, cancellation, and descendant cleanup. |
-| **App Control** | Recognized direct Electron and package-script launches become structured Windows command/argv/env/cwd descriptors. Shell fallbacks emit PowerShell/cmd syntax instead of POSIX environment syntax; macOS/Linux behavior remains unchanged. |
+| **Electron Control** | Recognized direct Electron and package-script launches become structured Windows command/argv/env/cwd descriptors. Shell fallbacks emit PowerShell/cmd syntax instead of POSIX environment syntax; macOS/Linux behavior remains unchanged. |
 | **Renderer paths** | `pathUtils` — drive letters, `\`, UNC, comparison helpers for workspace UI. |
 | **Native + sync** | `vendor/crsqlite/win32-x64`, `node-pty` Windows prebuild, packaged runtime hooks. The required `win-unpacked` smoke loads `crsqlite.dll`, marks a table CRR, writes a row, and requires a `crsql_changes` record. Runtime capability is exposed as `crdtSyncAvailable`; Connections blocks pairing and shows reinstall/restart guidance if unavailable. |
-| **Desktop UX** | Windows uses a hidden title bar with native window overlay/caption controls and an explicit AppUserModelID. iOS Simulator and macOS Attention Notch controls are hidden; persisted iOS sidebar state falls back to Git. App Control, built-in Browser, and proof ingestion remain available. Visible local-machine/Finder/Command-key copy is platform-neutral or platform-aware. |
+| **Desktop UX** | Windows uses a hidden title bar with native window overlay/caption controls and an explicit AppUserModelID. iOS Simulator and macOS Attention Notch controls are hidden; persisted iOS sidebar state falls back to Git. Electron Control, built-in Browser, and proof ingestion remain available. Visible local-machine/Finder/Command-key copy is platform-neutral or platform-aware. |
 | **Installers** | The assisted NSIS installer is explicitly per-user and non-elevating. Its custom install step repairs the channel-aware CLI shim, current-user `PATH`, and brain startup registration; uninstall removes only the terminal shim, PATH/protocol/association/startup state owned by that installation. Stable/Beta/Alpha use distinct executable, app, and shim names. Windows packages carry all Darwin/Linux remote-runtime sidecars. Electron-builder owns `app-update.yml`; CI binds it to `${{ github.repository }}` and package smoke verifies the authority. |
 | **Standalone brain** | Releases build `ade-win32-x64.exe` plus a native dependency archive and checksum them with all other runtime artifacts. `install.ps1` stages and verifies both, installs the current-user PATH/service, and rolls back on failure. `ade brain start/status/doctor/update` support Windows; self-update stops the running executable before replacement and restores the previous runtime/service on failure. |
 | **Remote SSH runtime** | Windows 10 22H2 and Windows 11 x64 are native SSH-bootstrap targets through Windows OpenSSH Server. Bootstrap uses encoded PowerShell plus JSON stdin, verified SFTP uploads for `ade-win32-x64.exe`, native dependencies, the PTY worker, and agent skills, then launches the channel-specific named-pipe runtime through `ade rpc --stdio`. PowerShell 5.1+ and `tar.exe` are prerequisites; WSL, ARM64, and Windows Server remain excluded from Windows v1. |
@@ -65,7 +65,7 @@ Recent `main` work that is **not** inherently macOS-only but can surface path/sh
 ## Intentionally not Windows-complete (product reality)
 
 - **Local computer use** (screenshot, video, Apple GUI automation) remains **macOS-first**; other platforms are `blocked_by_capability` by design — do not block the Windows port on this.
-- **Windows OS control** — App Control/CDP and proof ingestion work; native
+- **Windows OS control** — Electron Control/CDP and proof ingestion work; native
   Windows Graphics Capture/UI Automation is not implemented.
 - **iOS Simulator / Attention Notch** — hidden on Windows by capability. These
   remain macOS-only product surfaces.
@@ -94,7 +94,7 @@ verification. Complete these before enabling the public website/release flags:
    Tailscale/Relay fallback. For a non-default Tailscale install, set
    `ADE_TAILSCALE_CLI` explicitly.
 5. **Remote/runtime and UI** — bootstrap supported macOS/Linux remote runtimes
-   from the Windows package; exercise lanes/git/files/browser/App Control,
+   from the Windows package; exercise lanes/git/files/browser/Electron Control,
    deep links, file associations, DPI 100–200%, Snap Layouts, multiple
    monitors, high contrast, and keyboard navigation.
 6. **Signed installer** — verify the installer and installed app use the approved

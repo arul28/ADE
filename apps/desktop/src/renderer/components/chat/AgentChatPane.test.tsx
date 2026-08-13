@@ -99,7 +99,7 @@ vi.mock("./ChatIosSimulatorPanel", () => {
 vi.mock("./ChatAppControlPanel", () => {
   const ReactMod = require("react") as typeof React;
   return {
-    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
+    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "Electron Control panel mounted"),
   };
 });
 
@@ -1006,7 +1006,7 @@ beforeEach(() => {
     })),
   });
   resetChatTestStore();
-  // The simulator and App Control drawers are plugin-owned: without their
+  // The simulator and Electron Control drawers are plugin-owned: without their
   // plugins there is no toolbar button, no drawer and no `ade ios-sim`
   // reveal. These tests describe a machine that has both.
   seedBuiltinSurfacePlugins(["ios", "app-control"]);
@@ -1516,7 +1516,7 @@ describe("AgentChatPane pane reserve", () => {
 });
 
 describe("AgentChatPane companion drawers", () => {
-  it("opens and closes the iOS simulator and App Control drawers from chat chrome", async () => {
+  it("opens and closes the iOS simulator and Electron Control drawers from chat chrome", async () => {
     renderDrawerPane();
 
     await waitFor(() => {
@@ -1549,15 +1549,15 @@ describe("AgentChatPane companion drawers", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("button", { name: "Open Electron Control drawer" }).length).toBeGreaterThan(0);
     });
-    const appControlButton = screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!;
+    const appControlButton = screen.getAllByRole("button", { name: "Open Electron Control drawer" })[0]!;
     fireEvent.click(appControlButton);
 
-    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
-    expect(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("app-control-panel").textContent).toBe("Electron Control panel mounted");
+    expect(screen.getAllByRole("button", { name: "Close Electron Control drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Close Electron Control drawer" })[0]!);
     await waitFor(() => {
       expect(screen.queryByTestId("app-control-panel")).toBeNull();
     });
@@ -1573,7 +1573,7 @@ describe("AgentChatPane companion drawers", () => {
     expect(await screen.findByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     expect(iosEventListener).toBeNull();
     expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Open App Control drawer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open Electron Control drawer" })).toBeNull();
     expect(screen.queryByTestId("ios-panel")).toBeNull();
     expect(screen.queryByTestId("app-control-panel")).toBeNull();
   });
@@ -1744,13 +1744,13 @@ describe("AgentChatPane companion drawers", () => {
   it("persists split resize from the real divider on a working panel", async () => {
     renderDrawerPane();
 
-    // App Control is a heavy working panel that keeps the resizable split (and
+    // Electron Control is a heavy working panel that keeps the resizable split (and
     // therefore the drag divider) — unlike the floating chat-actions info pane.
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("button", { name: "Open Electron Control drawer" }).length).toBeGreaterThan(0);
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!);
-    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
+    fireEvent.click(screen.getAllByRole("button", { name: "Open Electron Control drawer" })[0]!);
+    expect(screen.getByTestId("app-control-panel").textContent).toBe("Electron Control panel mounted");
 
     const divider = screen.getByRole("separator", { name: "" });
     const splitParent = divider.parentElement;
@@ -9835,7 +9835,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     renderPane(session);
 
-    const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
+    const appControlButton = (await screen.findAllByRole("button", { name: "Open Electron Control drawer" }))[0]!;
     fireEvent.click(appControlButton);
 
     expect(screen.queryByTestId("app-control-panel")).toBeNull();

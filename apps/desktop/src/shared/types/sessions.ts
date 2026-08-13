@@ -310,7 +310,7 @@ export type PtyCreateArgs = {
   allowNewSessionId?: boolean;
   /** Allow an explicit absolute cwd outside the selected lane worktree. */
   allowExternalCwd?: boolean;
-  /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
+  /** Session that owns this attached terminal, when launched from chat/CLI UI or Electron Control. */
   chatSessionId?: string | null;
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;

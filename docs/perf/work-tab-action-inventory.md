@@ -56,7 +56,7 @@ Coverage states:
 | work.sidebar.tab.git | Select Git tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.files | Select Files tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.ios | Select iOS Sim tools tab | measured | `WorkSidebar.tsx` |
-| work.sidebar.tab.app-control | Select App Control tools tab | measured | `WorkSidebar.tsx` |
+| work.sidebar.tab.app-control | Select Electron Control tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.browser | Select Browser tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.compact-tabs | Verify all tools tabs remain reachable in narrow pane | measured | `WorkSidebar.tsx` |
 
@@ -168,7 +168,7 @@ Coverage states:
 | work.chat.approval.accept-session | Accept all/session tool approval | prompt-only | `AgentChatComposer.tsx` |
 | work.chat.approval.decline | Decline tool approval | prompt-only | `AgentChatMessageList.tsx` |
 | work.chat.drawer.ios | Open/close iOS simulator drawer | measured | `AgentChatPane.tsx` |
-| work.chat.drawer.app-control | Open/close App Control drawer | measured | `AgentChatPane.tsx` |
+| work.chat.drawer.app-control | Open/close Electron Control drawer | measured | `AgentChatPane.tsx` |
 | work.chat.drawer.proof | Open/close proof/artifacts drawer | measured | `AgentChatPane.tsx` |
 | work.chat.drawer.resize | Resize chat companion drawer | measured | `AgentChatPane.tsx` |
 | work.chat.handoff.open | Open handoff menu | measured | `AgentChatPane.tsx` |
@@ -231,7 +231,7 @@ Coverage states:
 | work.chat.cursor-cloud.auto-pr | Toggle Auto-PR | external-skip | `CursorCloudInlineLaunch.tsx` |
 | work.chat.cursor-cloud.current-branch | Toggle Work on current branch | external-skip | `CursorCloudInlineLaunch.tsx` |
 | work.chat.cursor-cloud.cancel | Cancel Cursor Cloud launch | measured | `CursorCloudInlineLaunch.tsx` |
-| work.chat.dismiss.preview | Dismiss attached iOS/App Control/browser preview | measured | `AgentChatComposer.tsx` |
+| work.chat.dismiss.preview | Dismiss attached iOS/Electron Control/browser preview | measured | `AgentChatComposer.tsx` |
 | work.chat.dismiss.error | Dismiss composer attach error | measured | `AgentChatComposer.tsx` |
 
 ## Git tools
@@ -365,22 +365,22 @@ Coverage states:
 | work.browser.clear-context | Clear browser context selection | measured | `ChatBuiltInBrowserPanel.tsx` |
 | work.browser.insert-draft | Insert selected browser details into draft | measured | `ChatBuiltInBrowserPanel.tsx` |
 
-## App Control tools
+## Electron Control tools
 
 | id | action | state | source |
 | --- | --- | --- | --- |
-| work.app-control.mount | Mount App Control tab | measured | `ChatAppControlPanel.tsx` |
+| work.app-control.mount | Mount Electron Control tab | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.launch-input | Type launch command | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.run-command | Select configured run command | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.run | Launch command | sandbox-only | `ChatAppControlPanel.tsx` |
 | work.app-control.show-terminal | Show launch terminal | measured | `ChatAppControlPanel.tsx` |
-| work.app-control.stop | Stop active App Control session | prompt-only | `ChatAppControlPanel.tsx` |
+| work.app-control.stop | Stop active Electron Control session | prompt-only | `ChatAppControlPanel.tsx` |
 | work.app-control.cdp-port | Type CDP port | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.connect | Connect to CDP port | sandbox-only | `ChatAppControlPanel.tsx` |
 | work.app-control.help-cdp | Insert Help wire CDP draft | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.window-select | Switch controlled window | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.window-refresh | Re-scan controlled app windows | measured | `ChatAppControlPanel.tsx` |
-| work.app-control.message.dismiss | Dismiss App Control message | measured | `ChatAppControlPanel.tsx` |
+| work.app-control.message.dismiss | Dismiss Electron Control message | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.snapshot | Re-capture screenshot and DOM snapshot | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.mode.control | Select Control mode | measured | `ChatAppControlPanel.tsx` |
 | work.app-control.mode.inspect | Select Inspect mode | measured | `ChatAppControlPanel.tsx` |
@@ -497,7 +497,7 @@ Skipped current-run rows that were unpromoted at this stage:
 - `work.files.filter` and `work.files.filter.clear` skipped because the embedded
   Files filter input/clear button were not visible to the driver.
 - `work.app-control.launch-input` and `work.app-control.cdp-port` skipped
-  because the setup inputs were not visible in the current App Control state.
+  because the setup inputs were not visible in the current Electron Control state.
 - `work.browser.tab.new`, `work.browser.url.type`,
   `work.browser.inspect.toggle`, `work.browser.screenshot.start`, and
   `work.browser.screenshot.cancel` skipped because the browser chrome controls
@@ -940,7 +940,7 @@ Rows reclassified:
   draft button is not rendered.
 - `work.app-control.mode.control`, `work.app-control.mode.inspect`, and
   `work.app-control.type-input` needed fixture evidence from this state: the
-  empty App Control tools pane has no active app session, so both mode buttons
+  empty Electron Control tools pane has no active app session, so both mode buttons
   are disabled and typing cannot target a focused external app element.
 - `work.ios.preview-ask-agent` and `work.ios.preview-add-preview` needed
   fixture evidence from this state: the detached Work tools pane has no chat
@@ -1132,10 +1132,10 @@ Browser coverage:
   mode appeared, so that marker is also invalid. Later focused browser-panel
   evidence covers screenshot start/cancel.
 
-App Control coverage:
+Electron Control coverage:
 
 - The valid `work.app-control.launch-input` marker typed
-  `npm run dev -- --inspect=9229` into `App Control launch command`, then
+  `npm run dev -- --inspect=9229` into `Electron Control launch command`, then
   restored the field to empty without clicking Run.
 - The valid `work.app-control.cdp-port` marker typed `9222` into `CDP port`,
   then restored the field to empty without clicking Connect.
@@ -1204,7 +1204,7 @@ Rows promoted to `measured`:
   verified `Start a new conversation`, the composer input, and disabled `Send`.
 - `work.sidebar.compact-tabs`: with a `1164x818` renderer viewport and narrow
   Work tools pane, verified all five Work tools tabs (`Git`, `Files`, `iOS Sim`,
-  `App Control`, `Browser`) had `31.99px` hit targets inside the
+  `Electron Control`, `Browser`) had `31.99px` hit targets inside the
   viewport. A DOM-click retry selected each tab and observed `aria-pressed=true`
   for the clicked tab.
 - `work.git.history.refresh`: selected the Git tools tab, clicked the commit
@@ -1245,7 +1245,7 @@ Rows reclassified:
   `measured-partial` to fixture evidence. Source inspection and real Work UI
   markers showed `WorkViewArea` and `WorkStartSurface` render `AgentChatPane`
   with `hideLaneToolDrawers`, so these drawer buttons are not rendered in the
-  Work tab. The Work equivalents are the measured `iOS Sim` and `App Control`
+  Work tab. The Work equivalents are the measured `iOS Sim` and `Electron Control`
   tools tabs; later focused companion-drawer evidence covers the retained
   cross-surface rows.
 
@@ -1539,8 +1539,8 @@ Rows promoted to `measured`:
   without Work's `hideLaneToolDrawers`, seeded the iOS drawer availability event,
   clicked the real `Open iOS simulator drawer` button, verified the iOS panel
   mounted, and closed it from the chat chrome.
-- `work.chat.drawer.app-control`: the same fixture mocked supported App Control,
-  clicked the real `Open App Control drawer` button, verified the App Control
+- `work.chat.drawer.app-control`: the same fixture mocked supported Electron Control,
+  clicked the real `Open Electron Control drawer` button, verified the Electron Control
   panel mounted, and closed it from the chat chrome.
 - `work.chat.drawer.proof`: the proof fixture clicked `Open proof drawer`,
   verified the Artifacts panel appeared, then closed it from the proof chrome.
@@ -1765,7 +1765,7 @@ Rows promoted to `measured`:
   project root, then verified the successful refresh removed the stale
   launch-target error message.
 
-### Focused fixture evidence: App Control safe state controls
+### Focused fixture evidence: Electron Control safe state controls
 
 Command:
 
@@ -1777,10 +1777,10 @@ Result: passed (`2` focused tests).
 
 Rows promoted to `measured`:
 
-- `work.app-control.run-command`: the idle App Control fixture selected the
+- `work.app-control.run-command`: the idle Electron Control fixture selected the
   `dev` launch command and verified the launch input became `npm run dev`.
 - `work.app-control.help-cdp`: the same fixture clicked `Help wire CDP` and
-  verified `onInsertDraft` received the App Control CDP setup prompt.
+  verified `onInsertDraft` received the Electron Control CDP setup prompt.
 - `work.app-control.show-terminal`: the connected-session fixture clicked the
   visible Terminal button and verified `onShowTerminal` received
   `terminal-1` / `pty-1`.

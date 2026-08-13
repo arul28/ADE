@@ -77,7 +77,7 @@ Expected account owner alias:
 6. In PRs, open the lane's PR detail or the empty/no-PR state, refresh it, and
    exercise a non-mutating check/diff control. Do not create or merge a real PR.
 7. In Work, open Chat, CLI, and Shell surfaces; switch tab/grid layout; resize the
-   session list and tools pane; open Git, Files, App Control, and Browser. Confirm
+   session list and tools pane; open Git, Files, Electron Control, and Browser. Confirm
    all tools remain reachable at a narrow width.
 8. In a PowerShell PTY and a cmd PTY, print a Unicode fixture and a string
    containing spaces, quotes, `$`, `%`, `&`, and backticks. Resize, send Ctrl+C,
@@ -87,14 +87,14 @@ Expected account owner alias:
    token. Do not add a real provider credential solely for this proof.
 10. Open Browser, navigate between two benign pages, use back/forward/reload,
     download a disposable file, inspect a visible element, and capture a browser
-    proof. Confirm App Control/CDP proof remains offered.
+    proof. Confirm Electron Control/CDP proof remains offered.
 11. Invoke microphone dictation without granting access, confirm Windows privacy
     guidance, grant access in Windows Settings, relaunch ADE, and confirm the
     denial guidance clears. Do not record actual speech containing private data.
 12. Trigger a harmless ADE notification and click it. Confirm it carries ADE's
     app identity and returns focus to the correct session.
 13. Confirm iOS Simulator, Xcode Preview, macOS Attention Notch, and native OS
-    computer-use actions are hidden or capability-blocked. Browser/App Control
+    computer-use actions are hidden or capability-blocked. Browser/Electron Control
     and proof ingestion must remain available.
 
 Required evidence: one overview video plus screenshots of Lanes Git, Work tools,
@@ -228,7 +228,7 @@ repeat with the oldest supported released controller against the current host.
    command. Confirm unsupported optional actions are hidden or return update
    guidance rather than breaking the socket.
 5. Open B, sign in, adopt W through the account directory, and select the same
-   project. Confirm web has no local shell/browser/App Control surface, but live
+   project. Confirm web has no local shell/browser/Electron Control surface, but live
    project reads, Work transcript paging, terminal streaming, lifecycle controls,
    Files, and PR snapshot work through the host.
 6. Disconnect/reconnect B during chat streaming. Confirm the hydration barrier

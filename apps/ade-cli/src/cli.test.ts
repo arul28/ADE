@@ -10021,7 +10021,7 @@ describe("ADE CLI", () => {
     expect(text).toContain("ade terminal read --terminal session-1 --text");
   });
 
-  it("app-control logs and terminal write use the active App Control terminal", () => {
+  it("app-control logs and terminal write use the active Electron Control terminal", () => {
     const logs = buildCliPlan(["app-control", "logs", "--max-bytes", "1024"]);
     expect(logs.kind).toBe("execute");
     if (logs.kind !== "execute") return;
@@ -10051,7 +10051,7 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("app-control connect, select, click, and type map to App Control actions", () => {
+  it("app-control connect, select, click, and type map to Electron Control actions", () => {
     const connect = buildCliPlan([
       "app-control",
       "connect",

@@ -1,13 +1,13 @@
 ---
 name: ade-app-control
-description: Use this skill when you need to run or drive a local Electron/desktop app and capture what it does — launch it or attach to a running renderer, read its logs or answer its terminal prompts, click and type in it, or pull screenshot-backed DOM/source context into the chat — through `ade app-control`.
+description: Use this skill when you need to run or drive a local Electron or Chromium app and capture what it does — launch it or attach to a running renderer, read its logs or answer its terminal prompts, click and type in it, or pull screenshot-backed DOM/source context into the chat — through `ade app-control`.
 ---
 
-# ADE App Control
+# ADE Electron Control
 
 ## Use socket mode
 
-App Control is a live desktop drawer service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):
+Electron Control is a live desktop drawer service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):
 
 ```bash
 ade help app-control
@@ -41,7 +41,7 @@ Use Control mode for input. Re-snapshot after meaningful UI changes.
 
 ## Logs and terminal
 
-Start with App Control status, then prefer App Control terminal/log commands:
+Start with Electron Control status, then prefer Electron Control terminal/log commands:
 
 ```bash
 ade --socket app-control logs --text --max-bytes 8388608
@@ -49,11 +49,11 @@ ade --socket app-control terminal write --data "y\n"
 ade --socket app-control terminal signal --signal SIGINT
 ```
 
-Only fall back to `ade --socket terminal list --text` and `ade --socket terminal read ...` when no App Control terminal is active.
+Only fall back to `ade --socket terminal list --text` and `ade --socket terminal read ...` when no Electron Control terminal is active.
 
 ## Launching ADE itself from inside ADE
 
-If you are an agent running inside one ADE instance (e.g. ADE Beta or stable) and you need to launch the ADE dev desktop app under App Control, the dev launcher is already isolated and safe to run:
+If you are an agent running inside one ADE instance (e.g. ADE Beta or stable) and you need to launch the ADE dev desktop app under Electron Control, the dev launcher is already isolated and safe to run:
 
 ```bash
 ade --socket app-control launch --command "npm run dev" --text
@@ -63,7 +63,7 @@ ade --socket app-control launch --command "npm run dev" --text
 
 ### Survive Electron restarts
 
-`npm run dev` watches `apps/desktop/src/main/**` and restarts Electron whenever the main bundle rebuilds. After a restart, the App Control drawer UI in the parent ADE window can show stale `Waiting for CDP on 127.0.0.1:<port>` even though the new renderer is already exposed on the same port. From the CLI you can confirm and re-bind:
+`npm run dev` watches `apps/desktop/src/main/**` and restarts Electron whenever the main bundle rebuilds. After a restart, the Electron Control drawer UI in the parent ADE window can show stale `Waiting for CDP on 127.0.0.1:<port>` even though the new renderer is already exposed on the same port. From the CLI you can confirm and re-bind:
 
 ```bash
 ade --socket app-control targets --text          # find the new page target id

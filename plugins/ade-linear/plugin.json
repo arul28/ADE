@@ -4,7 +4,7 @@
   "displayName": "Linear",
   "description": "Open and browse Linear issues without leaving ADE.",
   "icon": "list-checks",
-  "accent": "#7C6FF0",
+  "accent": "#5E6AD2",
   "vocabVersion": 1,
   "surfaces": [
     {
@@ -13,7 +13,8 @@
       "title": "Linear",
       "icon": "list-checks",
       "panelId": "main",
-      "builtin": "linear"
+      "builtin": "linear",
+      "mobile": true
     }
   ],
   "panels": [

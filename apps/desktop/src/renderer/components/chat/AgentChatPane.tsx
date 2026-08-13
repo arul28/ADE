@@ -7744,7 +7744,7 @@ export function AgentChatPane({
       const saved = await saveContextScreenshot({
         dataUrl: item.screenshotDataUrl,
         filename: "app-control-selection.png",
-        surfaceLabel: "App Control",
+        surfaceLabel: "Electron Control",
       });
       if (saved.cancelled) return;
       attachmentPath = saved.path;
@@ -11551,12 +11551,12 @@ export function AgentChatPane({
   const appControlPanelContent = (
     <>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
-        <span className="font-sans text-[12px] font-medium text-fg/80">App Control</span>
+        <span className="font-sans text-[12px] font-medium text-fg/80">Electron Control</span>
         <button
           type="button"
           className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
           onClick={() => setAppControlOpen(false)}
-          title="Close App Control panel"
+          title="Close Electron Control panel"
         >
           Close
         </button>
@@ -11655,7 +11655,7 @@ export function AgentChatPane({
           {laneToolsVisible && appControlAvailable ? (
             <SmartTooltip
               content={{
-                label: appControlOpen ? "Close App Control" : "Open App Control",
+                label: appControlOpen ? "Close Electron Control" : "Open Electron Control",
                 description: "Launch or attach to an Electron app to inspect, click, and capture context.",
                 effect: appControlContextItems.length
                   ? `${appControlContextItems.length} element context attached`
@@ -11680,7 +11680,7 @@ export function AgentChatPane({
                     return next;
                   });
                 }}
-                aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
+                aria-label={appControlOpen ? "Close Electron Control drawer" : "Open Electron Control drawer"}
                 aria-pressed={appControlOpen}
               >
                 <span>Desktop</span>
@@ -12611,7 +12611,7 @@ export function AgentChatPane({
   );
 
   // True when a non-proof companion panel is open. These panels (iOS simulator,
-  // App Control) host their own input affordances, so the empty-state layout
+  // Electron Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
@@ -12664,7 +12664,7 @@ export function AgentChatPane({
     />
   ) : null;
   // Wrap a right-side panel for either grid-tile (overlay) or standard
-  // (resizable split) layout. Used for proof, iOS simulator, and App Control
+  // (resizable split) layout. Used for proof, iOS simulator, and Electron Control
   // panels which all share the same outer chrome.
   const renderRightPane = (content: React.ReactNode) =>
     layoutVariant === "grid-tile" ? (

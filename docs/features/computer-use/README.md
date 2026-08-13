@@ -9,7 +9,7 @@ Execution does not imply proof. ADE never passively promotes every Computer Use 
 
 On Windows, the macOS Codex Computer Use client and native OS capture/control
 remain unavailable and report `blocked_by_capability`. This does not disable
-the platform-neutral surfaces: App Control can launch and drive developer-owned
+the platform-neutral surfaces: Electron Control can launch and drive developer-owned
 Electron apps through CDP, and proof-file ingestion continues to accept
 intentional screenshots, videos, traces, and logs. The renderer hides the
 macOS-native Attention Notch and iOS Simulator controls rather than presenting
@@ -159,9 +159,9 @@ with the bytes.
 - Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
 - The old ADE-defined universal computer-use tool delivery. Codex now uses its provider-native MCP client instead.
 
-## App Control bridge
+## Electron Control bridge
 
-Alongside the proof broker, ADE exposes a separate **App Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, App Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. App Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
+Alongside the proof broker, ADE exposes a separate **Electron Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, Electron Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. Electron Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
@@ -172,7 +172,7 @@ See [`app-control.md`](./app-control.md) for the full surface (service, IPC, ren
 
 ## Detail docs
 
-- [`app-control.md`](./app-control.md) — current App Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
+- [`app-control.md`](./app-control.md) — current Electron Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
 
 The backend doc begins with the current direct Codex integration, then retains the pre-rebuild Ghost OS / local-fallback catalog for historical context. The settings/readiness doc is historical.
 

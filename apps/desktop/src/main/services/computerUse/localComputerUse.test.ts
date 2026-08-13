@@ -26,7 +26,7 @@ describe("createComputerUseArtifactPath", () => {
 
 describe("getLocalComputerUseCapabilities", () => {
   it.each(["win32", "linux"] as const)(
-    "blocks native OS control on %s without disabling App Control or proof ingestion",
+    "blocks native OS control on %s without disabling Electron Control or proof ingestion",
     (platform) => {
       const capabilities = getLocalComputerUseCapabilities(platform, () => {
         throw new Error("non-macOS capability checks must not probe macOS executables");
@@ -40,7 +40,7 @@ describe("getLocalComputerUseCapabilities", () => {
         appLaunch: { state: "blocked_by_capability", available: false, command: null },
         guiInteraction: { state: "blocked_by_capability", available: false, command: null },
       });
-      expect(capabilities.screenshot.detail).toContain("App Control and proof-file ingestion remain available");
+      expect(capabilities.screenshot.detail).toContain("Electron Control and proof-file ingestion remain available");
     },
   );
 

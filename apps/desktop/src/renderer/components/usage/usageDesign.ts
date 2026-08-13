@@ -99,14 +99,14 @@ export const USAGE_PANEL_HEADER_CLASS =
  * used it. It is the same mistake that made the top-bar usage popover
  * see-through. Anything that floats over content uses this instead.
  *
- * `--ade-shell-surface` is the hook ADE's own popovers read; it is currently
- * undefined, so the fallback is what renders. The fallback here is the theme's
- * opaque raised token rather than the shell's hardcoded `#121019`, because
- * these readouts carry `text-fg` and a fixed dark plate would be dark-on-dark
- * text under the light theme.
+ * Deliberately NOT `--shell-surface` either, which is what the top-bar popovers
+ * read: that token still carries the shell's historic dark plate on both
+ * schemes, and these readouts are drawn in `text-fg`, so it would be
+ * dark-on-dark under the light theme. The theme's raised token is the one that
+ * is opaque in both.
  */
 export const USAGE_OVERLAY_BG_CLASS =
-  "bg-[color:var(--ade-shell-surface,var(--color-surface-raised))]";
+  "bg-[color:var(--color-surface-raised)]";
 
 export const USAGE_OVERLAY_CLASS =
   "rounded-lg border border-[color:color-mix(in_srgb,var(--color-border)_80%,var(--color-fg)_10%)]"

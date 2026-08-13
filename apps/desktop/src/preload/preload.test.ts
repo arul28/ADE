@@ -4245,7 +4245,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.ptyResumeSession, input);
   });
 
-  it("routes App Control attachToTarget through the remote runtime with positional args", async () => {
+  it("routes Electron Control attachToTarget through the remote runtime with positional args", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",

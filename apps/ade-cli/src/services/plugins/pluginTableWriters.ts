@@ -232,11 +232,48 @@ export type PutPluginPanelArgs = {
   /** Opaque vocabulary JSON. Its own version lives inside, not in a column. */
   schemaJson: string;
   vocabVersion: number;
+  /**
+   * Whether the phone should list this panel, resolved from the declaring
+   * surface. Defaults to true, which is what every row written before the flag
+   * existed means.
+   */
+  mobile?: boolean;
   nowIso: string;
 };
 
+/**
+ * Stamp the resolved mobile flag onto the stored schema.
+ *
+ * Inside the JSON rather than in a new column, because the plugin tables are
+ * CRR and their SQL shapes are frozen: a column added here would have to be
+ * added to every mirror that already exists, while a key inside the payload
+ * reaches an old reader as something it ignores. Both vocabulary parsers walk
+ * only the roots they know (`v`, `title`, `fallback`, `body`), so a client that
+ * predates the key renders the panel exactly as before.
+ *
+ * Written on every update, never merged: the host's resolution wins over
+ * anything the plugin put under the same name, and flipping the flag back to
+ * true has to actually remove the false from the row.
+ */
+function withPanelMobileFlag(schemaJson: string, mobile: boolean): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schemaJson) as unknown;
+  } catch {
+    return schemaJson;
+  }
+  // A schema that is not an object has nowhere to carry the key. It is also a
+  // panel no client can render, so leaving it byte-identical is the honest
+  // answer rather than wrapping it in a shape it never had.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return schemaJson;
+  return JSON.stringify({ ...(parsed as Record<string, unknown>), mobile });
+}
+
 export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): void {
-  const schemaBytes = byteLength(args.schemaJson);
+  const schemaJson = withPanelMobileFlag(args.schemaJson, args.mobile ?? true);
+  // Measured after stamping: the cap is a promise about the bytes that land in
+  // the row, and the clients check it against exactly those bytes.
+  const schemaBytes = byteLength(schemaJson);
   if (schemaBytes > PLUGIN_PANEL_SCHEMA_MAX_BYTES) {
     throw budgetExceeded(
       `A panel schema may be at most ${PLUGIN_PANEL_SCHEMA_MAX_BYTES} bytes (this one is ${schemaBytes}).`,
@@ -274,7 +311,7 @@ export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): vo
         args.title,
         args.icon,
         args.surface,
-        args.schemaJson,
+        schemaJson,
         Math.max(1, Math.floor(args.vocabVersion)),
         args.nowIso,
       ],

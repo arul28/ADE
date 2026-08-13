@@ -1455,7 +1455,7 @@ function withBundledClaudePlugin(
   // More than one root since plugin-owned skills moved into their packages:
   // ADE's bundled root plus one per installed plugin that contributes skills.
   // Each needs its own `--plugin-dir`; a session that saw only the first would
-  // silently lose the Linear / iOS Simulator / App Control skills.
+  // silently lose the Linear / iOS Simulator / Electron Control skills.
   const pluginRoots = claudeAgentSkillPluginRoots(env);
   if (!pluginRoots.length) return { args, startupCommand };
 
@@ -4797,7 +4797,7 @@ export function createPtyService({
     if (ptyId) return ptys.get(ptyId)?.sessionId ?? null;
     const chatSessionId = cleanOptionalId(args.chatSessionId);
     if (!chatSessionId) return null;
-    // Auxiliary terminals (shell, App Control, etc.) — never route chat-CLI rows.
+    // Auxiliary terminals (shell, Electron Control, etc.) — never route chat-CLI rows.
     return activeAuxiliaryEntryFor(chatSessionId)?.sessionId ?? null;
   };
 
@@ -6802,7 +6802,7 @@ export function createPtyService({
         }
       }
 
-      // Single-flight dedup: concurrent callers (chat composer + App Control,
+      // Single-flight dedup: concurrent callers (chat composer + Electron Control,
       // rapid sends, etc.) must not each launch a fresh `claude --resume` PTY.
       // Whoever wins the create wins; everyone else awaits the same Promise.
       const existing = reattachChatCliFlights.get(chatSessionId);

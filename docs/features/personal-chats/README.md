@@ -181,7 +181,7 @@ domains into the hidden runtime.
 - Desktop/web: a global `/chats` route with a conversation rail, focused
   transcript, and shared model/reasoning/access controls. The sidebar entry is
   available even on the welcome screen. Project-only Work, Git, Files, iOS,
-  App Control, and CLI-launch affordances are absent. The desktop Browser uses
+  Electron Control, and CLI-launch affordances are absent. The desktop Browser uses
   its global profile; terminal commands run in the personal scratch workspace.
 - iOS: the Hub is the only entry point. It pushes a native Chats page, then a
   new-chat or existing-chat destination without selecting a project.

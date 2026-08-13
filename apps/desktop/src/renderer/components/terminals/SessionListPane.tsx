@@ -1155,7 +1155,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     [allSessions],
   );
   // Build parent → children index. A child is a tracked terminal that records the
-  // chat session id of its parent (e.g. App Control launches, in-chat terminal
+  // chat session id of its parent (e.g. Electron Control launches, in-chat terminal
   // drawer tabs). Children render indented under the parent when the parent is
   // also visible. If the parent is filtered out, the child still renders at the
   // top level so users do not lose access.

@@ -31,7 +31,7 @@ freshly-opened chat into the Work tab. It also computes a
 `draftContextTargetId` (formatted as `work:draft:<laneId>:<draftKind>`)
 and a `contextTarget` that includes a `"draft"` kind when no active
 Work session is selected but a draft composer is mounted, so the Work
-sidebar can insert context (attachments, iOS/App Control/browser
+sidebar can insert context (attachments, iOS/Electron Control/browser
 selections) into the draft composer before a chat session exists.
 Context insertion is enabled for draft targets — the "no session open"
 disabled message no longer appears when a draft is active. The page
@@ -582,7 +582,7 @@ chat, draft, or tracked agent CLI session is open in the active Work
 lane, attachment is disabled with the banner "Open a chat, draft, or
 agent CLI session in this lane before inserting tool context." The
 sidebar also owns its own `AppControlSession` / `IosSimulatorSession`
-subscriptions so it can detect lane mismatches (e.g. App Control was
+subscriptions so it can detect lane mismatches (e.g. Electron Control was
 launched from a different lane); lane mismatches are surfaced as an
 informational warning banner but no longer block context insertion —
 controls affect the running tool while inserted context goes to the
@@ -598,7 +598,7 @@ reaching across the screen.
 
 Drawers in `AgentChatPane` accept `hideLaneToolDrawers={true}` when the
 pane is mounted as a Work tile (`SessionSurface`), so the chat header
-no longer shows the iOS / App Control toggles inside Work — those
+no longer shows the iOS / Electron Control toggles inside Work — those
 drawers now live on the lane-scoped `WorkSidebar`. Proof remains
 chat-scoped and stays on the chat header.
 

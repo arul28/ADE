@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { MARKETPLACE_LOCAL_INDEX } from "./marketplaceLocalIndex";
 import {
   DEFAULT_PLUGIN_ICON,
   PLUGIN_ICON_NAMES,
   PLUGIN_IDENTITY_COLORS,
   PLUGIN_IDENTITY_GLYPHS,
+  officialPluginLogo,
   pluginIcon,
   pluginIdentity,
 } from "./pluginIcons";
@@ -88,5 +90,96 @@ describe("pluginIdentity", () => {
       .toBe("https://example.test/i.png");
     expect(pluginIdentity({ pluginId: "x", iconUrl: "   " }).imageUrl).toBeNull();
     expect(pluginIdentity({ pluginId: "x" }).imageUrl).toBeNull();
+  });
+});
+
+/**
+ * The three officials that wear someone else's mark.
+ *
+ * These are the plugins a reader recognises by logo rather than by name, and
+ * the Marketplace's first paint is served from the BUNDLED index — offline, on
+ * a machine that has never reached the directory. So the mark has to be in the
+ * build, and it has to survive being handed to an `<img>`.
+ */
+describe("officialPluginLogo", () => {
+  const branded = ["ade-linear", "ade-ios-sim", "ade-app-control"];
+
+  it("bundles a self-contained mark for each branded official", () => {
+    for (const pluginId of branded) {
+      const logo = officialPluginLogo(pluginId);
+      expect(logo, pluginId).toBeTruthy();
+      // A `data:` URL, so no fetch, no host, and nothing for the directory or
+      // the network to be down for.
+      expect(logo!.startsWith("data:image/svg+xml,"), pluginId).toBe(true);
+      // Encoded, not raw: an unescaped `#` in a fill starts a fragment and
+      // truncates the document at the first colour.
+      expect(logo, pluginId).not.toContain("#");
+      expect(decodeURIComponent(logo!.slice("data:image/svg+xml,".length)), pluginId)
+        .toContain("<svg");
+    }
+  });
+
+  it("gives every other plugin no image, including the officials drawn as glyphs", () => {
+    expect(officialPluginLogo("ade-graph")).toBeNull();
+    expect(officialPluginLogo("ade-theme-ink")).toBeNull();
+    expect(officialPluginLogo("constructor")).toBeNull();
+    expect(officialPluginLogo("")).toBeNull();
+  });
+
+  it("fills in for a branded official that published no image, and yields to one that did", () => {
+    expect(pluginIdentity({ pluginId: "ade-linear" }).imageUrl)
+      .toBe(officialPluginLogo("ade-linear"));
+    // A directory entry can move a logo without shipping a build, so a
+    // published URL still wins over the bundled copy.
+    expect(pluginIdentity({ pluginId: "ade-linear", iconUrl: "https://example.test/l.png" }).imageUrl)
+      .toBe("https://example.test/l.png");
+  });
+});
+
+/**
+ * The bundled set is the first thing anyone sees in the Marketplace, and it is
+ * the one listing ADE controls end to end. Two officials that look alike is a
+ * catalogue that reads as unfinished — which is what the derived-glyph fallback
+ * produced when several manifests named a glyph this build did not have.
+ */
+describe("the official set's identities", () => {
+  const officials = MARKETPLACE_LOCAL_INDEX.map((listing) => ({
+    pluginId: listing.pluginId,
+    icon: listing.icon,
+    accent: listing.accent,
+  }));
+
+  it("names a glyph this build actually has", () => {
+    for (const official of officials) {
+      expect(official.icon, `${official.pluginId} names no glyph`).toBeTruthy();
+      // Not `pluginIcon(icon) !== DEFAULT_PLUGIN_ICON` — `puzzle` is a legal
+      // name. The published list is the allowlist.
+      expect(PLUGIN_ICON_NAMES, `${official.pluginId} names an unknown glyph`)
+        .toContain(official.icon!.toLowerCase());
+    }
+  });
+
+  it("gives each one a colour of its own", () => {
+    const byColor = new Map<string, string[]>();
+    for (const official of officials) {
+      expect(official.accent, `${official.pluginId} publishes no colour`).toBeTruthy();
+      const ids = byColor.get(official.accent!) ?? [];
+      ids.push(official.pluginId);
+      byColor.set(official.accent!, ids);
+    }
+    const shared = [...byColor.entries()].filter(([, ids]) => ids.length > 1);
+    expect(shared, `officials sharing a colour: ${JSON.stringify(shared)}`).toEqual([]);
+  });
+
+  it("never draws two of them the same way", () => {
+    const glyphIds = new Map<unknown, number>();
+    const looks = officials.map((official) => {
+      const identity = pluginIdentity(official);
+      if (!glyphIds.has(identity.Icon)) glyphIds.set(identity.Icon, glyphIds.size);
+      return identity.imageUrl ?? `${identity.color}:glyph-${glyphIds.get(identity.Icon)!}`;
+    });
+    // Themes share the palette glyph on purpose, so the pair is what has to be
+    // distinct — a reader tells them apart by colour.
+    expect(new Set(looks).size).toBe(officials.length);
   });
 });

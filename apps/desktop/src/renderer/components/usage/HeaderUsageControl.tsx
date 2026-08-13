@@ -355,17 +355,16 @@ export function HeaderUsageControl({
         >
           <div
             ref={panelRef}
-            // The shell surface, the same hook every other top-bar popover
-            // reads. An earlier pass moved this to `bg-surface-overlay`, which
-            // is `rgba(255,255,255,0.92)` on the light theme — the popover read
-            // as see-through and unanchored. A popover over live content needs
-            // to be opaque; that is what this variable is for.
+            // An earlier pass moved this to `bg-surface-overlay`, which is
+            // `rgba(255,255,255,0.92)` on the light theme — the popover read as
+            // see-through and unanchored. A popover over live content needs to
+            // be opaque.
             //
-            // The fallback is the theme's raised token rather than the shell's
-            // literal `#121019`, because everything inside is drawn in `text-fg`
-            // and a fixed dark plate would be dark-on-dark under the light
-            // theme. `USAGE_OVERLAY_BG_CLASS` keeps this identical to the chart
-            // and heatmap readouts.
+            // It reads the theme's raised token rather than `--shell-surface`,
+            // which the other top-bar popovers use: everything inside is drawn
+            // in `text-fg`, and that token is still the shell's dark plate on
+            // both schemes. `USAGE_OVERLAY_BG_CLASS` keeps this identical to the
+            // chart and heatmap readouts.
             className={cn(
               "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(420px,calc(100vw-24px))] overflow-y-auto",
               "rounded-xl border shadow-2xl shadow-black/45",

@@ -1151,7 +1151,7 @@ export function LinearIssueBrowser({
                     <div key={group.key}>
                       <button
                         type="button"
-                        className="sticky top-0 z-[1] flex h-8 w-full items-center gap-1.5 border-b border-white/[0.05] bg-[color:var(--ade-shell-surface,#121019)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
+                        className="sticky top-0 z-[1] flex h-8 w-full items-center gap-1.5 border-b border-white/[0.05] bg-[color:var(--shell-surface)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
                         onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
                       >
                         {collapsed ? <CaretRight size={11} className="shrink-0" /> : <CaretDown size={11} className="shrink-0" />}
@@ -1558,7 +1558,7 @@ function IssueDetails({
       </div>
 
       <div
-        className="shrink-0 max-h-[42%] overflow-y-auto overscroll-contain border-t border-white/10 bg-[color:color-mix(in_srgb,var(--ade-shell-surface,#121019)_92%,black_8%)] px-4 py-3 shadow-[0_-18px_36px_rgba(0,0,0,0.22)] backdrop-blur-md"
+        className="shrink-0 max-h-[42%] overflow-y-auto overscroll-contain border-t border-white/10 bg-[color:color-mix(in_srgb,var(--shell-surface)_92%,black_8%)] px-4 py-3 shadow-[0_-18px_36px_rgba(0,0,0,0.22)] backdrop-blur-md"
         data-linear-action-dock="true"
       >
         <div className="mb-2 flex min-w-0 items-center gap-2">

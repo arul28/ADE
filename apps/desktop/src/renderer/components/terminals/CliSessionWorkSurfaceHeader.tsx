@@ -153,7 +153,7 @@ function ClaudeLoginHeaderAction({ session }: { session: TerminalSessionSummary 
  * Trailing-action set rendered to the right of every CLI session header. Kept
  * intentionally light: Stop, a lane-scoped Run dropdown, an Info button, and the
  * session kebab. The chat surface owns its much larger action set (Simulator,
- * App Control, Browser, Chat actions, terminal, delete, etc.) inline in
+ * Electron Control, Browser, Chat actions, terminal, delete, etc.) inline in
  * AgentChatPane.
  */
 export function CliSurfaceTrailingActions({

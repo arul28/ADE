@@ -26,6 +26,7 @@ import {
   deriveSurfaceFacets,
   featuredListings,
   installStateFor,
+  installedPluginIds,
   marketplaceRouteFromPath,
   queryMarketplace,
   type ListingInstallState,
@@ -56,6 +57,9 @@ import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
 const CHIPS: { id: MarketplaceChip; label: string }[] = [
   { id: "all", label: "All" },
+  // Second, because "what do I already have" is the question people arrive with
+  // most often after their first visit.
+  { id: "installed", label: "Installed" },
   { id: "official", label: "Official" },
   { id: "featured", label: "Featured" },
   { id: "themes", label: "Themes" },
@@ -93,13 +97,15 @@ function MarketplaceGallery() {
     [presence.rows],
   );
 
+  const installedIds = React.useMemo(() => installedPluginIds(installed), [installed]);
+
   const visible = React.useMemo(
-    () => queryMarketplace(catalogue.listings, query),
-    [catalogue.listings, query],
+    () => queryMarketplace(catalogue.listings, query, installedIds),
+    [catalogue.listings, installedIds, query],
   );
   const facets = React.useMemo(
-    () => deriveSurfaceFacets(catalogue.listings, query),
-    [catalogue.listings, query],
+    () => deriveSurfaceFacets(catalogue.listings, query, installedIds),
+    [catalogue.listings, installedIds, query],
   );
   const featured = React.useMemo(() => featuredListings(catalogue.listings), [catalogue.listings]);
   // Asked for in the order the gallery draws, so the rows on screen are the
@@ -167,6 +173,7 @@ function MarketplaceGallery() {
             <FilterBar
               query={query}
               facets={facets}
+              installedCount={installedIds.size}
               onChange={setQuery}
             />
 
@@ -462,10 +469,13 @@ function FeaturedRow({
 function FilterBar({
   query,
   facets,
+  installedCount,
   onChange,
 }: {
   query: MarketplaceQuery;
   facets: { surface: PluginSurfaceId; label: string; total: number }[];
+  /** Counted on the chip, and only when there is something to count. */
+  installedCount: number;
   onChange: React.Dispatch<React.SetStateAction<MarketplaceQuery>>;
 }) {
   const toggleSurface = (surface: PluginSurfaceId) => {
@@ -492,6 +502,7 @@ function FilterBar({
         <FilterChip
           key={chip.id}
           label={chip.label}
+          count={chip.id === "installed" && installedCount > 0 ? installedCount : undefined}
           active={query.chip === chip.id}
           onClick={() => onChange((previous) => ({ ...previous, chip: chip.id }))}
           tour={`plugin:marketplace.chip-${chip.id}`}

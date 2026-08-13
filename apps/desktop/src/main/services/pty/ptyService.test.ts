@@ -3393,7 +3393,7 @@ describe("ptyService", () => {
 
       await service.create({
         laneId: "lane-1",
-        title: "App Control",
+        title: "Electron Control",
         cols: 80,
         rows: 24,
         toolType: "shell",
@@ -9083,7 +9083,7 @@ describe("ptyService", () => {
         expect(result.ptyId).toBe(created.ptyId);
       });
 
-      it("prefers chat CLI over a newer App Control shell with the same chatSessionId", async () => {
+      it("prefers chat CLI over a newer Electron Control shell with the same chatSessionId", async () => {
         const { service } = createChatHarness();
         const chatCli = await service.create({
           sessionId: "chat-app-control",
@@ -9099,7 +9099,7 @@ describe("ptyService", () => {
         });
         const appControlShell = await service.create({
           laneId: "lane-1",
-          title: "App Control",
+          title: "Electron Control",
           cols: 80,
           rows: 24,
           chatSessionId: "chat-app-control",
@@ -9118,7 +9118,7 @@ describe("ptyService", () => {
         expect(reattached.ptyId).toBe(chatCli.ptyId);
       });
 
-      it("routes terminal operations to the App Control shell without making it the active chat CLI", async () => {
+      it("routes terminal operations to the Electron Control shell without making it the active chat CLI", async () => {
         const { service, loadPty, sessionService } = createChatHarness();
         const chatPty = createMockPty();
         const appControlPty = createMockPty();
@@ -9141,7 +9141,7 @@ describe("ptyService", () => {
         });
         const appControlShell = await service.create({
           laneId: "lane-1",
-          title: "App Control",
+          title: "Electron Control",
           cols: 80,
           rows: 24,
           chatSessionId: "chat-app-control-routing",

@@ -200,7 +200,7 @@ function ensureCwdInsideRoot(cwd: string, projectRoot: string): void {
   const root = path.resolve(projectRoot);
   if (cwd === root || cwd.startsWith(`${root}${path.sep}`)) return;
   throw new Error(
-    `App Control launch must run inside the current lane. cwd ${cwd} is outside ${root}.`,
+    `Electron Control launch must run inside the current lane. cwd ${cwd} is outside ${root}.`,
   );
 }
 
@@ -214,7 +214,7 @@ function findFreePort(): Promise<number> {
       server.close((error) => {
         if (error) reject(error);
         else if (port) resolve(port);
-        else reject(new Error("Could not allocate an App Control debug port."));
+        else reject(new Error("Could not allocate an Electron Control debug port."));
       });
     });
   });
@@ -1276,7 +1276,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
           cdpEndpoint: null,
           cdpTargetId: activeSession.cdpTargetId,
           status: terminalAlive ? "running" : "exited",
-          lastError: listError ? listError.message : "App Control lost the CDP target. The app may have quit.",
+          lastError: listError ? listError.message : "Electron Control lost the CDP target. The app may have quit.",
         });
         if (terminalAlive) startCdpPoller(sessionId, port);
         return;
@@ -1360,7 +1360,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       ensureCwdInsideRoot(cwd, projectRoot);
       const rawCommand = launchArgs.command.trim();
       // Reject commands that try to step outside the lane via `cd <other path>`.
-      // App Control source-matches against the lane root, so running an app
+      // Electron Control source-matches against the lane root, so running an app
       // from a sibling repo would surface unrelated source matches.
       const cdMatches = Array.from(rawCommand.matchAll(/(?:^|[;&|]\s*)cd\s+((?:"[^"]+"|'[^']+'|[^\s;&|]+))\s*&&/g));
       for (const match of cdMatches) {
@@ -1370,7 +1370,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         const laneRoot = path.resolve(projectRoot);
         if (resolvedTarget !== laneRoot && !resolvedTarget.startsWith(`${laneRoot}${path.sep}`)) {
           throw new Error(
-            `App Control launch must run inside the current lane. The command tried to \`cd\` to ${resolvedTarget}, which is outside ${laneRoot}. Run the app from this lane instead.`,
+            `Electron Control launch must run inside the current lane. The command tried to \`cd\` to ${resolvedTarget}, which is outside ${laneRoot}. Run the app from this lane instead.`,
           );
         }
       }
@@ -1449,7 +1449,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       };
     }
 
-    throw new Error("App Control launch requires a command.");
+    throw new Error("Electron Control launch requires a command.");
   };
 
   const stop = async (stopArgs: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> => {
@@ -1495,7 +1495,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !connectArgs.force) {
-      throw new Error("App Control already has an active session. Pass force=true to replace it.");
+      throw new Error("Electron Control already has an active session. Pass force=true to replace it.");
     }
     if (activeSession) await stop({ force: true });
     const projectRoot = normalizeProjectRoot(connectArgs.projectRoot, args.projectRoot);
@@ -1540,10 +1540,10 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
-      throw new Error("App Control already has an active session. Pass --force to replace it.");
+      throw new Error("Electron Control already has an active session. Pass --force to replace it.");
     }
     if (!args.ptyService) {
-      throw new Error("App Control terminal launch requires the ADE terminal service.");
+      throw new Error("Electron Control terminal launch requires the ADE terminal service.");
     }
     if (activeSession) await stop({ force: true });
     cdpAttachmentEpoch += 1;
@@ -1557,7 +1557,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       chatSessionId: launchArgs.chatSessionId ?? null,
     });
     if (!laneId) {
-      throw new Error("App Control could not resolve a lane for the terminal. Select a lane or pass laneId.");
+      throw new Error("Electron Control could not resolve a lane for the terminal. Select a lane or pass laneId.");
     }
     const session: AppControlSession = {
       id: randomUUID(),
@@ -1611,7 +1611,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         allowExternalCwd: true,
         cols: 120,
         rows: 36,
-        title: `App Control: ${resolved.label}`,
+        title: `Electron Control: ${resolved.label}`,
         tracked: true,
         // Use "shell" so the session shows up in the chat sidebar nested under
         // its parent chat.
@@ -1644,7 +1644,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   };
 
   const ensureConnectedSession = async (): Promise<AppControlSession> => {
-    if (!activeSession) throw new Error("No active App Control session. Launch or connect first.");
+    if (!activeSession) throw new Error("No active Electron Control session. Launch or connect first.");
     if (activeSession.cdpPort && (!activeSession.cdpEndpoint || activeSession.status !== "connected")) {
       const targets = await listCdpTargets(activeSession.cdpPort);
       // Prefer the user's previously-attached target if it still exists. Falling
@@ -1667,7 +1667,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         return reconnected;
       }
     }
-    if (!activeSession.cdpEndpoint) throw new Error(activeSession.lastError ?? "Active App Control session has no CDP endpoint.");
+    if (!activeSession.cdpEndpoint) throw new Error(activeSession.lastError ?? "Active Electron Control session has no CDP endpoint.");
     if (
       (!screencastClient
         || screencastClient.isClosed()
@@ -1683,7 +1683,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const withCdp = async <T>(fn: (client: CdpClient, session: AppControlSession) => Promise<T>): Promise<T> => {
     const session = await ensureConnectedSession();
-    if (!session.cdpEndpoint) throw new Error("Active App Control session has no CDP endpoint.");
+    if (!session.cdpEndpoint) throw new Error("Active Electron Control session has no CDP endpoint.");
     // Reuse the persistent screencast client when it's connected to the same
     // session. This avoids opening a new WebSocket per click/scroll/key — under
     // a wheel gesture that's 30+ short-lived sockets, which CDP starts to
@@ -2058,7 +2058,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         selector: element.selector,
         testId: element.testId,
         session: snapshot.session,
-        selectionExplanation: "The user selected this UI element from ADE App Control. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
+        selectionExplanation: "The user selected this UI element from ADE Electron Control. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
       },
       screenshotDataUrl: screenshotDataUrl ?? undefined,
       selectedAt: nowIso(),
@@ -2091,7 +2091,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       title: snapshot.title,
       sourceConfidence: "none",
       session: snapshot.session,
-      note: "No DOM element matched this point; App Control preserved the selected coordinate and screenshot.",
+      note: "No DOM element matched this point; Electron Control preserved the selected coordinate and screenshot.",
     },
     screenshotDataUrl: screenshotDataUrl ?? undefined,
     selectedAt: nowIso(),
@@ -2270,7 +2270,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const attachToTarget = async (targetId: string): Promise<AppControlSession> => {
     if (!activeSession || !activeSession.cdpPort) {
-      throw new Error("No active App Control session.");
+      throw new Error("No active Electron Control session.");
     }
     const id = (targetId ?? "").trim();
     if (!id) throw new Error("attachToTarget requires a targetId.");
@@ -2281,7 +2281,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     stopCdpHealthCheck();
     const targets = await listCdpTargets(cdpPort);
     if (!activeSession || activeSession.id !== sessionId || cdpAttachmentEpoch !== attachEpoch) {
-      if (!activeSession) throw new Error("No active App Control session.");
+      if (!activeSession) throw new Error("No active Electron Control session.");
       return activeSession;
     }
     const target = targets.find((candidate) => candidate.id === id && candidate.webSocketDebuggerUrl);
@@ -2304,8 +2304,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const requireTerminalSessionId = (): string => {
     const terminalId = activeSession?.terminalSessionId;
-    if (!terminalId) throw new Error("App Control has no launch terminal for the active session.");
-    if (!args.ptyService) throw new Error("App Control terminal access requires the ADE terminal service.");
+    if (!terminalId) throw new Error("Electron Control has no launch terminal for the active session.");
+    if (!args.ptyService) throw new Error("Electron Control terminal access requires the ADE terminal service.");
     return terminalId;
   };
 
@@ -2320,7 +2320,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const writeTerminal = async (terminalArgs: { data?: string | null }): Promise<{ ok: true }> => {
     const terminalId = requireTerminalSessionId();
-    if (typeof terminalArgs?.data !== "string") throw new Error("App Control terminal write requires data.");
+    if (typeof terminalArgs?.data !== "string") throw new Error("Electron Control terminal write requires data.");
     return await args.ptyService!.writeTerminal({ terminalId, data: terminalArgs.data });
   };
 

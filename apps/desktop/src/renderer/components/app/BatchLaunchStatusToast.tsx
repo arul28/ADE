@@ -94,7 +94,7 @@ export function BatchLaunchStatusToast({
   return createPortal(
     <div className="fixed bottom-4 right-4 z-[10001] w-[min(340px,calc(100vw-32px))]">
       <div
-        className="overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/50"
+        className="overflow-hidden rounded-xl border bg-[color:var(--shell-surface)] shadow-2xl shadow-black/50"
         style={{ borderColor: LINEAR_BRAND.border }}
       >
         <div

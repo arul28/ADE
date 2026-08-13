@@ -1,5 +1,5 @@
 import type { Logger } from "../logging/logger";
-import type { PluginManifest } from "../../../shared/plugins/manifest";
+import { pluginPanelShowsOnMobile, type PluginManifest } from "../../../shared/plugins/manifest";
 import { isRecord } from "../../../shared/plugins/parse";
 import {
   isPluginEntityKind,
@@ -176,6 +176,7 @@ export function createPluginSdkServer(deps: {
             ...(declared?.title ? { title: declared.title } : {}),
             ...(declared?.icon ? { icon: declared.icon } : {}),
             ...(surface ? { surface: surface.id } : {}),
+            ...(surface ? { mobile: pluginPanelShowsOnMobile(surface) } : {}),
             schema: params.schema,
             vocabVersion: manifest.vocabVersion,
           });

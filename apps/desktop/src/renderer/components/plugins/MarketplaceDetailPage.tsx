@@ -14,7 +14,9 @@ import {
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { ChatMarkdown } from "../chat/chatMarkdown";
 import { useRootAppStore } from "../../state/appStore";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+// The system browser, not ADE's built-in one: the built-in pane loads the page
+// without navigating anyone to it, so these buttons all read as doing nothing.
+import { openExternalUrl } from "../../lib/openExternal";
 import { parsePluginManifest, type PluginManifest } from "../../../shared/plugins/manifest";
 import { builtinSurfaceOwner } from "../../../shared/plugins/builtinSurfaces";
 import {
@@ -55,6 +57,7 @@ import {
   type ListingInstallState,
   type MarketplaceListing,
 } from "./marketplaceModel";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 /**
  * One plugin, in full.
@@ -172,6 +175,9 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   // gets a fact row instead of a button that would go nowhere.
   const source = describePluginSource(listing.source);
   const resources = describePluginResources(listing);
+  // The catalogue flags themes it knows about; the installed manifest is the
+  // answer for one it does not.
+  const isTheme = listing.isTheme || manifest?.theme !== undefined;
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -300,6 +306,26 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               tokens={listing.themeTokens}
               installed={installedPlugin !== null && installedPlugin.enabled}
             />
+          ) : null}
+
+          {/* Installing a theme does not switch to it, and the switch lives in
+              Appearance beside the built-in palettes. Without this the page
+              ends with a theme that is present and not on, and no signpost to
+              the one screen that turns it on. */}
+          {isTheme && installedPlugin ? (
+            <RailSection title="Appearance">
+              <button
+                type="button"
+                onClick={() => navigate(settingsRouteFor("appearance.theme"))}
+                data-tour="plugin:marketplace.theme-settings"
+                style={{
+                  ...outlineButton({ height: 27, fontSize: 11.5 }),
+                  justifySelf: "start",
+                }}
+              >
+                Choose in Appearance settings
+              </button>
+            </RailSection>
           ) : null}
 
           <ContributionsRail
@@ -471,7 +497,7 @@ function DetailHeader({
         {authorUrl ? (
           <button
             type="button"
-            onClick={() => openUrlInAdeBrowser(authorUrl)}
+            onClick={() => openExternalUrl(authorUrl)}
             title={authorUrl}
             style={{
               justifySelf: "start",
@@ -744,7 +770,7 @@ function LinkButton({ label, url }: { label: string; url: string }) {
   return (
     <button
       type="button"
-      onClick={() => openUrlInAdeBrowser(url)}
+      onClick={() => openExternalUrl(url)}
       title={url}
       style={{
         ...outlineButton({ height: 26, padding: "0 9px", fontSize: 11 }),

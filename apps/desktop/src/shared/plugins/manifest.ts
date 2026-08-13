@@ -137,6 +137,28 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
   return PLUGIN_BUILTIN_SURFACE_IDS.some((id) => id === value);
 }
 
+/**
+ * Which gated built-ins the phone has a page for.
+ *
+ * A `builtin` surface renders compiled code, not a panel schema, so "does it
+ * appear on mobile" is a fact about what the iOS app SHIPS — not something a
+ * manifest can decide. Linear is ported; the Graph canvas, Review, History, the
+ * simulator pane and Electron Control are not, and declaring `mobile: true` on
+ * one of them would put a rail entry in front of a renderer that does not exist.
+ * So the table is the ceiling and the manifest may only narrow it.
+ *
+ * Keyed by the closed id list above, so adding a gateable surface without
+ * deciding this question does not compile.
+ */
+export const PLUGIN_BUILTIN_SURFACE_MOBILE: Readonly<Record<PluginBuiltinSurfaceId, boolean>> = {
+  graph: false,
+  review: false,
+  history: false,
+  linear: true,
+  ios: false,
+  "app-control": false,
+};
+
 const SURFACE_KINDS: readonly PluginSurfaceKind[] = ["tab", "pane", "webview"];
 
 export type PluginManifestSurface = {
@@ -162,6 +184,17 @@ export type PluginManifestSurface = {
    * exposes that directory and nothing above it.
    */
   entryHtml?: string;
+  /**
+   * Whether this surface appears on the phone.
+   *
+   * The parser always sets it, and sets the RESOLVED answer rather than the raw
+   * manifest value: what the author asked for is only ever narrowed, by the two
+   * ceilings in {@link parseSurfaces}. Optional in the type because a
+   * hand-written surface literal (the bundled Marketplace index, a fixture) is
+   * not obliged to restate a default — absent reads as "whatever this kind does
+   * today", which is what {@link pluginPanelShowsOnMobile} applies.
+   */
+  mobile?: boolean;
 };
 
 export type PluginManifestPanel = {
@@ -350,6 +383,31 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         builtin = requested;
       }
     }
+    // `mobile` is a narrowing switch, not a grant. The ceiling comes from what
+    // the surface IS — a webview draws a desktop-only page, a gated built-in
+    // draws whatever compiled page the phone ships for it — and the manifest may
+    // only turn a mobile-capable surface off. A malformed value is treated as
+    // absent rather than fatal: it costs the author a default, not a plugin.
+    let declaredMobile: boolean | null = null;
+    if (entry.mobile !== undefined) {
+      if (typeof entry.mobile === "boolean") {
+        declaredMobile = entry.mobile;
+      } else {
+        ctx.warnings.push(`${label}.mobile must be true or false — ignored`);
+      }
+    }
+    const mobileCeiling = kind === "webview"
+      ? false
+      : builtin
+        ? PLUGIN_BUILTIN_SURFACE_MOBILE[builtin]
+        : true;
+    if (declaredMobile === true && !mobileCeiling) {
+      ctx.warnings.push(
+        kind === "webview"
+          ? `${label}.mobile cannot be true on a "webview" surface — the phone renders its panelId panel instead`
+          : `${label}.mobile cannot be true for the built-in "${String(builtin)}" surface, which the phone has no page for — ignored`,
+      );
+    }
     return {
       kind,
       id,
@@ -359,8 +417,27 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
       ...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
       ...(builtin ? { builtin } : {}),
       ...(entryHtml ? { entryHtml } : {}),
+      mobile: mobileCeiling && (declaredMobile ?? true),
     };
   });
+}
+
+/**
+ * Whether the phone should LIST the panel a surface names.
+ *
+ * Not the same question as `surface.mobile`, and the webview is why. A webview
+ * page is desktop-only by construction, but the panel it names is exactly what
+ * every non-desktop client renders in its place — filtering that panel out would
+ * delete the fallback the surface exists to provide. A gated built-in has no
+ * such consolation: the phone either ships the compiled page or has nothing at
+ * all to show, so there the surface's answer is the panel's answer.
+ *
+ * Exported because two layers ask it — the panel seeder and the SDK's
+ * `panels.update` — and a second spelling of this rule is a second answer.
+ */
+export function pluginPanelShowsOnMobile(surface: PluginManifestSurface): boolean {
+  if (surface.kind === "webview") return true;
+  return surface.mobile !== false;
 }
 
 function parsePanels(raw: unknown, ctx: ParseContext): PluginManifestPanel[] {

@@ -2,7 +2,7 @@
 
 ADE supports the packaged Windows 10/11 x64 desktop, shipped as a public beta.
 Windows ARM64, native Windows OS computer use, and iOS Simulator remain out of
-scope. App Control over CDP, the built-in Browser, proof-file ingestion, phone
+scope. Electron Control over CDP, the built-in Browser, proof-file ingestion, phone
 pairing, the local Windows brain, and Windows as an SSH-bootstrap runtime target
 are supported.
 
@@ -25,7 +25,7 @@ all and the surface does not exist.
 
 | Capability | Outcome | What Windows does | Why |
 | --- | --- | --- | --- |
-| Native OS computer use — screenshot, video, GUI automation | Blocked | App Control over CDP, the built-in Browser, and proof-file ingestion all work. Only OS-level capture is gated. | Backed by `screencapture` and `osascript`. The Windows equivalent is Windows.Graphics.Capture plus UI Automation, which is a separate project. |
+| Native OS computer use — screenshot, video, GUI automation | Blocked | Electron Control over CDP, the built-in Browser, and proof-file ingestion all work. Only OS-level capture is gated. | Backed by `screencapture` and `osascript`. The Windows equivalent is Windows.Graphics.Capture plus UI Automation, which is a separate project. |
 | iOS Simulator drawer, Xcode Preview | Unavailable | Hidden. | Requires macOS and Xcode. |
 | Native Notch | Unavailable | Hidden. | macOS window-server feature with no counterpart. |
 | Claude Code background-job reattach | Degraded | Each follow-up prompt respawns the CLI instead of replying into the live background job. Turns are slower and in-flight context is lost. | Claude Code ships no `control.sock` on Windows, and `os.userInfo().uid` is `-1`, so there is nothing to attach to. |

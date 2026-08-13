@@ -141,12 +141,12 @@ describe("refusal copy", () => {
   });
 
   it("reads the display name out of the bundled package manifests", () => {
-    const builtinPluginsRoot = writeBundledRoot({ "ade-app-control": "App Control" });
+    const builtinPluginsRoot = writeBundledRoot({ "ade-app-control": "Electron Control" });
 
     expect(pluginDisplayNameFromCatalog("ade-app-control", {
       builtinPluginsRoot,
       pluginsRoot: writePluginsRoot({}),
-    })).toBe("App Control");
+    })).toBe("Electron Control");
   });
 
   it("falls back to the cached registry index when nothing is bundled", () => {

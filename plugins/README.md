@@ -12,7 +12,7 @@ plugins/
   ade-history/          gates the built-in History tab
   ade-linear/           gates the Linear pane in Work
   ade-ios-sim/          gates the iOS Simulator pane in Work
-  ade-app-control/      gates the App Control pane in Work
+  ade-app-control/      gates the Electron Control pane in Work
   ade-log-viewer/       renders .log and .ndjson in the Files tab
   themes/
     ade-theme-paper/    warm paper light

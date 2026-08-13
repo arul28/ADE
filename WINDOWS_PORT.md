@@ -37,7 +37,7 @@ working branch:
   Node's intended-user-only named-pipe access flags; effective cross-account
   access remains a clean-VM proof gate.
 - Tracked CLI continuation uses structured command/argv/env descriptors on
-  Windows for Claude, Codex, Cursor, OpenCode, and Droid. App Control likewise
+  Windows for Claude, Codex, Cursor, OpenCode, and Droid. Electron Control likewise
   uses structured Windows launches for direct Electron/package scripts and
   platform-specific shell fallbacks. Fresh provider intent is materialized on
   the runtime that owns the lane, so a Windows renderer cannot send
@@ -62,7 +62,7 @@ working branch:
 - Windows chrome, AppUserModelID, microphone-denial guidance, sync health, and
   platform-aware copy/navigation are implemented. macOS-native Notch,
   computer-use, and iOS Simulator actions are hidden or capability-blocked
-  while App Control, Browser, and proof ingestion remain available.
+  while Electron Control, Browser, and proof ingestion remain available.
 - The Windows developer loop now uses a per-user named pipe, invokes local
   JavaScript CLI entry points instead of fragile global `.cmd` shims, strips
   inherited runtime parent/idle shutdown controls, and waits for tsup's
@@ -196,13 +196,13 @@ The product decision is either:
 Including everything is simpler for a first preview but increases installer
 size. On-demand, checksummed sidecar downloads would be cleaner later.
 
-### 4. Provider resume and App Control commands still contain POSIX syntax
+### 4. Provider resume and Electron Control commands still contain POSIX syntax
 
 Fresh provider launches are mostly structured and Windows-aware. Resume and
 fallback paths frequently generate shell strings instead.
 
 Examples include OpenCode environment assignments and Droid resume commands in
-[`cliLaunch.ts`](apps/desktop/src/shared/cliLaunch.ts). App Control's
+[`cliLaunch.ts`](apps/desktop/src/shared/cliLaunch.ts). Electron Control's
 package-script rewrite emits `PATH=<dir>:$PATH` and POSIX quoting in
 [`appControlLaunchCommand.ts`](apps/desktop/src/main/services/appControl/appControlLaunchCommand.ts),
 even though the command is later typed into PowerShell or cmd.
@@ -295,7 +295,7 @@ The build PR should also include a focused platform pass:
   maximize, Snap Layouts, and DPI scaling.
 - Hide or clearly disable iOS Simulator, Xcode Preview, native Notch, and local
   OS computer-use actions.
-- Keep browser/App Control capture and proof-file ingestion enabled where
+- Keep browser/Electron Control capture and proof-file ingestion enabled where
   supported.
 - Replace visible "This Mac", "Reveal in Finder", `Command` key, and macOS
   Keychain wording with platform-aware labels. Preserve the internal
@@ -325,7 +325,7 @@ A reviewable first submission should be titled along the lines of
 - Fix the scheduled-task environment, channel naming, and locale-safe status.
 - Use user/channel-scoped named pipes.
 - Introduce structured provider resume commands.
-- Fix App Control's Windows launch handling.
+- Fix Electron Control's Windows launch handling.
 - Generate sync singleton recovery commands that do not suggest `launchctl`
   or `/bin/kill`.
 
@@ -375,7 +375,7 @@ At minimum:
 - Load packaged `crsqlite.dll` and complete a bidirectional Windows
   desktop-to-physical-iPhone CRR sync.
 - Use the Windows desktop to control an existing macOS/Linux remote runtime.
-- Exercise the built-in browser, downloads, proof ingest, and App Control CDP
+- Exercise the built-in browser, downloads, proof ingest, and Electron Control CDP
   capture.
 - Test `ade://` cold/hot deep links, file associations, the PATH wrapper, and
   uninstall cleanup.
@@ -420,7 +420,7 @@ The source implementation was validated on Windows with:
 - Desktop typecheck, lint, build, documentation validation, web typecheck and
   build.
 - The required Windows release contract, updater, packaging-smoke,
-  CR-SQLite, ConPTY, App Control, microphone, window-chrome, preload, sync UI,
+  CR-SQLite, ConPTY, Electron Control, microphone, window-chrome, preload, sync UI,
   provider-launch, and platform-copy focused suites.
 - ADE CLI typecheck/build, 328 CLI tests, 59 service-manager tests, and 1,045
   TUI tests.

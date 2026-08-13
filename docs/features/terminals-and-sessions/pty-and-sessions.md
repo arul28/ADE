@@ -428,7 +428,7 @@ Chat-scoped PTYs are partitioned by tool type. Persisted chat tool
 types (`claude-chat`, `codex-chat`, `cursor`, `opencode-chat`,
 `droid-chat`) are the only sessions allowed to own the chat-CLI active
 route used by `activeForChat` and `reattachChatCli`. Auxiliary PTYs
-such as App Control or plain shells may carry the same `chatSessionId`
+such as Electron Control or plain shells may carry the same `chatSessionId`
 so they nest under the parent chat, but they are tracked in a separate
 auxiliary active route for `terminal.read` / `write` / `signal`.
 
@@ -444,7 +444,7 @@ Behaviour:
   fresh PTY in the same row and return `{ ..., relaunched: true }`.
 - Concurrent callers are deduped through `reattachChatCliFlights`
   (one in-flight reattach per `chatSessionId`) so a chat composer +
-  App Control + a rapid send burst can't each race a separate
+  Electron Control + a rapid send burst can't each race a separate
   `claude --resume <same-id>` PTY into existence.
 
 `writeTerminal` was made async and now auto-reattaches before
@@ -459,7 +459,7 @@ writing when:
 In that case the service calls `reattachChatCli({ chatSessionId })`
 and writes to the freshly attached PTY. Any other "no live PTY"
 case still throws — the auto-reattach is intentionally scoped to
-chat CLIs so an active App Control terminal, a shell, or a non-chat
+chat CLIs so an active Electron Control terminal, a shell, or a non-chat
 agent CLI doesn't silently resurrect after the user stopped it.
 
 A new IPC channel `ade.terminal.reattachChatCli` exposes the
