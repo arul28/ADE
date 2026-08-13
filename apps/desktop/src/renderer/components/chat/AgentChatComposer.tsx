@@ -65,6 +65,7 @@ import {
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
@@ -1482,6 +1483,7 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  modelRuntimePin = null,
   attachmentPersistenceUnavailableReason = null,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
@@ -1624,6 +1626,14 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /**
+   * {@link composerMachineBinding} when it is NOT the machine this window's
+   * project tab is bound to. What a model picker offers — which models exist,
+   * which are configured, and their thinking levels — is a fact about the
+   * machine that will run the turn, so it is read from this binding. `null`
+   * (the common case) means the bound machine, and keeps the shared catalog.
+   */
+  modelRuntimePin?: OpenProjectBinding | null;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
   contextAttachments?: AgentChatContextAttachment[];
@@ -1882,6 +1892,9 @@ export function AgentChatComposer({
   const fileAddInProgressRef = useRef(false);
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
+  // Catalog bucket for every model-derived control in this composer (picker
+  // rows, availability, thinking levels). Empty means the bound machine.
+  const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
@@ -3463,7 +3476,7 @@ export function AgentChatComposer({
       ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
       : (modelId ?? "");
   const fastModeSupported = modelSupportsFastMode(
-    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId) ?? getModelById(fastModeModelId),
+    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId, modelCatalogScopeKey) ?? getModelById(fastModeModelId),
   );
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
@@ -4664,6 +4677,8 @@ export function AgentChatComposer({
                 metadata={meta}
                 {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                runtimePin={modelRuntimePin}
+                catalogScopeKey={modelCatalogScopeKey}
                 responding={approvalResponding ?? false}
                 onConfirm={(selection) => {
                   onApproval("accept", null, { selection: JSON.stringify(selection) });
@@ -5226,6 +5241,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={parallelLaunchBusy}
                   compact
@@ -5246,6 +5262,7 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  catalogScopeKey={modelCatalogScopeKey}
                 />
               </>
             ) : null}
@@ -5262,6 +5279,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={modelSelectionLocked}
                   compact
@@ -5277,6 +5295,7 @@ export function AgentChatComposer({
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  catalogScopeKey={modelCatalogScopeKey}
                 />
               </>
             ) : null}
@@ -5310,7 +5329,7 @@ export function AgentChatComposer({
               usage={usageViewModel}
               active={turnActive}
               compactionPulse={compactionPulse}
-              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId)?.displayName ?? undefined}
+              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey)?.displayName ?? undefined}
             />
           ) : null}
 

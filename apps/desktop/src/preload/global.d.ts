@@ -1757,7 +1757,10 @@ declare global {
           args: AgentChatModelsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatModelInfo[]>;
-        modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
+        modelCatalog: (
+          args?: AgentChatModelCatalogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatModelCatalog>;
         archive: (
           args: AgentChatArchiveArgs,
           pin?: OpenProjectBinding | null,

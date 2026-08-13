@@ -16,6 +16,13 @@ export type ReasoningEffortPickerProps = {
   disabled?: boolean;
   className?: string;
   triggerClassName?: string;
+  /**
+   * Binding key of the machine whose runtime catalog describes `modelId`.
+   * Thinking levels come from that catalog's `reasoningEfforts`, so a composer
+   * targeting another machine must read the tiers that machine reported, not
+   * the bound machine's. Omitted means the bound machine.
+   */
+  catalogScopeKey?: string;
 };
 
 export function reasoningChipLabel(
@@ -175,6 +182,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   disabled = false,
   className,
   triggerClassName,
+  catalogScopeKey,
 }: ReasoningEffortPickerProps) {
   const [open, setOpen] = useState(false);
   const activePointerGestureRef = useRef<ActivePointerGesture | null>(null);
@@ -197,8 +205,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   }, []);
 
   const descriptor = useMemo<ModelDescriptor | undefined>(
-    () => resolveModelDescriptorWithRuntimeCatalog(modelId),
-    [modelId],
+    () => resolveModelDescriptorWithRuntimeCatalog(modelId, catalogScopeKey),
+    [catalogScopeKey, modelId],
   );
 
   const tiers = useMemo(

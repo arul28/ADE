@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   descriptorsFromAgentChatModelCatalog,
+  getRuntimeCatalogModelDescriptor,
   mergeSelectorModels,
   resetRuntimeCatalogDescriptorCacheForTests,
   resolveModelDescriptorWithRuntimeCatalog,
@@ -8,6 +9,7 @@ import {
 import { sortModelItems } from "./modelOrdering";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
 import {
+  getSharedRuntimeCatalog,
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
   runtimeCatalogProviderIsFresh,
@@ -450,5 +452,145 @@ describe("runtime catalog cache flavor-aware cursor freshness", () => {
     expect(runtimeCatalogProviderIsFresh("cursor", "sdk")).toBe(false);
     expect(runtimeCatalogProviderIsFresh("cursor", "cli")).toBe(false);
     expect(runtimeCatalogProviderIsFresh("cursor")).toBe(false);
+  });
+});
+
+/**
+ * A runtime catalog is a fact about ONE machine — its ollama/LM Studio
+ * endpoints, its installed cursor-agent, its opencode inventory. The Work tab
+ * shows chats from every machine on the account at once, so the cache and the
+ * descriptors it feeds are bucketed per machine; a composer targeting machine B
+ * must never be answered from machine A's catalog.
+ */
+describe("runtime catalog machine scoping", () => {
+  const FOREIGN_SCOPE = "remote:target-2:project-2";
+
+  beforeEach(() => {
+    resetModelPickerRuntimeCatalogForTests();
+    resetRuntimeCatalogDescriptorCacheForTests();
+  });
+
+  function localModelCatalog(modelId: string, reasoningEfforts: string[]): AgentChatModelCatalog {
+    return {
+      groups: [{
+        key: "ollama",
+        label: "Ollama",
+        providers: [{
+          key: "ollama",
+          displayName: "Ollama",
+          modelCount: 1,
+          subsections: [{
+            key: "ollama",
+            label: "Ollama",
+            models: [{
+              id: modelId,
+              displayName: modelId,
+              family: "ollama",
+              groupKey: "ollama",
+              isAvailable: true,
+              supportsReasoning: true,
+              supportsTools: true,
+              reasoningEfforts: reasoningEfforts.map((effort) => ({ effort })),
+            }],
+          }],
+        }],
+      }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    } as unknown as AgentChatModelCatalog;
+  }
+
+  it("keeps each machine's catalog in its own bucket", () => {
+    const bound = localModelCatalog("ollama/llama-bound", ["low"]);
+    const foreign = localModelCatalog("ollama/llama-foreign", ["low"]);
+
+    rememberRuntimeCatalog(bound, { mode: "cached" });
+    rememberRuntimeCatalog(foreign, { mode: "cached", scopeKey: FOREIGN_SCOPE });
+
+    expect(getSharedRuntimeCatalog()).toBe(bound);
+    expect(getSharedRuntimeCatalog(FOREIGN_SCOPE)).toBe(foreign);
+  });
+
+  it("does not offer one machine's local models to another machine's picker", () => {
+    rememberRuntimeCatalog(localModelCatalog("ollama/llama-bound", ["low"]), { mode: "cached" });
+    const boundIds = descriptorsFromAgentChatModelCatalog(
+      getSharedRuntimeCatalog(),
+    ).availableModelIds;
+
+    expect(boundIds).toContain("ollama/llama-bound");
+    // The foreign machine has reported nothing yet, so its picker has no
+    // catalog at all rather than inheriting the bound machine's rows.
+    expect(getSharedRuntimeCatalog(FOREIGN_SCOPE)).toBeNull();
+  });
+
+  it("resolves thinking levels from the composer's own machine", () => {
+    const sharedId = "ollama/llama-3";
+    rememberRuntimeCatalog(localModelCatalog(sharedId, ["low"]), { mode: "cached" });
+    rememberRuntimeCatalog(localModelCatalog(sharedId, ["low", "high"]), {
+      mode: "cached",
+      scopeKey: FOREIGN_SCOPE,
+    });
+    descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog());
+    descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog(FOREIGN_SCOPE), undefined, FOREIGN_SCOPE);
+
+    expect(resolveModelDescriptorWithRuntimeCatalog(sharedId)?.reasoningTiers).toEqual(["low"]);
+    expect(resolveModelDescriptorWithRuntimeCatalog(sharedId, FOREIGN_SCOPE)?.reasoningTiers)
+      .toEqual(["low", "high"]);
+  });
+
+  // Regression: the scoped lookup used to answer a miss from the bound
+  // machine's bucket. That is the same cross-machine leak in a narrower place —
+  // a composer on the Studio would show the ladder THIS Mac reported for the
+  // same model id, whenever the Studio's catalog had not loaded yet (the normal
+  // state before its picker is first opened).
+  it("never answers one machine's descriptor miss from another machine's bucket", () => {
+    const sharedId = "ollama/llama-3";
+    rememberRuntimeCatalog(localModelCatalog(sharedId, ["low", "high", "max"]), { mode: "cached" });
+    descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog());
+
+    // The bound machine knows this model and its ladder...
+    expect(resolveModelDescriptorWithRuntimeCatalog(sharedId)?.reasoningTiers)
+      .toEqual(["low", "high", "max"]);
+    // ...and the machine that has reported nothing must not inherit either.
+    expect(getRuntimeCatalogModelDescriptor(sharedId, FOREIGN_SCOPE)).toBeUndefined();
+    expect(resolveModelDescriptorWithRuntimeCatalog(sharedId, FOREIGN_SCOPE)?.reasoningTiers)
+      .toBeUndefined();
+  });
+
+  // The bucket cap is a backstop, but evicting the BOUND machine would make the
+  // common case refetch — it is the bucket every unpinned surface reads. Its
+  // descriptors ride in the same bucket, so eviction must drop both together
+  // rather than leaving a descriptor registry to grow on its own.
+  it("caps machine buckets without ever evicting the bound machine", () => {
+    rememberRuntimeCatalog(localModelCatalog("ollama/bound", ["low"]), { mode: "cached" });
+    descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog());
+    expect(getRuntimeCatalogModelDescriptor("ollama/bound")).toBeDefined();
+
+    // Far more machines than the cap, none of them the bound one.
+    for (let i = 0; i < 20; i += 1) {
+      const scopeKey = `remote:target-${i}:project-${i}`;
+      rememberRuntimeCatalog(localModelCatalog(`ollama/m-${i}`, ["low"]), { mode: "cached", scopeKey });
+      descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog(scopeKey), undefined, scopeKey);
+    }
+
+    // The bound machine survived, catalog and descriptors together...
+    expect(getSharedRuntimeCatalog()).not.toBeNull();
+    expect(getRuntimeCatalogModelDescriptor("ollama/bound")).toBeDefined();
+    // ...the most recent foreign machine is still cached...
+    expect(getSharedRuntimeCatalog("remote:target-19:project-19")).not.toBeNull();
+    // ...and the oldest foreign machine was evicted whole, leaving no orphaned
+    // descriptors behind it.
+    expect(getSharedRuntimeCatalog("remote:target-0:project-0")).toBeNull();
+    expect(getRuntimeCatalogModelDescriptor("ollama/m-0", "remote:target-0:project-0")).toBeUndefined();
+  });
+
+  it("marks provider freshness per machine so one machine's refresh cannot silence another's", () => {
+    rememberRuntimeCatalog(cursorCatalog({ sdk: true, cli: true }), {
+      mode: "force",
+      refreshProvider: "cursor",
+    });
+
+    expect(runtimeCatalogProviderIsFresh("cursor", "sdk")).toBe(true);
+    expect(runtimeCatalogProviderIsFresh("cursor", "sdk", FOREIGN_SCOPE)).toBe(false);
   });
 });

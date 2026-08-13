@@ -6359,9 +6359,23 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModels, args);
     },
+    // Pinned exactly like `models`: the catalog enumerates ollama/LM Studio
+    // endpoints, the installed cursor-agent and the opencode inventory, all of
+    // which are facts about the machine that serves the action. A composer
+    // targeting another machine must read THAT machine's catalog rather than
+    // the one this window's project tab happens to be bound to.
     modelCatalog: async (
       args?: AgentChatModelCatalogArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatModelCatalog> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatModelCatalog>(
+          pin,
+          "chat",
+          "modelCatalog",
+          { args: args ?? {} },
+        );
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatModelCatalog
       >("chat", "modelCatalog", { args: args ?? {} });
