@@ -2,6 +2,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
+  AgentChatSubagentSnapshot,
 } from "../../../desktop/src/shared/types/chat";
 import { isBackgroundShellCommand, latestPlan } from "../../../desktop/src/shared/chatSubagents";
 import { deriveBackgroundItems, mergeManagedScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
@@ -57,12 +58,51 @@ function trimmedOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function snapshotFromRuntimeSubagent(row: AgentChatSubagentSnapshot): SubagentSnapshot {
+  return {
+    id: row.agentId?.trim() || row.taskId,
+    name: row.description || row.label || row.agentType || "subagent",
+    kind: "subagent",
+    status: row.status,
+    summary: row.finalSummary || row.summary || "",
+    parentToolUseId: row.parentToolUseId ?? null,
+    parentAgentId: row.parentAgentId ?? null,
+    turnId: row.turnId ?? null,
+    label: row.label ?? null,
+    background: row.background === true,
+    startedAt: row.startTimestamp ?? null,
+    endedAt: row.endTimestamp ?? null,
+    tokens: row.usage?.totalTokens,
+    toolUses: row.usage?.toolUses,
+    costUsd: row.usage?.costUsd,
+    durationMs: row.usage?.durationMs,
+    lastToolName: row.lastToolName,
+  };
+}
+
+export function mergeSubagentSnapshots(
+  eventDerived: readonly SubagentSnapshot[],
+  runtime: readonly SubagentSnapshot[],
+): SubagentSnapshot[] {
+  if (runtime.length === 0) return [...eventDerived];
+  const byId = new Map<string, SubagentSnapshot>();
+  for (const row of eventDerived) byId.set(row.id, row);
+  for (const row of runtime) {
+    const existing = byId.get(row.id);
+    byId.set(row.id, existing ? { ...row, ...existing, ...row, lastToolName: existing.lastToolName ?? row.lastToolName } : row);
+  }
+  return [...byId.values()];
+}
+
 export function deriveChatInfoSnapshot(args: {
   events: AgentChatEventEnvelope[];
   activeSession: AgentChatSessionSummary | null;
   provider: AdeCodeProvider;
   modelLabel: string;
   laneLabel: string | null;
+  laneIcon?: string | null;
+  laneColor?: string | null;
+  title?: string | null;
   snapshots: SubagentSnapshot[];
   tokenStats: TokenStats | null;
   goal: ChatInfoSnapshot["goal"];
@@ -79,6 +119,12 @@ export function deriveChatInfoSnapshot(args: {
     provider,
     modelLabel: args.modelLabel,
     laneLabel: args.laneLabel,
+    laneIcon: args.laneIcon ?? null,
+    laneColor: args.laneColor ?? null,
+    title: args.title
+      ?? trimmedOrNull(args.activeSession?.title)
+      ?? trimmedOrNull(args.activeSession?.summary)
+      ?? null,
     claudeTag: args.activeSession?.claudeTag ?? null,
     contextPercent: args.tokenStats?.percent ?? null,
     tokenSummary: tokenStatsSummary(args.tokenStats),

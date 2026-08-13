@@ -61,6 +61,8 @@ const SUPPORTED_ACTION_VALUES = [
   "chat:stash",
   "chat:imagePaste",
   "chat:paste-image",
+  "chat:openImage",
+  "chat:open-image",
   "autocomplete:accept",
   "autocomplete:dismiss",
   "autocomplete:previous",

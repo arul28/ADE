@@ -540,13 +540,35 @@ function tokensToRuns(tokens: HighlightedToken[]): InlineRun[] {
   });
 }
 
+function isListMarkdownKind(kind: AssistantMarkdownBlock["kind"]): boolean {
+  return kind === "bullet" || kind === "numbered";
+}
+
+/**
+ * How many blank terminal rows to insert between markdown blocks.
+ * Desktop assistant prose uses `prose-p:my-3` (≈ one rem of gap) between
+ * paragraphs/sections; consecutive list items stay tighter (`prose-li:my-1.5`).
+ * Terminal cells can't do fractional leading, so non-list gaps use two blank
+ * rows and list→list keeps a single blank (existing bullet readability).
+ */
+export function markdownSpacersBetween(
+  prev: AssistantMarkdownBlock["kind"],
+  next: AssistantMarkdownBlock["kind"],
+): number {
+  if (isListMarkdownKind(prev) && isListMarkdownKind(next)) return 1;
+  return 2;
+}
+
 function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: string): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
   let prevKind: AssistantMarkdownBlock["kind"] | null = null;
 
   for (const block of blocks) {
     if (prevKind) {
-      rows.push(spacerRow(`${id}:md-spacer:${rows.length}`, "assistant"));
+      const spacers = markdownSpacersBetween(prevKind, block.kind);
+      for (let i = 0; i < spacers; i += 1) {
+        rows.push(spacerRow(`${id}:md-spacer:${rows.length}`, "assistant"));
+      }
     }
     if (block.kind === "heading") {
       rows.push(...inlineRowsFromText(block.text, width, id, "", "", { color: theme.color.accent, bold: true }));
@@ -1336,9 +1358,28 @@ function isLiveBlock(block: AggregatedBlock): boolean {
   return "live" in block && (block as { live?: boolean }).live === true;
 }
 
-function maxScrollOffsetForRows(rowCount: number, maxRows?: number): number {
-  if (!maxRows || maxRows <= 0 || rowCount <= maxRows) return 0;
-  return Math.max(0, rowCount - Math.max(1, maxRows - 1));
+function isStickyTranscriptRow(row: RenderedChatRow): boolean {
+  return row.id === "model-working"
+    || row.id === "model-interrupted"
+    || row.id.startsWith("active-turn-activity");
+}
+
+function stickyTailCount(rows: ReadonlyArray<RenderedChatRow>): number {
+  let count = 0;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (!isStickyTranscriptRow(rows[index]!)) break;
+    count += 1;
+  }
+  return count;
+}
+
+function maxScrollOffsetForRows(rowCount: number, maxRows?: number, stickyCount = 0): number {
+  const gap = stickyCount > 0 ? 1 : 0;
+  const bodyCount = Math.max(0, rowCount - stickyCount);
+  if (!maxRows || maxRows <= 0) return 0;
+  const bodyBudget = Math.max(1, Math.max(1, maxRows) - stickyCount - gap);
+  if (bodyCount <= bodyBudget) return 0;
+  return Math.max(0, bodyCount - Math.max(1, bodyBudget - 1));
 }
 
 function spacerRow(
@@ -1348,12 +1389,12 @@ function spacerRow(
   return { id, tone, text: BLANK_ROW_TEXT, dim: true, rail: null };
 }
 
-function sliceRows(
+function sliceTranscriptWindow(
   rows: RenderedChatRow[],
-  maxRows?: number,
-  scrollOffsetRows = 0,
-  unseenMessageCount = 0,
-  olderHistoryStatus: OlderHistoryStatus | null = null,
+  viewportRows: number,
+  scrollOffsetRows: number,
+  unseenMessageCount: number,
+  olderHistoryStatus: OlderHistoryStatus | null,
 ): RenderedChatRow[] {
   const remoteOlderAvailable = olderHistoryStatus === "loading"
     || olderHistoryStatus === "available"
@@ -1369,18 +1410,10 @@ function sliceRows(
     dim: true,
     rail: null,
   });
-  // Preserve object identity when sourceRowIndex is already correct (pre-indexed
-  // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
-  // on every spinner tick. Rows without a matching index are cloned as before.
-  const indexedRows = rows.map((row, index) => (
-    row.sourceRowIndex === index ? row : { ...row, sourceRowIndex: index }
-  ));
-  if (!maxRows || maxRows <= 0) return indexedRows;
-  const viewportRows = Math.max(1, maxRows);
-  if (indexedRows.length <= viewportRows) {
+  if (rows.length <= viewportRows) {
     const visible = remoteOlderAvailable
-      ? [olderIndicator(), ...indexedRows.slice(-Math.max(0, viewportRows - 1))]
-      : [...indexedRows];
+      ? [olderIndicator(), ...rows.slice(-Math.max(0, viewportRows - 1))]
+      : [...rows];
     return [
       ...visible,
       ...Array.from({ length: viewportRows - visible.length }, (_, index) => (
@@ -1388,8 +1421,8 @@ function sliceRows(
       )),
     ];
   }
-  const offset = Math.max(0, Math.min(scrollOffsetRows, maxScrollOffsetForRows(indexedRows.length, viewportRows)));
-  const end = Math.max(1, indexedRows.length - offset);
+  const offset = Math.max(0, Math.min(scrollOffsetRows, maxScrollOffsetForRows(rows.length, viewportRows)));
+  const end = Math.max(1, rows.length - offset);
   const hasNewer = offset > 0;
   let contentRows = Math.max(1, viewportRows - (hasNewer ? 1 : 0));
   let start = Math.max(0, end - contentRows);
@@ -1398,11 +1431,9 @@ function sliceRows(
     contentRows = Math.max(1, viewportRows - 1 - (hasNewer ? 1 : 0));
     start = Math.max(0, end - contentRows);
   }
-  const visible = indexedRows.slice(start, end);
+  const visible = rows.slice(start, end);
   const result: RenderedChatRow[] = [];
   if (hasOlder) {
-    // While a scroll-back page fetch is in flight the indicator swaps text in
-    // place — same row, same count — so the scroll math is untouched.
     result.push(olderIndicator());
   }
   result.push(...visible);
@@ -1410,8 +1441,6 @@ function sliceRows(
     result.push(spacerRow(`scroll-filler:${result.length}`));
   }
   if (hasNewer) {
-    // If we know how many unseen messages arrived since the user scrolled away,
-    // surface that count as the "↓ N new" pill. Falls back to the plain indicator.
     const pillText = unseenMessageCount > 0
       ? `↓ ${unseenMessageCount} new message${unseenMessageCount === 1 ? "" : "s"} · press End`
       : "↓ newer messages";
@@ -1425,6 +1454,44 @@ function sliceRows(
     });
   }
   return result;
+}
+
+function sliceRows(
+  rows: RenderedChatRow[],
+  maxRows?: number,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+  olderHistoryStatus: OlderHistoryStatus | null = null,
+): RenderedChatRow[] {
+  // Preserve object identity when sourceRowIndex is already correct (pre-indexed
+  // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
+  // on every spinner tick. Rows without a matching index are cloned as before.
+  const indexedRows = rows.map((row, index) => (
+    row.sourceRowIndex === index ? row : { ...row, sourceRowIndex: index }
+  ));
+  if (!maxRows || maxRows <= 0) return indexedRows;
+  const viewportRows = Math.max(1, maxRows);
+  const stickyCount = stickyTailCount(indexedRows);
+  if (stickyCount === 0) {
+    return sliceTranscriptWindow(
+      indexedRows,
+      viewportRows,
+      scrollOffsetRows,
+      unseenMessageCount,
+      olderHistoryStatus,
+    );
+  }
+  // Pin the live working/interrupted tail to the bottom of the chat pane, one
+  // blank line above the prompt border. Fillers go between transcript and the
+  // tail so a short turn does not float the indicator in empty space.
+  const sticky = indexedRows.slice(indexedRows.length - stickyCount);
+  const body = indexedRows.slice(0, indexedRows.length - stickyCount);
+  const bodyBudget = Math.max(0, viewportRows - stickyCount - 1);
+  const windowed = bodyBudget > 0
+    ? sliceTranscriptWindow(body, bodyBudget, scrollOffsetRows, unseenMessageCount, olderHistoryStatus)
+    : [];
+  const pinned = [...windowed, ...sticky, spacerRow("working-gap")];
+  return pinned.length > viewportRows ? pinned.slice(0, viewportRows) : pinned;
 }
 
 function railColorForTone(_tone: RenderedChatRow["tone"]): string | null {
@@ -1623,7 +1690,7 @@ export function chatScrollMaxOffsetFromSelectableRows({
   rows: ReadonlyArray<RenderedChatRow>;
   maxRows?: number;
 }): number {
-  return maxScrollOffsetForRows(rows.length, maxRows);
+  return maxScrollOffsetForRows(rows.length, maxRows, stickyTailCount(rows));
 }
 
 export function renderChatSelectableRowTextsFromRows(rows: ReadonlyArray<RenderedChatRow>): string[] {
@@ -1925,7 +1992,7 @@ export function computeChatScrollMaxOffset({
   }
   else if (interrupted) statusRows = modelInterruptedRows().length;
   const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐", expandedLineIds).length + statusRows;
-  return maxScrollOffsetForRows(rowCount, maxRows);
+  return maxScrollOffsetForRows(rowCount, maxRows, statusRows);
 }
 
 function ChatViewComponent({

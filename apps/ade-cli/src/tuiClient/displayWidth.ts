@@ -117,6 +117,20 @@ export function truncateDisplayEnd(value: string, maxCells: number): string {
   return `${displayPrefixWithinCells(value, maxCells - 1)}…`;
 }
 
+/** Pad with spaces so the string occupies exactly `width` terminal cells. */
+export function padDisplayEnd(value: string, width: number): string {
+  const used = terminalDisplayWidth(value);
+  if (used >= width) return value;
+  return value + " ".repeat(width - used);
+}
+
+/** Left-pad with spaces so the string occupies exactly `width` terminal cells. */
+export function padDisplayStart(value: string, width: number): string {
+  const used = terminalDisplayWidth(value);
+  if (used >= width) return value;
+  return " ".repeat(width - used) + value;
+}
+
 export function hardWrapDisplayText(value: string, width: number): string[] {
   const safeWidth = Math.max(1, width);
   const chunks: string[] = [];

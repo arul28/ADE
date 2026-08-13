@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitByDisplayCells, terminalDisplayWidth, truncateDisplayEnd } from "../displayWidth";
+import { splitByDisplayCells, terminalDisplayWidth, truncateDisplayEnd, padDisplayEnd, padDisplayStart } from "../displayWidth";
 
 describe("splitByDisplayCells", () => {
   it("assigns a wide cluster that crosses a split boundary to one segment", () => {
@@ -28,5 +28,13 @@ describe("truncateDisplayEnd", () => {
     expect(truncateDisplayEnd("abc", 4)).toBe("abc");
     expect(truncateDisplayEnd("abcdef", 4)).toBe("abc…");
     expect(truncateDisplayEnd("ab", 1)).toBe("a");
+  });
+});
+
+describe("padDisplayStart", () => {
+  it("left-pads to a cell budget", () => {
+    expect(padDisplayStart("ab", 4)).toBe("  ab");
+    expect(padDisplayStart("abcd", 4)).toBe("abcd");
+    expect(terminalDisplayWidth(padDisplayStart("界", 4))).toBe(4);
   });
 });

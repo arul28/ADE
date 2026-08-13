@@ -25,6 +25,7 @@ import type {
   ExternalSessionProvider,
   ExternalSessionSummary,
 } from "../../../desktop/src/shared/types/externalSessions";
+import type { ModelWizardStep } from "./modelWizard";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import type { UsageProviderSource, UsageProviderState } from "../../../desktop/src/shared/types/usage";
@@ -42,6 +43,14 @@ export type ProjectLaunchContext = {
   sessionHint: string | null;
   remote: boolean;
   remoteLabel: string | null;
+  /**
+   * True when the user passed `--project-root`. False when the root was
+   * inferred from cwd / git / a worktree. Interactive launches still open
+   * the project picker either way — `ade code` always injects this flag.
+   */
+  explicitProjectRoot?: boolean;
+  /** Test-only: skip the startup project picker. */
+  skipProjectPicker?: boolean;
 };
 
 export type ChatHistorySnapshot = AgentChatEventHistorySnapshot;
@@ -130,10 +139,12 @@ export type ProviderReadinessRow = {
   modelCount: number;
 };
 
+// NOTE: there is deliberately no "import-session" row. Importing an external
+// CLI session is its own command (`/import`), not a setting buried in the model
+// flow — see tuiClient/externalSessionBrowser.ts.
 export type SetupPaneRowKind =
   | "provider"
   | "interface"
-  | "import-session"
   | "model"
   | "reasoning"
   | "permission"
@@ -201,6 +212,10 @@ export type ChatInfoSnapshot = {
   backgroundWork: ChatScheduledWorkSnapshot[];
   /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */
   pr: ChatInfoPrSummary | null;
+  /** Session title shown as the pane identity (not the provider/model). */
+  title: string | null;
+  laneIcon?: string | null;
+  laneColor?: string | null;
   snapshots: SubagentSnapshot[];
   inspectedSubagentId?: string | null;
   streaming: boolean;
@@ -245,6 +260,25 @@ export type ModelPickerRightPaneContent = {
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
 };
 
+/**
+ * The `/model` wizard pane. TRANSIENT: it is opened by /model (or the new-chat
+ * page), walks provider → family → model → settings, and closes on commit. The
+ * step/selection fields mirror ModelWizardSelection in tuiClient/modelWizard.ts,
+ * which owns every navigation decision.
+ */
+export type ModelWizardRightPaneContent = {
+  kind: "model-wizard";
+  /** Which surface the commit lands on: a live chat, or the new-chat draft. */
+  surface: "chat" | "new-chat";
+  step: ModelWizardStep;
+  provider: AdeCodeProvider | null;
+  familyKey: string | null;
+  index: number;
+  /** Lane the commit lands in (new-chat surface); also what `/import` targets. */
+  laneId?: string | null;
+  laneLabel?: string | null;
+};
+
 // Serializable state carried on the feedback form's RightPaneContent. Mirrors
 // the framework-free FeedbackFormState in feedbackForm.ts (type + multiline body
 // + toggleable auto-context footer) so the right-pane render, the keyboard input
@@ -264,6 +298,7 @@ export interface FeedbackContextMeta {
 export type RightPaneContent =
   | { kind: "empty" }
   | ModelPickerRightPaneContent
+  | ModelWizardRightPaneContent
   | { kind: "activity"; model: ActivityPaneModel }
   | {
       kind: "help";
@@ -286,7 +321,7 @@ export type RightPaneContent =
         // "snooze-duration" rows are duration choices, not sessions: the ids are
         // SnoozeDurationKey values and the target session is held alongside the
         // pane state in app.tsx.
-        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration";
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration" | "switch-machine" | "switch-project";
         ids: string[];
       };
     }

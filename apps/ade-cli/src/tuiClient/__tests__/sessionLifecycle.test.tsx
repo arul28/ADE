@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "ink-testing-library";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
-import { Drawer } from "../components/Drawer";
+import { WorkSessionsPane } from "../components/WorkSessionsPane";
+import { buildWorkListModel, type WorkListShelfKind } from "../workListModel";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "../commands";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
@@ -24,8 +25,8 @@ const NOW = Date.parse("2026-07-26T12:00:00.000Z");
 /**
  * Strips BOTH SGR color and every other CSI sequence, then asserts the result
  * still carries the state. This is the no-color legibility check: whatever the
- * drawer says about snooze/settle/wake has to survive a terminal that renders
- * no styling at all.
+ * sessions pane says about snooze/settle/wake has to survive a terminal that
+ * renders no styling at all.
  */
 function stripAnsi(text: string): string {
   return text.replace(/\[[0-?]*[ -/]*[@-~]/g, "");
@@ -446,106 +447,97 @@ describe("clearing the woke marker on visit", () => {
   });
 });
 
+/** Render the sessions pane over a fixed lane, with the quiet shelves open. */
+function paneFrame(
+  sessions: TuiChatSessionSummary[],
+  options: { activeSessionId?: string | null } = {},
+): string {
+  const model = buildWorkListModel({
+    lanes: [lane("lane-1", "Lifecycle")],
+    sessions,
+    activeSessionId: options.activeSessionId ?? null,
+    // The quiet tiers live behind collapsed shelves; open them so the rows the
+    // legibility rule is about are actually on screen.
+    expandedShelves: new Set<WorkListShelfKind>(["snoozed", "settled"]),
+  });
+  return stripAnsi(render(
+    <WorkSessionsPane model={model} selectedKey={null} panelHeight={40} width={48} />,
+  ).lastFrame() ?? "");
+}
+
+/** The stripped card (3 lines) a session's title sits in — status above, preview below. */
+function cardFor(frame: string, title: string): string {
+  const lines = frame.split("\n");
+  const index = lines.findIndex((line) => line.includes(title));
+  if (index < 0) return "";
+  const start = Math.max(0, index - 1);
+  return lines.slice(start, index + 2).join("\n");
+}
+
 describe("session list legibility with no color at all", () => {
-  it("renders snoozed, woken, and settled rows as plain text in the lane drawer", () => {
+  it("renders snoozed, woken, and settled rows as plain text", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
 
-    const frame = stripAnsi(render(
-      <Drawer
-        lanes={[lane("lane-1", "Lifecycle")]}
-        sessions={[
-          session({
-            sessionId: "chat-snoozed",
-            title: "Snoozed chat",
-            snoozedUntil: new Date(NOW + 3 * 60 * 60_000).toISOString(),
-            snoozedAt: new Date(NOW - 60_000).toISOString(),
-          }),
-          session({
-            sessionId: "chat-woke",
-            title: "Woken chat",
-            wokeAt: "2026-07-26T11:58:00.000Z",
-            wokeReason: "needs_you",
-          }),
-          session({ sessionId: "chat-settled", title: "Settled chat", settledAt: "2026-07-26T11:00:00.000Z" }),
-        ]}
-        activeLaneId="lane-1"
-        activeSessionId={null}
-        browsingLaneId="lane-1"
-        selectedLaneIndex={0}
-        selectedChatIndex={-1}
-        panelHeight={30}
-        width={48}
-      />,
-    ).lastFrame() ?? "");
+    const frame = paneFrame([
+      session({
+        sessionId: "chat-snoozed",
+        title: "Snoozed chat",
+        snoozedUntil: new Date(NOW + 3 * 60 * 60_000).toISOString(),
+        snoozedAt: new Date(NOW - 60_000).toISOString(),
+      }),
+      session({
+        sessionId: "chat-woke",
+        title: "Woken chat",
+        wokeAt: "2026-07-26T11:58:00.000Z",
+        wokeReason: "needs_you",
+      }),
+      session({ sessionId: "chat-settled", title: "Settled chat", settledAt: "2026-07-26T11:00:00.000Z" }),
+    ]);
 
-    // Every state is carried by text on its OWN row: strip all styling and the
-    // three rows are still told apart without a single color.
-    expect(rowFor(frame, "Snoozed chat")).toContain("z wakes in 3h");
-    expect(rowFor(frame, "Woken chat")).toContain("* needs approval");
-    expect(rowFor(frame, "Settled chat")).toContain("done");
-    expect(rowFor(frame, "Snoozed chat")).not.toContain("done");
+    // Every state is carried by TEXT on its own card: strip all styling and the
+    // three are still told apart without a single color.
+    expect(cardFor(frame, "Snoozed chat")).toContain("wakes in 3h");
+    expect(cardFor(frame, "Snoozed chat")).toContain(" z");
+    expect(cardFor(frame, "Woken chat")).toContain("Woke");
+    expect(cardFor(frame, "Settled chat")).toContain("done");
+    expect(cardFor(frame, "Snoozed chat")).not.toContain("done");
     expect(rowFor(frame, "Settled chat")).not.toContain("wakes");
     // Nothing escaped the strip: no residual escape byte is doing the work.
-    expect(frame).not.toContain("");
+    expect(frame).not.toContain("\u001b");
   });
 
-  it("keeps the same markers in chats mode, where rows have no status suffix column", () => {
+  it("keeps a long snooze readable as a day word rather than a bare hour count", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
 
-    const frame = stripAnsi(render(
-      <Drawer
-        mode="chats"
-        lanes={[lane("lane-1", "Lifecycle")]}
-        sessions={[
-          session({
-            sessionId: "chat-snoozed",
-            title: "Snoozed",
-            snoozedUntil: new Date(NOW + 26 * 60 * 60_000).toISOString(),
-            snoozedAt: new Date(NOW - 60_000).toISOString(),
-          }),
-          session({ sessionId: "chat-settled", title: "Settled", settledAt: "2026-07-26T11:00:00.000Z" }),
-        ]}
-        activeLaneId="lane-1"
-        activeSessionId={null}
-        browsingLaneId="lane-1"
-        selectedLaneIndex={0}
-        selectedChatIndex={-1}
-        panelHeight={30}
-        width={48}
-      />,
-    ).lastFrame() ?? "");
+    const frame = paneFrame([
+      session({
+        sessionId: "chat-snoozed",
+        title: "Snoozed",
+        snoozedUntil: new Date(NOW + 26 * 60 * 60_000).toISOString(),
+        snoozedAt: new Date(NOW - 60_000).toISOString(),
+      }),
+    ]);
 
-    expect(rowFor(frame, "Snoozed")).toContain("z wakes tomorrow");
-    expect(rowFor(frame, "Settled")).toContain("done");
+    expect(cardFor(frame, "Snoozed")).toContain("wakes tomorrow");
   });
 
   it("does not mark a running session as done just because it once settled", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
 
-    const running: AgentChatSessionSummary = session({
-      sessionId: "chat-running",
-      title: "Running chat",
-      status: "active",
-      settledAt: "2026-07-26T11:00:00.000Z",
-      lastOutputPreview: "compiling",
-    });
-
-    const frame = stripAnsi(render(
-      <Drawer
-        lanes={[lane("lane-1", "Lifecycle")]}
-        sessions={[running]}
-        activeLaneId="lane-1"
-        activeSessionId="chat-running"
-        browsingLaneId="lane-1"
-        selectedLaneIndex={0}
-        selectedChatIndex={-1}
-        panelHeight={30}
-        width={48}
-      />,
-    ).lastFrame() ?? "");
+    const frame = paneFrame([
+      session({
+        sessionId: "chat-running",
+        title: "Running chat",
+        status: "active",
+        runtimeState: "running",
+        toolType: "codex",
+        settledAt: "2026-07-26T11:00:00.000Z",
+        lastOutputPreview: "compiling",
+      }),
+    ], { activeSessionId: "chat-running" });
 
     expect(frame).not.toContain("done");
     expect(frame).toContain("compiling");

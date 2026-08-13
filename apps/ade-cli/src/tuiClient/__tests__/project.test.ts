@@ -52,6 +52,7 @@ describe("chooseInitialLane", () => {
     });
 
     expect(context.laneHint).toBe("feature-a");
+    expect(context.explicitProjectRoot).toBe(true);
   });
 
   it("allows remote-only roots and carries the initial session hint", () => {
@@ -83,6 +84,7 @@ describe("chooseInitialLane", () => {
 
     expect(context.projectRoot).toBe(path.resolve("/tmp"));
     expect(context.workspaceRoot).toBe(path.resolve("/tmp"));
+    expect(context.explicitProjectRoot).toBe(false);
   });
 
   it("prefers the ADE worktree lane hint", () => {
@@ -183,7 +185,7 @@ describe("resolveTuiChatRefreshTarget", () => {
       draftChatActive: false,
       initialNewChatPreview: false,
       newChatPreviewLaneId: null,
-      selectedDrawerChatAction: null,
+      selectedWorkChatAction: null,
       drawerLaneId: null,
     });
 
@@ -212,7 +214,7 @@ describe("resolveTuiChatRefreshTarget", () => {
       draftChatActive: false,
       initialNewChatPreview: true,
       newChatPreviewLaneId: null,
-      selectedDrawerChatAction: null,
+      selectedWorkChatAction: null,
       drawerLaneId: null,
     });
 
@@ -244,7 +246,7 @@ describe("resolveTuiChatRefreshTarget", () => {
       draftChatActive: false,
       initialNewChatPreview: true,
       newChatPreviewLaneId: null,
-      selectedDrawerChatAction: null,
+      selectedWorkChatAction: null,
       drawerLaneId: null,
     });
 
@@ -269,7 +271,7 @@ describe("resolveTuiChatRefreshTarget", () => {
       draftChatActive: false,
       initialNewChatPreview: false,
       newChatPreviewLaneId: "feature-b",
-      selectedDrawerChatAction: "new-chat",
+      selectedWorkChatAction: "new-chat",
       drawerLaneId: "feature-b",
     });
 
@@ -295,7 +297,7 @@ describe("resolveTuiChatRefreshTarget", () => {
       draftChatActive: false,
       initialNewChatPreview: false,
       newChatPreviewLaneId: null,
-      selectedDrawerChatAction: null,
+      selectedWorkChatAction: null,
       drawerLaneId: "feature-b",
       drawerBrowsingChatId: "older-chat",
       drawerBrowsingNewChat: false,

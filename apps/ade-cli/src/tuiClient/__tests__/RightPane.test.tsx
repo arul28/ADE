@@ -90,6 +90,9 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     tokenSummary: "+1.2k/340",
     streaming: true,
     goal: null,
+    title: "Fix send error",
+    laneIcon: null,
+    laneColor: null,
     plan: {
       current: 1,
       total: 2,
@@ -115,7 +118,7 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
 }
 
 describe("RightPane chat info", () => {
-  it("renders the model + lane header, plan, goal, and chats — but no errors section", () => {
+  it("renders the chat title, lane caption, plan, goal, and agents — but no errors section", () => {
     const result = render(
       <RightPane
         content={{
@@ -140,18 +143,20 @@ describe("RightPane chat info", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("CHAT INFO · CODEX");
-    expect(frame).toContain("gpt-5.5-high");
-    expect(frame).toContain("lane");
+    expect(frame).toContain("CHAT INFO");
+    expect(frame).not.toContain("CHAT INFO · CODEX");
+    expect(frame).toContain("Fix send error");
     expect(frame).toContain("fixing-cli-send-error");
+    expect(frame).not.toContain("lane ·");
+    expect(frame).not.toContain("new chat");
+    expect(frame).not.toContain("○ idle");
+    expect(frame).not.toContain("● live");
     expect(frame).toContain("PLAN");
     expect(frame).toContain("Patch runtime bridge");
     expect(frame).toContain("GOAL");
     expect(frame).toContain("Ship CLI parity");
-    expect(frame).toContain("CHATS");
     expect(frame).toContain("delegated");
-    // Codex can view full subagent transcripts → Enter takes over the main chat.
-    expect(frame).toContain("↑↓ focus · ↵ open thread · esc → main");
+    expect(frame).toContain("↑↓");
     expect(frame).not.toContain("Errors");
     expect(frame).not.toContain("Activity");
     expect(frame).not.toContain("tab · cycle");
@@ -170,12 +175,13 @@ describe("RightPane chat info", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("CHAT INFO · CLAUDE");
+    expect(frame).toContain("CHAT INFO");
     expect(frame).toContain("PLAN");
     expect(frame).not.toContain("GOAL");
+    expect(frame).not.toContain("CHAT INFO · CLAUDE");
   });
 
-  it("renders the Claude session tag in the chat info header", () => {
+  it("does not put the Claude tag or provider family in the chat info title", () => {
     const result = render(
       <RightPane
         content={{
@@ -186,8 +192,10 @@ describe("RightPane chat info", () => {
         width={80}
       />,
     );
-
-    expect(stripAnsi(result.lastFrame() ?? "")).toContain("tag:review-ready");
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("CHAT INFO");
+    expect(frame).not.toContain("CHAT INFO · CLAUDE");
+    expect(frame).not.toContain("tag:review-ready");
   });
 
   it("switches the Chat Info header to the inspected subagent model", () => {
@@ -267,20 +275,26 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("inherited");
   });
 
-  it("shows the main row + a 'no subagents yet' hint when the roster is empty", () => {
+  it("hides empty plan, idle state, and the new-chat row", () => {
     const result = render(
       <RightPane
-        content={{ kind: "chat-info", info: chatInfo({ snapshots: [] }) }}
+        content={{ kind: "chat-info", info: chatInfo({ snapshots: [], plan: { current: 0, total: 0, live: false, steps: [] } }) }}
         focused
         width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("CHATS");
-    expect(frame).toContain("main");
-    expect(frame).toContain("viewing");
-    expect(frame).toContain("no subagents yet");
+    expect(frame).toContain("Fix send error");
+    expect(frame).toContain("fixing-cli-send-error");
+    expect(frame).not.toContain("CHATS");
+    expect(frame).not.toContain("main");
+    expect(frame).not.toContain("no subagents yet");
+    expect(frame).not.toContain("new chat");
+    expect(frame).not.toContain("/new chat");
+    expect(frame).not.toContain("No plan yet");
+    expect(frame).not.toContain("○ idle");
+    expect(frame).toContain("+1.2k/340");
   });
 
   it("marks the focused subagent row with a rail and exposes its last tool as a hover preview", () => {
@@ -330,7 +344,7 @@ describe("RightPane chat info", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toMatch(/↑\s+\d+\s+completed/);
+    expect(frame).toMatch(/↑\s+\d+/);
     expect(frame).toContain("agent-07");
   });
 
@@ -356,11 +370,8 @@ describe("RightPane chat info", () => {
     );
     const collapsedFrame = stripAnsi(collapsed.lastFrame() ?? "");
 
-    expect(collapsedFrame).toContain("+ show all (1)");
-    expect(collapsedFrame).toContain("▸ completed (1)");
-    expect(collapsedFrame).toMatch(/↑\s+\d+\s+completed/);
-    expect(collapsedFrame).not.toContain("x clear");
-    expect(collapsedFrame).not.toContain("completed-agent");
+    expect(collapsedFrame).toContain("+1");
+    expect(collapsedFrame).toMatch(/↑\s+\d+/);
 
     const expanded = render(
       <RightPane
@@ -373,7 +384,6 @@ describe("RightPane chat info", () => {
     );
     const expandedFrame = stripAnsi(expanded.lastFrame() ?? "");
     expect(expandedFrame).toContain("completed-agent");
-    expect(expandedFrame).toContain("x clear");
   });
 
   it("separates foreground subagents from background tasks with section headers", () => {
@@ -406,8 +416,6 @@ describe("RightPane chat info", () => {
     expect(desktopIndex).toBeGreaterThanOrEqual(0);
     expect(exploreIndex).toBeLessThan(backgroundIndex);
     expect(backgroundIndex).toBeLessThan(desktopIndex);
-    // bg count shows up in the header
-    expect(frame).toMatch(/2\s+bg/);
   });
 
   it("renders tasks and PR sections below the roster (desktop chat-actions parity)", () => {
@@ -437,8 +445,9 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("PR");
     expect(frame).toContain("#412");
     expect(frame).toContain("open");
-    expect(frame).toContain("3/5");
     expect(frame).toContain("/pr for details");
+    expect(frame).not.toContain("/pr checks");
+    expect(frame).not.toContain("3/5");
   });
 
   it("renders scheduled Claude wakeups in chat info without mixing them into the subagent roster", () => {
@@ -478,8 +487,8 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("Check the nightly build");
     expect(frame).toContain("wakeup · scheduled");
     expect(frame).toContain("after CI starts");
-    expect(frame).toContain("CHATS");
-    expect(frame).toContain("no subagents yet");
+    expect(frame).not.toContain("CHATS");
+    expect(frame).not.toContain("no subagents yet");
   });
 
   it("renders the active session's next wake in the Schedule block", () => {
@@ -707,7 +716,7 @@ describe("RightPane chat info", () => {
 
     expect(frame).toContain("[ ⟳ resume session ]");
     // Resume row renders ABOVE the model header line.
-    expect(frame.indexOf("resume session")).toBeLessThan(frame.indexOf("claude-code"));
+    expect(frame.indexOf("resume session")).toBeLessThan(frame.indexOf("Fix send error"));
     // Selected at index 0 → the resume row holds the selection (activation hint),
     // and the main roster row does NOT show as selected.
     expect(frame).toContain("↵ resume");
@@ -724,22 +733,19 @@ describe("RightPane chat info", () => {
     expect(theme.color.attention).toBe("#F59E0B");
   });
 
-  it("shifts roster selection below the resume row (index 1 = main) and hides the row when not resumable", () => {
+  it("shows the resume row when the terminal is resumable and hides it otherwise", () => {
     const resumable = render(
       <RightPane
         content={{
           kind: "chat-info",
           info: chatInfo({ provider: "claude", resumableTerminal: true }),
         }}
-        selectedIndex={1}
+        selectedIndex={0}
         focused
         width={80}
       />,
     );
-    const resumableFrame = stripAnsi(resumable.lastFrame() ?? "");
-    // Index 1 selects "main" when the resume row occupies index 0.
-    const mainLine = resumableFrame.split("\n").find((line) => line.includes(" main"));
-    expect(mainLine).toContain("▎");
+    expect(stripAnsi(resumable.lastFrame() ?? "")).toContain("resume session");
 
     const plain = render(
       <RightPane
@@ -1198,13 +1204,14 @@ describe("RightPane lane-details", () => {
 });
 
 describe("RightPane setup panes", () => {
-  it("renders lane delete as a real preflight with scope, remote, force, and confirmation rows", () => {
+  it("renders lane delete as a preflight with scope, remote, and force — no name typing", () => {
     const result = render(
       <RightPane
         content={{
           kind: "form",
           title: "Delete lane",
           command: "lane-delete",
+          description: "⚠ uncommitted changes · 2 unpushed commits",
           laneDelete: {
             laneId: "lane-delete-1",
             laneName: "scratch-delete-tui",
@@ -1215,14 +1222,12 @@ describe("RightPane setup panes", () => {
             { name: "scope", label: "Scope", initialValue: "remote_branch" },
             { name: "remoteName", label: "Remote name", initialValue: "origin" },
             { name: "force", label: "Force delete", initialValue: "yes" },
-            { name: "confirm", label: "Type lane name", required: true, placeholder: "scratch-delete-tui" },
           ],
         }}
         formValues={{
           scope: "remote_branch",
           force: "yes",
           remoteName: "origin",
-          confirm: "scratch-delete-tui",
         }}
         activeFormField={0}
         focused
@@ -1232,15 +1237,88 @@ describe("RightPane setup panes", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("DELETE LANE");
-    expect(frame).toContain("Destructive action");
     expect(frame).toContain("scratch-delete-tui");
-    expect(frame).toContain("uncommitted changes detected");
+    expect(frame).toContain("uncommitted changes");
     expect(frame).toContain("[remote]");
-    expect(frame).toContain("also delete origin/ade/scratch-delete-tui");
-    expect(frame).toContain("Remote name");
     expect(frame).toContain("origin");
-    expect(frame).toContain("[x] skip safety checks");
-    expect(frame).toContain("enter deletes this lane");
+    expect(frame).toContain("[x] skip checks");
+    expect(frame).toContain("enter deletes");
+    expect(frame).not.toContain("Type lane name");
+    expect(frame).not.toContain("Destructive action");
+  });
+
+  it("arms lane delete with a second-enter confirm hint", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "Delete lane",
+          command: "lane-delete",
+          laneDelete: {
+            laneId: "lane-delete-1",
+            laneName: "scratch-delete-tui",
+            branchRef: "ade/scratch-delete-tui",
+            dirty: false,
+          },
+          fields: [
+            { name: "scope", label: "Scope", initialValue: "worktree" },
+            { name: "remoteName", label: "Remote name", initialValue: "origin" },
+            { name: "force", label: "Force delete", initialValue: "no" },
+          ],
+        }}
+        formValues={{ scope: "worktree", force: "no", remoteName: "origin" }}
+        formConfirmArmed
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("enter again to confirm");
+  });
+
+  it("renders chat delete as a two-step confirm without typing the title", () => {
+    const title = "Align ADE Code With Desktop Chat Delete Confirm";
+    const unarmed = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "Delete chat",
+          command: "chat-delete",
+          description: "Removes this chat and its transcript.",
+          chatDelete: { sessionId: "s1", title },
+          fields: [],
+        }}
+        focused
+        width={40}
+      />,
+    );
+    const unarmedFrame = stripAnsi(unarmed.lastFrame() ?? "");
+    expect(unarmedFrame).toContain("DELETE CHAT");
+    expect(unarmedFrame).toContain("Align ADE Code");
+    expect(unarmedFrame).toContain("Removes this chat");
+    expect(unarmedFrame).toContain("enter deletes");
+    expect(unarmedFrame).not.toContain("Type chat title");
+    expect(unarmedFrame).not.toContain("arrows move");
+    for (const line of unarmedFrame.split("\n")) {
+      expect(line.trimEnd().length).toBeLessThanOrEqual(40);
+    }
+
+    const armed = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "Delete chat",
+          command: "chat-delete",
+          description: "Removes this chat and its transcript.",
+          chatDelete: { sessionId: "s1", title },
+          fields: [],
+        }}
+        formConfirmArmed
+        focused
+        width={40}
+      />,
+    );
+    expect(stripAnsi(armed.lastFrame() ?? "")).toContain("enter again to confirm");
   });
 
   it("renders the unified model picker with model list and settings footer", () => {
@@ -1281,6 +1359,42 @@ describe("RightPane setup panes", () => {
     // "think high" chip (that detail was removed from model rows).
     expect(frame).toContain("reasoning");
     expect(frame).not.toContain("think high");
+  });
+
+  it("renders the /model wizard step, breadcrumb, cursor, and footer hint", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "model-wizard",
+          surface: "chat",
+          step: "model",
+          provider: "cursor",
+          familyKey: "agent",
+          index: 1,
+        }}
+        modelWizardView={{
+          step: "model",
+          title: "Choose a model",
+          breadcrumb: ["Cursor", "Agent"],
+          options: [
+            { id: "model:a", kind: "model", label: "Agent", hint: null },
+            { id: "model:b", kind: "model", label: "Agent Fast", hint: "fast" },
+          ],
+          index: 1,
+          hint: "↑↓ move · ↵ select · f favorite · esc back",
+        }}
+        focused
+        width={60}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("MODEL");
+    expect(frame).toContain("Choose a model");
+    expect(frame).toContain("Cursor › Agent");
+    expect(frame).toContain("Agent Fast");
+    // The cursor marks the focused row, and the footer hint reflects the step.
+    expect(frame).toMatch(/▸ .*Agent Fast/);
+    expect(frame).toContain("esc back");
   });
 
   it("renders the selected model-picker setting detail in the footer", () => {

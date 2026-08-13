@@ -172,6 +172,7 @@ function FooterControlsComponent({
   gridTerminalControlHint,
   multiViewActive,
   multiViewMap,
+  workPaneFocused,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -197,6 +198,8 @@ function FooterControlsComponent({
   gridTerminalControlHint?: boolean;
   multiViewActive?: boolean;
   multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
+  /** The sessions pane has keyboard focus: show ITS keys, not the chat's. */
+  workPaneFocused?: boolean;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -367,6 +370,14 @@ function FooterControlsComponent({
             <Text color={theme.color.accent}>← →</Text>
             <Text dimColor>{" choose"}</Text>
           </>
+        ) : workPaneFocused ? (
+          <>
+            <Hint keyLabel="↑↓" action="move" />
+            <Text dimColor>{"  ·  "}</Text>
+            <Hint keyLabel="↵" action="open" />
+            <Text dimColor>{"  ·  "}</Text>
+            <Hint keyLabel="esc" action="chat" />
+          </>
         ) : rowFocused ? (
           <>
             <Hint keyLabel="↑" action="prompt" />
@@ -377,7 +388,7 @@ function FooterControlsComponent({
           </>
         ) : (
           <>
-            <Hint keyLabel="^o" action="lanes" />
+            <Hint keyLabel="^o" action="work" />
             <Text dimColor>{"  "}</Text>
             <Hint keyLabel="^p" action="pane" />
             <Text dimColor>{"  "}</Text>

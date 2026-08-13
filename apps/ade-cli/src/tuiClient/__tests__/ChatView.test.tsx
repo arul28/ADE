@@ -5,6 +5,7 @@ import {
   ChatView,
   chatScrollMaxOffsetFromSelectableRows,
   computeChatScrollMaxOffset,
+  markdownSpacersBetween,
   renderChatSelectableRows,
   renderChatSelectableRowTexts,
   renderChatSelectableRowTextsFromRows,
@@ -201,7 +202,7 @@ describe("ChatView", () => {
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
     const frame = renderEvents([]);
     // Hero card uses a bordered box
-    expect(frame).toMatch(/[╭╮╯╰┌┐└┘]/);
+    expect(frame).toMatch(/[╭╮╯╰┌┝└┘]/);
     expect(frame).toContain("AGENTIC DEVELOPMENT ENVIRONMENT");
     expect(frame).toContain("project");
     expect(frame).toContain("lane");
@@ -270,6 +271,28 @@ describe("ChatView", () => {
     expect(frame).toContain("check status");
     expect(frame).toContain("model working");
     expect(frame).not.toContain("waiting for runtime events");
+  });
+
+  it("pins the model working row just above the bottom of a tall chat pane", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "check status", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "status", turnStatus: "started", turnId: "turn-active" },
+      },
+    ], { streaming: true, width: 80, maxRows: 10 });
+    const lines = transcriptLines(frame);
+    const workingIndex = lines.findIndex((line) => line.includes("model working"));
+    expect(workingIndex).toBeGreaterThanOrEqual(0);
+    expect(workingIndex).toBe(lines.length - 2);
+    expect(lines[lines.length - 1]?.trim() ?? "").toBe("");
   });
 
   it("shows the model working state after historical assistant output", () => {
@@ -1326,7 +1349,7 @@ describe("ChatView", () => {
     expect(frame).not.toContain("stale-command");
   });
 
-  it("counts expanded active activity in the scroll range", () => {
+  it("pins expanded active activity so it does not grow the scroll range", () => {
     const events: AgentChatEventEnvelope[] = Array.from({ length: 8 }, (_, index) => ({
       sessionId: "s1",
       timestamp: `2026-01-01T12:00:0${index}.000Z`,
@@ -1362,7 +1385,7 @@ describe("ChatView", () => {
       width: 80,
     });
 
-    expect(expanded).toBeGreaterThan(collapsed);
+    expect(expanded).toBe(collapsed);
   });
 
   it("renders a markdown table with box-drawing borders", () => {
@@ -1654,12 +1677,48 @@ describe("ChatView", () => {
     ];
     const frame = renderEvents(events, { width: 80 });
     const lines = transcriptLines(frame).map((line) => line.trimEnd());
-    const bulletLines = lines.filter((line) => line.trim().startsWith("•"));
-    expect(bulletLines.length).toBe(3);
+    const itemLines = ["First item", "Second item", "Third item"].map((item) => {
+      const hit = lines.find((line) => line.includes(item));
+      expect(hit).toBeDefined();
+      return hit!;
+    });
+    expect(itemLines.length).toBe(3);
     // Each consecutive bullet should sit two lines apart (one blank between).
-    const indices = bulletLines.map((bullet) => lines.indexOf(bullet));
+    const indices = itemLines.map((line) => lines.indexOf(line));
     for (let i = 1; i < indices.length; i += 1) {
       expect(indices[i]! - indices[i - 1]!).toBe(2);
+    }
+  });
+
+  it("opens paragraph gaps toward desktop prose-p:my-3 breathing room", () => {
+    expect(markdownSpacersBetween("paragraph", "paragraph")).toBe(2);
+    expect(markdownSpacersBetween("heading", "paragraph")).toBe(2);
+    expect(markdownSpacersBetween("paragraph", "bullet")).toBe(2);
+    expect(markdownSpacersBetween("bullet", "bullet")).toBe(1);
+    expect(markdownSpacersBetween("numbered", "numbered")).toBe(1);
+
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "text",
+          text: "Alpha paragraph one.\n\nBravo paragraph two.\n\nCharlie paragraph three.",
+        },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    const lines = transcriptLines(frame).map((line) => line.trimEnd());
+    const markers = ["Alpha paragraph one.", "Bravo paragraph two.", "Charlie paragraph three."];
+    const indices = markers.map((marker) => {
+      const index = lines.findIndex((line) => line.includes(marker));
+      expect(index).toBeGreaterThanOrEqual(0);
+      return index;
+    });
+    // Two blank spacer rows between paragraphs ? adjacent markers are 3 rows apart.
+    for (let i = 1; i < indices.length; i += 1) {
+      expect(indices[i]! - indices[i - 1]!).toBe(3);
     }
   });
 

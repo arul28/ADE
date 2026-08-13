@@ -51,16 +51,16 @@ export function detectProjectLaunchContext(args: {
   remoteLabel?: string | null;
 } = {}): ProjectLaunchContext {
   const launchCwd = normalizeRoot(args.cwd ?? process.cwd());
-  const explicitProjectRoot = args.projectRoot?.trim() || null;
+  const explicitProjectRootArg = args.projectRoot?.trim() || null;
   const explicitWorkspaceRoot = args.workspaceRoot?.trim() || null;
   const remote = args.remote === true;
   const worktree = findAdeWorktreeContext(launchCwd);
   const gitRoot = findGitRoot(launchCwd);
 
   const projectRoot = remote
-    ? (explicitProjectRoot ?? worktree?.projectRoot ?? gitRoot ?? launchCwd)
+    ? (explicitProjectRootArg ?? worktree?.projectRoot ?? gitRoot ?? launchCwd)
     : normalizeRoot(
-      explicitProjectRoot
+      explicitProjectRootArg
         ?? worktree?.projectRoot
         ?? gitRoot
         ?? launchCwd,
@@ -89,6 +89,7 @@ export function detectProjectLaunchContext(args: {
     sessionHint: args.sessionHint?.trim() || null,
     remote,
     remoteLabel: args.remoteLabel?.trim() || null,
+    explicitProjectRoot: Boolean(explicitProjectRootArg),
   };
 }
 
@@ -178,7 +179,7 @@ export function resolveTuiChatRefreshTarget(args: {
   draftChatActive: boolean;
   initialNewChatPreview: boolean;
   newChatPreviewLaneId: string | null;
-  selectedDrawerChatAction: "new-chat" | "closed-toggle" | null;
+  selectedWorkChatAction: "new-chat" | null;
   drawerLaneId: string | null;
   drawerBrowsingChatId?: string | null;
   drawerBrowsingNewChat?: boolean;
@@ -238,7 +239,7 @@ export function resolveTuiChatRefreshTarget(args: {
     && args.activeSessionId == null
     && (
       args.newChatPreviewLaneId === laneId
-      || args.selectedDrawerChatAction === "new-chat"
+      || args.selectedWorkChatAction === "new-chat"
     );
   const previewMode = launchToNewChatPreview || keepNewChatPreview;
   const seedSession = args.draftChatActive || previewMode ? newestChatSession(laneSessions) : null;
