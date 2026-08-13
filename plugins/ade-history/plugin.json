@@ -1,6 +1,6 @@
 {
   "name": "ade-history",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "History",
   "description": "Commits, lane operations and captured artifacts \u2014 as an optional tab.",
   "icon": "clock-counter-clockwise",

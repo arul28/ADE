@@ -1,6 +1,6 @@
 {
   "name": "ade-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Review",
   "description": "AI review passes over your project and pull requests \u2014 as an optional tab.",
   "icon": "git-pull-request",

@@ -1,6 +1,6 @@
 {
   "name": "ade-graph",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Graph",
   "description": "Lanes, commits and PR overlays on one canvas — as an optional tab.",
   "icon": "graph",

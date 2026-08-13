@@ -1,6 +1,6 @@
 {
   "name": "ade-ios-sim",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "iOS Simulator",
   "description": "Drive an iOS Simulator from the Work tools, on a Mac.",
   "icon": "device-mobile",

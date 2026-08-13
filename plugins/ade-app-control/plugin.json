@@ -1,6 +1,6 @@
 {
   "name": "ade-app-control",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Electron Control",
   "description": "Drive and inspect Electron apps from the Work tools.",
   "icon": "desktop",

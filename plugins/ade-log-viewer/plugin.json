@@ -1,6 +1,6 @@
 {
   "name": "ade-log-viewer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Log viewer",
   "description": "Reads the end of .log and .ndjson files in Files, with levels picked out.",
   "icon": "rows",

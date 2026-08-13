@@ -56,7 +56,7 @@ function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
 
 const GRAPH = manifest({
   name: "ade-graph",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Graph",
   description: "Lanes, commits and PR overlays on one canvas — as an optional tab.",
   icon: "graph",
@@ -88,7 +88,7 @@ const GRAPH = manifest({
  */
 const REVIEW = manifest({
   name: "ade-review",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Review",
   description: "AI review passes over your project and pull requests — as an optional tab.",
   icon: "git-pull-request",
@@ -99,7 +99,7 @@ const REVIEW = manifest({
 
 const HISTORY = manifest({
   name: "ade-history",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "History",
   description: "Commits, lane operations and captured artifacts — as an optional tab.",
   icon: "clock-counter-clockwise",
@@ -110,7 +110,7 @@ const HISTORY = manifest({
 
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Linear",
   description: "Open and browse Linear issues without leaving ADE.",
   icon: "list-checks",
@@ -121,7 +121,7 @@ const LINEAR = manifest({
 
 const IOS_SIM = manifest({
   name: "ade-ios-sim",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "iOS Simulator",
   description: "Drive an iOS Simulator from the Work tools, on a Mac.",
   icon: "device-mobile",
@@ -132,7 +132,7 @@ const IOS_SIM = manifest({
 
 const APP_CONTROL = manifest({
   name: "ade-app-control",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Electron Control",
   description: "Drive and inspect Electron apps from the Work tools.",
   icon: "desktop",
@@ -143,7 +143,7 @@ const APP_CONTROL = manifest({
 
 const LOG_VIEWER = manifest({
   name: "ade-log-viewer",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Log viewer",
   description: "Reads the end of .log and .ndjson files in Files, with levels picked out.",
   icon: "rows",
@@ -179,7 +179,7 @@ const LOG_VIEWER = manifest({
  */
 const PAPER = manifest({
   name: "ade-theme-paper",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Paper",
   description: "Warm paper and ink, with a clay accent. For working in daylight.",
   icon: "palette",
@@ -368,7 +368,7 @@ const PAPER = manifest({
 
 const INK = manifest({
   name: "ade-theme-ink",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "Ink",
   description: "Deep blue-black with a steel accent. Quiet under long sessions.",
   icon: "palette",
@@ -557,7 +557,7 @@ const INK = manifest({
 
 const CONTRAST = manifest({
   name: "ade-theme-contrast",
-  version: "1.0.0",
+  version: "1.0.1",
   displayName: "High contrast",
   description: "Maximum separation between text, edges and background. For bad light and tired eyes.",
   icon: "palette",
